@@ -1,6 +1,6 @@
 """
 思维链捕获器
-专门解析 preset 强制生成的 <thinking> 标签内容
+专门解析 preset 强制生成的 <thinking> 标签内容，并提取结构化记忆
 """
 
 import re
@@ -21,7 +21,7 @@ class ThinkingTracker:
         "characters": r"【角色】\s*(.*?)(?=【|$)",
         "plot_steps": r"【剧情模块】\s*(.*?)(?=【|$)",
         "user_intent": r"【用户需求】\s*(.*?)(?=【|$)",
-        "status_bar": r"【状态栏】\s*(.*?)(?=【|$)",
+        "diverse_expression": r"【多样表达】\s*(.*?)(?=【|$)",
     }
 
     def parse_thinking(self, thinking_text: str) -> dict[str, Any]:
@@ -30,8 +30,19 @@ class ThinkingTracker:
         for module_name, pattern in self.MODULE_PATTERNS.items():
             match = re.search(pattern, thinking_text, re.DOTALL)
             if match:
-                result[module_name] = match.group(1).strip()
+                raw_text = match.group(1).strip()
+                result[module_name] = self._clean_thinking_block(raw_text)
         return result
+
+    def _clean_thinking_block(self, raw_text: str) -> str:
+        """清洗 thinking 块，去除残留标签和无关内容"""
+        text = raw_text.strip()
+        # 去除残留的XML标签
+        text = re.sub(r"</?[A-Za-z\u4e00-\u9fff]+>", "", text)
+        text = re.sub(r"</[^>]*>", "", text)
+        # 压缩多余空白
+        text = re.sub(r"[\r\n]{2,}", "\n", text)
+        return text.strip()
 
     def to_memory_nodes(self, parsed: dict[str, Any]) -> list[dict[str, Any]]:
         """将解析结果转换为记忆节点候选"""
@@ -48,48 +59,104 @@ class ThinkingTracker:
                 }
             )
 
-        # 2. 角色分析 → 角色状态节点
+        # 2. 角色分析 → 角色状态节点 (每个角色独立)
         if "characters" in parsed:
-            nodes.append(
-                {
-                    "type": "character_state",
-                    "label": parsed["characters"][:50],
-                    "content": parsed["characters"],
-                    "importance": 0.9,
-                }
-            )
+            char_nodes = self._extract_characters(parsed["characters"])
+            nodes.extend(char_nodes)
 
-        # 3. 剧情步骤 → 剧情计划节点
+        # 3. 剧情步骤 → 剧情计划节点 (每步独立)
         if "plot_steps" in parsed:
-            nodes.append(
-                {
-                    "type": "plot_plan",
-                    "label": parsed["plot_steps"][:50],
-                    "content": parsed["plot_steps"],
-                    "importance": 0.7,
-                }
-            )
+            step_nodes = self._extract_plot_steps(parsed["plot_steps"])
+            nodes.extend(step_nodes)
 
         # 4. 用户意图 → 意图节点
         if "user_intent" in parsed:
-            nodes.append(
-                {
-                    "type": "user_intent",
-                    "label": parsed["user_intent"][:50],
-                    "content": parsed["user_intent"],
-                    "importance": 0.85,
-                }
-            )
-
-        # 5. 状态栏 → 结构化状态节点
-        if "status_bar" in parsed:
-            nodes.append(
-                {
-                    "type": "status_update",
-                    "label": parsed["status_bar"][:50],
-                    "content": parsed["status_bar"],
-                    "importance": 0.75,
-                }
-            )
+            intent = self._extract_user_intent(parsed["user_intent"])
+            if intent:
+                nodes.append(intent)
 
         return nodes
+
+    def _extract_characters(self, character_block: str) -> list[dict[str, Any]]:
+        """从角色块中提取每个独立角色的信息，过滤掉分类标题行"""
+        nodes = []
+        # 先按 "每个在场角色..." 这种标题行分割
+        parts = re.split(r"每个在场角色\w*[身份/性格/关系]是[：:]", character_block)
+
+        for part in parts:
+            lines = part.strip().split("\n")
+            for i, line in enumerate(lines):
+                line = line.lstrip("- ").strip()
+                # 过滤掉分类标题行和过短的行
+                if not line or len(line) < 5:
+                    continue
+                if (
+                    "每个在场角色" in line
+                    or "关系是：" in line
+                    or "身份/性格是：" in line
+                ):
+                    continue
+                # 如果下一行还是内容（不是新角色），合并进来
+                if (
+                    i + 1 < len(lines)
+                    and not lines[i + 1].startswith("-")
+                    and ":" in lines[i + 1]
+                ):
+                    continue
+                nodes.append(
+                    {
+                        "type": "character_state",
+                        "label": line[:50],
+                        "content": line,
+                        "importance": 0.9,
+                    }
+                )
+
+        return nodes
+
+    def _extract_plot_steps(self, plot_block: str) -> list[dict[str, Any]]:
+        """从剧情模块中提取每一步剧情计划"""
+        nodes = []
+
+        # 移除 Meta 指令
+        plot_block = re.sub(r"Nana将注意.*?$", "", plot_block, flags=re.MULTILINE)
+        plot_block = re.sub(
+            r"Nana以用户发送.*?$", "", plot_block, flags=re.MULTILINE
+        ).strip()
+
+        # 匹配序号开头的行：1. 2. 3. 或 1) 2) 3) 或 1、 2、 3、
+        steps = re.findall(
+            r"(?:\d+[\.\)、．]\s*)(.*?)(?=(?:\d+[\.\)、．])|$)", plot_block, re.DOTALL
+        )
+
+        for step in steps:
+            content = step.strip()
+            if content and len(content) > 5:
+                nodes.append(
+                    {
+                        "type": "plot_plan",
+                        "label": content[:50],
+                        "content": content,
+                        "importance": 0.7,
+                    }
+                )
+
+        return nodes
+
+    def _extract_user_intent(self, intent_block: str) -> dict[str, Any] | None:
+        """提取用户意图的核心内容"""
+        if not intent_block:
+            return None
+        # 去掉冗长的前缀描述
+        core = re.sub(r'用户发送的最新内容是[：:]\s*"[^"]*"', "", intent_block)
+        core = re.sub(r"用户需求字数[：:]\s*\S+", "", core)
+        core = core.strip()
+
+        if core:
+            return {
+                "type": "user_intent",
+                "label": core[:50],
+                "content": core,
+                "importance": 0.85,
+            }
+        return None
