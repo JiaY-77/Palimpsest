@@ -142,6 +142,9 @@ async def import_chat(file: UploadFile = File(...)):
                 else:
                     skipped += 1
 
+        # 验证入库结果
+        all_ids = store._get_all_node_ids()
+
         return {
             "status": "ok",
             "total_messages": len(all_messages),
