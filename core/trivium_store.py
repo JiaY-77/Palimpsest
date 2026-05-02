@@ -18,8 +18,13 @@ class TriviumStore:
         # 使用 DeepSeek 默认的 embedding 维度
         self.dim = 1536
 
-    def _acquire(self) -> triviumdb.TriviumDB:
-        """获取数据库连接（仅存在于 with 块内部）"""
+    def _acquire(self):
+        """
+        获取数据库连接（仅存在于 with 块内部）
+        注意：triviumdb 库没有提供 Python 类型存根 (.pyi)，
+        因此手动添加 type: ignore 注释来抑制 Pylance 的类型推断警告。
+        """
+        # type: ignore
         return triviumdb.TriviumDB(self.db_path, dim=self.dim)
 
     def insert_node(self, node_data: dict[str, Any], embedding: list[float]) -> int:
@@ -89,3 +94,9 @@ class TriviumStore:
                     "num_edges": node.num_edges,
                 }
             return None
+
+    def _get_all_node_ids(self) -> list[int]:
+        """获取数据库中所有节点的 ID 列表（供内部使用）"""
+        # type: ignore
+        with self._acquire() as db:
+            return db.all_node_ids()
