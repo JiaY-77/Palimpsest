@@ -91,22 +91,9 @@ class Merger:
 
             overlap = self._content_overlap(content, existing_content)
             # 只保留相似度大于 0.3 的最佳匹配
-            if overlap > best_score and overlap > 0.05:
+            if overlap > best_score and overlap > 0.3:
                 best_score = overlap
                 best_match = {"id": node_data.get("id"), "payload": payload}
-
-            # ★★★ 终极调试：直接返回第一个内容不为空的节点 ★★★
-            if not best_match:
-                for nid in all_ids:
-                    node_data = self.store.get_node(nid)
-                    if not node_data:
-                        continue
-                    payload = node_data.get("payload", {})
-                    if payload.get("content", "").strip():
-                        print(
-                            f"  [DEBUG-MERGER] 强制匹配节点 ID={node_data.get('id')}, 内容前40字: {payload['content'][:40]}"
-                        )
-                        return {"id": node_data.get("id"), "payload": payload}
 
         return best_match
 
