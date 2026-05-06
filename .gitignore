@@ -13,5 +13,9 @@ __pycache__/
 .vscode/
 .idea/
 
-# 数据库文件（本地测试用）
+# TriviumDB 数据库文件（本地测试用）
 *.db
+*.vec
+*.tdb
+
+data/
