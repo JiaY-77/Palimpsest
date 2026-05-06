@@ -1,6 +1,5 @@
 """记忆检索器 - 基于关键词匹配的最简版本"""
 
-import re
 import logging
 from typing import Any
 from core.trivium_store import TriviumStore
