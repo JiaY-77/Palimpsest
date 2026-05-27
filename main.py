@@ -72,8 +72,10 @@ async def extract_memory(req: ExtractRequest):
     new_count = 0
     skipped = 0
     for node in nodes:
-        temp_vec = [0.1] * store.dim
-        result = merger.merge(node, temp_vec)
+        # 用真实的文本内容生成向量
+        content_to_embed = node.get("content", "") or node.get("label", "")
+        real_vec = store.embed_text(content_to_embed)
+        result = merger.merge(node, real_vec)
         if result:
             new_count += 1
         else:
@@ -135,8 +137,10 @@ async def import_chat(file: UploadFile = File(...)):
             parsed = tracker.parse_thinking(msg["reasoning"])
             nodes = tracker.to_memory_nodes(parsed)
             for node in nodes:
-                temp_vec = [0.1] * store.dim
-                result = merger.merge(node, temp_vec)
+                # 用真实的文本内容生成向量
+                content_to_embed = node.get("content", "") or node.get("label", "")
+                real_vec = store.embed_text(content_to_embed)
+                result = merger.merge(node, real_vec)
                 if result:
                     new_count += 1
                 else:

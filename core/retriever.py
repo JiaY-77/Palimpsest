@@ -15,45 +15,24 @@ class Retriever:
 
     def retrieve(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
         """
-        根据查询文本检索最相关的记忆节点 (单字精确匹配版)
+        根据查询文本检索最相关的记忆节点（语义检索版）
         """
-        # 1. 精准分词：直接按单字拆分，确保人名等专名能被匹配
-        keywords = list(query.replace(" ", ""))
+        # 生成查询向量
+        query_vec = self.store.embed_text(query)
 
-        if not keywords:
-            keywords = [query.strip()]
+        # 用语义相似度检索
+        results = self.store.search_similar(query_vec, top_k=top_k, expand_depth=1)
 
-        # 2. 遍历所有节点，对每个节点打分
-        all_nodes = self._get_all_nodes()
-        scored = []
-
-        for node in all_nodes:
-            content = node.get("payload", {}).get("content", "")
-            if not content:
-                continue
-
-            # 关键词命中次数作为分数
-            score = sum(1 for kw in keywords if kw in content)
-            if score > 0:
-                scored.append((score, node))
-
-        # 3. 按分数降序排列，取 top_k
-        scored.sort(key=lambda x: x[0], reverse=True)
-
-        results = []
-        for score, node in scored[:top_k]:
-            payload = node.get("payload", {})
-            results.append(
-                {
-                    "id": node.get("id"),
-                    "score": score,
-                    "type": payload.get("type", "unknown"),
-                    "content": payload.get("content", ""),
-                    "importance": payload.get("importance", 0),
-                }
-            )
-
-        return results
+        return [
+            {
+                "id": r.get("id"),
+                "score": r.get("score", 0),
+                "type": r.get("payload", {}).get("type", "unknown"),
+                "content": r.get("payload", {}).get("content", ""),
+                "importance": r.get("payload", {}).get("importance", 0),
+            }
+            for r in results
+        ]
 
     def _get_all_nodes(self) -> list[dict[str, Any]]:
         """直接使用手动遍历获取所有节点"""

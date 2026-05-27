@@ -1,6 +1,5 @@
 """TriviumDB 存储封装"""
 
-import json
 import logging
 from typing import Any
 
@@ -16,7 +15,7 @@ class TriviumStore:
     def __init__(self) -> None:
         self.db_path = Config.DB_PATH
         # 使用 DeepSeek 默认的 embedding 维度
-        self.dim = 1536
+        self.dim = 1024
 
     def _acquire(self):
         """
@@ -25,7 +24,31 @@ class TriviumStore:
         因此手动添加 type: ignore 注释来抑制 Pylance 的类型推断警告。
         """
         # type: ignore
-        return triviumdb.TriviumDB(self.db_path, dim=self.dim)
+        return triviumdb.TriviumDB(self.db_path, dim=self.dim)  # type: ignore
+
+    def embed_text(self, text: str) -> list[float]:
+        """
+        通过本地 Ollama 服务生成文本向量
+        使用 bge-m3 模型，输出 1024 维
+        """
+        import requests
+
+        try:
+            response = requests.post(
+                "http://localhost:11434/api/embeddings",
+                json={"model": "bge-m3", "prompt": text},
+                timeout=30,
+            )
+            response.raise_for_status()
+            embedding = response.json().get("embedding")
+            if embedding:
+                return embedding
+            else:
+                print("警告: Ollama 返回的 embedding 为空")
+                return [0.0] * self.dim
+        except Exception as e:
+            print(f"Ollama Embedding 生成失败: {e}")
+            return [0.0] * self.dim
 
     def insert_node(self, node_data: dict[str, Any], embedding: list[float]) -> int:
         """插入记忆节点，返回节点 ID"""
@@ -65,26 +88,42 @@ class TriviumStore:
         top_k: int = 5,
         expand_depth: int = 1,
     ) -> list[dict[str, Any]]:
-        """语义搜索 + 图扩散"""
-        with self._acquire() as db:
-            results = db.search(
-                query_embedding,
-                top_k=top_k,
-                expand_depth=expand_depth,
-                min_score=0.3,
-            )
+        """手动遍历所有节点，计算余弦相似度并返回 Top-K"""
+        import numpy as np
 
-            return [
-                {
-                    "id": hit.id,
-                    "score": hit.score,
-                    "payload": hit.payload,
-                }
-                for hit in results
-            ]
+        # 1. 获取所有节点ID
+        ids = self._get_all_node_ids()
+        if not ids:
+            return []
+
+        # 2. 逐个获取节点，手动计算相似度
+        scored = []
+        qv = np.array(query_embedding)
+        for nid in ids:
+            node_data = self.get_node(nid)
+            if not node_data or "vector" not in node_data:
+                continue
+            db_vec = np.array(node_data["vector"])
+            # 防止零向量
+            norm = np.linalg.norm(db_vec)
+            if norm == 0:
+                continue
+            score = float(np.dot(qv, db_vec) / (np.linalg.norm(qv) * norm))
+            scored.append((score, node_data))
+
+        # 3. 排序、截断、返回
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [
+            {
+                "id": node.get("id"),
+                "score": score,
+                "payload": node.get("payload", {}),
+            }
+            for score, node in scored[:top_k]
+        ]
 
     def get_node(self, node_id: int) -> dict[str, Any] | None:
-        """获取单个节点的详细信息"""
+        """获取单个节点的详细信息（包含向量）"""
         with self._acquire() as db:
             node = db.get(node_id)
             if node:
@@ -92,6 +131,7 @@ class TriviumStore:
                     "id": node.id,
                     "payload": node.payload,
                     "num_edges": node.num_edges,
+                    "vector": node.vector,  # 新增：返回向量
                 }
             return None
 
