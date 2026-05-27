@@ -52,8 +52,8 @@ class MemoryResponse(BaseModel):
 async def root():
     return {
         "service": "MemoryHub",
-        "version": "0.9.0",
-        "endpoints": ["/extract", "/retrieve", "/import", "/export"],
+        "version": "0.10.0",
+        "endpoints": ["/extract", "/retrieve", "/import", "/export", "/memory/{id}"],
     }
 
 
@@ -269,8 +269,6 @@ async def generate_report():
 """
     # 4. 调用 DeepSeek
     try:
-        store._acquire()  # 这是一个临时连接，我们只需要用它来调一次 API
-        # 注意：这里我们直接使用 openai 库，因为 store 里没有封装 chat.completions
         from openai import OpenAI
         from config import Config
 
@@ -280,10 +278,48 @@ async def generate_report():
         completion = client.chat.completions.create(
             model=llm_cfg["model"],
             messages=[{"role": "user", "content": report_prompt}],
-            temperature=0.8,  # 给报告一点文学性的创造力
+            temperature=0.8,
             max_tokens=4000,
         )
         report = completion.choices[0].message.content
         return {"status": "ok", "report": report}
     except Exception as e:
         return {"status": "error", "message": f"报告生成失败: {str(e)}"}
+
+
+# ---- 新增：记忆删除/编辑 API ----
+@app.delete("/memory/{node_id}")
+async def delete_memory(node_id: int):
+    """删除指定 ID 的记忆节点"""
+    try:
+        store.delete_node(node_id)
+        return {"status": "ok", "message": f"节点 {node_id} 已删除"}
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"删除失败: {str(e)}")
+
+
+@app.put("/memory/{node_id}")
+async def update_memory_payload(node_id: int, payload: dict):
+    """更新指定 ID 的记忆 payload（元数据）"""
+    try:
+        store.update_payload(node_id, payload)
+        return {"status": "ok", "message": f"节点 {node_id} payload 已更新"}
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"更新失败: {str(e)}")
+
+
+@app.patch("/memory/{node_id}/vector")
+async def update_memory_vector(node_id: int, vector: list[float]):
+    """更新指定 ID 的记忆向量（维度必须匹配）"""
+    try:
+        if len(vector) != store.dim:
+            raise HTTPException(
+                status_code=400,
+                detail=f"向量维度应为 {store.dim}，实际为 {len(vector)}",
+            )
+        store.update_vector(node_id, vector)
+        return {"status": "ok", "message": f"节点 {node_id} 向量已更新"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"更新失败: {str(e)}")

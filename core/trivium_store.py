@@ -135,6 +135,24 @@ class TriviumStore:
                 }
             return None
 
+    def delete_node(self, node_id: int) -> None:
+        """删除节点（同时删除所有关联边）"""
+        with self._acquire() as db:
+            db.delete(node_id)
+        logger.info(f"已删除节点 ID={node_id}")
+
+    def update_payload(self, node_id: int, new_payload: dict[str, Any]) -> None:
+        """更新节点的 payload 元数据"""
+        with self._acquire() as db:
+            db.update_payload(id=node_id, payload=new_payload)  # 改为关键字参数
+        logger.info(f"已更新节点 ID={node_id} 的 payload")
+
+    def update_vector(self, node_id: int, new_vector: list[float]) -> None:
+        """更新节点的向量（维度必须一致）"""
+        with self._acquire() as db:
+            db.update_vector(vector=new_vector, id=node_id)  # 改为关键字参数
+        logger.info(f"已更新节点 ID={node_id} 的向量")
+
     def _get_all_node_ids(self) -> list[int]:
         """获取数据库中所有节点的 ID 列表（供内部使用）"""
         # type: ignore
