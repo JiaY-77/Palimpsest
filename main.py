@@ -71,6 +71,10 @@ async def extract_memory(req: ExtractRequest):
 
     new_count = 0
     skipped = 0
+    # 添加角色隔离字段
+    for node in nodes:
+        node["character_name"] = req.character_name
+        node["user_name"] = req.user_name
     for node in nodes:
         # 用真实的文本内容生成向量
         content_to_embed = node.get("content", "") or node.get("label", "")
@@ -96,6 +100,9 @@ async def extract_memory(req: ExtractRequest):
 async def retrieve_memory(req: RetrieveRequest):
     """检索与当前消息相关的记忆"""
     results = retriever.retrieve(req.current_message, top_k=5)
+    print("=== 检索结果 ===", results)
+    # 过滤只保留当前角色的记忆
+    results = [r for r in results if r.get("character_name") == req.character_name]
 
     if not results:
         return MemoryResponse(
@@ -119,7 +126,11 @@ async def retrieve_memory(req: RetrieveRequest):
 
 
 @app.post("/import")
-async def import_chat(file: UploadFile = File(...)):
+async def import_chat(
+    file: UploadFile = File(...),
+    character_name: str = "unknown",
+    user_name: str = "unknown",
+):
     """导入酒馆聊天文件，批量提取记忆"""
     # 保存上传文件到临时目录
     with tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode="wb") as tmp:
@@ -137,6 +148,8 @@ async def import_chat(file: UploadFile = File(...)):
             parsed = tracker.parse_thinking(msg["reasoning"])
             nodes = tracker.to_memory_nodes(parsed)
             for node in nodes:
+                node["character_name"] = character_name
+                node["user_name"] = user_name
                 # 用真实的文本内容生成向量
                 content_to_embed = node.get("content", "") or node.get("label", "")
                 real_vec = store.embed_text(content_to_embed)

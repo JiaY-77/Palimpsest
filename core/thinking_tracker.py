@@ -4,7 +4,6 @@
 """
 
 import re
-import json
 import logging
 from typing import Any
 
@@ -16,7 +15,7 @@ class ThinkingTracker:
 
     # 匹配你预设中的模块标签
     MODULE_PATTERNS = {
-        "plot_summary": r"【上段剧情】\s*前情提要：(.*?)(?=【|$)",
+        "plot_summary": r"【上段剧情】\s*前情提要[：:](.*?)(?=【|$)",
         "self_check": r"【自我检查】\s*(.*?)(?=【|$)",
         "characters": r"【角色】\s*(.*?)(?=【|$)",
         "plot_steps": r"【剧情模块】\s*(.*?)(?=【|$)",
@@ -26,7 +25,7 @@ class ThinkingTracker:
 
     def parse_thinking(self, thinking_text: str) -> dict[str, Any]:
         """解析 <thinking> 块，返回结构化数据"""
-        result = {}
+        result = {"raw_text": thinking_text}
         for module_name, pattern in self.MODULE_PATTERNS.items():
             match = re.search(pattern, thinking_text, re.DOTALL)
             if match:
@@ -75,6 +74,20 @@ class ThinkingTracker:
             if intent:
                 nodes.append(intent)
 
+        # 5. 如果上面都没有提取到节点，则把原始 thinking 作为用户意图节点
+        if not nodes and "raw_text" in parsed:
+            raw = parsed["raw_text"]
+            # 去除 thinking 标签
+            raw = re.sub(r"</?thinking>", "", raw).strip()
+            if raw:
+                nodes.append(
+                    {
+                        "type": "user_intent",
+                        "label": raw[:50],
+                        "content": raw,
+                        "importance": 0.7,
+                    }
+                )
         return nodes
 
     def _extract_characters(self, character_block: str) -> list[dict[str, Any]]:

@@ -22,7 +22,7 @@ class Retriever:
 
         # 用语义相似度检索
         results = self.store.search_similar(query_vec, top_k=top_k, expand_depth=1)
-
+        # 将结果转换为记忆节点格式
         return [
             {
                 "id": r.get("id"),
@@ -30,6 +30,7 @@ class Retriever:
                 "type": r.get("payload", {}).get("type", "unknown"),
                 "content": r.get("payload", {}).get("content", ""),
                 "importance": r.get("payload", {}).get("importance", 0),
+                "character_name": r.get("payload", {}).get("character_name", ""),
             }
             for r in results
         ]

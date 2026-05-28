@@ -53,6 +53,7 @@ class TriviumStore:
     def insert_node(self, node_data: dict[str, Any], embedding: list[float]) -> int:
         """插入记忆节点，返回节点 ID"""
         with self._acquire() as db:
+            # 基础 payload
             payload = {
                 "type": node_data.get("type", "unknown"),
                 "label": node_data.get("label", ""),
@@ -61,13 +62,19 @@ class TriviumStore:
                 "status": "active",
                 "created_at": None,
             }
+            # 合并额外字段（如 character_name, user_name）
+            extra_fields = {
+                k: v
+                for k, v in node_data.items()
+                if k not in payload and k not in ("label", "content")
+            }
+            payload.update(extra_fields)
 
             node_id = db.insert(embedding, payload)
-
             db.create_index("type")
             db.create_index("importance")
             db.create_index("status")
-
+            db.create_index("character_name")  # 新增索引，加速过滤
             return node_id
 
     def create_edge(
