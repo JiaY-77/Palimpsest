@@ -31,9 +31,9 @@ class TriviumStore:
         通过本地 Ollama 服务生成文本向量
         使用 bge-m3 模型，输出 1024 维
         """
-        import requests
-
         try:
+            import requests
+
             response = requests.post(
                 "http://localhost:11434/api/embeddings",
                 json={"model": "bge-m3", "prompt": text},
