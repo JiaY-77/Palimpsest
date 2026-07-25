@@ -3,3 +3,4 @@ uvicorn
 openai
 python-dotenv
 pydantic
+git+https://github.com/YoKONCy/TriviumDB.git
