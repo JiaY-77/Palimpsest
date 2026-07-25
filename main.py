@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from typing import Optional
 import tempfile
 import os
+import time
 
 from core.thinking_tracker import ThinkingTracker
 from core.trivium_store import TriviumStore
@@ -94,6 +95,38 @@ async def extract_memory(req: ExtractRequest):
             "character": req.character_name,
         },
     )
+
+
+# ---- 新增：通用灵感卡片接入接口 ----
+class IngestRequest(BaseModel):
+    source_url: str | None = None
+    source_title: str | None = None
+    objective_summary: str
+    subjective_thought: str
+    tags: list[str] | None = []
+
+
+@app.post("/ingest")
+async def ingest_card(req: IngestRequest):
+    """接收来自 Dify 的灵感卡片，存入 MemoryHub"""
+    card_payload = {
+        "type": "inspiration",
+        "source_url": req.source_url,
+        "source_title": req.source_title,
+        "objective_summary": req.objective_summary,
+        "subjective_thought": req.subjective_thought,
+        "tags": req.tags or [],
+        "created_at": time.time(),
+    }
+
+    # 用客观摘要 + 主观感悟拼接作为向量文本
+    text_to_embed = f"{req.objective_summary}\n{req.subjective_thought}"
+    embedding = store.embed_text(text_to_embed)
+
+    # 存入 TriviumDB
+    node_id = store.insert_node(card_payload, embedding)
+
+    return {"status": "ok", "node_id": node_id}
 
 
 @app.post("/retrieve")
