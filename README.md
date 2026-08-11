@@ -1,160 +1,180 @@
-# MemoryHub — 为角色扮演而生的 AI 记忆引擎
+# MemoryHub
 
-> 让 AI 不再忘记的「第二大脑」。
-> 基于结构化思维链的长期记忆系统。
+> 捕获 AI 的推理链（reasoning），将其转化为可检索、可复用、可跨端同步的结构化记忆资产。
 
----
-
-## 一句话介绍
-
-MemoryHub 是一个专为 SillyTavern 设计的**独立记忆后端服务**。
-它通过捕获大语言模型的内部思考过程（思维链），构建结构化的角色扮演记忆图谱，
-并通过 API 提供记忆的存储、合并、检索与上下文注入能力。
+**MemoryHub 是一个专为 AI 对话场景设计的轻量级记忆服务。** 它不存储对话原文，而是从模型的推理过程中提取结构化信息——事件、角色状态、剧情计划、用户意图——让 AI 记住“为什么这么想”，而不是只记住“说了什么”。
 
 ---
 
-## 为什么需要 MemoryHub？
+## 💡 核心理念
 
-### 现有记忆方案的局限
+现有 RAG 系统只能记住对话结果（鱼），而 MemoryHub 记住的是模型的推理过程（渔网）。
 
-| 方案 | 核心问题 |
-|------|----------|
-| 纯摘要 | 因果链丢失，只剩「A 做了 B」 |
-| 记忆表格 | 角色脸谱化，越聊越笨 |
-| 分层总结机 | 压缩过程中主观评价和动机被洗掉 |
-| 纯向量 RAG | 检索零散，无法回溯完整叙事线 |
-
-### MemoryHub 的创新
-
-MemoryHub 不记忆 AI 的「输出文本」，而是记忆 AI 的「思考过程」。
-它直接从 DeepSeek 的原生思维链（`reasoning_content`）和预设立场（preset）中
-提取结构化的记忆节点和边，构建一张可追溯、可修正、可演化的记忆图谱。
-
-**核心优势**：
-- **记住「为什么」而不是「什么」**：保留角色的动机、情感和因果链
-- **非破坏性更新**：修正记忆时不删除旧版本，保留 `REVISED_BY` 边
-- **独立后端服务**：与酒馆解耦，数据可跨会话持久化
-- **合并去重**：自动识别重复记忆，避免数据库膨胀
+| | 普通 RAG / 记忆插件 | MemoryHub |
+|---|---|---|
+| 存储内容 | 对话原文或摘要 | **结构化的推理链**（思考过程） |
+| 因果逻辑 | ❌ 丢失 | ✅ 完整保留 |
+| 角色动机 | ❌ 丢失 | ✅ 完整保留 |
+| 跨会话复用 | 低（依赖原始文本） | **高（思维底片可迁移）** |
+| 记忆合并 | 简单去重 | **语义级合并，保留演进痕迹** |
+| 多角色隔离 | 通常不支持 | ✅ 原生支持 |
 
 ---
 
-## 技术架构
+## 🚀 核心功能
+
+- **记忆提取**：从 AI 回复中自动提取思考链，生成结构化记忆节点
+- **语义检索**：基于向量相似度 + 图谱扩散，精准召回相关记忆
+- **智能合并**：语义级去重（相似度 > 0.85 跳过，0.4–0.85 更新并建立 `REVISED_BY` 边）
+- **多角色隔离**：按 `character_name` 隔离，不同角色卡记忆互不污染
+- **记忆管理**：支持删除、更新 payload、更新向量的 REST API
+- **批量导入**：支持酒馆导出的 JSON 聊天文件
+- **角色分析报告**：基于全部记忆生成 LLM 驱动的角色心理分析
+- **跨端压缩**：将聊天记录压缩为 `.memory` 文件（约 100 倍压缩比），支持跨端同步
+
+---
+
+## 🏗️ 技术架构
 
 ```
-┌──────────────────────────┐
-│  SillyTavern（前端）     │
-│  Service Plugin (计划中)  │
-└─────────┬────────────────┘
-          │ HTTP POST /retrieve  /extract
-          ▼
-┌──────────────────────────┐
-│  MemoryHub（FastAPI）     │
-│                          │
-│  ├── extractor.py        │  ← 记忆提取入口
-│  ├── thinking_tracker.py │  ← 思维链解析
-│  ├── merger.py           │  ← 合并去重
-│  ├── retriever.py        │  ← 记忆检索
-│  └── trivium_store.py    │  ← 存储封装
-└─────────┬────────────────┘
-          │
-          ▼
-┌──────────────────────────┐
-│  TriviumDB               │
-│  向量 + 图 + 文档        │
-│  三合一嵌入式数据库      │
-└──────────────────────────┘
+┌────────────────────────────────────────────────────────────────┐
+│                    客户端（SillyTavern / WebUI）               │
+└────────────────────────┬───────────────────────────────────────┘
+                         │ HTTP
+                         ▼
+┌────────────────────────────────────────────────────────────────┐
+│                    MemoryHub（FastAPI）                       │
+│                                                              │
+│  ┌─────────────┐  ┌──────────────┐  ┌─────────────────────┐  │
+│  │thinking_tracker│  │   merger    │  │      retriever      │  │
+│  │  思维链解析   │  │  智能合并   │  │   语义检索+图谱扩散  │  │
+│  └─────────────┘  └──────────────┘  └─────────────────────┘  │
+└────────────────────────┬───────────────────────────────────────┘
+                         │
+                         ▼
+┌────────────────────────────────────────────────────────────────┐
+│                     TriviumDB（嵌入式数据库）                  │
+│                                                              │
+│   向量（1024维 bge-m3） │  Payload（JSON）  │  有向带权图    │
+│   （语义检索）         │  （文档过滤）     │  （图谱扩散）   │
+└────────────────────────────────────────────────────────────────┘
 ```
 
----
+### 技术选型
 
-## 核心模块
-
-| 模块 | 文件 | 职责 | 状态 |
-|------|------|------|:--:|
-| 思维链解析 | `thinking_tracker.py` | 解析 `<thinking>` 块，提取剧情/角色/计划/意图 | ✅ |
-| 记忆提取 | `extractor.py` | 统一提取入口，优先思维链，备用 LLM 分析 | ✅ |
-| 合并去重 | `merger.py` | 新记忆与旧记忆比对，自动跳过重复 | ✅ |
-| 记忆检索 | `retriever.py` | 关键词匹配检索，返回相关性排序 | ✅ |
-| 存储封装 | `trivium_store.py` | TriviumDB 节点/边操作、索引管理 | ✅ |
-| API 服务 | `main.py` | FastAPI 端点 `/extract`, `/retrieve` | ⬜ 待接入 |
-| 核心验证 | `verify_core_loop.py` | 集成测试：提取 → 合并 → 存储 → 检索 | ✅ |
+| 组件 | 选型 | 理由 |
+|------|------|------|
+| **向量+图+文档** | TriviumDB | 原生三位一体，单文件部署，无需外部数据库 |
+| **Embedding** | bge-m3 + Ollama | 本地免费，1024 维，中文效果优秀 |
+| **LLM 网关（规划中）** | LiteLLM | 统一模型调度、成本可视化、请求监控 |
+| **API 服务** | FastAPI + Python | 快速开发，生态成熟 |
 
 ---
 
-## 快速上手
+## 📦 快速开始
 
-### 1. 环境要求
+### 环境要求
 
-- Python 3.12+
-- DeepSeek API Key（或兼容 OpenAI API 的后端）
+- Python 3.10+
+- Ollama（本地 Embedding）
+- Docker（可选，用于 LiteLLM 网关）
 
-### 2. 安装
+### 安装
 
 ```bash
-git clone https://github.com/JiaY-77/memoryhub.git
+git clone https://github.com/YOUR_USERNAME/memoryhub.git
 cd memoryhub
 python -m venv venv
-.\venv\Scripts\Activate.ps1
-pip install triviumdb fastapi uvicorn openai python-dotenv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+pip install -r requirements.txt
 ```
 
-### 3. 配置 `.env`
+### 配置
 
-```
+复制 `.env.example` 为 `.env`，填写你的配置：
+
+```ini
+# LLM 后端选择
 LLM_BACKEND=deepseek
+
+# DeepSeek API
+DEEPSEEK_API_KEY=sk-你的密钥
 DEEPSEEK_BASE_URL=https://api.deepseek.com
-DEEPSEEK_API_KEY=sk-你的key
-DEEPSEEK_MODEL=deepseek-v4-flash
-DB_PATH=data/mh_memory.db
+DEEPSEEK_MODEL=deepseek-chat
+
+# 本地 Embedding（Ollama）
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_EMBEDDING_MODEL=bge-m3
 ```
 
-### 4. 启动服务
+### 启动服务
 
 ```bash
-uvicorn main:app --host 0.0.0.0 --port 8001 --reload
+uvicorn main:app --reload
 ```
 
-### 5. 运行核心验证
+访问 `http://localhost:8000` 查看 API 文档。
 
-```bash
-python verify_core_loop.py
+---
+
+## 🔌 API 端点
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/extract` | 从 AI 回复中提取记忆节点 |
+| `POST` | `/retrieve` | 语义检索相关记忆 |
+| `POST` | `/import` | 批量导入酒馆聊天文件 |
+| `GET` | `/export` | 导出所有记忆节点 |
+| `GET` | `/summary` | 生成人类可读的记忆摘要 |
+| `POST` | `/report` | 生成角色灵魂分析报告 |
+| `DELETE` | `/memory/{id}` | 删除指定记忆节点 |
+| `PUT` | `/memory/{id}` | 更新节点 payload |
+| `PATCH` | `/memory/{id}/vector` | 更新节点向量 |
+
+---
+
+## 🗂️ 项目结构
+
+```
+memoryhub/
+├── main.py                 # FastAPI 主入口
+├── core/
+│   ├── thinking_tracker.py # 思维链解析
+│   ├── trivium_store.py    # TriviumDB 存储封装
+│   ├── merger.py           # 智能合并去重
+│   ├── retriever.py        # 语义检索
+│   ├── importer.py         # 聊天文件导入
+│   └── extractor.py        # 记忆提取（含 LLM 备用）
+├── config.py               # 配置管理
+├── requirements.txt
+└── .env                    # 环境变量
 ```
 
-预期输出：第一次运行创建 10 个记忆节点，第二次运行全部显示「与已有记忆重复，已跳过」。
+---
+
+## 📌 当前状态与后续规划
+
+### 已完成
+
+- ✅ 思维链解析（支持结构化 thinking 标签）
+- ✅ 向量存储 + 语义检索
+- ✅ 智能合并去重（语义级）
+- ✅ 多角色隔离
+- ✅ 记忆 CRUD API
+- ✅ 聊天文件批量导入
+- ✅ 角色分析报告
+
+### 进行中 / 规划
+
+- ⏳ **LiteLLM 集成**：统一模型网关 + 成本可视化
+- ⏳ **透明代理层**：强制所有 LLM 请求输出统一格式 thinking
+- ⏳ **前端可视化界面**：记忆图谱浏览 + 节点编辑
+- ⏳ **预设适配优化**：通用 LLM 提取 + 正则快速通道
 
 ---
 
-## 设计哲学
-
-> **记住渔网，而不是记住鱼。**
-
-传统记忆系统试图记住 AI 说了什么（「鱼」）。
-MemoryHub 记住的是 AI 为什么这么说（「渔网」）——它的思考路径、角色动机、因果关系。
-
-这条思考路径可以被任何一个 AI 模型用来重演角色的决策逻辑，
-即使换了模型、换了角色卡，角色的内核也不会丢失。
-
----
-
-## 路线图
-
-- [x] **V0.9** (2026-05-02)  
-  思维链捕获 + 结构化提取 + 合并去重 + 存储 + 检索，完整闭环验证通过
-
-- [ ] **V1.0**  
-  接入 SillyTavern 服务端插件，实现自动提取和注入
-
-- [ ] **V1.1**  
-  管理面板（Element Plus 前端），支持可视化记忆图谱
-
-- [ ] **V1.2**  
-  真实 Embedding 语义检索
-
-- [ ] **V2.0**  
-  记忆遗忘策略、矛盾处理、多角色记忆隔离
-
----
-
-## License
+## 📄 License
 
 Apache-2.0
+
+---
