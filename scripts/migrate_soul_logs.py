@@ -43,6 +43,24 @@ def main():
     print(f"解析到 {len(logs)} 条日志，从 {logs[0][1]} 到 {logs[-1][1]}")
 
     store = TriviumStore()
+
+    # ---- 增量模式：跳过已存在的版本号（防重复 ingest）----
+    existing_map = {}  # version -> node_id
+    for nid in store._get_all_node_ids():
+        node = store.get_node(nid)
+        payload = node.get("payload", {}) if node else {}
+        if payload.get("type") == "event" and payload.get("character_name") == DOMAIN:
+            m = re.search(r"版本\s*v?([\d.]+)", payload.get("content", ""))
+            if m:
+                existing_map[m.group(1)] = nid
+    if existing_map:
+        before = len(logs)
+        logs = [l for l in logs if l[1] not in existing_map]
+        print(f"增量模式：已有 {len(existing_map)} 个版本，本次新增 {len(logs)} 条（跳过 {before - len(logs)} 条）")
+    if not logs:
+        print("没有新增日志，无需迁移")
+        return
+
     node_ids = {}
     for i, (date, ver, content) in enumerate(logs):
         text = f"[SOUL变更日志] {date} 版本 {ver}：{content}"
@@ -67,7 +85,18 @@ def main():
             store.update_payload(nid, payload)
         node_ids[ver] = nid
         # REVISED_BY 边：当前版本 → 上一版本（新修订旧）
-        if i > 0:
+        # 增量模式：第一个新增版本连到已有版本中最大的那个（防链断裂）
+        if i == 0 and existing_map:
+            prev_ver = sorted(existing_map.keys(), key=lambda v: [int(p) for p in v.split(".")])[-1]
+            if prev_ver:
+                store.create_edge(
+                    nid,
+                    existing_map[prev_ver],
+                    "REVISED_BY",
+                    content=f"{ver} 修订 {prev_ver}",
+                    weight=0.9,
+                )
+        elif i > 0:
             prev_ver = logs[i - 1][1]
             store.create_edge(
                 nid,
