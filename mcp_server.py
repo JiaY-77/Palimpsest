@@ -15,7 +15,9 @@ Ollama 的 qwen3-embedding:0.6b 生成（1024 维，已验证可用）。
   6. kb_search    - 知识库语义检索（向量检索，只查 build_kb_index.py 建的 kb_chunk 节点，
                    含 domain=rule 规则类切片）
   7. mem_search   - 统一检索入口：scope=memory/kb/all 混合检索记忆与知识库
-                   （v2.0：domain=rule 规则切片内置 ×1.3 加权）
+                   （v2.0：domain=rule 规则切片内置 ×1.3 加权；
+                    v3.0：include_neighbors=True 时返回图关联区（分区返回），
+                    语义区原样 + neighbors 区展示已命中节点的一跳邻居）
   8. router_query - 任务路由查询（v2.0）：查规则类知识切片，提取推荐模型/配置
   9. mem_version_history - 版本历史查询：沿 REVISED_BY 修订链返回版本演进摘要
                  （如 SOUL 版本日志；domain/full_content/offset/limit 参数）
@@ -24,9 +26,13 @@ Ollama 的 qwen3-embedding:0.6b 生成（1024 维，已验证可用）。
   11. mem_link         - 手动建边（RELATED_TO / CAUSES / REFERS_TO 等）
 
 边类型约定：
-  - REVISED_BY : 版本修订链（mem_ingest 自动建，新 → 旧）
-  - RELATED_TO : 关联（mem_link 手动建）
-  - CAUSES     : 因果（预留，未来 ingest 提取）
+  - REVISED_BY : 版本修订链（mem_ingest 自动建，新 → 旧；单向语义）
+  - RELATED_TO : 关联（mem_link 手动建；无向语义，双向建边协议自动补反向）
+  - CAUSES     : 因果（预留，未来 ingest 提取；无向语义，双向补反向）
+  - REFERS_TO  : 引用（预留；无向语义，双向补反向）
+双向建边协议：RELATED_TO / CAUSES / REFERS_TO 在 mem_link(bidirectional=True)
+  时自动补反向边（先查存在则跳过），绕开 get_edges 只返回出边、入边不可查的
+  API 限制；REVISED_BY 保持单向（版本链方向语义）。
 
 运行方式（由 Hermes 以 stdio 方式拉起）：
     D:/HeJiaQi/Documents/Code/Python/Memory_Hub/venv/Scripts/python.exe mcp_server.py
@@ -391,30 +397,48 @@ def graph_neighbors(node_id: int, relation: str = "", depth: int = 1,
 
 
 @mcp.tool()
-def mem_link(source_id: int, target_id: int, relation: str = "related",
-             weight: float = 0.9) -> str:
+def mem_link(source_id: int, target_id: int, relation: str = "RELATED_TO",
+             weight: float = 0.9, bidirectional: bool = True) -> str:
     """
     手动建边：在 source_id → target_id 之间建立 relation 类型的关联边
     （如 RELATED_TO / CAUSES / REFERS_TO），供 graph_neighbors 图谱查询使用。
-    校验两端节点存在后建边。返回 JSON：
-    {"linked", "source_id", "target_id", "relation", "weight"}。
+    校验两端节点存在后建边。自环（source_id == target_id）禁止。
+    weight 统一 round 6 位小数。
+    bidirectional=True 且 relation 大写后属于双向集合（RELATED_TO / CAUSES / REFERS_TO）
+    时，自动补反向边 target → source（先查已存在则跳过，不重复建）；REVISED_BY 保持单向。
+    返回 JSON：{"linked", "source_id", "target_id", "relation", "weight",
+               "reverse_added"}。
     """
+    if source_id == target_id:
+        return _to_json({"linked": False,
+                         "error": "自环禁止：source_id 与 target_id 不能相同"})
     relation = (relation or "").strip() or "related"
     try:
-        weight = float(weight)
+        weight = round(float(weight), 6)
     except (TypeError, ValueError):
         weight = 0.9
     if not store.get_node(source_id):
         return _to_json({"linked": False, "error": f"源节点不存在: {source_id}"})
     if not store.get_node(target_id):
         return _to_json({"linked": False, "error": f"目标节点不存在: {target_id}"})
-    store.create_edge(source_id, target_id, relation, weight=weight)
+    rel_upper = relation.upper()
+    # 主边防重：已存在则不重复建（反向边协议见下）
+    main_edge_needed = not _edge_exists(source_id, target_id, rel_upper)
+    # 双向建边协议：无向语义关系自动补反向边（先查存在则跳过）
+    reverse_added = False
+    if bidirectional and rel_upper in _BIDIRECTIONAL_RELATIONS:
+        if not _edge_exists(target_id, source_id, rel_upper):
+            store.create_edge(target_id, source_id, rel_upper, weight=weight)
+            reverse_added = True
+    if main_edge_needed:
+        store.create_edge(source_id, target_id, relation, weight=weight)
     return _to_json({
         "linked": True,
         "source_id": source_id,
         "target_id": target_id,
         "relation": relation,
         "weight": weight,
+        "reverse_added": reverse_added,
     })
 
 
@@ -456,8 +480,69 @@ def kb_search(query: str, top_k: int = 5) -> str:
     return _to_json({"results": items})
 
 
+# ---- 阶段三：图关联区（分区返回）----
+# 无向语义关系：mem_link 双向建边协议自动补反向边；REVISED_BY 保持单向
+_BIDIRECTIONAL_RELATIONS = {"RELATED_TO", "CAUSES", "REFERS_TO"}
+
+
+def _edge_exists(src: int, dst: int, label: str) -> bool:
+    """检查 src → dst 且 label 匹配的出边是否已存在（防重复建边）"""
+    label = label.upper()
+    for edge in store.get_edges(src):
+        if edge.target_id == dst and (getattr(edge, "label", "") or "").upper() == label:
+            return True
+    return False
+
+
+def _collect_neighbors(items: list, neighbor_limit: int = 5) -> list:
+    """
+    从语义命中节点出发，沿出边取一跳邻居，生成图关联区（方案 B 分区返回）。
+
+    - 过滤：已在语义区 / 自环 / 节点缺失无 payload
+    - 去重：同一邻居被多个命中节点到达时，保留 score 最高一条（via 取最高分来源）
+    - score = via_score × weight（关联强度分，仅图关联区内部排序用，不参与语义区排序）
+    - relation 统一大写展示；weight round 6 位；title = content 前 80 字
+    """
+    if not items:
+        return []
+    sem_ids = {item.get("id") for item in items}
+    best = {}  # neighbor_id -> 条目（去重后取最高分）
+    for item in items:
+        nid = item.get("id")
+        if nid is None:
+            continue
+        via_score = float(item.get("score", 0.0))
+        for edge in store.get_edges(nid):
+            nb = edge.target_id
+            if nb is None or nb == nid or nb in sem_ids:
+                continue
+            node = store.get_node(nb)
+            if not node:
+                continue
+            payload = node.get("payload", {}) or {}
+            label = (getattr(edge, "label", "") or "").upper() or "LINKED"
+            weight = round(float(getattr(edge, "weight", 1.0) or 1.0), 6)
+            strength = round(via_score * weight, 4)
+            prev = best.get(nb)
+            if prev is None or strength > prev["score"]:
+                best[nb] = {
+                    "id": nb,
+                    "relation": label,
+                    "via_id": nid,
+                    "via_score": round(via_score, 4),
+                    "weight": weight,
+                    "target_type": payload.get("type", ""),
+                    "title": _shorten(payload.get("content", ""), 80),
+                    "score": strength,
+                }
+    result = sorted(best.values(), key=lambda x: x["score"], reverse=True)
+    return result[:neighbor_limit]
+
+
 def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
-                     domain_bias: str = "", top_k: int = 5) -> dict:
+                     domain_bias: str = "", top_k: int = 5,
+                     include_neighbors: bool = False,
+                     neighbor_limit: int = 5) -> dict:
     """
     mem_search 的核心实现（返回 dict，供 mem_search 工具与 router_query 复用）。
     v2.0 统一语义层：
@@ -518,15 +603,23 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
         })
     # bias 后按最终 score 降序排序再截断（bias 需影响排序，不能按原始顺序收集后 break）
     items.sort(key=lambda x: x["score"], reverse=True)
-    result = {"results": items[:top_k], "scope": scope}
+    top_items = items[:top_k]
+    result = {"results": top_items, "scope": scope}
     if domain_bias:
         result["bias"] = domain_bias
+    # 阶段三：分区返回——图关联区（语义区原样，邻居独立展示，不参与语义排序）
+    if include_neighbors:
+        neighbors = _collect_neighbors(top_items, max(1, min(int(neighbor_limit), 20)))
+        result["neighbors"] = neighbors
+        result["neighbor_count"] = len(neighbors)
     return result
 
 
 @mcp.tool()
 def mem_search(query: str, scope: str = "all", domain: str = "",
-               domain_bias: str = "", top_k: int = 5) -> str:
+               domain_bias: str = "", top_k: int = 5,
+               include_neighbors: bool = False,
+               neighbor_limit: int = 5) -> str:
     """
     统一检索入口：记忆 + 知识库混合检索。
     scope 取值：memory（只查记忆节点，排除 kb_chunk）/ kb（只查知识库块）/ all（都查）。
@@ -537,8 +630,13 @@ def mem_search(query: str, scope: str = "all", domain: str = "",
         内置恒 ×1.3 加权（排在普通知识前），rule 是知识的子集，kb bias 时同样叠加。
         bias 在过滤之后、排序之前应用（先 bias 再按最终 score 排序截断）。
     双层返回原则不变：只返回 150 字摘要 + meta，不返回全文（全文请用 mem_get_full）。
+    v3.0 分区返回：include_neighbors=True 时，语义区（results）原样返回，
+        额外附 neighbors 图关联区（语义命中节点的一跳邻居，score = via_score × weight，
+        去重、relation 大写、按 score 降序）。include_neighbors=False 时输出与旧版完全一致。
+        neighbor_limit 钳制 1-20（默认 5）。
     """
-    return _to_json(_mem_search_impl(query, scope, domain, domain_bias, top_k))
+    return _to_json(_mem_search_impl(query, scope, domain, domain_bias, top_k,
+                                     include_neighbors, neighbor_limit))
 
 
 # ---- v2.0 统一语义层：任务路由查询 ----
