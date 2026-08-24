@@ -21,6 +21,10 @@ class Config:
     OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
     OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-r1:7b")
 
+    # ---- Ollama Embedding 配置 ----
+    OLLAMA_EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:0.6b")
+    OLLAMA_EMBEDDING_DIM = int(os.getenv("OLLAMA_EMBEDDING_DIM", "1024"))
+
     # ---- 根据后端动态取得当前使用的配置 ----
     @classmethod
     def get_llm_config(cls):

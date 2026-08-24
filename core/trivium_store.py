@@ -14,8 +14,8 @@ class TriviumStore:
 
     def __init__(self) -> None:
         self.db_path = Config.DB_PATH
-        # 使用 DeepSeek 默认的 embedding 维度
-        self.dim = 1024
+        # embedding 维度从配置读取（qwen3-embedding:0.6b 实测 1024 维）
+        self.dim = Config.OLLAMA_EMBEDDING_DIM
 
     def _acquire(self):
         """
@@ -29,14 +29,14 @@ class TriviumStore:
     def embed_text(self, text: str) -> list[float]:
         """
         通过本地 Ollama 服务生成文本向量
-        使用 bge-m3 模型，输出 1024 维
+        使用配置的 Ollama embedding 模型（默认 qwen3-embedding:0.6b，1024 维）
         """
         try:
             import requests
 
             response = requests.post(
                 "http://localhost:11434/api/embeddings",
-                json={"model": "bge-m3", "prompt": text},
+                json={"model": Config.OLLAMA_EMBEDDING_MODEL, "prompt": text},
                 timeout=30,
             )
             response.raise_for_status()
