@@ -18,7 +18,15 @@ Ollama 的 qwen3-embedding:0.6b 生成（1024 维，已验证可用）。
                    （v2.0：domain=rule 规则切片内置 ×1.3 加权）
   8. router_query - 任务路由查询（v2.0）：查规则类知识切片，提取推荐模型/配置
   9. mem_version_history - 版本历史查询：沿 REVISED_BY 修订链返回版本演进摘要
-                  （如 SOUL 版本日志；domain/full_content/offset/limit 参数）
+                 （如 SOUL 版本日志；domain/full_content/offset/limit 参数）
+  10. graph_neighbors  - 图谱邻居查询：从任意节点沿出边 BFS 遍历
+                 （relation 过滤 / depth 1-3 / limit 截断，去重）
+  11. mem_link         - 手动建边（RELATED_TO / CAUSES / REFERS_TO 等）
+
+边类型约定：
+  - REVISED_BY : 版本修订链（mem_ingest 自动建，新 → 旧）
+  - RELATED_TO : 关联（mem_link 手动建）
+  - CAUSES     : 因果（预留，未来 ingest 提取）
 
 运行方式（由 Hermes 以 stdio 方式拉起）：
     D:/HeJiaQi/Documents/Code/Python/Memory_Hub/venv/Scripts/python.exe mcp_server.py
@@ -315,6 +323,98 @@ def mem_version_history(domain: str = "hermes", full_content: bool = False,
         "start_id": start_id,
         "chain_length": len(chain),
         "versions": versions,
+    })
+
+
+# ---- 图谱扩展：通用邻居遍历 + 手动建边 ----
+@mcp.tool()
+def graph_neighbors(node_id: int, relation: str = "", depth: int = 1,
+                    limit: int = 20) -> str:
+    """
+    图谱邻居查询：从 node_id 沿出边 BFS 遍历到 depth 层（1-3）。
+    relation 非空时只保留 label 匹配的边（忽略大小写）；每节点去重
+    （只出现一次，取最先到达的跳数）。每条邻居返回
+    {target_id, relation, weight, target_type, target_title}。
+    返回 JSON：{"node_id", "depth", "count", "relations": [...]}。
+    """
+    # 参数钳制：depth 1-3，limit >= 1
+    depth = max(1, min(int(depth), 3))
+    limit = max(1, int(limit))
+    rel = (relation or "").strip().lower()
+
+    if not store.get_node(node_id):
+        return _to_json({"node_id": node_id, "depth": depth, "count": 0,
+                         "relations": [], "hint": f"节点不存在: {node_id}"})
+
+    # BFS 收集出边（去重：seen 记录已发现节点，取最先到达）
+    relations = []
+    seen = {node_id}
+    frontier = [(node_id, 0)]
+    while frontier:
+        cur, hop = frontier.pop(0)
+        if hop >= depth or len(relations) >= limit:
+            continue
+        for edge in store.get_edges(cur):
+            if len(relations) >= limit:
+                break
+            label = getattr(edge, "label", "") or ""
+            if rel and label.lower() != rel:
+                continue
+            tid = edge.target_id
+            if tid is None or tid in seen:
+                continue
+            seen.add(tid)
+            relations.append({
+                "target_id": tid,
+                "relation": label,
+                "weight": getattr(edge, "weight", 1.0),
+                "target_type": "",
+                "target_title": "",
+            })
+            frontier.append((tid, hop + 1))
+
+    # 补邻居节点摘要（target_type / target_title=content 前 80 字）
+    for item in relations:
+        node = store.get_node(item["target_id"])
+        if not node:
+            continue
+        payload = node.get("payload", {}) or {}
+        item["target_type"] = payload.get("type", "")
+        item["target_title"] = _shorten(payload.get("content", ""), 80)
+
+    return _to_json({
+        "node_id": node_id,
+        "depth": depth,
+        "count": len(relations),
+        "relations": relations,
+    })
+
+
+@mcp.tool()
+def mem_link(source_id: int, target_id: int, relation: str = "related",
+             weight: float = 0.9) -> str:
+    """
+    手动建边：在 source_id → target_id 之间建立 relation 类型的关联边
+    （如 RELATED_TO / CAUSES / REFERS_TO），供 graph_neighbors 图谱查询使用。
+    校验两端节点存在后建边。返回 JSON：
+    {"linked", "source_id", "target_id", "relation", "weight"}。
+    """
+    relation = (relation or "").strip() or "related"
+    try:
+        weight = float(weight)
+    except (TypeError, ValueError):
+        weight = 0.9
+    if not store.get_node(source_id):
+        return _to_json({"linked": False, "error": f"源节点不存在: {source_id}"})
+    if not store.get_node(target_id):
+        return _to_json({"linked": False, "error": f"目标节点不存在: {target_id}"})
+    store.create_edge(source_id, target_id, relation, weight=weight)
+    return _to_json({
+        "linked": True,
+        "source_id": source_id,
+        "target_id": target_id,
+        "relation": relation,
+        "weight": weight,
     })
 
 
