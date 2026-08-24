@@ -226,7 +226,7 @@ def mem_recent(domain: str = "", limit: int = 10) -> str:
 
 
 # ---- 版本历史查询（REVISED_BY 修订链）----
-_VERSION_RE = re.compile(r"\[SOUL变更日志\]\s*(\d{4}-\d{2}-\d{2})\s*版本\s*([\d.]+)")
+_VERSION_RE = re.compile(r"\[SOUL变更日志\]\s*(\d{4}-\d{2}-\d{2})\s*版本\s*v?([\d.]+)")
 _TITLE_RE = re.compile(r"\*\*(.+?)\*\*")
 
 
