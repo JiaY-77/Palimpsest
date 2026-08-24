@@ -3,6 +3,6 @@ uvicorn
 openai
 python-dotenv
 pydantic
-git+https://github.com/YoKONCy/TriviumDB.git
+triviumdb==0.7.6
 python-multipart
 requests

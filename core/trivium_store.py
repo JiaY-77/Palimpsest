@@ -97,35 +97,47 @@ class TriviumStore:
         expand_depth: int = 1,
         apply_decay: bool = True,
     ) -> list[dict[str, Any]]:
-        """手动遍历所有节点，计算余弦相似度并返回 Top-K
+        """使用 triviumdb 原生 search API 检索，保留时间衰减与图谱扩散
 
+        - 向量检索：db.search(query, top_k=cand_k, min_score=0.0, expand_depth=0)
+          多取候选（top_k×3，至少 10），不设分数下限，由衰减/扩散层决定最终排序
         - expand_depth=0：纯向量 Top-K，不扩散（与旧版一致）；>0 时沿全部边
           扩散邻居（每跳 score × 0.8），去重后重新按 score 排序取 Top-K
         - 时间衰减：非 kb_chunk 节点 有效分 = 余弦分 × importance ×
           MEMORY_DECAY_FACTOR^(距创建天数/30)（只影响排序，不改存储；
           factor=1.0 关闭衰减；apply_decay=False 供 mem_ingest 内部阈值判断保持原样）
         """
-        import numpy as np
-
-        # 1. 获取所有节点ID
-        ids = self._get_all_node_ids()
-        if not ids:
-            return []
-
-        # 2. 逐个获取节点，手动计算相似度
+        # 1. 原生向量检索拿候选（0.7.6 search API；min_score=0.0 不过滤，
+        #    让衰减/扩散层决定最终排序；多取一些候选供后面重排）
+        cand_k = max(top_k * 3, 10)
         scored = []
-        qv = np.array(query_embedding)
-        for nid in ids:
-            node_data = self.get_node(nid)
-            if not node_data or "vector" not in node_data:
-                continue
-            db_vec = np.array(node_data["vector"])
-            # 防止零向量
-            norm = np.linalg.norm(db_vec)
-            if norm == 0:
-                continue
-            score = float(np.dot(qv, db_vec) / (np.linalg.norm(qv) * norm))
-            scored.append((score, node_data))
+        db = None
+        try:
+            db = self._acquire()
+            hits = db.search(
+                query_embedding,
+                top_k=cand_k,
+                min_score=0.0,
+                expand_depth=0,
+            )
+            # 2. 原生 hits → (score, node) 候选（SearchHit: .id / .payload / .score）
+            scored = [
+                (float(hit.score), {"id": hit.id, "payload": hit.payload})
+                for hit in (hits or [])
+            ]
+        except Exception as e:
+            # 零向量/空库等异常场景兜底：不崩，返回空列表
+            logger.warning(f"triviumdb 原生 search 失败，返回空结果: {e}")
+            return []
+        finally:
+            # 关键：0.7.6 的 with 块退出不会释放锁（__exit__ 是空操作），
+            # 必须显式 close()，否则后续 _expand_neighbors 再 open 会报
+            # "Database locked ... already opened by another process"
+            if db is not None:
+                try:
+                    db.close()
+                except Exception:
+                    pass
 
         # 3. 时间衰减（记忆生命周期）：kb_chunk 知识块不衰减
         if apply_decay:
@@ -144,7 +156,7 @@ class TriviumStore:
         scored.sort(key=lambda x: x[0], reverse=True)
         top = scored[:top_k]
 
-        # 5. 图谱扩散：expand_depth>0 时沿 REVISED_BY 边把邻居并入候选集
+        # 5. 图谱扩散：expand_depth>0 时沿全部边把邻居并入候选集
         if expand_depth > 0:
             top = self._expand_neighbors(top, depth=expand_depth)
 

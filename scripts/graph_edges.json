@@ -1,7 +1,34 @@
 {
   "edges": [
-    {"source": "03_技术学习/模型军团管理办法.md", "target": "03_技术学习/模型路由决策树.md", "relation": "RELATED_TO", "weight": 0.9},
-    {"source": "03_技术学习/MemoryHub 阶段蓝图（0-5）.md", "target": "03_技术学习/任务清单（Task List）.md", "relation": "RELATED_TO", "weight": 0.9},
-    {"source": "03_技术学习/Token优化记录（2026-08-24）.md", "target": "03_技术学习/模型路由决策树.md", "relation": "RELATED_TO", "weight": 0.9}
+    {
+      "source": "03_技术学习/模型军团管理办法.md",
+      "target": "03_技术学习/模型路由决策树.md",
+      "relation": "RELATED_TO",
+      "weight": 0.9
+    },
+    {
+      "source": "03_技术学习/MemoryHub 阶段蓝图（0-5）.md",
+      "target": "03_技术学习/任务清单（Task List）.md",
+      "relation": "RELATED_TO",
+      "weight": 0.9
+    },
+    {
+      "source": "03_技术学习/Token优化记录（2026-08-24）.md",
+      "target": "03_技术学习/模型路由决策树.md",
+      "relation": "RELATED_TO",
+      "weight": 0.9
+    },
+    {
+      "source": "03_技术学习/模型军团管理办法.md",
+      "target": "04_成长复盘/2026-08-22成长复盘.md",
+      "relation": "RELATED_TO",
+      "weight": 0.9
+    },
+    {
+      "source": "04_成长复盘/2026-08-22成长复盘.md",
+      "target": "03_技术学习/模型军团管理办法.md",
+      "relation": "RELATED_TO",
+      "weight": 0.9
+    }
   ]
 }
