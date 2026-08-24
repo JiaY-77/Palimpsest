@@ -19,6 +19,14 @@ v2.0 统一语义层（规则类标记）：
     增量模式下若文件已有索引的 domain 与当前判定不一致（如 kb→rule），也会触发重建。
     构建完成后输出 domain=rule / domain=kb 块数统计（返回 dict 含 domain_counts）。
 
+v2.1 退役文档排除：
+    文档引言区（frontmatter 之后、首个 ## 节标题之前）出现「⛔ 已退役」或
+    「已退役（」横幅标记 → 判定为已退役文档，不进入索引（不切片、不向量化），
+    并清理其在库中的旧 kb_chunk 节点（否则旧块仍会被语义检索命中）。
+    只检测引言区，避免误伤正文提到「已退役」的文档（如模型军团管理办法的
+    模型退役表格、模型路由决策树的「宪法已退役」说明、知识库首页的导航列表）。
+    幂等：退役文档第二次运行时库中已无其旧节点，重复执行无副作用。
+
 全量重建（v1.0 行为）：
     python scripts/build_kb_index.py --full
     删除所有 type==kb_chunk 旧节点后全量插入。
@@ -63,6 +71,39 @@ MTIME_TOLERANCE = 1e-3
 RULE_KEYWORDS = ["副官加班协议", "宪法", "模型军团管理办法", "模型路由决策树"]
 RULE_DOMAIN = "rule"
 KB_DOMAIN = "kb"
+
+# ---- v2.1 退役文档排除 ----
+# 退役横幅标记（文档引言区出现任一即视为退役）。样例：
+#   > ⛔ **已退役（2026-08-24 规则收敛，主人批准）**：本文档不再维护...
+# 只检测引言区（frontmatter 之后、首个 ## 节标题之前），避免误伤正文提及
+# 「已退役」的文档（模型军团管理办法的模型退役表格、模型路由决策树的
+# 「宪法已退役」说明、知识库首页的退役导航列表等）。
+RETIRED_MARKERS = ("⛔ 已退役", "已退役（")
+
+# 退役预检只读取文件头部这么多字符（frontmatter + 引言区横幅绰绰有余）
+RETIRED_HEAD_CHARS = 4096
+
+
+def _is_retired_doc(text: str) -> bool:
+    """
+    检测文档是否已退役：跳过 YAML frontmatter 后，检查首个 ## / ### 节标题
+    之前的引言区是否出现「⛔ 已退役」或「已退役（」横幅标记。
+    退役横幅语义上必然位于文档顶部引言区，此策略精确且不误伤正文提及。
+    """
+    lines = text.splitlines()
+    start = 0
+    if lines and lines[0].strip() == "---":
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":
+                start = i + 1
+                break
+    head = []
+    for line in lines[start:]:
+        if re.match(r"^#{2,3}\s", line):  # 首个 ## / ### 节标题，引言区到此为止
+            break
+        head.append(line)
+    intro = "\n".join(head)
+    return any(m in intro for m in RETIRED_MARKERS)
 
 
 def _doc_domain(rel_path: str) -> str:
@@ -207,6 +248,22 @@ def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False) ->
     md_files = _kb_md_files(knowledge_dir)
     existing = _load_existing_index(store)
 
+    # ---- v2.1 退役文档预检：只读文件头部检测退役横幅，退役文档不进入索引 ----
+    retired_rels = set()
+    active_files = []
+    for fp in md_files:
+        rel = os.path.relpath(fp, knowledge_dir).replace("\\", "/")
+        try:
+            with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+                head = f.read(RETIRED_HEAD_CHARS)
+        except OSError:
+            head = ""  # 读取失败不判退役，留给后续逻辑记录跳过
+        if head and _is_retired_doc(head):
+            retired_rels.add(rel)
+            print(f"[退役] 跳过（顶部已退役横幅）: {rel}")
+        else:
+            active_files.append(fp)
+
     t0 = time.time()
     file_stats = []
     total_chunks = 0
@@ -218,14 +275,14 @@ def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False) ->
         deleted_old = _delete_nodes(store, all_old_ids)
         if deleted_old:
             print(f"[清理] 全量模式：已删除旧 kb_chunk 节点 {deleted_old} 个")
-        pending = md_files
+        pending = active_files
         skipped = 0
     else:
         # ---- 增量模式：筛选需要重建的文件 ----
         pending = []
         skipped = 0
         known_paths = set()
-        for fp in md_files:
+        for fp in active_files:
             rel = os.path.relpath(fp, knowledge_dir).replace("\\", "/")
             known_paths.add(rel)
             cur_mtime = os.path.getmtime(fp)
@@ -239,6 +296,8 @@ def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False) ->
                 pending.append(fp)  # v2.0 domain 变化（如 kb→rule），需重建
             else:
                 skipped += 1  # mtime 未变，跳过
+        # 退役文档仍在磁盘上（不算孤儿），并入 known_paths 防止被误判清理
+        known_paths |= retired_rels
         # 顺带清理：源文件已不存在的孤儿块（增量模式下的残留）
         orphan_ids = []
         for rel, entry in existing.items():
@@ -247,6 +306,17 @@ def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False) ->
         if orphan_ids:
             deleted_old += _delete_nodes(store, orphan_ids)
             print(f"[清理] 增量模式：源文件已删除，清理孤儿 kb_chunk 节点 {len(orphan_ids)} 个")
+        # v2.1 退役文档旧节点清理：退役文档不进入索引，旧块须一并移除，
+        # 否则旧块仍会被语义检索命中（退役 ≠ 文件删除，不能走孤儿逻辑）
+        retired_ids = []
+        for rel in sorted(retired_rels):
+            entry = existing.get(rel)
+            if entry and entry["ids"]:
+                retired_ids.extend(entry["ids"])
+        if retired_ids:
+            deleted_old += _delete_nodes(store, retired_ids)
+            print(f"[清理] 增量模式：退役文档旧 kb_chunk 节点 {len(retired_ids)} 个已删除: "
+                  f"{sorted(retired_rels)}")
 
     # ---- 切片 -> 向量化 -> 入库（增量模式先删该文件的旧块再重建） ----
     rebuilt = 0
