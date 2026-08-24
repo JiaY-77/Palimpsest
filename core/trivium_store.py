@@ -1,6 +1,7 @@
 """TriviumDB 存储封装"""
 
 import logging
+import time
 from typing import Any
 
 import triviumdb
@@ -94,8 +95,16 @@ class TriviumStore:
         query_embedding: list[float],
         top_k: int = 5,
         expand_depth: int = 1,
+        apply_decay: bool = True,
     ) -> list[dict[str, Any]]:
-        """手动遍历所有节点，计算余弦相似度并返回 Top-K"""
+        """手动遍历所有节点，计算余弦相似度并返回 Top-K
+
+        - expand_depth=0：纯向量 Top-K，不扩散（与旧版一致）；>0 时沿 REVISED_BY
+          边扩散邻居（每跳 score × 0.8），去重后重新按 score 排序取 Top-K
+        - 时间衰减：非 kb_chunk 节点 有效分 = 余弦分 × importance ×
+          MEMORY_DECAY_FACTOR^(距创建天数/30)（只影响排序，不改存储；
+          factor=1.0 关闭衰减；apply_decay=False 供 mem_ingest 内部阈值判断保持原样）
+        """
         import numpy as np
 
         # 1. 获取所有节点ID
@@ -118,16 +127,72 @@ class TriviumStore:
             score = float(np.dot(qv, db_vec) / (np.linalg.norm(qv) * norm))
             scored.append((score, node_data))
 
-        # 3. 排序、截断、返回
+        # 3. 时间衰减（记忆生命周期）：kb_chunk 知识块不衰减
+        if apply_decay:
+            decay = getattr(Config, "MEMORY_DECAY_FACTOR", 1.0)
+            if decay != 1.0:
+                now = time.time()
+                for i, (score, node) in enumerate(scored):
+                    payload = node.get("payload", {}) or {}
+                    if payload.get("type") == "kb_chunk":
+                        continue
+                    days = _days_since_created(payload.get("created_at"), now)
+                    importance = _to_float(payload.get("importance"), 0.5)
+                    scored[i] = (score * importance * (decay ** (days / 30.0)), node)
+
+        # 4. 排序、截断
         scored.sort(key=lambda x: x[0], reverse=True)
+        top = scored[:top_k]
+
+        # 5. 图谱扩散：expand_depth>0 时沿 REVISED_BY 边把邻居并入候选集
+        if expand_depth > 0:
+            top = self._expand_neighbors(top, depth=expand_depth)
+
         return [
             {
                 "id": node.get("id"),
                 "score": score,
                 "payload": node.get("payload", {}),
             }
-            for score, node in scored[:top_k]
+            for score, node in top[:top_k]
         ]
+
+    def _expand_neighbors(self, top: list, depth: int) -> list:
+        """沿 REVISED_BY 出边 BFS 扩散邻居（每跳 score × 0.8），去重后重排"""
+        merged = {node.get("id"): (score, node) for score, node in top}
+        seen = set(merged.keys())
+        frontier = [(score, node.get("id"), 0) for score, node in top]
+        with self._acquire() as db:
+            while frontier:
+                score, nid, hop = frontier.pop(0)
+                if hop >= depth:
+                    continue
+                # 只沿 REVISED_BY 边扩散（出边方向：新版本 → 旧版本）
+                for edge in db.get_edges(nid):
+                    if edge.label != "REVISED_BY":
+                        continue
+                    nb = edge.target_id
+                    if nb in seen:
+                        continue
+                    seen.add(nb)
+                    nb_node = db.get(nb)
+                    if not nb_node:
+                        continue
+                    nb_score = score * 0.8  # 扩散一跳分数衰减
+                    merged[nb] = (nb_score, {
+                        "id": nb_node.id,
+                        "payload": nb_node.payload,
+                        "num_edges": nb_node.num_edges,
+                        "vector": nb_node.vector,
+                    })
+                    frontier.append((nb_score, nb, hop + 1))
+        # 扩散后按 score 降序重排
+        return sorted(merged.values(), key=lambda x: x[0], reverse=True)
+
+    def get_edges(self, node_id: int) -> list:
+        """获取节点的出边列表（Edge 对象，含 label/target_id/weight）"""
+        with self._acquire() as db:
+            return db.get_edges(node_id)
 
     def get_node(self, node_id: int) -> dict[str, Any] | None:
         """获取单个节点的详细信息（包含向量）"""
@@ -165,3 +230,22 @@ class TriviumStore:
         # type: ignore
         with self._acquire() as db:
             return db.all_node_ids()
+
+
+def _days_since_created(created_at: Any, now: float) -> float:
+    """距创建天数；created_at 缺失/非法按 0 天（不衰减）"""
+    try:
+        ts = float(created_at)
+    except (TypeError, ValueError):
+        return 0.0
+    if ts <= 0:
+        return 0.0
+    return max(0.0, (now - ts) / 86400.0)
+
+
+def _to_float(value: Any, default: float) -> float:
+    """安全转 float，失败用默认值（payload 字段可能为字符串）"""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default

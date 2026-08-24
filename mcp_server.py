@@ -17,6 +17,8 @@ Ollama 的 qwen3-embedding:0.6b 生成（1024 维，已验证可用）。
   7. mem_search   - 统一检索入口：scope=memory/kb/all 混合检索记忆与知识库
                    （v2.0：domain=rule 规则切片内置 ×1.3 加权）
   8. router_query - 任务路由查询（v2.0）：查规则类知识切片，提取推荐模型/配置
+  9. mem_version_history - 版本历史查询：沿 REVISED_BY 修订链返回版本演进摘要
+                  （如 SOUL 版本日志；domain/full_content/offset/limit 参数）
 
 运行方式（由 Hermes 以 stdio 方式拉起）：
     D:/HeJiaQi/Documents/Code/Python/Memory_Hub/venv/Scripts/python.exe mcp_server.py
@@ -24,6 +26,7 @@ Ollama 的 qwen3-embedding:0.6b 生成（1024 维，已验证可用）。
 
 import json
 import os
+import re
 import sys
 import time
 
@@ -133,7 +136,7 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
 
     # ---- v1.1 知识关联检测：找出 score > 0.35 的 kb_chunk 节点，写入 payload.linked_from ----
     linked_kb_ids = []
-    kb_similar = store.search_similar(emb, top_k=3, expand_depth=0)
+    kb_similar = store.search_similar(emb, top_k=3, expand_depth=0, apply_decay=False)
     for r in kb_similar:
         r_payload = r.get("payload", {}) or {}
         if r_payload.get("type") == "kb_chunk" and float(r.get("score", 0.0)) > 0.35:
@@ -162,7 +165,7 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
 
     # ---- 冲突检测：查找与本次写入相似的旧记忆 ----
     outdated_ids = []
-    similar = store.search_similar(emb, top_k=3, expand_depth=0)
+    similar = store.search_similar(emb, top_k=3, expand_depth=0, apply_decay=False)
     for r in similar:
         old_id = r.get("id")
         score = float(r.get("score", 0.0))
@@ -220,6 +223,99 @@ def mem_recent(domain: str = "", limit: int = 10) -> str:
     # (created_at, id) 双键倒序：时间戳缺失（None→0）时按 id 倒序兜底
     items.sort(key=lambda x: (x["created_at"] or 0, x["id"]), reverse=True)
     return _to_json({"results": items[:limit], "total": len(items)})
+
+
+# ---- 版本历史查询（REVISED_BY 修订链）----
+_VERSION_RE = re.compile(r"\[SOUL变更日志\]\s*(\d{4}-\d{2}-\d{2})\s*版本\s*([\d.]+)")
+_TITLE_RE = re.compile(r"\*\*(.+?)\*\*")
+
+
+def _parse_version_content(content: str) -> tuple:
+    """解析版本日志 content → (date, version, title)"""
+    content = content or ""
+    m = _VERSION_RE.search(content)
+    date = m.group(1) if m else ""
+    version = m.group(2) if m else ""
+    t = _TITLE_RE.search(content)
+    if t:
+        title = t.group(1).strip()
+    else:
+        # 无 **标题** 时取「：」后的前 50 字
+        title = content.split("：", 1)[-1].strip()[:50]
+    return date, version, title
+
+
+@mcp.tool()
+def mem_version_history(domain: str = "hermes", full_content: bool = False,
+                        offset: int = 0, limit: int = 20) -> str:
+    """
+    版本历史查询：沿 REVISED_BY 修订链（新版本 → 旧版本）返回版本演进摘要，
+    用于查 SOUL 版本日志等历史事件链。
+    参数：domain 按 character_name 过滤（默认 hermes）；full_content=True 时
+    每条含完整 content 原文；offset/limit 分页（链长 > limit 时分页）。
+    返回 JSON：{"found", "start_id", "chain_length", "versions": [...]}，
+    每条版本为 {id, version, date, title, importance}。
+    """
+    # 1. 找 domain 下最新的事件节点（created_at 最大，缺失时按 id 最大兜底）
+    candidates = []
+    for nid in store._get_all_node_ids():
+        node = store.get_node(nid)
+        if not node:
+            continue
+        payload = node.get("payload", {}) or {}
+        if payload.get("character_name") != domain or payload.get("type") != "event":
+            continue
+        try:
+            ts = float(payload.get("created_at") or 0)
+        except (TypeError, ValueError):
+            ts = 0
+        candidates.append((ts, nid))
+    if not candidates:
+        return _to_json({"found": False, "start_id": None,
+                         "chain_length": 0, "versions": []})
+    candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    start_id = candidates[0][1]
+
+    # 2. 沿 REVISED_BY 出边往回走（新 → 旧），收集版本链（防环）
+    chain = []
+    seen = set()
+    cur = start_id
+    while cur is not None and cur not in seen:
+        seen.add(cur)
+        node = store.get_node(cur)
+        if not node:
+            break
+        chain.append(node)
+        nxt = None
+        for edge in store.get_edges(cur):
+            if edge.label == "REVISED_BY":
+                nxt = edge.target_id
+                break
+        cur = nxt
+
+    # 3. 组装版本摘要 + 分页
+    versions = []
+    for node in chain[offset:offset + limit]:
+        payload = node.get("payload", {}) or {}
+        content = payload.get("content", "")
+        date, version, title = _parse_version_content(content)
+        item = {
+            "id": node.get("id"),
+            "version": version,
+            "date": date,
+            "title": title,
+            "importance": payload.get("importance", 0.5),
+        }
+        if full_content:
+            item["content"] = content
+        versions.append(item)
+
+    return _to_json({
+        "found": True,
+        "start_id": start_id,
+        "chain_length": len(chain),
+        "versions": versions,
+    })
 
 
 @mcp.tool()
