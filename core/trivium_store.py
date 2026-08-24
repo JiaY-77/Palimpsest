@@ -99,8 +99,8 @@ class TriviumStore:
     ) -> list[dict[str, Any]]:
         """手动遍历所有节点，计算余弦相似度并返回 Top-K
 
-        - expand_depth=0：纯向量 Top-K，不扩散（与旧版一致）；>0 时沿 REVISED_BY
-          边扩散邻居（每跳 score × 0.8），去重后重新按 score 排序取 Top-K
+        - expand_depth=0：纯向量 Top-K，不扩散（与旧版一致）；>0 时沿全部边
+          扩散邻居（每跳 score × 0.8），去重后重新按 score 排序取 Top-K
         - 时间衰减：非 kb_chunk 节点 有效分 = 余弦分 × importance ×
           MEMORY_DECAY_FACTOR^(距创建天数/30)（只影响排序，不改存储；
           factor=1.0 关闭衰减；apply_decay=False 供 mem_ingest 内部阈值判断保持原样）
@@ -158,7 +158,7 @@ class TriviumStore:
         ]
 
     def _expand_neighbors(self, top: list, depth: int) -> list:
-        """沿 REVISED_BY 出边 BFS 扩散邻居（每跳 score × 0.8），去重后重排"""
+        """沿全部边类型 BFS 扩散邻居（每跳 score × 0.8），去重后重排"""
         merged = {node.get("id"): (score, node) for score, node in top}
         seen = set(merged.keys())
         frontier = [(score, node.get("id"), 0) for score, node in top]
@@ -167,10 +167,8 @@ class TriviumStore:
                 score, nid, hop = frontier.pop(0)
                 if hop >= depth:
                     continue
-                # 只沿 REVISED_BY 边扩散（出边方向：新版本 → 旧版本）
+                # 沿所有边类型扩散（REVISED_BY 版本链 / RELATED_TO 关联 / 未来其他类型）
                 for edge in db.get_edges(nid):
-                    if edge.label != "REVISED_BY":
-                        continue
                     nb = edge.target_id
                     if nb in seen:
                         continue
