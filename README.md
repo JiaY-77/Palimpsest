@@ -1,113 +1,131 @@
 # MemoryHub
 
-> 捕获 AI 的推理链（reasoning），将其转化为可检索、可复用、可跨端同步的结构化记忆资产。
+> 面向 AI Agent 的记忆与知识统一语义层——基于 TriviumDB（向量 × 图谱 × 文档 三位一体嵌入式数据库）。
 
-**MemoryHub 是一个专为 AI 对话场景设计的轻量级记忆服务。** 它不存储对话原文，而是从模型的推理过程中提取结构化信息——事件、角色状态、剧情计划、用户意图——让 AI 记住“为什么这么想”，而不是只记住“说了什么”。
+MemoryHub 是一个轻量级 AI 记忆服务，把两类内容变成**可检索、可关联、可演进**的结构化资产：
 
----
+1. **AI 对话记忆**：事件、角色、状态的结构化记忆，语义检索 + 图谱扩散双通道召回
+2. **Markdown 知识库**：知识切片向量化入库，与记忆统一检索（规则类知识内置加权）
 
-## 💡 核心理念
-
-现有 RAG 系统只能记住对话结果（鱼），而 MemoryHub 记住的是模型的推理过程（渔网）。
-
-| | 普通 RAG / 记忆插件 | MemoryHub |
-|---|---|---|
-| 存储内容 | 对话原文或摘要 | **结构化的推理链**（思考过程） |
-| 因果逻辑 | ❌ 丢失 | ✅ 完整保留 |
-| 角色动机 | ❌ 丢失 | ✅ 完整保留 |
-| 跨会话复用 | 低（依赖原始文本） | **高（思维底片可迁移）** |
-| 记忆合并 | 简单去重 | **语义级合并，保留演进痕迹** |
-| 多角色隔离 | 通常不支持 | ✅ 原生支持 |
+对外通过 **MCP Server** 暴露工具（Hermes 等 Agent 经 MCP 协议直接调用），同时保留 FastAPI REST 接口。
 
 ---
 
-## 🚀 核心功能
+## 核心理念
 
-- **记忆提取**：从 AI 回复中自动提取思考链，生成结构化记忆节点
-- **语义检索**：基于向量相似度 + 图谱扩散，精准召回相关记忆
-- **智能合并**：语义级去重（相似度 > 0.85 跳过，0.4–0.85 更新并建立 `REVISED_BY` 边）
-- **多角色隔离**：按 `character_name` 隔离，不同角色卡记忆互不污染
-- **记忆管理**：支持删除、更新 payload、更新向量的 REST API
-- **批量导入**：支持酒馆导出的 JSON 聊天文件
-- **角色分析报告**：基于全部记忆生成 LLM 驱动的角色心理分析
-- **跨端压缩**：将聊天记录压缩为 `.memory` 文件（约 100 倍压缩比），支持跨端同步
+| 能力 | 说明 |
+|---|---|
+| 结构化记忆 | 以事件/角色/状态为核心构建记忆层，不只是对话原文 |
+| 语义检索 | 向量相似度召回（qwen3-embedding 1024 维） |
+| 图谱扩散召回 | 沿有向带权边 BFS 遍历，增强召回广度与关联解释 |
+| 知识库向量化 | Markdown 切片 → kb_chunk 节点 → 与记忆同库检索 |
+| 统一检索入口 | `mem_search` 一个工具查记忆 + 知识库，规则节点 ×1.3 加权 |
+| 冲突检测 | 写入相似新记忆时自动标记旧记忆 outdated，建立 REVISED_BY 版本链 |
 
 ---
 
-## 🏗️ 技术架构
+## 核心特性
+
+- **语义检索 + 图谱扩散双通道**：可独立检索，也可 `include_neighbors=True` 分区返回（语义区原样 + 图关联区，不互相挤占）
+- **150 字摘要设计**：检索默认只返回摘要 + meta，全文按需 `mem_get_full` 取——省 token 的关键设计
+- **冲突检测自动版本链**：相似记忆（score > 0.4）自动 outdated + REVISED_BY 链，保留演进痕迹
+- **记忆时间衰减**：旧记忆检索权重随龄衰减（`MEMORY_DECAY_FACTOR=0.95`，约每月 5%），知识块不衰减
+- **多域隔离**：`domain` 字段隔离（如 hermes / work / novel），互不污染
+- **知识库统一语义层**：`kb_index` 建索引、`kb_search` 检索，规则类切片（domain=rule）内置 ×1.3 加权
+- **图谱遍历 + 手动建边**：`graph_neighbors` BFS 遍历、`mem_link` 手动建边（双向协议自动补反向）
+- **双接口**：MCP Server（stdio）+ FastAPI REST
+
+---
+
+## 技术架构
 
 ```
-┌────────────────────────────────────────────────────────────────┐
-│                    客户端（SillyTavern / WebUI）               │
-└────────────────────────┬───────────────────────────────────────┘
-                         │ HTTP
-                         ▼
-┌────────────────────────────────────────────────────────────────┐
-│                    MemoryHub（FastAPI）                       │
+┌─────────────────────────────────────────────────────────────┐
+│                    MCP Client（Hermes 等 Agent）             │
+└────────────────────────────┬────────────────────────────────┘
+                             │ MCP（stdio）
+                             ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    MemoryHub（Python）                        │
 │                                                              │
-│  ┌─────────────┐  ┌──────────────┐  ┌─────────────────────┐  │
-│  │thinking_tracker│  │   merger    │  │      retriever      │  │
-│  │  思维链解析   │  │  智能合并   │  │   语义检索+图谱扩散  │  │
-│  └─────────────┘  └──────────────┘  └─────────────────────┘  │
-└────────────────────────┬───────────────────────────────────────┘
-                         │
-                         ▼
-┌────────────────────────────────────────────────────────────────┐
-│                     TriviumDB（嵌入式数据库）                  │
+│   mcp_server.py（FastMCP）        main.py（FastAPI REST）    │
 │                                                              │
-│   向量（1024维 bge-m3） │  Payload（JSON）  │  有向带权图    │
-│   （语义检索）         │  （文档过滤）     │  （图谱扩散）   │
-└────────────────────────────────────────────────────────────────┘
+│   core/  trivium_store（存储封装）· merger（冲突合并）        │
+│          retriever（检索）· extractor（提取）· importer       │
+│          thinking_tracker（思维链）                           │
+└────────────────────────────┬────────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────────┐
+│               TriviumDB（嵌入式，单文件 data/mh_memory.db）  │
+│                                                              │
+│   向量（1024 维）│  Payload（JSON）│  有向带权图              │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ### 技术选型
 
-| 组件 | 选型 | 理由 |
-|------|------|------|
-| **向量+图+文档** | TriviumDB | 原生三位一体，单文件部署，无需外部数据库 |
-| **Embedding** | bge-m3 + Ollama | 本地免费，1024 维，中文效果优秀 |
-| **LLM 网关（规划中）** | LiteLLM | 统一模型调度、成本可视化、请求监控 |
-| **API 服务** | FastAPI + Python | 快速开发，生态成熟 |
+| 组件 | 选型 | 说明 |
+|---|---|---|
+| 存储引擎 | TriviumDB（Rust 嵌入式） | 向量 + 图 + 文档三位一体，单文件部署，Apache-2.0 |
+| Embedding | Ollama `qwen3-embedding:0.6b` | 本地免费，1024 维，中文效果优秀 |
+| MCP | FastMCP | stdio 方式，被 Hermes 等 MCP 客户端拉起 |
+| REST | FastAPI + Uvicorn | 保留传统集成方式 |
+| LLM 后端 | DeepSeek / Ollama 可配 | 记忆提取与报告生成用 |
 
 ---
 
-## 📦 快速开始
+## 快速开始
 
 ### 环境要求
 
 - Python 3.10+
-- Ollama（本地 Embedding）
-- Docker（可选，用于 LiteLLM 网关）
+- Ollama（`ollama pull qwen3-embedding:0.6b`）
+- 网络可访问 GitHub（TriviumDB 以 git 依赖安装）
 
 ### 安装
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/memoryhub.git
-cd memoryhub
+git clone https://github.com/JiaY-77/memoryhub.git
+cd Memory_Hub
 python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+venv\Scripts\activate        # Windows
 pip install -r requirements.txt
 ```
 
 ### 配置
 
-复制 `.env.example` 为 `.env`，填写你的配置：
+复制 `.env.example` 为 `.env`（或直接设置环境变量）：
 
 ```ini
-# LLM 后端选择
-LLM_BACKEND=deepseek
+# 数据库文件
+DB_PATH=data/mh_memory.db
 
-# DeepSeek API
+# Embedding（本地 Ollama）
+OLLAMA_EMBEDDING_MODEL=qwen3-embedding:0.6b
+OLLAMA_EMBEDDING_DIM=1024
+
+# LLM 后端（deepseek / ollama）
+LLM_BACKEND=deepseek
 DEEPSEEK_API_KEY=sk-你的密钥
 DEEPSEEK_BASE_URL=https://api.deepseek.com
-DEEPSEEK_MODEL=deepseek-chat
+DEEPSEEK_MODEL=deepseek-v4-flash
 
-# 本地 Embedding（Ollama）
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_EMBEDDING_MODEL=bge-m3
+# 记忆时间衰减（0.95 ≈ 每月衰减 5%，1.0 关闭）
+MEMORY_DECAY_FACTOR=0.95
 ```
 
-### 启动服务
+### 启动
+
+**MCP Server（主入口，stdio 方式）**：
+
+```bash
+venv\Scripts\python.exe mcp_server.py
+```
+
+由 MCP 客户端（如 Hermes）配置后拉起；工具即 `mem_*` / `kb_*` / `graph_neighbors` / `mem_link` 等 11 个。
+
+**REST 服务（可选）**：
 
 ```bash
 uvicorn main:app --reload
@@ -117,64 +135,89 @@ uvicorn main:app --reload
 
 ---
 
-## 🔌 API 端点
+## MCP 工具列表
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `POST` | `/extract` | 从 AI 回复中提取记忆节点 |
-| `POST` | `/retrieve` | 语义检索相关记忆 |
-| `POST` | `/import` | 批量导入酒馆聊天文件 |
-| `GET` | `/export` | 导出所有记忆节点 |
-| `GET` | `/summary` | 生成人类可读的记忆摘要 |
-| `POST` | `/report` | 生成角色灵魂分析报告 |
-| `DELETE` | `/memory/{id}` | 删除指定记忆节点 |
-| `PUT` | `/memory/{id}` | 更新节点 payload |
-| `PATCH` | `/memory/{id}/vector` | 更新节点向量 |
+| 工具 | 功能 |
+|---|---|
+| `mem_search` | 统一检索入口：scope=memory/kb/all 混合检索；rule 切片 ×1.3 加权；`include_neighbors=True` 分区返回图关联区 |
+| `mem_retrieve` | 语义检索记忆（150 字摘要 + meta，不返回全文） |
+| `mem_get_full` | 按 id 取完整记忆 |
+| `mem_ingest` | 写入新记忆（冲突检测：相似旧记忆 outdated + REVISED_BY 链） |
+| `mem_recent` | 最近记忆列表 |
+| `mem_version_history` | 版本历史查询（沿 REVISED_BY 修订链） |
+| `kb_index` | 知识库文件索引（扫描 Knowledge 目录所有 .md，切片向量化） |
+| `kb_search` | 知识库语义检索（kb_chunk 节点，含 domain=rule 规则类切片） |
+| `router_query` | 任务路由查询（查规则类知识切片，提取推荐模型/配置） |
+| `graph_neighbors` | 图谱邻居查询（BFS 遍历，relation 过滤 / depth 1-3 / limit） |
+| `mem_link` | 手动建边（RELATED_TO / CAUSES / REFERS_TO，双向协议自动补反向） |
 
 ---
 
-## 🗂️ 项目结构
+## 图谱协议
+
+| 边类型 | 语义 | 建立方式 | 方向 |
+|---|---|---|---|
+| `REVISED_BY` | 版本修订链（新 → 旧） | `mem_ingest` 自动 | 单向 |
+| `RELATED_TO` | 关联 | `mem_link` 手动 | 无向（双向建边自动补反向） |
+| `CAUSES` | 因果（预留） | `mem_link` 手动 | 无向 |
+| `REFERS_TO` | 引用（预留） | `mem_link` 手动 | 无向 |
+
+约定：**自环禁止**；weight 统一 round 6 位；双向建边协议绕开 get_edges 只返回出边的限制（先查存在则跳过，不重复建）。
+
+---
+
+## 脚本工具（scripts/）
+
+| 脚本 | 功能 |
+|---|---|
+| `build_kb_index.py` | 知识库切片 + 向量化入库（kb_chunk 节点） |
+| `sync_rules.py` | 规则笔记 → 决策树 JSON 同步（幂等） |
+| `check_kb_consistency.py` | 笔记 / JSON / 向量库三方一致性检查 |
+| `migrate_soul_logs.py` | SOUL 历史日志迁移（增量模式） |
+
+---
+
+## 项目结构
 
 ```
-memoryhub/
-├── main.py                 # FastAPI 主入口
+Memory_Hub/
+├── main.py                 # FastAPI REST 入口
+├── mcp_server.py           # MCP Server（主入口，11 个工具）
+├── config.py               # 配置管理（.env）
 ├── core/
-│   ├── thinking_tracker.py # 思维链解析
 │   ├── trivium_store.py    # TriviumDB 存储封装
-│   ├── merger.py           # 智能合并去重
-│   ├── retriever.py        # 语义检索
+│   ├── merger.py           # 冲突检测 / 智能合并（REVISED_BY）
+│   ├── retriever.py        # 语义检索 + 图谱扩散
+│   ├── extractor.py        # 记忆提取（LLM 后端可配）
 │   ├── importer.py         # 聊天文件导入
-│   └── extractor.py        # 记忆提取（含 LLM 备用）
-├── config.py               # 配置管理
+│   └── thinking_tracker.py # 思维链解析
+├── scripts/
+│   ├── build_kb_index.py   # 知识库向量化
+│   ├── sync_rules.py       # 规则同步
+│   ├── check_kb_consistency.py
+│   └── migrate_soul_logs.py
+├── data/                   # 数据库（mh_memory.db）
 ├── requirements.txt
 └── .env                    # 环境变量
 ```
 
 ---
 
-## 📌 当前状态与后续规划
+## 阶段路线图
 
-### 已完成
-
-- ✅ 思维链解析（支持结构化 thinking 标签）
-- ✅ 向量存储 + 语义检索
-- ✅ 智能合并去重（语义级）
-- ✅ 多角色隔离
-- ✅ 记忆 CRUD API
-- ✅ 聊天文件批量导入
-- ✅ 角色分析报告
-
-### 进行中 / 规划
-
-- ⏳ **LiteLLM 集成**：统一模型网关 + 成本可视化
-- ⏳ **透明代理层**：强制所有 LLM 请求输出统一格式 thinking
-- ⏳ **前端可视化界面**：记忆图谱浏览 + 节点编辑
-- ⏳ **预设适配优化**：通用 LLM 提取 + 正则快速通道
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| 0 | 项目复活 / 基础链路 | 完成 |
+| 1 | 统一语义层（mem_search 唯一入口 / rule 加权） | 完成 |
+| 2 | 知识库向量化（kb_index / kb_search / sync_rules） | 完成 |
+| 3 | 图谱能力（graph_neighbors / mem_link / 分区返回 / 双向建边） | 完成 |
+| 4 | 记忆生命周期（时间衰减已实现；盘点 / 高频升级待启动） | 待启动 |
+| 5 | 完备化（远期） | 规划中 |
 
 ---
 
-## 📄 License
+## 踩坑备忘（给使用者的提醒）
 
-Apache-2.0
-
----
+- **换 embedding 必须全量重建向量**：维度匹配 ≠ 向量空间匹配（跨模型余弦可为负值）
+- **MCP 2.0 兼容**：FastMCP 需用 mcp 1.29.x（2.0 移除了顶层 FastMCP）
+- **图谱边持久化**：kb 重建会导致 kb_chunk id 变化，图谱边可能丢失（幂等建边脚本为优先修复方向）
