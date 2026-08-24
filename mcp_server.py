@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-MemoryHub 本地 MCP Server
+Palimpsest 本地 MCP Server
 =========================
 把小七（Hermes）的记忆层能力暴露为标准 MCP 工具，供 Hermes 通过 MCP 协议调用。
-底层使用 MemoryHub 的 TriviumStore（向量 + 图 + 文档存储），embedding 由本地
+底层使用 Palimpsest 的 TriviumStore（向量 + 图 + 文档存储），embedding 由本地
 Ollama 的 qwen3-embedding:0.6b 生成（1024 维，已验证可用）。
 
 工具列表：
@@ -35,7 +35,7 @@ Ollama 的 qwen3-embedding:0.6b 生成（1024 维，已验证可用）。
   API 限制；REVISED_BY 保持单向（版本链方向语义）。
 
 运行方式（由 Hermes 以 stdio 方式拉起）：
-    D:/HeJiaQi/Documents/Code/Python/Memory_Hub/venv/Scripts/python.exe mcp_server.py
+    D:/HeJiaQi/Documents/Code/Python/Palimpsest/venv/Scripts/python.exe mcp_server.py
 """
 
 import json
@@ -62,7 +62,7 @@ KNOWLEDGE_DIR = r"D:/HeJiaQi/Documents/Knowledge"
 # 全局存储实例（TriviumDB：向量 + 图 + 文档）
 store = TriviumStore()
 
-mcp = FastMCP("memoryhub")
+mcp = FastMCP("palimpsest")
 
 
 def _to_json(data) -> str:

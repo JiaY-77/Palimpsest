@@ -1,5 +1,5 @@
 """
-MemoryHub — FastAPI 主入口
+Palimpsest — FastAPI 主入口
 提供记忆提取、检索、导入、导出的完整 API 服务
 """
 
@@ -16,7 +16,7 @@ from core.merger import Merger
 from core.retriever import Retriever
 from core.importer import ChatImporter
 
-app = FastAPI(title="MemoryHub")
+app = FastAPI(title="Palimpsest")
 
 # ---- 全局服务实例（启动时初始化一次） ----
 store = TriviumStore()
@@ -52,7 +52,7 @@ class MemoryResponse(BaseModel):
 @app.get("/")
 async def root():
     return {
-        "service": "MemoryHub",
+        "service": "Palimpsest",
         "version": "0.10.0",
         "endpoints": ["/extract", "/retrieve", "/import", "/export", "/memory/{id}"],
     }
@@ -108,7 +108,7 @@ class IngestRequest(BaseModel):
 
 @app.post("/ingest")
 async def ingest_card(req: IngestRequest):
-    """接收来自 Dify 的灵感卡片，存入 MemoryHub"""
+    """接收来自 Dify 的灵感卡片，存入 Palimpsest"""
     card_payload = {
         "type": "inspiration",
         "source_url": req.source_url,
@@ -143,7 +143,7 @@ async def retrieve_memory(req: RetrieveRequest):
         )
 
     # 组装注入文本
-    lines = ["[MemoryHub 记忆注入]"]
+    lines = ["[Palimpsest 记忆注入]"]
     for r in results:
         lines.append(f"- [{r['type']}] {r['content']}")
     injected = "\n".join(lines)
@@ -292,7 +292,7 @@ async def generate_report():
     # 2. 把所有记忆文本组装成一个大的上下文
     memory_text = "\n".join(memories)
 
-    # 3. 这是整个 MemoryHub 最核心的 Prompt 之一
+    # 3. 这是整个 Palimpsest 最核心的 Prompt 之一
     # 它定义了我们的系统如何从一个数据仓库，变成一个灵魂洞察师
     report_prompt = f"""你是一位极其敏锐的角色扮演心理分析师。你的任务不是复述剧情，而是洞察角色的灵魂。
 

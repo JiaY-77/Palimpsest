@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MemoryHub 数据库重建脚本
+Palimpsest 数据库重建脚本
 ========================
 从 data/export_backup_20260824.json 恢复到新库（DB_PATH 环境变量指向的副本），
 用于 triviumdb 0.6.0 → 0.7.6 升级（存储格式不兼容）后的数据重建。

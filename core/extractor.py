@@ -1,4 +1,4 @@
-"""MemoryHub - 记忆提取器 (思维链版本)"""
+"""Palimpsest - 记忆提取器 (思维链版本)"""
 
 import json
 import logging
@@ -26,7 +26,7 @@ class Extractor:
     def extract_from_thinking(self, thinking_text: str) -> dict[str, Any]:
         """
         从 thinking 文本直接提取记忆
-        这是目前 MemoryHub 最高质量的记忆来源
+        这是目前 Palimpsest 最高质量的记忆来源
         """
         # 解析 thinking 中的模块
         parsed = self.tracker.parse_thinking(thinking_text)

@@ -1,19 +1,19 @@
-"""SOUL.md 变更日志 → MemoryHub 迁移脚本（2026-08-24 建立）
+"""SOUL.md 变更日志 → Palimpsest 迁移脚本（2026-08-24 建立）
 
-用途：把 SOUL.md 的变更日志（历史事件）平移进 MemoryHub，SOUL 只保留最近几条 + 指针。
+用途：把 SOUL.md 的变更日志（历史事件）平移进 Palimpsest，SOUL 只保留最近几条 + 指针。
 语义设计：
 - 版本日志 = 历史事件（永远真实），所以全部 type=event、status=active，
   不用 mem_ingest 的自动冲突检测（会把旧版本误标 outdated）。
 - 手动建 REVISED_BY 边：新版本 → 旧版本，形成版本演进图谱。
 - importance 按新旧递增（0.5 → 0.9），最近的版本更相关。
 
-用法：cd Memory_Hub && ./venv/Scripts/python.exe scripts/migrate_soul_logs.py
+用法：cd Palimpsest && ./venv/Scripts/python.exe scripts/migrate_soul_logs.py
 """
 import re
 import sys
 import time
 
-sys.path.insert(0, "D:/HeJiaQi/Documents/Code/Python/Memory_Hub")
+sys.path.insert(0, "D:/HeJiaQi/Documents/Code/Python/Palimpsest")
 from core.trivium_store import TriviumStore  # noqa: E402
 
 SOUL_PATH = r"C:/Users/七七/AppData/Local/hermes/SOUL.md"

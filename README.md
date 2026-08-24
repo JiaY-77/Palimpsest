@@ -1,8 +1,8 @@
-# MemoryHub
+# Palimpsest
 
 > 面向 AI Agent 的记忆与知识统一语义层——基于 TriviumDB（向量 × 图谱 × 文档 三位一体嵌入式数据库）。
 
-MemoryHub 是一个轻量级 AI 记忆服务，把两类内容变成**可检索、可关联、可演进**的结构化资产：
+Palimpsest 是一个轻量级 AI 记忆服务，把两类内容变成**可检索、可关联、可演进**的结构化资产：
 
 1. **AI 对话记忆**：事件、角色、状态的结构化记忆，语义检索 + 图谱扩散双通道召回
 2. **Markdown 知识库**：知识切片向量化入库，与记忆统一检索（规则类知识内置加权）
@@ -46,7 +46,7 @@ MemoryHub 是一个轻量级 AI 记忆服务，把两类内容变成**可检索�
                              │ MCP（stdio）
                              ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                    MemoryHub（Python）                        │
+│                    Palimpsest（Python）                        │
 │                                                              │
 │   mcp_server.py（FastMCP）        main.py（FastAPI REST）    │
 │                                                              │
@@ -86,8 +86,8 @@ MemoryHub 是一个轻量级 AI 记忆服务，把两类内容变成**可检索�
 ### 安装
 
 ```bash
-git clone https://github.com/JiaY-77/memoryhub.git
-cd Memory_Hub
+git clone https://github.com/JiaY-77/palimpsest.git
+cd Palimpsest
 python -m venv venv
 venv\Scripts\activate        # Windows
 pip install -r requirements.txt
@@ -180,7 +180,7 @@ uvicorn main:app --reload
 ## 项目结构
 
 ```
-Memory_Hub/
+Palimpsest/
 ├── main.py                 # FastAPI REST 入口
 ├── mcp_server.py           # MCP Server（主入口，11 个工具）
 ├── config.py               # 配置管理（.env）
