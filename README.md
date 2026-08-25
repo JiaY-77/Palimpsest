@@ -32,7 +32,7 @@ Palimpsest 是一个专为 Obsidian 用户和 AI Agent 设计的轻量级记忆�
 - **轻量 GraphRAG**：语义检索结合图谱扩散召回，利用 RELATED_TO/REVISED_BY 边提供关联解释与推理能力，让笔记互联、可沿边扩散召回。
 - **语义检索 + 图谱扩散双通道**：可独立检索，也可 `include_neighbors=True` 分区返回（语义区原样 + 图关联区，不互相挤占）
 - **150 字摘要设计**：检索默认只返回摘要 + meta，全文按需 `mem_get_full` 取——省 token 的关键设计
-- **冲突检测自动版本链**：相似记忆（score > 0.4）自动 outdated + REVISED_BY 链，保留演进痕迹
+- **冲突检测自动版本链**：相似记忆（score > 0.4）自动标记 outdated + REVISED_BY 链；**outdated 节点不留**（内容已被新版覆盖），复盘治理（mem_review）时全部清理
 - **记忆时间衰减**：旧记忆检索权重随龄衰减（`MEMORY_DECAY_FACTOR=0.95`，约每月 5%），知识块不衰减
 - **多域隔离**：`domain` 字段隔离（如 hermes / work / novel），互不污染；**无 domain 的 general 节点只在全量模式（不设 block）下可见，分区查询自动忽略它**（无标签 = 未分类，隔离场景丢弃防污染）
 - **知识库统一语义层**：`kb_index` 建索引、`kb_search` 检索，规则类切片（domain=rule）内置 ×1.3 加权
