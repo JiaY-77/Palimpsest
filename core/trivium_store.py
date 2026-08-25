@@ -9,14 +9,22 @@ from config import Config
 
 logger = logging.getLogger(__name__)
 
+# 图谱扩散精馏（2026-08-25 主人挑战 #2）：每节点最多扩散最强 N 条边；弱边阈值
+EXPAND_MAX_EDGES_PER_NODE = 20   # 防高节点（500 邻居）全量扩散
+EXPAND_MIN_EDGE_WEIGHT = 0.0     # 弱边过滤阈值（默认不启用，可调）
+
 
 class TriviumStore:
     """封装 TriviumDB 操作，提供记忆存储和检索接口"""
 
     def __init__(self) -> None:
         self.db_path = Config.DB_PATH
-        # embedding 维度从配置读取（qwen3-embedding:0.6b 实测 1024 维）
-        self.dim = Config.OLLAMA_EMBEDDING_DIM
+        # embedding 维度从配置读取（按 provider 选择：ollama 本地 / openai 兼容云端）
+        self.provider = getattr(Config, "EMBEDDING_PROVIDER", "ollama") or "ollama"
+        if self.provider == "openai":
+            self.dim = Config.EMBEDDING_DIM
+        else:
+            self.dim = Config.OLLAMA_EMBEDDING_DIM
 
     def _acquire(self):
         """
@@ -28,6 +36,12 @@ class TriviumStore:
         return triviumdb.TriviumDB(self.db_path, dim=self.dim)  # type: ignore
 
     def embed_text(self, text: str) -> list[float]:
+        """生成文本向量，按 EMBEDDING_PROVIDER 分发（默认本地 ollama，隐私优先）。"""
+        if self.provider == "openai":
+            return self._embed_openai(text)
+        return self._embed_ollama(text)
+
+    def _embed_ollama(self, text: str) -> list[float]:
         """
         通过本地 Ollama 服务生成文本向量
         使用配置的 Ollama embedding 模型（默认 qwen3-embedding:0.6b，1024 维）
@@ -49,6 +63,35 @@ class TriviumStore:
                 return [0.0] * self.dim
         except Exception as e:
             print(f"Ollama Embedding 生成失败: {e}")
+            return [0.0] * self.dim
+
+    def _embed_openai(self, text: str) -> list[float]:
+        """
+        通过 OpenAI 兼容 Embedding API 生成文本向量（Voyage/OpenAI/硅基流动等）。
+        需配置 EMBEDDING_API_KEY / EMBEDDING_BASE_URL / EMBEDDING_MODEL。
+        """
+        if not Config.EMBEDDING_API_KEY:
+            print("警告: EMBEDDING_PROVIDER=openai 但未配置 EMBEDDING_API_KEY")
+            return [0.0] * self.dim
+        try:
+            import requests
+
+            url = Config.EMBEDDING_BASE_URL.rstrip("/") + "/embeddings"
+            response = requests.post(
+                url,
+                headers={"Authorization": f"Bearer {Config.EMBEDDING_API_KEY}"},
+                json={"model": Config.EMBEDDING_MODEL, "input": text},
+                timeout=30,
+            )
+            response.raise_for_status()
+            data = response.json()
+            # OpenAI 兼容返回: {"data": [{"embedding": [...]}]}
+            embedding = data["data"][0]["embedding"]
+            if embedding:
+                return embedding
+            return [0.0] * self.dim
+        except Exception as e:
+            print(f"云端 Embedding 生成失败: {e}")
             return [0.0] * self.dim
 
     def insert_node(self, node_data: dict[str, Any], embedding: list[float]) -> int:
@@ -169,8 +212,21 @@ class TriviumStore:
             for score, node in top[:top_k]
         ]
 
-    def _expand_neighbors(self, top: list, depth: int) -> list:
-        """沿全部边类型 BFS 扩散邻居（每跳 score × 0.8），去重后重排"""
+    def _expand_neighbors(self, top: list, depth: int,
+                          max_edges_per_node: int | None = None,
+                          min_edge_weight: float | None = None) -> list:
+        """沿边 BFS 扩散邻居，去重后按 score 重排。
+
+        精馏（2026-08-25 主人挑战 #2）：
+        - 每节点只扩散按 weight 降序的最强 max_edges_per_node 条边（默认 20），
+          防高节点（如 500 邻居）全量扩散撑爆计算/污染结果；
+        - 扩散分数 = 当前分数 × 边 weight（替代旧固定 ×0.8），强边自然靠前；
+        - min_edge_weight 可额外过滤弱边（默认 0.0 不启用）。
+        """
+        max_edges = (max_edges_per_node if max_edges_per_node is not None
+                     else EXPAND_MAX_EDGES_PER_NODE)
+        min_w = (min_edge_weight if min_edge_weight is not None
+                 else EXPAND_MIN_EDGE_WEIGHT)
         merged = {node.get("id"): (score, node) for score, node in top}
         seen = set(merged.keys())
         frontier = [(score, node.get("id"), 0) for score, node in top]
@@ -179,8 +235,15 @@ class TriviumStore:
                 score, nid, hop = frontier.pop(0)
                 if hop >= depth:
                     continue
-                # 沿所有边类型扩散（REVISED_BY 版本链 / RELATED_TO 关联 / 未来其他类型）
-                for edge in db.get_edges(nid):
+                edges = list(db.get_edges(nid))
+                # 精馏 1：过滤弱边 + 按 weight 降序取最强 max_edges 条
+                edges = [e for e in edges
+                         if float(getattr(e, "weight", 1.0) or 1.0) >= min_w]
+                edges.sort(key=lambda e: float(getattr(e, "weight", 1.0) or 1.0),
+                           reverse=True)
+                edges = edges[:max_edges]
+                for edge in edges:
+                    w = float(getattr(edge, "weight", 1.0) or 1.0)
                     nb = edge.target_id
                     if nb in seen:
                         continue
@@ -188,7 +251,8 @@ class TriviumStore:
                     nb_node = db.get(nb)
                     if not nb_node:
                         continue
-                    nb_score = score * 0.8  # 扩散一跳分数衰减
+                    # 精馏 2：扩散分数用边 weight（替代旧固定 ×0.8）
+                    nb_score = score * w
                     merged[nb] = (nb_score, {
                         "id": nb_node.id,
                         "payload": nb_node.payload,

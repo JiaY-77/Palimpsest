@@ -18,7 +18,7 @@ Palimpsest 是一个专为 Obsidian 用户和 AI Agent 设计的轻量级记忆�
 | 能力 | 说明 |
 |---|---|
 | 结构化记忆 | 以事件/角色/状态为核心构建记忆层，不只是对话原文 |
-| 语义检索 | 向量相似度召回（qwen3-embedding 1024 维） |
+| 语义检索 | 向量相似度召回（多 provider：本地 qwen3-embedding 1024 维默认 / OpenAI 兼容云端可选） |
 | 图谱扩散召回 | 沿有向带权边 BFS 遍历，增强召回广度与关联解释 |
 | 知识库向量化 | Markdown 切片 → kb_chunk 节点 → 与记忆同库检索 |
 | 统一检索入口 | `mem_search` 一个工具查记忆 + 知识库，规则节点 ×1.3 加权 |
@@ -36,7 +36,7 @@ Palimpsest 是一个专为 Obsidian 用户和 AI Agent 设计的轻量级记忆�
 - **记忆时间衰减**：旧记忆检索权重随龄衰减（`MEMORY_DECAY_FACTOR=0.95`，约每月 5%），知识块不衰减
 - **多域隔离**：`domain` 字段隔离（如 hermes / work / novel），互不污染
 - **知识库统一语义层**：`kb_index` 建索引、`kb_search` 检索，规则类切片（domain=rule）内置 ×1.3 加权
-- **图谱遍历 + 手动建边**：`graph_neighbors` BFS 遍历、`mem_link` 手动建边（双向协议自动补反向）
+- **图谱遍历 + 手动建边**：`graph_neighbors` BFS 遍历（`min_weight` 精馏过滤弱边 + 结果按 weight 降序截断，防高节点先到先得）、`mem_link` 手动建边（双向协议自动补反向）
 - **双接口**：MCP Server（stdio）+ FastAPI REST
 
 ---
@@ -118,9 +118,16 @@ pip install -r requirements.txt
 # 数据库文件
 DB_PATH=data/mh_memory.db
 
-# Embedding（本地 Ollama）
+# Embedding（多 provider：本地 ollama 默认，隐私优先；云端 OpenAI 兼容可选）
+# EMBEDDING_PROVIDER=ollama | openai
+EMBEDDING_PROVIDER=ollama
 OLLAMA_EMBEDDING_MODEL=qwen3-embedding:0.6b
 OLLAMA_EMBEDDING_DIM=1024
+# 云端 OpenAI 兼容 Embedding（Voyage / OpenAI / 硅基流动等；EMBEDDING_PROVIDER=openai 时生效）
+# EMBEDDING_API_KEY=
+# EMBEDDING_BASE_URL=https://api.voyageai.com/v1
+# EMBEDDING_MODEL=voyage-3
+# EMBEDDING_DIM=1024
 
 # LLM 后端（deepseek / ollama）
 LLM_BACKEND=deepseek

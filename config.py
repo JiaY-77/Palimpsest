@@ -27,9 +27,18 @@ class Config:
     OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
     OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-r1:7b")
 
-    # ---- Ollama Embedding 配置 ----
+    # ---- Embedding 配置（2026-08-25 开源多选择：本地隐私优先，云端精度可选）----
+    # EMBEDDING_PROVIDER: "ollama"（默认本地）| "openai"（OpenAI 兼容云端：Voyage/OpenAI/硅基流动等）
+    # 注意：换 provider = 换向量空间，必须全量重建知识库索引（scripts/build_kb_index.py）
+    EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "ollama")
+    # 本地 Ollama Embedding
     OLLAMA_EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:0.6b")
     OLLAMA_EMBEDDING_DIM = int(os.getenv("OLLAMA_EMBEDDING_DIM", "1024"))
+    # 云端 OpenAI 兼容 Embedding API（默认 Voyage，可换任意 OpenAI 兼容端点）
+    EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY", "")
+    EMBEDDING_BASE_URL = os.getenv("EMBEDDING_BASE_URL", "https://api.voyageai.com/v1")
+    EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "voyage-3")
+    EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1024"))
 
     # ---- 根据后端动态取得当前使用的配置 ----
     @classmethod

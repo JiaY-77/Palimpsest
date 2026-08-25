@@ -337,36 +337,39 @@ def mem_version_history(domain: str = "hermes", full_content: bool = False,
 # ---- 图谱扩展：通用邻居遍历 + 手动建边 ----
 @mcp.tool()
 def graph_neighbors(node_id: int, relation: str = "", depth: int = 1,
-                    limit: int = 20) -> str:
+                    limit: int = 20, min_weight: float = 0.0) -> str:
     """
     图谱邻居查询：从 node_id 沿出边 BFS 遍历到 depth 层（1-3）。
-    relation 非空时只保留 label 匹配的边（忽略大小写）；每节点去重
-    （只出现一次，取最先到达的跳数）。每条邻居返回
-    {target_id, relation, weight, target_type, target_title}。
+    relation 非空时只保留 label 匹配的边（忽略大小写）；min_weight 过滤弱边；
+    每节点去重（只出现一次，取最先到达的跳数），结果按 weight 降序截断
+    （精馏：强关联优先，防高节点「先到先得」占满 limit，2026-08-25 主人挑战 #2）。
+    每条邻居返回 {target_id, relation, weight, target_type, target_title}。
     返回 JSON：{"node_id", "depth", "count", "relations": [...]}。
     """
-    # 参数钳制：depth 1-3，limit >= 1
+    # 参数钳制：depth 1-3，limit >= 1，min_weight >= 0
     depth = max(1, min(int(depth), 3))
     limit = max(1, int(limit))
+    min_w = max(0.0, float(min_weight))
     rel = (relation or "").strip().lower()
 
     if not store.get_node(node_id):
         return _to_json({"node_id": node_id, "depth": depth, "count": 0,
                          "relations": [], "hint": f"节点不存在: {node_id}"})
 
-    # BFS 收集出边（去重：seen 记录已发现节点，取最先到达）
+    # BFS 收集出边（min_weight 过滤弱边；先收集后按 weight 排序截断，防先到先得）
     relations = []
     seen = {node_id}
     frontier = [(node_id, 0)]
     while frontier:
         cur, hop = frontier.pop(0)
-        if hop >= depth or len(relations) >= limit:
+        if hop >= depth:
             continue
         for edge in store.get_edges(cur):
-            if len(relations) >= limit:
-                break
             label = getattr(edge, "label", "") or ""
             if rel and label.lower() != rel:
+                continue
+            w = float(getattr(edge, "weight", 1.0) or 1.0)
+            if w < min_w:
                 continue
             tid = edge.target_id
             if tid is None or tid in seen:
@@ -375,11 +378,15 @@ def graph_neighbors(node_id: int, relation: str = "", depth: int = 1,
             relations.append({
                 "target_id": tid,
                 "relation": label,
-                "weight": getattr(edge, "weight", 1.0),
+                "weight": w,
                 "target_type": "",
                 "target_title": "",
             })
             frontier.append((tid, hop + 1))
+
+    # 精馏：按 weight 降序截断（强关联优先）
+    relations.sort(key=lambda x: x.get("weight", 0.0), reverse=True)
+    relations = relations[:limit]
 
     # 补邻居节点摘要（target_type / target_title=content 前 80 字）
     for item in relations:
