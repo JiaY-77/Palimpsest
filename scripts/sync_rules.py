@@ -41,10 +41,17 @@ import sys
 from datetime import datetime
 
 # ----------------------------------------------------------------------------
-# 路径常量（可按需用 --kb-root / --json-path 覆盖）
+# 路径常量（环境变量优先；可按需用 --kb-root / --json-path 覆盖）
 # ----------------------------------------------------------------------------
-KNOWLEDGE_ROOT = r"D:/HeJiaQi/Documents/Knowledge"
-DECISION_TREE_JSON = r"D:/HeJiaQi/Documents/Knowledge/03_技术学习/模型路由决策树.json"
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_SCRIPT_DIR)
+# 知识库根目录：环境变量 KNOWLEDGE_ROOT 优先；默认相对项目根的通用路径，不硬编码个人路径
+KNOWLEDGE_ROOT = os.getenv("KNOWLEDGE_ROOT", "") or os.path.normpath(
+    os.path.join(_PROJECT_ROOT, "../../../Knowledge")
+)
+DECISION_TREE_JSON = os.getenv("DECISION_TREE_JSON", "") or os.path.join(
+    KNOWLEDGE_ROOT, "03_技术学习/模型路由决策树.json"
+)
 RULE_TAG = "rule"
 
 # ----------------------------------------------------------------------------

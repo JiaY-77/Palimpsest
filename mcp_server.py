@@ -11,7 +11,7 @@ Ollama 的 qwen3-embedding:0.6b 生成（1024 维，已验证可用）。
   2. mem_get_full - 按 id 取完整记忆内容（全文由本工具单独取）
   3. mem_ingest   - 写入新记忆（带冲突检测：相似旧记忆标记 outdated + REVISED_BY 链）
   4. mem_recent   - 最近记忆列表（按 created_at 倒序）
-  5. kb_index     - 知识库文件索引（扫描 D:/HeJiaQi/Documents/Knowledge 下所有 .md）
+  5. kb_index     - 知识库文件索引（扫描知识库根目录下所有 .md）
   6. kb_search    - 知识库语义检索（向量检索，只查 build_kb_index.py 建的 kb_chunk 节点，
                    含 domain=rule 规则类切片）
   7. mem_search   - 统一检索入口：scope=memory/kb/all 混合检索记忆与知识库
@@ -35,7 +35,7 @@ Ollama 的 qwen3-embedding:0.6b 生成（1024 维，已验证可用）。
   API 限制；REVISED_BY 保持单向（版本链方向语义）。
 
 运行方式（由 Hermes 以 stdio 方式拉起）：
-    D:/HeJiaQi/Documents/Code/Python/Palimpsest/venv/Scripts/python.exe mcp_server.py
+    python mcp_server.py
 """
 
 import json
@@ -56,8 +56,10 @@ from mcp.server.fastmcp import FastMCP  # noqa: E402
 from config import Config  # noqa: E402
 from core.trivium_store import TriviumStore  # noqa: E402
 
-# 知识库根目录（小七的知识库）
-KNOWLEDGE_DIR = r"D:/HeJiaQi/Documents/Knowledge"
+# 知识库根目录（环境变量 KNOWLEDGE_DIR 优先；默认相对项目根的通用路径，不硬编码个人路径）
+KNOWLEDGE_DIR = os.getenv("KNOWLEDGE_DIR", "") or os.path.normpath(
+    os.path.join(_SCRIPT_DIR, "../../../Knowledge")
+)
 
 # 全局存储实例（TriviumDB：向量 + 图 + 文档）
 store = TriviumStore()
@@ -444,7 +446,7 @@ def mem_link(source_id: int, target_id: int, relation: str = "RELATED_TO",
 
 @mcp.tool()
 def kb_index() -> str:
-    """知识库索引：扫描 D:/HeJiaQi/Documents/Knowledge 下所有 .md 文件，返回相对路径 + 文件名"""
+    """知识库索引：扫描知识库根目录下所有 .md 文件，返回相对路径 + 文件名"""
     entries = []
     for fp in _kb_md_files():
         rel = os.path.relpath(fp, KNOWLEDGE_DIR).replace("\\", "/")

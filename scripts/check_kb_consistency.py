@@ -3,7 +3,7 @@
 知识库一致性检查脚本（v2.0 统一语义层）
 ========================================
 检查规则类文档（domain=rule）的入库一致性：
-  1. 扫描 D:/HeJiaQi/Documents/Knowledge 下的规则类文档（文件名/路径含
+  1. 扫描知识库根目录（KNOWLEDGE_DIR）下的规则类文档（文件名/路径含
      副官加班协议 / 宪法 / 模型军团管理办法 / 模型路由决策树），用与
      build_kb_index.py 相同的 split_markdown 逻辑估算应有切片数。
   2. 查 TriviumDB 中 domain="rule" 的 kb_chunk 切片（source_path + 数量）。

@@ -9,14 +9,20 @@
 
 用法：cd Palimpsest && ./venv/Scripts/python.exe scripts/migrate_soul_logs.py
 """
+import os
 import re
 import sys
 import time
 
-sys.path.insert(0, "D:/HeJiaQi/Documents/Code/Python/Palimpsest")
+# 项目根 = 脚本上级目录（不硬编码个人路径）
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _PROJECT_ROOT)
 from core.trivium_store import TriviumStore  # noqa: E402
 
-SOUL_PATH = r"C:/Users/七七/AppData/Local/hermes/SOUL.md"
+# SOUL.md 路径：环境变量 SOUL_PATH 优先；默认 ~/AppData/Local/hermes/SOUL.md（运行时展开，不硬编码用户名）
+SOUL_PATH = os.getenv("SOUL_PATH") or os.path.join(
+    os.path.expanduser("~"), "AppData", "Local", "hermes", "SOUL.md"
+)
 SOURCE = "SOUL.md"
 DOMAIN = "hermes"
 

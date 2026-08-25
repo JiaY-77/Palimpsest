@@ -2,7 +2,7 @@
 """
 知识库索引构建脚本
 ==================
-扫描 D:/HeJiaQi/Documents/Knowledge 下的所有 Obsidian 笔记（.md），按 Markdown
+扫描知识库根目录（KNOWLEDGE_DIR，可用环境变量覆盖）下的所有 Obsidian 笔记（.md），按 Markdown
 标题（## / ###）切片，每块 300~800 字符，向量化后以 type=kb_chunk 节点写入
 TriviumDB，供 kb_search / mem_search(scope=kb) 做语义检索。
 
@@ -51,8 +51,10 @@ os.chdir(_PROJECT_ROOT)
 from config import Config  # noqa: E402
 from core.trivium_store import TriviumStore  # noqa: E402
 
-# 知识库根目录（小七的知识库）
-KNOWLEDGE_DIR = r"D:/HeJiaQi/Documents/Knowledge"
+# 知识库根目录（环境变量 KNOWLEDGE_DIR 优先；默认相对项目根的通用路径，不硬编码个人路径）
+KNOWLEDGE_DIR = os.getenv("KNOWLEDGE_DIR", "") or os.path.normpath(
+    os.path.join(_PROJECT_ROOT, "../../../Knowledge")
+)
 
 # 每块字符数目标区间（简单实现：超长段按行切，尽量落在区间内）
 MIN_CHUNK_LEN = 300
