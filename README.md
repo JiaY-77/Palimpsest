@@ -36,7 +36,7 @@ Palimpsest 是一个专为 Obsidian 用户和 AI Agent 设计的轻量级记忆�
 - **记忆时间衰减**：旧记忆检索权重随龄衰减（`MEMORY_DECAY_FACTOR=0.95`，约每月 5%），知识块不衰减
 - **多域隔离**：`domain` 字段隔离（如 hermes / work / novel），互不污染
 - **知识库统一语义层**：`kb_index` 建索引、`kb_search` 检索，规则类切片（domain=rule）内置 ×1.3 加权
-- **图谱遍历 + 手动建边**：`graph_neighbors` BFS 遍历（`min_weight` 精馏过滤弱边 + 结果按 weight 降序截断，防高节点先到先得）、`mem_link` 手动建边（双向协议自动补反向）
+- **图谱遍历 + 手动建边**：`graph_neighbors` BFS 遍历（`min_weight` 精馏过滤弱边 + 结果按 weight 降序截断，防高节点先到先得；`block` 分区块只沿同区块边扩散，防跨域污染）、`mem_link` 手动建边（双向协议自动补反向）
 - **双接口**：MCP Server（stdio）+ FastAPI REST
 
 ---

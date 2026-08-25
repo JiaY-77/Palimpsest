@@ -41,7 +41,7 @@ from mcp_server import (  # noqa: E402
 def cmd_search(args):
     print(mem_search(
         query=args.query, scope=args.scope, domain=args.domain,
-        top_k=args.top_k, include_neighbors=args.neighbors,
+        top_k=args.top_k, include_neighbors=args.neighbors, block=args.block,
     ))
 
 
@@ -66,7 +66,7 @@ def cmd_index(args):
 def cmd_graph(args):
     print(graph_neighbors(
         node_id=args.id, relation=args.relation, depth=args.depth,
-        limit=args.limit, min_weight=args.min_weight,
+        limit=args.limit, min_weight=args.min_weight, block=args.block,
     ))
 
 
@@ -95,6 +95,7 @@ def main():
     sp.add_argument("--domain", default="")
     sp.add_argument("--top-k", type=int, default=5)
     sp.add_argument("--neighbors", action="store_true", help="返回图关联区")
+    sp.add_argument("--block", default="", help="图谱扩散只走同区块边（hermes/work/novel/kb/general）")
     sp.set_defaults(fn=cmd_search)
 
     sp = sub.add_parser("ingest", help="写入记忆（内容/分级由指挥官定）")
@@ -120,6 +121,7 @@ def main():
     sp.add_argument("--relation", default="")
     sp.add_argument("--min-weight", type=float, default=0.0, help="精馏：只保留 weight 不低于此值的边")
     sp.add_argument("--limit", type=int, default=20)
+    sp.add_argument("--block", default="", help="只沿 target 节点 domain 匹配区块的边扩散（hermes/work/novel/kb/general）")
     sp.set_defaults(fn=cmd_graph)
 
     sp = sub.add_parser("recent", help="最近记忆列表")

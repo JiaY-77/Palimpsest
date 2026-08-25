@@ -14,6 +14,19 @@ EXPAND_MAX_EDGES_PER_NODE = 20   # 防高节点（500 邻居）全量扩散
 EXPAND_MIN_EDGE_WEIGHT = 0.0     # 弱边过滤阈值（默认不启用，可调）
 
 
+def domain_in_block(node_domain: str, block: str) -> bool:
+    """区块匹配（分区块）：domain 是否属于 block。kb 区块兼容 rule（rule 是知识子集）。"""
+    d = (node_domain or "general").strip().lower()
+    b = (block or "").strip().lower()
+    if not b:
+        return True
+    if d == b:
+        return True
+    if b == "kb" and d == "rule":
+        return True
+    return False
+
+
 class TriviumStore:
     """封装 TriviumDB 操作，提供记忆存储和检索接口"""
 
@@ -139,6 +152,7 @@ class TriviumStore:
         top_k: int = 5,
         expand_depth: int = 1,
         apply_decay: bool = True,
+        block: str = "",
     ) -> list[dict[str, Any]]:
         """使用 triviumdb 原生 search API 检索，保留时间衰减与图谱扩散
 
@@ -199,9 +213,9 @@ class TriviumStore:
         scored.sort(key=lambda x: x[0], reverse=True)
         top = scored[:top_k]
 
-        # 5. 图谱扩散：expand_depth>0 时沿全部边把邻居并入候选集
+        # 5. 图谱扩散：expand_depth>0 时沿边把邻居并入候选集（block 非空时只走同区块边）
         if expand_depth > 0:
-            top = self._expand_neighbors(top, depth=expand_depth)
+            top = self._expand_neighbors(top, depth=expand_depth, block=block)
 
         return [
             {
@@ -214,14 +228,16 @@ class TriviumStore:
 
     def _expand_neighbors(self, top: list, depth: int,
                           max_edges_per_node: int | None = None,
-                          min_edge_weight: float | None = None) -> list:
+                          min_edge_weight: float | None = None,
+                          block: str = "") -> list:
         """沿边 BFS 扩散邻居，去重后按 score 重排。
 
-        精馏（2026-08-25 主人挑战 #2）：
+        精馏（2026-08-25 主人挑战 #2 + 分区块）：
         - 每节点只扩散按 weight 降序的最强 max_edges_per_node 条边（默认 20），
           防高节点（如 500 邻居）全量扩散撑爆计算/污染结果；
         - 扩散分数 = 当前分数 × 边 weight（替代旧固定 ×0.8），强边自然靠前；
-        - min_edge_weight 可额外过滤弱边（默认 0.0 不启用）。
+        - min_edge_weight 可额外过滤弱边（默认 0.0 不启用）；
+        - block 非空时只扩散 target 节点 domain 匹配区块的边（图谱分区块，防跨域污染）。
         """
         max_edges = (max_edges_per_node if max_edges_per_node is not None
                      else EXPAND_MAX_EDGES_PER_NODE)
@@ -247,10 +263,21 @@ class TriviumStore:
                     nb = edge.target_id
                     if nb in seen:
                         continue
+                    # 精馏 3（分区块）：只扩散 target 节点 domain 匹配区块的边
+                    if block:
+                        nb_node = db.get(nb)
+                        if not nb_node:
+                            continue
+                        nb_payload = nb_node.payload or {}
+                        nb_domain = (nb_payload.get("character_name", "")
+                                     or nb_payload.get("domain", "") or "general")
+                        if not domain_in_block(nb_domain, block):
+                            continue
+                    else:
+                        nb_node = db.get(nb)
+                        if not nb_node:
+                            continue
                     seen.add(nb)
-                    nb_node = db.get(nb)
-                    if not nb_node:
-                        continue
                     # 精馏 2：扩散分数用边 weight（替代旧固定 ×0.8）
                     nb_score = score * w
                     merged[nb] = (nb_score, {

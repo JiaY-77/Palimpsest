@@ -54,7 +54,7 @@ os.chdir(_SCRIPT_DIR)
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 
 from config import Config  # noqa: E402
-from core.trivium_store import TriviumStore  # noqa: E402
+from core.trivium_store import TriviumStore, domain_in_block  # noqa: E402
 
 # 知识库根目录（环境变量 KNOWLEDGE_DIR 优先；默认相对项目根的通用路径，不硬编码个人路径）
 KNOWLEDGE_DIR = os.getenv("KNOWLEDGE_DIR", "") or os.path.normpath(
@@ -406,10 +406,12 @@ def mem_version_history(domain: str = "hermes", full_content: bool = False,
 # ---- 图谱扩展：通用邻居遍历 + 手动建边 ----
 @mcp.tool()
 def graph_neighbors(node_id: int, relation: str = "", depth: int = 1,
-                    limit: int = 20, min_weight: float = 0.0) -> str:
+                    limit: int = 20, min_weight: float = 0.0,
+                    block: str = "") -> str:
     """
     图谱邻居查询：从 node_id 沿出边 BFS 遍历到 depth 层（1-3）。
     relation 非空时只保留 label 匹配的边（忽略大小写）；min_weight 过滤弱边；
+    block 非空时只沿 target 节点 domain 匹配区块的边扩散（图谱分区块，防跨域污染）；
     每节点去重（只出现一次，取最先到达的跳数），结果按 weight 降序截断
     （精馏：强关联优先，防高节点「先到先得」占满 limit，2026-08-25 主人挑战 #2）。
     每条邻居返回 {target_id, relation, weight, target_type, target_title}。
@@ -420,12 +422,13 @@ def graph_neighbors(node_id: int, relation: str = "", depth: int = 1,
     limit = max(1, int(limit))
     min_w = max(0.0, float(min_weight))
     rel = (relation or "").strip().lower()
+    blk = (block or "").strip().lower()
 
     if not store.get_node(node_id):
         return _to_json({"node_id": node_id, "depth": depth, "count": 0,
                          "relations": [], "hint": f"节点不存在: {node_id}"})
 
-    # BFS 收集出边（min_weight 过滤弱边；先收集后按 weight 排序截断，防先到先得）
+    # BFS 收集出边（min_weight 过滤弱边；block 分区块；先收集后按 weight 排序截断）
     relations = []
     seen = {node_id}
     frontier = [(node_id, 0)]
@@ -443,6 +446,16 @@ def graph_neighbors(node_id: int, relation: str = "", depth: int = 1,
             tid = edge.target_id
             if tid is None or tid in seen:
                 continue
+            # 区块过滤：target 节点 domain 匹配 block 才进入（不扩散跨区块边）
+            if blk:
+                tnode = store.get_node(tid)
+                if not tnode:
+                    continue
+                tpayload = tnode.get("payload", {}) or {}
+                tdomain = (tpayload.get("character_name", "")
+                           or tpayload.get("domain", "") or "general")
+                if not domain_in_block(tdomain, blk):
+                    continue
             seen.add(tid)
             relations.append({
                 "target_id": tid,
@@ -668,7 +681,7 @@ def _l1_sniff(query: str) -> list:
 def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
                      domain_bias: str = "", top_k: int = 5,
                      include_neighbors: bool = False,
-                     neighbor_limit: int = 5) -> dict:
+                     neighbor_limit: int = 5, block: str = "") -> dict:
     """
     mem_search 的核心实现（返回 dict，供 mem_search 工具与 router_query 复用）。
     v2.0 统一语义层：
@@ -690,7 +703,8 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
     l1_hits = [] if scope == "kb" else _l1_sniff(query)
     emb = store.embed_text(query)
     # 一次向量检索，拉宽召回再按 scope 过滤截断，保证过滤后仍有足够结果
-    results = store.search_similar(emb, top_k=max(top_k * 3, 30), expand_depth=1)
+    results = store.search_similar(emb, top_k=max(top_k * 3, 30), expand_depth=1,
+                                   block=block)
     items = []
     for r in results:
         payload = r.get("payload", {}) or {}
@@ -751,7 +765,7 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
 def mem_search(query: str, scope: str = "all", domain: str = "",
                domain_bias: str = "", top_k: int = 5,
                include_neighbors: bool = False,
-               neighbor_limit: int = 5) -> str:
+               neighbor_limit: int = 5, block: str = "") -> str:
     """
     统一检索入口：记忆 + 知识库混合检索。
     scope 取值：memory（只查记忆节点，排除 kb_chunk）/ kb（只查知识库块）/ all（都查）。
@@ -768,7 +782,7 @@ def mem_search(query: str, scope: str = "all", domain: str = "",
         neighbor_limit 钳制 1-20（默认 5）。
     """
     return _to_json(_mem_search_impl(query, scope, domain, domain_bias, top_k,
-                                     include_neighbors, neighbor_limit))
+                                     include_neighbors, neighbor_limit, block))
 
 
 # ---- v2.0 统一语义层：任务路由查询 ----
