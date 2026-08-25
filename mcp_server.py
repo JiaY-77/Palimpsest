@@ -54,7 +54,7 @@ os.chdir(_SCRIPT_DIR)
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 
 from config import Config  # noqa: E402
-from core.trivium_store import TriviumStore, domain_in_block  # noqa: E402
+from core.trivium_store import TriviumStore, domain_in_block, node_domain  # noqa: E402
 
 # 知识库根目录（环境变量 KNOWLEDGE_DIR 优先；默认相对项目根的通用路径，不硬编码个人路径）
 KNOWLEDGE_DIR = os.getenv("KNOWLEDGE_DIR", "") or os.path.normpath(
@@ -428,6 +428,17 @@ def graph_neighbors(node_id: int, relation: str = "", depth: int = 1,
         return _to_json({"node_id": node_id, "depth": depth, "count": 0,
                          "relations": [], "hint": f"节点不存在: {node_id}"})
 
+    # 起点自检（主人 2026-08-25 审查补丁）：带 block 时起点必须属于该区块，
+    # 否则直接拦截——堵死跨域起点污染（起点自身不能违规闯入别的区块）
+    if blk:
+        start_payload = (store.get_node(node_id) or {}).get("payload", {}) or {}
+        if not domain_in_block(node_domain(start_payload), blk):
+            return _to_json({
+                "node_id": node_id, "block": blk, "depth": depth, "count": 0,
+                "relations": [],
+                "error": f"起点节点 {node_id} 不属于 {blk} 区块（domain={node_domain(start_payload)}），已拦截",
+            })
+
     # BFS 收集出边（min_weight 过滤弱边；block 分区块；先收集后按 weight 排序截断）
     relations = []
     seen = {node_id}
@@ -699,8 +710,10 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
     query = (query or "").strip()
     if not query:
         return {"results": [], "scope": scope, "hint": "查询内容不能为空"}
-    # 前置 L1 嗅探（2026-08-25 主人建议）：MEMORY.md 一体化检索（scope=kb 时跳过）
-    l1_hits = [] if scope == "kb" else _l1_sniff(query)
+    # 前置 L1 嗅探（2026-08-25 主人建议）：MEMORY.md 一体化检索（scope=kb 跳过；
+    # block 非空且不是 hermes 时跳过——L1 属于 hermes 区块，分区查询不跨区块）
+    l1_hits = ([] if scope == "kb" or (block and block.strip().lower() != "hermes")
+               else _l1_sniff(query))
     emb = store.embed_text(query)
     # 一次向量检索，拉宽召回再按 scope 过滤截断，保证过滤后仍有足够结果
     results = store.search_similar(emb, top_k=max(top_k * 3, 30), expand_depth=1,
@@ -716,6 +729,10 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
             continue
         # domain 过滤仅作用于记忆节点（kb_chunk 无 character_name 概念）
         if domain and not is_kb and payload.get("character_name") != domain:
+            continue
+        # 分区块（主人 2026-08-25 审查补丁）：block 非空时主结果也按区块过滤——
+        # 带 --block hermes 的搜索只返回 hermes 区块内容，语义命中的跨区块节点丢弃
+        if block and not domain_in_block(node_domain(payload), block):
             continue
         # v2.0 统一语义层加权：过滤之后、排序之前应用（只乘系数，不改变过滤逻辑）
         score = float(r.get("score", 0.0))

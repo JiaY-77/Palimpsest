@@ -34,9 +34,9 @@ Palimpsest 是一个专为 Obsidian 用户和 AI Agent 设计的轻量级记忆�
 - **150 字摘要设计**：检索默认只返回摘要 + meta，全文按需 `mem_get_full` 取——省 token 的关键设计
 - **冲突检测自动版本链**：相似记忆（score > 0.4）自动 outdated + REVISED_BY 链，保留演进痕迹
 - **记忆时间衰减**：旧记忆检索权重随龄衰减（`MEMORY_DECAY_FACTOR=0.95`，约每月 5%），知识块不衰减
-- **多域隔离**：`domain` 字段隔离（如 hermes / work / novel），互不污染
+- **多域隔离**：`domain` 字段隔离（如 hermes / work / novel），互不污染；**无 domain 的 general 节点只在全量模式（不设 block）下可见，分区查询自动忽略它**（无标签 = 未分类，隔离场景丢弃防污染）
 - **知识库统一语义层**：`kb_index` 建索引、`kb_search` 检索，规则类切片（domain=rule）内置 ×1.3 加权
-- **图谱遍历 + 手动建边**：`graph_neighbors` BFS 遍历（`min_weight` 精馏过滤弱边 + 结果按 weight 降序截断，防高节点先到先得；`block` 分区块只沿同区块边扩散，防跨域污染）、`mem_link` 手动建边（双向协议自动补反向）
+- **图谱遍历 + 手动建边**：`graph_neighbors` BFS 遍历（`min_weight` 精馏过滤弱边 + 结果按 weight 降序截断，防高节点先到先得；`block` 分区块——主结果与图谱扩散都按区块过滤，起点自检拦截跨域起点，防跨域污染）、`mem_link` 手动建边（双向协议自动补反向）
 - **双接口**：MCP Server（stdio）+ FastAPI REST
 
 ---

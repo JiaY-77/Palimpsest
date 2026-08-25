@@ -27,6 +27,17 @@ def domain_in_block(node_domain: str, block: str) -> bool:
     return False
 
 
+def node_domain(payload: dict) -> str:
+    """节点区块域：memory 用 character_name，kb_chunk 用 domain，缺省 general。
+
+    注意：无 domain 的节点（general）在带 block 的分区查询中会被彻底忽略
+    （既不能当起点也不能当邻居）——「无标签 = 未分类」，隔离场景下丢弃防污染；
+    只有全量模式（block 为空）才可见。
+    """
+    return (payload.get("character_name", "")
+            or payload.get("domain", "") or "general").strip().lower()
+
+
 class TriviumStore:
     """封装 TriviumDB 操作，提供记忆存储和检索接口"""
 
