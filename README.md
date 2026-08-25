@@ -1,13 +1,15 @@
+
 # Palimpsest
 
-> 面向 AI Agent 的记忆与知识统一语义层——基于 TriviumDB（向量 × 图谱 × 文档 三位一体嵌入式数据库）。
+> 为 **Obsidian** 知识库注入 **AI 记忆**：轻量级 GraphRAG + 语义搜索的 MCP 服务器。
 
-Palimpsest 是一个轻量级 AI 记忆服务，把两类内容变成**可检索、可关联、可演进**的结构化资产：
+Palimpsest 是一个专为 Obsidian 用户和 AI Agent 设计的轻量级记忆服务，基于 TriviumDB（向量 × 图谱 × 文档 三位一体嵌入式数据库）。它将你的 **Obsidian Vault** 和 AI 对话转化为**可检索、可关联、可演进**的结构化资产：
 
-1. **AI 对话记忆**：事件、角色、状态的结构化记忆，语义检索 + 图谱扩散双通道召回
-2. **Markdown 知识库**：知识切片向量化入库，与记忆统一检索（规则类知识内置加权）
+1. **Obsidian 原生集成**：直接扫描 Vault 目录，解析 Frontmatter（Tags/Domain），支持双向链接 `[[ ]]` 上下文切片，将纯 Markdown 笔记向量化入库。
+2. **AI 对话记忆**：事件、角色、状态的结构化记忆，语义检索 + 图谱扩散双通道召回。
+3. **轻量 GraphRAG**：结合向量检索与图谱扩散（RELATED_TO / REVISED_BY），为 Agent 提供深度的知识推理能力。
 
-对外通过 **MCP Server** 暴露工具（Hermes 等 Agent 经 MCP 协议直接调用），同时保留 FastAPI REST 接口。
+对外通过 **MCP Server** 暴露工具，Hermes 等 Agent 可通过 MCP 协议直接“理解”并调用你的 Obsidian 知识库。
 
 ---
 
@@ -26,6 +28,8 @@ Palimpsest 是一个轻量级 AI 记忆服务，把两类内容变成**可检索
 
 ## 核心特性
 
+- **Obsidian 原生适配**：完美兼容 Obsidian Vault，支持 Frontmatter 规则解析（`tags: rule`）、双链 `[[ ]]` 上下文保留及 Markdown 智能切片，让笔记无缝转化为 AI 知识。
+- **轻量 GraphRAG**：语义检索结合图谱扩散召回，利用 RELATED_TO/REVISED_BY 边提供关联解释与推理能力，让笔记互联、可沿边扩散召回。
 - **语义检索 + 图谱扩散双通道**：可独立检索，也可 `include_neighbors=True` 分区返回（语义区原样 + 图关联区，不互相挤占）
 - **150 字摘要设计**：检索默认只返回摘要 + meta，全文按需 `mem_get_full` 取——省 token 的关键设计
 - **冲突检测自动版本链**：相似记忆（score > 0.4）自动 outdated + REVISED_BY 链，保留演进痕迹
@@ -34,6 +38,19 @@ Palimpsest 是一个轻量级 AI 记忆服务，把两类内容变成**可检索
 - **知识库统一语义层**：`kb_index` 建索引、`kb_search` 检索，规则类切片（domain=rule）内置 ×1.3 加权
 - **图谱遍历 + 手动建边**：`graph_neighbors` BFS 遍历、`mem_link` 手动建边（双向协议自动补反向）
 - **双接口**：MCP Server（stdio）+ FastAPI REST
+
+---
+
+## Obsidian 集成
+
+Palimpsest 原生支持 **Obsidian** 工作流，将你的笔记 Vault 直接转化为 AI 的长期记忆层：
+
+- **Vault 即知识库**：无需迁移，直接将本地 Obsidian 目录（纯 Markdown 笔记）作为数据源，通过 `kb_index` / `scripts/build_kb_index.py` 一键扫描切片并向量化入库。
+- **规则笔记驱动**：解析笔记 Frontmatter，若 `tags` 包含 `rule`，系统自动识别为规则类文档，设置 `domain=rule` 并在检索时内置 **×1.3 加权**。
+- **动态路由同步**：运行 `scripts/sync_rules.py`，将规则笔记实时同步到模型路由决策树 JSON。修改 Obsidian 笔记即可更新 Agent 的路由决策逻辑。
+- **深度语义切片**：按 Markdown 标题（## / ###）智能切片，完美保留双链 `[[ ]]` 上下文；通过图谱边（`RELATED_TO` / `REVISED_BY`）将笔记互联，支持沿边扩散召回。
+- **轻量 GraphRAG 体验**：语义检索结合图谱扩散，为 Obsidian 用户提供「AI 可检索的记忆/知识层」，让 Agent 能够理解笔记间的隐式关联。
+- **MCP 无缝接入**：通过 MCP Server（stdio）或 FastAPI REST 接口，Agent（如 Hermes）可直接读取并调用你的 Obsidian 知识网络。
 
 ---
 
