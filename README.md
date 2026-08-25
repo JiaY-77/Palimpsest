@@ -129,6 +129,9 @@ OLLAMA_EMBEDDING_DIM=1024
 # EMBEDDING_MODEL=voyage-3
 # EMBEDDING_DIM=1024
 
+# L1 嗅探（可选）：mem_search 一体化检索 MEMORY.md——命中查询词置顶返回（<5KB 内存缓存）
+# HERMES_MEMORY_FILE=C:\path\to\MEMORY.md
+
 # LLM 后端（deepseek / ollama）
 LLM_BACKEND=deepseek
 DEEPSEEK_API_KEY=sk-你的密钥

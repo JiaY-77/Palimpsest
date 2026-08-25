@@ -617,6 +617,54 @@ def _collect_neighbors(items: list, neighbor_limit: int = 5) -> list:
     return result[:neighbor_limit]
 
 
+# ---- L1 嗅探（2026-08-25 主人建议：mem_search 一体化检索 L1 MEMORY.md）----
+# MEMORY.md（<5KB）读入内存缓存，命中查询词则置顶返回；底层仍物理隔离于 TriviumDB。
+_L1_CACHE: dict = {"path": "", "mtime": 0.0, "content": ""}
+_L1_MAX_SIZE = 5 * 1024  # <5KB 直接读进内存缓存
+
+
+def _l1_sniff(query: str) -> list:
+    """前置 L1 嗅探：MEMORY.md 命中查询词则返回置顶结果。
+
+    路径来自环境变量 HERMES_MEMORY_FILE（开源不硬编码个人路径）；
+    命中规则：查询词整体，或按空白/标点分词后 ≥2 字符的词，出现在 MEMORY.md 内容中。
+    """
+    path = os.getenv("HERMES_MEMORY_FILE", "")
+    if not path or not os.path.isfile(path):
+        return []
+    try:
+        mtime = os.path.getmtime(path)
+        if _L1_CACHE["path"] != path or _L1_CACHE["mtime"] != mtime:
+            if os.path.getsize(path) > _L1_MAX_SIZE:
+                _L1_CACHE.update(path=path, mtime=mtime, content="")  # 过大不缓存
+            else:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    _L1_CACHE.update(path=path, mtime=mtime, content=f.read())
+        content = _L1_CACHE["content"]
+        if not content:
+            return []
+        q = (query or "").strip()
+        hits = [q] if q and q in content else [
+            t for t in re.split(r"[\s,，。；;、/（）()]+", q)
+            if len(t) >= 2 and t in content
+        ]
+        if not hits:
+            return []
+        idx = content.find(hits[0])
+        snippet = content[max(0, idx - 40):idx + 60].replace("\n", " ")
+        return [{
+            "id": -1,
+            "type": "memory_l1",
+            "score": 1.0,
+            "summary": f"[L1 MEMORY.md 命中] …{snippet}…",
+            "meta": {"type": "memory_l1", "importance": 1.0, "status": "active",
+                     "domain": "l1", "source": "MEMORY.md", "hits": hits[:3],
+                     "note": "L1 静态高频区（物理隔离于 TriviumDB）"},
+        }]
+    except Exception:
+        return []
+
+
 def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
                      domain_bias: str = "", top_k: int = 5,
                      include_neighbors: bool = False,
@@ -629,6 +677,7 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
       - domain_bias："" 不额外 bias；"memory" 非 kb_chunk ×1.15；
         "kb" 对 kb_chunk（含 rule）×1.15；"rule" 对 rule 节点 ×1.15（叠加内置 ×1.3）。
       - 最终权重 = base_score × (rule?1.3:1) × (bias 系数)，在过滤之后、排序之前应用。
+      - v3.7 L1 嗅探：scope!=kb 时先查 MEMORY.md（HERMES_MEMORY_FILE），命中置顶。
     """
     if scope not in ("memory", "kb", "all"):
         scope = "all"
@@ -637,6 +686,8 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
     query = (query or "").strip()
     if not query:
         return {"results": [], "scope": scope, "hint": "查询内容不能为空"}
+    # 前置 L1 嗅探（2026-08-25 主人建议）：MEMORY.md 一体化检索（scope=kb 时跳过）
+    l1_hits = [] if scope == "kb" else _l1_sniff(query)
     emb = store.embed_text(query)
     # 一次向量检索，拉宽召回再按 scope 过滤截断，保证过滤后仍有足够结果
     results = store.search_similar(emb, top_k=max(top_k * 3, 30), expand_depth=1)
@@ -682,6 +733,9 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
     # bias 后按最终 score 降序排序再截断（bias 需影响排序，不能按原始顺序收集后 break）
     items.sort(key=lambda x: x["score"], reverse=True)
     top_items = items[:top_k]
+    # L1 命中置顶（L1 静态高频区优先于 L2~L4 语义结果）
+    if l1_hits:
+        top_items = l1_hits + top_items
     result = {"results": top_items, "scope": scope}
     if domain_bias:
         result["bias"] = domain_bias
