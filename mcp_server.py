@@ -241,6 +241,75 @@ def mem_recent(domain: str = "", limit: int = 10) -> str:
     return _to_json({"results": items[:limit], "total": len(items)})
 
 
+@mcp.tool()
+def mem_review(days: int = 7, domain: str = "") -> str:
+    """复盘盘点（2026-08-25 主人批准：复盘机制融入小帕，复盘=记忆治理）。
+
+    统计全库节点 + 盘点最近 days 天 ingest 的记忆，输出复盘草稿：
+      - recent_ingests：窗口内新增记忆（type=memory，按 created_at 倒序）
+      - high_value_candidates：importance>=0.6 且 active（升级知识库候选）
+      - stale_outdated：outdated 节点（版本链历史，可清理候选）
+      - low_value_candidates：importance<=0.4 且 active 的非知识节点（清理候选）
+    供每日复盘使用：指挥官裁决后升级/清理，再存 type=review 节点。
+    """
+    import time
+    now = time.time()
+    window = max(1, int(days)) * 86400.0
+
+    items = []
+    for nid in store._get_all_node_ids():
+        node = store.get_node(nid)
+        if not node:
+            continue
+        payload = node.get("payload", {}) or {}
+        if domain and payload.get("character_name") != domain:
+            continue
+        items.append({
+            "id": nid,
+            "type": payload.get("type", ""),
+            "content": _shorten(payload.get("content", ""), 100),
+            "importance": payload.get("importance", 0.5),
+            "status": payload.get("status", ""),
+            "domain": payload.get("character_name", ""),
+            "created_at": payload.get("created_at"),
+        })
+
+    total = len(items)
+    active = sum(1 for x in items if x["status"] != "outdated")
+    outdated = sum(1 for x in items if x["status"] == "outdated")
+    kb_chunks = sum(1 for x in items if x["type"] == "kb_chunk")
+    memory_nodes = sum(1 for x in items if x["type"] == "memory")
+
+    # 窗口内新增记忆（只算 type=memory，kb_chunk 是文档切片不算 ingest）
+    recent = [x for x in items
+              if x["type"] == "memory" and isinstance(x["created_at"], (int, float))
+              and x["created_at"] and (now - x["created_at"]) <= window]
+    recent.sort(key=lambda x: (x["created_at"] or 0, x["id"]), reverse=True)
+
+    # 高价值候选（importance>=0.6 且 active → 升级知识库候选）
+    high_value = [x for x in items
+                  if x["status"] != "outdated" and float(x["importance"] or 0) >= 0.6]
+    high_value.sort(key=lambda x: x["importance"], reverse=True)
+
+    # 待治理：outdated 节点 + 低价值旧记忆（清理候选）
+    stale = [x for x in items if x["status"] == "outdated"]
+    low_value = [x for x in items
+                 if x["status"] != "outdated" and x["type"] != "kb_chunk"
+                 and float(x["importance"] or 0) <= 0.4]
+
+    return _to_json({
+        "review_window_days": days,
+        "stats": {
+            "total": total, "active": active, "outdated": outdated,
+            "memory": memory_nodes, "kb_chunk": kb_chunks,
+        },
+        "recent_ingests": recent[:30],
+        "high_value_candidates": high_value[:20],
+        "stale_outdated": stale[:20],
+        "low_value_candidates": low_value[:20],
+    })
+
+
 # ---- 版本历史查询（REVISED_BY 修订链）----
 _VERSION_RE = re.compile(r"\[SOUL变更日志\]\s*(\d{4}-\d{2}-\d{2})\s*版本\s*v?([\d.]+)")
 _TITLE_RE = re.compile(r"\*\*(.+?)\*\*")

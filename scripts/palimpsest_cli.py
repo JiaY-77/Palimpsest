@@ -34,7 +34,7 @@ if _PROJECT_ROOT not in sys.path:
 # 复用 mcp_server 的工具函数（mcp_server 内部会 chdir 到项目根）
 from mcp_server import (  # noqa: E402
     graph_neighbors, kb_index, kb_search, mem_ingest, mem_link, mem_recent,
-    mem_search,
+    mem_review, mem_search,
 )
 
 
@@ -72,6 +72,10 @@ def cmd_graph(args):
 
 def cmd_recent(args):
     print(mem_recent(domain=args.domain, limit=args.limit))
+
+
+def cmd_review(args):
+    print(mem_review(days=args.days, domain=args.domain))
 
 
 def cmd_kb(args):
@@ -122,6 +126,11 @@ def main():
     sp.add_argument("--limit", type=int, default=10)
     sp.add_argument("--domain", default="")
     sp.set_defaults(fn=cmd_recent)
+
+    sp = sub.add_parser("review", help="复盘盘点（近 N 天记忆 + 治理候选）")
+    sp.add_argument("--days", type=int, default=7)
+    sp.add_argument("--domain", default="")
+    sp.set_defaults(fn=cmd_review)
 
     sp = sub.add_parser("kb", help="知识库语义检索")
     sp.add_argument("query")

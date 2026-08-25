@@ -168,6 +168,7 @@ uvicorn main:app --reload
 | `mem_get_full` | 按 id 取完整记忆 |
 | `mem_ingest` | 写入新记忆（冲突检测：相似旧记忆 outdated + REVISED_BY 链） |
 | `mem_recent` | 最近记忆列表 |
+| `mem_review` | 复盘盘点：近 N 天新增记忆 / 高价值候选 / outdated / 低价值清理候选（复盘=记忆治理，2026-08-25） |
 | `mem_version_history` | 版本历史查询（沿 REVISED_BY 修订链） |
 | `kb_index` | 知识库文件索引（扫描 Knowledge 目录所有 .md，切片向量化） |
 | `kb_search` | 知识库语义检索（kb_chunk 节点，含 domain=rule 规则类切片） |
