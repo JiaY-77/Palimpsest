@@ -27,9 +27,17 @@ v2.1 退役文档排除：
     模型退役表格、模型路由决策树的「宪法已退役」说明、知识库首页的导航列表）。
     幂等：退役文档第二次运行时库中已无其旧节点，重复执行无副作用。
 
-全量重建（v1.0 行为）：
-    python scripts/build_kb_index.py --full
-    删除所有 type==kb_chunk 旧节点后全量插入。
+v2.2 Upsert 重建策略：
+    重建不再删除旧块再重新插入（导致节点 id 全部变化、图谱边丢失），改为
+    upsert 策略保持节点 id 不变：
+    - 对每个待重建文件，读取旧块 payload.chunk_index 建立 {chunk_index: node_id} 映射；
+    - 遍历新切片：新块 i 对应旧 id 存在 → update_payload + update_vector（保持 id）；
+      不存在 → insert_node（文件变长新增块）；
+      旧 chunk_index >= 新块数 → delete_nodes（文件变短多余块）。
+    - 全量模式（--full）不再删除所有旧 kb_chunk 节点，改为强制所有 active 文件
+      走 upsert，并统一执行孤儿/退役文档旧块清理。
+    - 增量/全量模式均保留孤儿清理与退役文档旧块清理。
+    图谱边（RELATED_TO）不再因重建丢失。
 
 可直接运行，也可 import 调用 build(full=...)。
 """
@@ -240,11 +248,14 @@ def _count_domain_chunks(store) -> dict:
 
 def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False) -> dict:
     """
-    构建知识库向量索引。
-    full=True：全量重建（删除所有 type=kb_chunk 节点后全量插入，等价 v1.0 行为）。
+    构建知识库向量索引（v2.2 upsert 策略）。
+    full=True：全量模式——所有 active 文件强制 upsert 重建（不删除旧节点，保持 id），
+        并统一执行孤儿/退役文档旧块清理。
     full=False（默认）：增量更新——对比 mtime，只重建新增/变化的文件；老数据
         （无 source_mtime）视为未知一律重建；源文件已删除的孤儿块顺带清理。
-    返回统计信息 {files, total_chunks, elapsed, mode, rebuilt, skipped, deleted_old}。
+    重建时通过 upsert 保持旧节点 id 不变，图谱边（RELATED_TO）不再因重建丢失。
+    返回统计信息 {files, total_chunks, elapsed, mode, rebuilt, skipped, deleted_old,
+        domain_counts}。
     """
     store = store or TriviumStore()
     md_files = _kb_md_files(knowledge_dir)
@@ -271,22 +282,17 @@ def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False) ->
     total_chunks = 0
     deleted_old = 0
 
+    # ---- v2.2 确定待重建文件列表 ----
     if full:
-        # ---- 全量模式：删除所有旧 kb_chunk 节点 ----
-        all_old_ids = [nid for entry in existing.values() for nid in entry["ids"]]
-        deleted_old = _delete_nodes(store, all_old_ids)
-        if deleted_old:
-            print(f"[清理] 全量模式：已删除旧 kb_chunk 节点 {deleted_old} 个")
+        # 全量模式：所有 active 文件强制重建（upsert），不再删除旧 kb_chunk 节点
         pending = active_files
         skipped = 0
     else:
         # ---- 增量模式：筛选需要重建的文件 ----
         pending = []
         skipped = 0
-        known_paths = set()
         for fp in active_files:
             rel = os.path.relpath(fp, knowledge_dir).replace("\\", "/")
-            known_paths.add(rel)
             cur_mtime = os.path.getmtime(fp)
             entry = existing.get(rel)
             if entry is None:
@@ -298,36 +304,40 @@ def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False) ->
                 pending.append(fp)  # v2.0 domain 变化（如 kb→rule），需重建
             else:
                 skipped += 1  # mtime 未变，跳过
-        # 退役文档仍在磁盘上（不算孤儿），并入 known_paths 防止被误判清理
-        known_paths |= retired_rels
-        # 顺带清理：源文件已不存在的孤儿块（增量模式下的残留）
-        orphan_ids = []
-        for rel, entry in existing.items():
-            if rel not in known_paths:
-                orphan_ids.extend(entry["ids"])
-        if orphan_ids:
-            deleted_old += _delete_nodes(store, orphan_ids)
-            print(f"[清理] 增量模式：源文件已删除，清理孤儿 kb_chunk 节点 {len(orphan_ids)} 个")
-        # v2.1 退役文档旧节点清理：退役文档不进入索引，旧块须一并移除，
-        # 否则旧块仍会被语义检索命中（退役 ≠ 文件删除，不能走孤儿逻辑）
-        retired_ids = []
-        for rel in sorted(retired_rels):
-            entry = existing.get(rel)
-            if entry and entry["ids"]:
-                retired_ids.extend(entry["ids"])
-        if retired_ids:
-            deleted_old += _delete_nodes(store, retired_ids)
-            print(f"[清理] 增量模式：退役文档旧 kb_chunk 节点 {len(retired_ids)} 个已删除: "
-                  f"{sorted(retired_rels)}")
 
-    # ---- 切片 -> 向量化 -> 入库（增量模式先删该文件的旧块再重建） ----
+    # ---- 两个模式共用：known_paths 构造 + 孤儿/退役清理 ----
+    known_paths = set()
+    for fp in active_files:
+        known_paths.add(os.path.relpath(fp, knowledge_dir).replace("\\", "/"))
+    known_paths |= retired_rels  # 退役文档仍在磁盘上（不算孤儿）
+
+    # 孤儿清理：existing 中有但磁盘上已不存在的源文件旧块删除
+    orphan_ids = []
+    for rel, entry in existing.items():
+        if rel not in known_paths:
+            orphan_ids.extend(entry["ids"])
+    if orphan_ids:
+        deleted_old += _delete_nodes(store, orphan_ids)
+        print(f"[清理] 孤儿：源文件已删除，清理旧 kb_chunk 节点 {len(orphan_ids)} 个")
+
+    # v2.1 退役文档旧节点清理：退役文档不进入索引，旧块须一并移除
+    retired_ids = []
+    for rel in sorted(retired_rels):
+        entry = existing.get(rel)
+        if entry and entry["ids"]:
+            retired_ids.extend(entry["ids"])
+    if retired_ids:
+        deleted_old += _delete_nodes(store, retired_ids)
+        print(f"[清理] 退役文档旧 kb_chunk 节点 {len(retired_ids)} 个已删除: "
+              f"{sorted(retired_rels)}")
+
+    # ---- 切片 -> upsert 入库（v2.2：保持旧节点 id） ----
     rebuilt = 0
     for fp in pending:
         try:
             with open(fp, "r", encoding="utf-8", errors="ignore") as f:
                 text = f.read()
         except OSError as e:
-            # 读取失败跳过并记录，不中断整体构建
             print(f"[跳过] 读取失败: {fp}: {e}")
             skipped += 1
             continue
@@ -337,14 +347,20 @@ def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False) ->
         cur_mtime = os.path.getmtime(fp)
         chunks = split_markdown(text)
 
-        # 增量模式：先删除该文件的旧块再重建（全量模式上面已全删，此处不重复）
+        # v2.2 构建旧块 {chunk_index: node_id} 映射
         entry = existing.get(rel)
-        if entry and entry["ids"] and not full:
-            deleted_old += _delete_nodes(store, entry["ids"])
+        old_index_map = {}
+        if entry and entry["ids"]:
+            for nid in entry["ids"]:
+                node = store.get_node(nid)
+                payload = node.get("payload", {}) if node else {}
+                ci = payload.get("chunk_index")
+                if ci is not None:
+                    old_index_map[int(ci)] = nid
 
         char_lens = []
-        # v2.0 统一语义层：规则类文档切片 domain 打 "rule"，其余保持 "kb"
         doc_domain = _doc_domain(rel)
+
         for i, chunk in enumerate(chunks):
             emb = store.embed_text(chunk)
             payload = {
@@ -357,8 +373,19 @@ def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False) ->
                 "importance": 0.6,
                 "source_mtime": cur_mtime,
             }
-            store.insert_node(payload, emb)
+            old_nid = old_index_map.get(i)
+            if old_nid is not None:
+                store.update_payload(old_nid, payload)
+                store.update_vector(old_nid, emb)
+            else:
+                store.insert_node(payload, emb)
             char_lens.append(len(chunk))
+
+        # 删除多余旧块（旧 chunk_index >= 新块数）
+        excess_ids = [nid for ci, nid in old_index_map.items() if ci >= len(chunks)]
+        if excess_ids:
+            deleted_old += _delete_nodes(store, excess_ids)
+
         file_stats.append({"file": rel, "chunks": len(chunks), "char_lens": char_lens})
         total_chunks += len(chunks)
         rebuilt += 1
@@ -368,7 +395,7 @@ def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False) ->
     mode = "full" if full else "incremental"
     # v2.0 统一语义层：重建完成后统计 rule / kb 块数
     domain_counts = _count_domain_chunks(store)
-    print(f"\n=== 知识库索引构建完成（{'全量' if full else '增量'}模式）===")
+    print(f"\n=== 知识库索引构建完成（{'全量' if full else '增量'}模式）v2.2 upsert ===")
     print(f"总块数: {total_chunks} | 新增/重建: {rebuilt} 篇 | 跳过: {skipped} 篇 | 耗时: {elapsed} 秒")
     print(f"[v2.0 域统计] domain=rule（规则类）: {domain_counts.get(RULE_DOMAIN, 0)} 块 | "
           f"domain=kb（普通知识）: {domain_counts.get(KB_DOMAIN, 0)} 块")
@@ -389,7 +416,7 @@ def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False) ->
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="知识库向量索引构建（默认增量，--full 全量）")
     parser.add_argument("--full", action="store_true",
-                        help="全量重建：删除所有 kb_chunk 节点后重新索引")
+                        help="全量重建：所有 active 文件强制 upsert 重建（保持节点 id）")
     args = parser.parse_args()
     print(f"知识库根目录: {KNOWLEDGE_DIR}")
     print(f"数据库路径: {Config.DB_PATH}")

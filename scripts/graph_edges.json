@@ -47,6 +47,12 @@
    "target": "03_技术学习/模型军团管理办法.md",
    "relation": "RELATED_TO",
    "weight": 0.9
+  },
+  {
+   "source": "04_成长复盘/2026-08-25成长复盘.md",
+   "target": "03_技术学习/TriviumDB 升级迁移方案（0.6.0-0.7.6）.md",
+   "relation": "RELATED_TO",
+   "weight": 0.9
   }
  ]
 }
