@@ -17,6 +17,7 @@ Palimpsest CLI —— 本地小兵调用小帕（Palimpsest）的薄封装（202
   python palimpsest_cli.py graph --id N [--depth 1] [--relation X]
   python palimpsest_cli.py recent [--limit 10] [--domain X]
   python palimpsest_cli.py kb "关键词" [--top-k 5]
+  python palimpsest_cli.py consolidate [--apply] [--threshold 0.85] [--max-importance 0.8]
 
 边界（指挥官铁律，CLI 不越权）：
   - importance 分级 / 记忆内容撰写 / 建边决策 = 指挥官（小七）负责；
@@ -37,6 +38,7 @@ from mcp_server import (  # noqa: E402
     graph_neighbors, kb_index, kb_search, mem_ingest, mem_link, mem_recent,
     mem_review, mem_search,
 )
+from core.consolidator import consolidate  # noqa: E402
 
 
 def cmd_search(args):
@@ -85,6 +87,18 @@ def cmd_review(args):
 
 def cmd_kb(args):
     print(kb_search(query=args.query, top_k=args.top_k))
+
+
+def cmd_consolidate(args):
+    from core.trivium_store import TriviumStore
+    store = TriviumStore()
+    result = consolidate(
+        store,
+        dry_run=not args.apply,
+        sim_threshold=args.threshold,
+        max_importance=args.max_importance,
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 def main():
@@ -143,6 +157,12 @@ def main():
     sp.add_argument("query")
     sp.add_argument("--top-k", type=int, default=5)
     sp.set_defaults(fn=cmd_kb)
+
+    sp = sub.add_parser("consolidate", help="容量自动合并（预览/合并高相似度 memory 节点对）")
+    sp.add_argument("--apply", action="store_true", help="执行合并（默认 dry-run 只预览）")
+    sp.add_argument("--threshold", type=float, default=0.85, help="相似度阈值（默认 0.85）")
+    sp.add_argument("--max-importance", type=float, default=0.8, help="高价值保护阈值（>= 此值不合并，默认 0.8）")
+    sp.set_defaults(fn=cmd_consolidate)
 
     args = p.parse_args()
     args.fn(args)
