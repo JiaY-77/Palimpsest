@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Palimpsest Dashboard</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:system-ui,-apple-system,sans-serif;background:#f5f6fa;color:#2d3436;padding:20px;max-width:1100px;margin:0 auto}
+h1{font-size:1.5rem;margin-bottom:20px;font-weight:600}
+.card{background:#fff;border-radius:8px;padding:16px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,.1)}
+.card h2{font-size:1rem;margin-bottom:12px;color:#636e72;border-bottom:1px solid #eee;padding-bottom:8px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
+.stat-item{background:#f8f9fa;border-radius:6px;padding:12px;text-align:center}
+.stat-num{font-size:1.5rem;font-weight:700;color:#0984e3}
+.stat-label{font-size:.8rem;color:#636e72;margin-top:4px}
+input[type=text]{width:100%;padding:10px 12px;border:1px solid #dfe6e9;border-radius:6px;font-size:.9rem;outline:none}
+input[type=text]:focus{border-color:#0984e3}
+button{padding:8px 16px;border:none;border-radius:6px;cursor:pointer;font-size:.85rem;font-weight:500;transition:background .2s}
+.btn-primary{background:#0984e3;color:#fff}.btn-primary:hover{background:#0769c9}
+.btn-warn{background:#e17055;color:#fff}.btn-warn:hover{background:#d63031}
+.btn-outline{background:#fff;border:1px solid #dfe6e9;color:#636e72}.btn-outline:hover{background:#f8f9fa}
+.btn-row{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+table{width:100%;border-collapse:collapse;font-size:.85rem}
+th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #eee}
+th{color:#636e72;font-weight:600;font-size:.75rem;text-transform:uppercase}
+td{color:#2d3436}
+.tag{display:inline-block;padding:2px 8px;border-radius:10px;font-size:.75rem;font-weight:500}
+.tag-memory{background:#dfe6e9;color:#2d3436}
+.tag-kb{background:#ffeaa7;color:#2d3436}
+.tag-decision{background:#a29bfe;color:#2d3436}
+.tag-git{background:#55efc4;color:#2d3436}
+.tag-other{background:#fab1a0;color:#2d3436}
+.empty{text-align:center;color:#b2bec3;padding:20px;font-size:.9rem}
+.loading{text-align:center;color:#b2bec3;padding:10px}
+.candidate{border:1px solid #dfe6e9;border-radius:6px;padding:12px;margin-bottom:8px;background:#fafbfc}
+.candidate .pair{font-weight:600;font-size:.85rem;margin-bottom:4px}
+.candidate .score{color:#e17055;font-size:.8rem}
+.candidate .content{font-size:.8rem;color:#636e72;margin-top:6px}
+.separator{height:1px;background:#eee;margin:10px 0}
+.toast{position:fixed;bottom:20px;right:20px;background:#2d3436;color:#fff;padding:12px 20px;border-radius:8px;font-size:.85rem;display:none;z-index:999}
+</style>
+</head>
+<body>
+<h1>Palimpsest Dashboard</h1>
+
+<!-- 统计卡 -->
+<div class="card">
+<h2>记忆库概览</h2>
+<div class="stats" id="statsArea"><div class="loading">加载中…</div></div>
+</div>
+
+<!-- 搜索框 -->
+<div class="card">
+<h2>全文搜索</h2>
+<input type="text" id="searchInput" placeholder="输入关键词搜索记忆…" onkeydown="if(event.key==='Enter')doSearch()">
+<div class="btn-row"><button class="btn-primary" onclick="doSearch()">搜索</button></div>
+<div id="searchResults"></div>
+</div>
+
+<!-- 最近记忆 -->
+<div class="card">
+<h2>最近记忆</h2>
+<div id="recentArea"><div class="loading">加载中…</div></div>
+</div>
+
+<!-- 合并治理 -->
+<div class="card">
+<h2>合并治理</h2>
+<p style="font-size:.85rem;color:#636e72;margin-bottom:8px">扫描高相似度记忆节点，预览后可执行合并（不可逆）。</p>
+<div class="btn-row">
+<button class="btn-outline" onclick="doPreview()">预览合并候选</button>
+<button class="btn-warn" id="applyBtn" onclick="doApply()" disabled>执行合并</button>
+</div>
+<div id="consolidateArea" style="margin-top:12px"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = '';
+
+function tag(t) {
+    const cls = t === 'memory' ? 'tag-memory' : t === 'kb_chunk' ? 'tag-kb' : t === 'decision' ? 'tag-decision' : t === 'git_commit' ? 'tag-git' : 'tag-other';
+    return '<span class="tag ' + cls + '">' + (t || '—') + '</span>';
+}
+
+function truncate(s, n) { return s && s.length > n ? s.slice(0, n) + '…' : (s || '—'); }
+
+function showToast(msg) {
+    var el = document.getElementById('toast');
+    el.textContent = msg;
+    el.style.display = 'block';
+    setTimeout(function() { el.style.display = 'none'; }, 3000);
+}
+
+async function fetchJSON(url, opts) {
+    var r = await fetch(API + url, opts);
+    return await r.json();
+}
+
+// ---- 统计卡 ----
+async function loadStats() {
+    try {
+        var d = await fetchJSON('/api/mem/stats');
+        var html = '';
+        html += '<div class="stat-item"><div class="stat-num">' + (d.total || 0) + '</div><div class="stat-label">节点总数</div></div>';
+        var by = d.by_type || {};
+        var types = ['memory', 'kb_chunk', 'git_commit', 'decision', 'inspiration', 'event', 'character_state', 'plot_plan'];
+        var labels = {memory:'记忆',kb_chunk:'知识块',git_commit:'Git 提交',decision:'决策',inspiration:'灵感',event:'事件',character_state:'角色状态',plot_plan:'剧情计划'};
+        for (var i = 0; i < types.length; i++) {
+            var k = types[i];
+            if (by[k]) {
+                html += '<div class="stat-item"><div class="stat-num">' + by[k] + '</div><div class="stat-label">' + (labels[k]||k) + '</div></div>';
+            }
+        }
+        if (d.outdated) {
+            html += '<div class="stat-item"><div class="stat-num">' + d.outdated + '</div><div class="stat-label">已过期</div></div>';
+        }
+        document.getElementById('statsArea').innerHTML = html;
+    } catch(e) {
+        document.getElementById('statsArea').innerHTML = '<div class="empty">加载失败: ' + e.message + '</div>';
+    }
+}
+
+// ---- 搜索 ----
+async function doSearch() {
+    var q = document.getElementById('searchInput').value.trim();
+    if (!q) return;
+    document.getElementById('searchResults').innerHTML = '<div class="loading">搜索中…</div>';
+    try {
+        var d = await fetchJSON('/api/mem/search?q=' + encodeURIComponent(q));
+        if (!d.results || !d.results.length) {
+            document.getElementById('searchResults').innerHTML = '<div class="empty">未找到匹配结果</div>';
+            return;
+        }
+        var html = '<table><tr><th>ID</th><th>内容摘要</th></tr>';
+        for (var i = 0; i < d.results.length; i++) {
+            var r = d.results[i];
+            html += '<tr><td>' + r.node_id + '</td><td>' + truncate(r.content, 100) + '</td></tr>';
+        }
+        html += '</table>';
+        document.getElementById('searchResults').innerHTML = html;
+    } catch(e) {
+        document.getElementById('searchResults').innerHTML = '<div class="empty">搜索失败: ' + e.message + '</div>';
+    }
+}
+
+// ---- 最近记忆 ----
+async function loadRecent() {
+    try {
+        var d = await fetchJSON('/api/mem/recent?limit=20');
+        if (!d.nodes || !d.nodes.length) {
+            document.getElementById('recentArea').innerHTML = '<div class="empty">暂无记忆</div>';
+            return;
+        }
+        var html = '<table><tr><th>ID</th><th>类型</th><th>重要性</th><th>内容摘要</th></tr>';
+        for (var i = 0; i < d.nodes.length; i++) {
+            var n = d.nodes[i];
+            html += '<tr><td>' + n.id + '</td><td>' + tag(n.type) + '</td><td>' + (n.importance != null ? n.importance.toFixed(2) : '—') + '</td><td>' + truncate(n.content, 80) + '</td></tr>';
+        }
+        html += '</table>';
+        document.getElementById('recentArea').innerHTML = html;
+    } catch(e) {
+        document.getElementById('recentArea').innerHTML = '<div class="empty">加载失败: ' + e.message + '</div>';
+    }
+}
+
+// ---- 合并治理 ----
+var previewData = null;
+
+async function doPreview() {
+    document.getElementById('consolidateArea').innerHTML = '<div class="loading">扫描中…</div>';
+    document.getElementById('applyBtn').disabled = true;
+    previewData = null;
+    try {
+        var d = await fetchJSON('/api/consolidate/preview');
+        previewData = d;
+        var cands = d.candidates || [];
+        var will = d.will_merge || [];
+        if (!cands.length) {
+            document.getElementById('consolidateArea').innerHTML = '<div class="empty">未发现高相似度候选对</div>';
+            return;
+        }
+        var html = '<div style="font-size:.85rem;color:#636e72;margin-bottom:8px">发现 ' + cands.length + ' 对候选，其中 ' + will.length + ' 对将被合并（跳过高价值 ' + (d.skipped_high_value||0) + '，跳过双重要 ' + (d.skipped_both_important||0) + '）</div>';
+        for (var i = 0; i < will.length; i++) {
+            var c = will[i];
+            html += '<div class="candidate">';
+            html += '<div class="pair">节点 ' + c.a + ' ↔ ' + c.b + ' <span class="score">相似度 ' + (c.score * 100).toFixed(1) + '%</span></div>';
+            html += '<div class="content">A: ' + truncate(c.a_content, 80) + '</div>';
+            html += '<div class="content">B: ' + truncate(c.b_content, 80) + '</div>';
+            html += '</div>';
+        }
+        if (will.length) document.getElementById('applyBtn').disabled = false;
+        document.getElementById('consolidateArea').innerHTML = html;
+    } catch(e) {
+        document.getElementById('consolidateArea').innerHTML = '<div class="empty">预览失败: ' + e.message + '</div>';
+    }
+}
+
+async function doApply() {
+    if (!confirm('确定执行合并？此操作不可逆。')) return;
+    document.getElementById('applyBtn').disabled = true;
+    document.getElementById('consolidateArea').innerHTML = '<div class="loading">合并中…</div>';
+    try {
+        var d = await fetchJSON('/api/consolidate/apply', {method:'POST'});
+        var msg = '合并完成：' + (d.merged || 0) + ' 对已合并';
+        showToast(msg);
+        previewData = null;
+        document.getElementById('consolidateArea').innerHTML = '<div class="empty">' + msg + '</div>';
+        loadStats();
+        loadRecent();
+    } catch(e) {
+        document.getElementById('consolidateArea').innerHTML = '<div class="empty">合并失败: ' + e.message + '</div>';
+    }
+}
+
+// ---- 初始化 ----
+loadStats();
+loadRecent();
+</script>
+</body>
+</html>
