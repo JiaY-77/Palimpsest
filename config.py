@@ -5,6 +5,10 @@ load_dotenv()
 
 
 class Config:
+    # ---- 服务端口（2026-08-26：8000 让给酒馆 SillyTavern，小帕 REST 用 8090；dashboard 独立 8010）----
+    REST_PORT = int(os.getenv("REST_PORT", "8090"))
+    DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "8010"))
+
     # ---- 通用 ----
     DB_PATH = os.getenv("DB_PATH", "data/mh_memory.db")
 

@@ -91,4 +91,5 @@ async def consolidate_apply():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8010)
+    from config import Config
+    uvicorn.run(app, host="127.0.0.1", port=Config.DASHBOARD_PORT)
