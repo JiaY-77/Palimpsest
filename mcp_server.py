@@ -55,6 +55,7 @@ from mcp.server.fastmcp import FastMCP  # noqa: E402
 
 from config import Config  # noqa: E402
 from core.trivium_store import TriviumStore, domain_in_block, node_domain  # noqa: E402
+from core.secret_scan import SecretScanError  # noqa: E402
 
 # 知识库根目录（环境变量 KNOWLEDGE_DIR 优先；默认相对项目根的通用路径，不硬编码个人路径）
 KNOWLEDGE_DIR = os.getenv("KNOWLEDGE_DIR", "") or os.path.normpath(
@@ -169,7 +170,10 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
         "created_at": now,
         "linked_from": linked_kb_ids,
     }
-    node_id = store.insert_node(node_data, emb)
+    try:
+        node_id = store.insert_node(node_data, emb)
+    except SecretScanError as e:
+        return _to_json({"stored": False, "error": str(e), "rules": e.rules})
 
     # 注意：core.insert_node 的基础 payload 固定 created_at=None 且不接收外部传入，
     # 这里补写一次真实时间戳，保证 mem_recent 排序有意义

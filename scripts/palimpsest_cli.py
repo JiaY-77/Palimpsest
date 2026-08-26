@@ -23,6 +23,7 @@ Palimpsest CLI —— 本地小兵调用小帕（Palimpsest）的薄封装（202
     小兵只做机械执行与结果回传。
 """
 import argparse
+import json
 import os
 import sys
 
@@ -46,10 +47,14 @@ def cmd_search(args):
 
 
 def cmd_ingest(args):
-    print(mem_ingest(
+    result = mem_ingest(
         content=args.content, domain=args.domain,
         importance=args.importance, type=args.type,
-    ))
+    )
+    print(result)
+    data = json.loads(result)
+    if not data.get("stored"):
+        sys.exit(1)
 
 
 def cmd_link(args):

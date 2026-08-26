@@ -6,6 +6,7 @@ from typing import Any
 
 import triviumdb
 from config import Config
+from core.secret_scan import SecretScanError, scan_secret
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +138,14 @@ class TriviumStore:
                 if k not in payload and k not in ("label", "content")
             }
             payload.update(extra_fields)
+
+            # 敏感信息扫描：拼接所有字符串字段值扫描，命中则拒绝入库
+            scan_text = " ".join(
+                str(v) for v in payload.values() if isinstance(v, str)
+            )
+            secret_hits = scan_secret(scan_text)
+            if secret_hits:
+                raise SecretScanError(secret_hits)
 
             node_id = db.insert(embedding, payload)
             db.create_index("type")
