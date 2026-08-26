@@ -15,6 +15,7 @@ from core.trivium_store import TriviumStore
 from core.merger import Merger
 from core.retriever import Retriever
 from core.importer import ChatImporter
+from core.fts_index import search_fts as fts_search
 
 app = FastAPI(title="Palimpsest")
 
@@ -334,6 +335,13 @@ async def generate_report():
 
 
 # ---- 新增：记忆删除/编辑 API ----
+@app.get("/api/fts")
+async def fts_query(q: str = "", limit: int = 10):
+    """FTS5 全文搜索（trigram 中文子串匹配）"""
+    results = fts_search(q, limit=limit)
+    return {"status": "ok", "query": q, "results": results, "total": len(results)}
+
+
 @app.delete("/memory/{node_id}")
 async def delete_memory(node_id: int):
     """删除指定 ID 的记忆节点"""

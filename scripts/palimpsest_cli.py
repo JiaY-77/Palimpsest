@@ -41,6 +41,7 @@ from mcp_server import (  # noqa: E402
     mem_review, mem_search,
 )
 from core.consolidator import consolidate  # noqa: E402
+from core.fts_index import index_node, rebuild as fts_rebuild, remove_node, search_fts  # noqa: E402
 from core.trivium_store import TriviumStore  # noqa: E402
 
 
@@ -60,6 +61,13 @@ def cmd_ingest(args):
     data = json.loads(result)
     if not data.get("stored"):
         sys.exit(1)
+    # 尽力同步 FTS 索引（失败不影响 ingest 结果）
+    try:
+        nid = data.get("node_id")
+        if nid is not None:
+            index_node(nid, args.content)
+    except Exception:
+        pass
 
 
 def cmd_link(args):
@@ -191,6 +199,22 @@ def cmd_ingest_git(args):
     print(f"ingest-git 完成：新增 {added} 条，跳过 {skipped} 条（已存在）")
 
 
+def cmd_fts_rebuild(args):
+    store = TriviumStore()
+    count = fts_rebuild(store)
+    print(f"FTS 索引重建完成，已索引 {count} 个节点")
+
+
+def cmd_fts_search(args):
+    results = search_fts(args.query, limit=args.limit)
+    if not results:
+        print(f"FTS 搜索「{args.query}」：无命中")
+        return
+    for r in results:
+        print(f"  node_id={r['node_id']}  {r['content']}")
+    print(f"共 {len(results)} 条命中")
+
+
 def main():
     p = argparse.ArgumentParser(
         prog="palimpsest_cli",
@@ -259,6 +283,14 @@ def main():
     sp.add_argument("--since", type=int, default=7, help="入库最近 N 天的 commit（默认 7）")
     sp.add_argument("--db-path", default="", help="指定 DB_PATH（用于临时库测试）")
     sp.set_defaults(fn=cmd_ingest_git)
+
+    sp = sub.add_parser("fts-rebuild", help="全量重建 FTS5 全文索引")
+    sp.set_defaults(fn=cmd_fts_rebuild)
+
+    sp = sub.add_parser("fts-search", help="FTS5 全文搜索（trigram 中文子串匹配）")
+    sp.add_argument("query")
+    sp.add_argument("--limit", type=int, default=10)
+    sp.set_defaults(fn=cmd_fts_search)
 
     args = p.parse_args()
     args.fn(args)
