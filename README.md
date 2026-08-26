@@ -30,7 +30,7 @@ Palimpsest 是一个专为 Obsidian 用户和 AI Agent 设计的轻量级记忆�
 
 ---
 
-## 定位与适配（诚实版）
+## 定位与适配
 
 **Palimpsest 是给「长期运行的 agent」用的语义记忆层（MCP 服务），不是给人用的产品界面。** 它的核心消费者是 agent（通过 MCP / CLI / REST 调用），前端 Dashboard 只是可选的「窗户」。
 
