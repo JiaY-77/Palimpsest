@@ -18,6 +18,7 @@ Palimpsest CLI —— 本地小兵调用小帕（Palimpsest）的薄封装（202
   python palimpsest_cli.py recent [--limit 10] [--domain X]
   python palimpsest_cli.py kb "关键词" [--top-k 5]
   python palimpsest_cli.py consolidate [--apply] [--threshold 0.85] [--max-importance 0.8]
+  python palimpsest_cli.py ingest-git [--repo PATH] [--since N] [--db-path PATH]
 
 边界（指挥官铁律，CLI 不越权）：
   - importance 分级 / 记忆内容撰写 / 建边决策 = 指挥官（小七）负责；
@@ -26,6 +27,7 @@ Palimpsest CLI —— 本地小兵调用小帕（Palimpsest）的薄封装（202
 import argparse
 import json
 import os
+import subprocess
 import sys
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -39,6 +41,7 @@ from mcp_server import (  # noqa: E402
     mem_review, mem_search,
 )
 from core.consolidator import consolidate  # noqa: E402
+from core.trivium_store import TriviumStore  # noqa: E402
 
 
 def cmd_search(args):
@@ -82,7 +85,25 @@ def cmd_recent(args):
 
 
 def cmd_review(args):
-    print(mem_review(days=args.days, domain=args.domain))
+    raw = mem_review(days=args.days, domain=args.domain)
+    try:
+        data = json.loads(raw)
+        # 统计 decision 节点数
+        from core.trivium_store import TriviumStore
+        _store = TriviumStore()
+        decision_count = 0
+        for nid in _store._get_all_node_ids():
+            node = _store.get_node(nid)
+            if node:
+                payload = node.get("payload", {}) or {}
+                if payload.get("type") == "decision":
+                    decision_count += 1
+        stats = data.get("stats", {})
+        stats["decision"] = decision_count
+        data["stats"] = stats
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+    except (json.JSONDecodeError, KeyError):
+        print(raw)
 
 
 def cmd_kb(args):
@@ -99,6 +120,75 @@ def cmd_consolidate(args):
         max_importance=args.max_importance,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+def cmd_ingest_git(args):
+    """将 git commit 作为 git_commit 类型节点入库（幂等：已有则跳过）。"""
+    repo = args.repo or _PROJECT_ROOT
+    since = args.since
+
+    if args.db_path:
+        os.environ["DB_PATH"] = args.db_path
+
+    # 运行 git log 获取最近 N 天的 commit
+    fmt = "%H|%ad|%s"
+    cmd = [
+        "git", "-C", repo, "log",
+        f'--since={since} days ago',
+        f"--pretty=format:{fmt}",
+        "--date=short",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if result.returncode != 0:
+        print(f"git log 失败：{result.stderr.strip()}")
+        sys.exit(1)
+
+    # 解析 commit 行
+    lines = result.stdout.strip().splitlines()
+    commits = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split("|", 2)
+        if len(parts) == 3:
+            commits.append({
+                "commit_hash": parts[0],
+                "commit_time": parts[1],
+                "subject": parts[2],
+            })
+
+    # 幂等检查：遍历库中已有节点，收集已有的 commit_hash
+    store = TriviumStore()
+    existing_hashes = set()
+    for nid in store._get_all_node_ids():
+        node = store.get_node(nid)
+        if node:
+            payload = node.get("payload", {}) or {}
+            ch = payload.get("commit_hash")
+            if ch:
+                existing_hashes.add(ch)
+
+    added = 0
+    skipped = 0
+    for c in commits:
+        if c["commit_hash"] in existing_hashes:
+            skipped += 1
+            continue
+        node_data = {
+            "type": "git_commit",
+            "content": c["subject"],
+            "importance": 0.5,
+            "commit_hash": c["commit_hash"],
+            "commit_time": c["commit_time"],
+            "repo": repo,
+            "source": "git_memory",
+        }
+        emb = store.embed_text(c["subject"])
+        store.insert_node(node_data, emb)
+        added += 1
+
+    print(f"ingest-git 完成：新增 {added} 条，跳过 {skipped} 条（已存在）")
 
 
 def main():
@@ -163,6 +253,12 @@ def main():
     sp.add_argument("--threshold", type=float, default=0.85, help="相似度阈值（默认 0.85）")
     sp.add_argument("--max-importance", type=float, default=0.8, help="高价值保护阈值（>= 此值不合并，默认 0.8）")
     sp.set_defaults(fn=cmd_consolidate)
+
+    sp = sub.add_parser("ingest-git", help="将 git commit 入库为 git_commit 节点（幂等）")
+    sp.add_argument("--repo", default="", help="git 仓库路径（默认项目根）")
+    sp.add_argument("--since", type=int, default=7, help="入库最近 N 天的 commit（默认 7）")
+    sp.add_argument("--db-path", default="", help="指定 DB_PATH（用于临时库测试）")
+    sp.set_defaults(fn=cmd_ingest_git)
 
     args = p.parse_args()
     args.fn(args)
