@@ -23,6 +23,43 @@ Palimpsest 是一个专为 Obsidian 用户和 AI Agent 设计的轻量级记忆�
 | 知识库向量化 | Markdown 切片 → kb_chunk 节点 → 与记忆同库检索 |
 | 统一检索入口 | `mem_search` 一个工具查记忆 + 知识库，规则节点 ×1.3 加权 |
 | 冲突检测 | 写入相似新记忆时自动标记旧记忆 outdated，建立 REVISED_BY 版本链 |
+| Ingest 安全扫描 | 写入前正则扫描 API key / token / 私钥 / 身份证 / 手机号（10 条规则），命中拒绝入库——开源脱敏红线（core/secret_scan.py） |
+| 容量自动合并 consolidate | 相似 memory 节点自动合并（REVISED_BY 保留、kb_chunk 永不参与、高价值保护），dry-run 预览 / --apply 执行 |
+| FTS5 全文搜索 | 中文子串匹配（trigram + 2 字 LIKE 兜底），支持重建索引与即时查询（core/fts_index.py） |
+| 轻量 Dashboard | 独立 Web 服务 http://127.0.0.1:8010，提供统计 / 搜索 / 最近记忆 / 合并治理预览执行 |
+
+---
+
+## 定位与适配（诚实版）
+
+**Palimpsest 是给「长期运行的 agent」用的语义记忆层（MCP 服务），不是给人用的产品界面。** 它的核心消费者是 agent（通过 MCP / CLI / REST 调用），前端 Dashboard 只是可选的「窗户」。
+
+**它解决什么**：
+- **agent 跨会话记忆**：事实 / 偏好 / 踩坑 / 决策理由，下次会话检索即得，不靠上下文窗口硬扛
+- **知识库语义化**：Obsidian 笔记向量化入库，语义召回 + 图谱关联 + 规则加权
+- **记忆治理**：安全扫描防污染（API key/身份证等拒绝入库）、容量自动合并防膨胀、outdated 清理、REVISED_BY 版本链可追溯
+
+**适配什么**（适合用它的场景）：
+- 长期陪伴 / 个人助理 agent——跨会话记忆是刚需
+- 编码 agent 做长项目——项目状态 / 踩坑 / 决策理由要记住（Git Memory 把 commit 也变成可检索事实）
+- 创作 / 研究 agent——素材、设定、结论需要积累
+- Obsidian 用户——原生适配（frontmatter / 双链 / 智能切片）
+
+**不适合什么**（别硬用）：
+- 一次性任务 agent（用完即走，不需要记忆）
+- 无状态工具型 agent（每次调用独立，无上下文延续）
+- 记忆量极小（几十条）——MEMORY.md 或文件就够，引入服务是过度设计
+- 没有资源 / 意愿维护服务的用户——需要跑 uvicorn、embedding（本地 Ollama 或云端 key）、定期治理（可自动化）
+
+**对什么友好**：
+- **MCP 生态友好**：Hermes 等 agent 通过 MCP 协议直接接入，零适配
+- **本地优先**：默认 Ollama 本地 embedding，隐私可控；云端 provider 可选
+- **中文友好**：FTS5 trigram 中文子串搜索（不用分词器）
+- **治理友好**：CLI 全自动化（consolidate 预览/执行、周维护可脚本化），Dashboard 只作查看
+
+**设计哲学**：纯后端为主——agent 是记忆的消费者，前端不是主体。**记忆是给 agent 用的，不是给人看的。**
+
+**成熟度（诚实）**：单用户真实工作流中迭代（当前约 260 节点，语义检索 / 图谱 / 治理均经实战验证）；1.0 前接口可能演进，请固定版本使用。
 
 ---
 
@@ -33,6 +70,7 @@ Palimpsest 是一个专为 Obsidian 用户和 AI Agent 设计的轻量级记忆�
 - **语义检索 + 图谱扩散双通道**：可独立检索，也可 `include_neighbors=True` 分区返回（语义区原样 + 图关联区，不互相挤占）
 - **150 字摘要设计**：检索默认只返回摘要 + meta，全文按需 `mem_get_full` 取——省 token 的关键设计
 - **冲突检测自动版本链**：相似记忆（score > 0.4）自动标记 outdated + REVISED_BY 链；**outdated 节点不留**（内容已被新版覆盖），复盘治理（mem_review）时全部清理
+- **新记忆类型约定**：`type=decision`（技术决策理由/权衡）、`type=correction`（主人纠正）、`type=git_commit`（工程事实）
 - **记忆时间衰减**：旧记忆检索权重随龄衰减（`MEMORY_DECAY_FACTOR=0.95`，约每月 5%），知识块不衰减
 - **多域隔离**：`domain` 字段隔离（如 hermes / work / novel），互不污染；**无 domain 的 general 节点只在全量模式（不设 block）下可见，分区查询自动忽略它**（无标签 = 未分类，隔离场景丢弃防污染）
 - **知识库统一语义层**：`kb_index` 建索引、`kb_search` 检索，规则类切片（domain=rule）内置 ×1.3 加权
@@ -69,7 +107,8 @@ Palimpsest 原生支持 **Obsidian** 工作流，将你的笔记 Vault 直接转
 │                                                              │
 │   core/  trivium_store（存储封装）· merger（冲突合并）        │
 │          retriever（检索）· extractor（提取）· importer       │
-│          thinking_tracker（思维链）                           │
+│          thinking_tracker（思维链）· secret_scan（安全扫描）  │
+│          fts_index（FTS5 全文搜索）                           │
 └────────────────────────────┬────────────────────────────────┘
                              │
                              ▼
@@ -87,7 +126,8 @@ Palimpsest 原生支持 **Obsidian** 工作流，将你的笔记 Vault 直接转
 | 存储引擎 | TriviumDB（Rust 嵌入式） | 向量 + 图 + 文档三位一体，单文件部署，Apache-2.0 |
 | Embedding | Ollama `qwen3-embedding:0.6b` | 本地免费，1024 维，中文效果优秀 |
 | MCP | FastMCP | stdio 方式，被 Hermes 等 MCP 客户端拉起 |
-| REST | FastAPI + Uvicorn | 保留传统集成方式 |
+| REST | FastAPI + Uvicorn | 端口 8090（8000 让给 SillyTavern） |
+| Dashboard | 独立 HTTP 服务 | 端口 8010，统计 / 搜索 / 合并治理面板 |
 | LLM 后端 | DeepSeek / Ollama 可配 | 记忆提取与报告生成用 |
 
 ---
@@ -152,13 +192,27 @@ venv\Scripts\python.exe mcp_server.py
 
 由 MCP 客户端（如 Hermes）配置后拉起；工具即 `mem_*` / `kb_*` / `graph_neighbors` / `mem_link` 等 11 个。
 
+**Dashboard（轻量 Web 面板）**：
+
+```bash
+python scripts/dashboard.py
+```
+
+访问 `http://127.0.0.1:8010`（`Config.DASHBOARD_PORT`），提供统计 / 搜索 / 最近记忆 / 合并治理预览执行。
+
+**CLI 子命令（12 个）**：
+
+```bash
+palimpsest_cli search / ingest / link / index / graph / recent / review / kb / consolidate / ingest-git / fts-rebuild / fts-search
+```
+
 **REST 服务（可选）**：
 
 ```bash
 uvicorn main:app --reload
 ```
 
-访问 `http://localhost:8000` 查看 API 文档。
+默认端口 **8090**（`Config.REST_PORT`，8000 让给 SillyTavern），访问 `http://localhost:8090` 查看 API 文档。
 
 ---
 
@@ -202,6 +256,7 @@ uvicorn main:app --reload
 | `sync_rules.py` | 规则笔记 → 决策树 JSON 同步（幂等） |
 | `check_kb_consistency.py` | 笔记 / JSON / 向量库三方一致性检查 |
 | `migrate_soul_logs.py` | SOUL 历史日志迁移（增量模式） |
+| `dashboard.py` | 轻量 Web Dashboard（统计/搜索/最近记忆/合并治理），端口 8010 |
 
 ---
 
@@ -210,7 +265,7 @@ uvicorn main:app --reload
 ```
 Palimpsest/
 ├── main.py                 # FastAPI REST 入口
-├── mcp_server.py           # MCP Server（主入口，11 个工具）
+├── mcp_server.py           # MCP Server（主入口，11 个工具 + 12 个 CLI 子命令）
 ├── config.py               # 配置管理（.env）
 ├── core/
 │   ├── trivium_store.py    # TriviumDB 存储封装
@@ -218,12 +273,15 @@ Palimpsest/
 │   ├── retriever.py        # 语义检索 + 图谱扩散
 │   ├── extractor.py        # 记忆提取（LLM 后端可配）
 │   ├── importer.py         # 聊天文件导入
-│   └── thinking_tracker.py # 思维链解析
+│   ├── thinking_tracker.py # 思维链解析
+│   ├── secret_scan.py      # Ingest 安全扫描（10 条正则规则）
+│   └── fts_index.py        # FTS5 全文搜索（trigram + LIKE 兜底）
 ├── scripts/
 │   ├── build_kb_index.py   # 知识库向量化
 │   ├── sync_rules.py       # 规则同步
 │   ├── check_kb_consistency.py
-│   └── migrate_soul_logs.py
+│   ├── migrate_soul_logs.py
+│   └── dashboard.py        # 轻量 Web Dashboard（8010）
 ├── data/                   # 数据库（mh_memory.db）
 ├── requirements.txt
 └── .env                    # 环境变量
@@ -239,7 +297,7 @@ Palimpsest/
 | 1 | 统一语义层（mem_search 唯一入口 / rule 加权） | 完成 |
 | 2 | 知识库向量化（kb_index / kb_search / sync_rules） | 完成 |
 | 3 | 图谱能力（graph_neighbors / mem_link / 分区返回 / 双向建边） | 完成 |
-| 4 | 记忆生命周期（时间衰减已实现；盘点 / 高频升级待启动） | 待启动 |
+| 4 | 记忆生命周期（时间衰减已实现；盘点 / 高频升级待启动） | **P0-P3 已落地**：安全扫描 / 自动合并 / Git Memory / FTS5 / Dashboard |
 | 5 | 完备化（远期） | 规划中 |
 
 ---
