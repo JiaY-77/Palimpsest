@@ -107,21 +107,14 @@ def find_candidates(
     return candidates
 
 
-def consolidate(
-    store: TriviumStore,
-    dry_run: bool = True,
-    sim_threshold: float = 0.85,
-    max_importance: float = 0.8,
-) -> dict:
-    """扫描并合并高相似度 memory 节点。
+def _filter_candidates(
+    candidates: list[dict],
+    max_importance: float,
+) -> tuple[list[dict], int, int, list[dict]]:
+    """按保护规则过滤候选对，拆分为 will_merge 与各类 skipped。
 
-    dry_run=True  只预览候选，不修改任何数据。
-    dry_run=False 执行合并：新建合并节点，旧节点标 outdated，建 REVISED_BY 边。
+    返回 (will_merge, skipped_high_value, skipped_both_important, skipped_ids)。
     """
-    candidates = find_candidates(store, sim_threshold=sim_threshold)
-
-    # 过滤保护规则
-    merged = 0
     skipped_high_value = 0
     skipped_both_important = 0
     skipped_ids: list[dict] = []
@@ -142,16 +135,15 @@ def consolidate(
             continue
         will_merge.append(c)
 
-    if dry_run:
-        return {
-            "candidates": candidates,
-            "will_merge": will_merge,
-            "skipped_high_value": skipped_high_value,
-            "skipped_both_important": skipped_both_important,
-            "dry_run": True,
-        }
+    return will_merge, skipped_high_value, skipped_both_important, skipped_ids
 
-    # ---- 执行合并 ----
+
+def _apply_merge(store: TriviumStore, will_merge: list[dict]) -> tuple[int, list[dict]]:
+    """真正执行合并：新建合并节点、旧节点标 outdated、建 REVISED_BY 边。
+
+    返回 (merged, merged_ids)。
+    """
+    merged = 0
     merged_ids: list[dict] = []
     db = None
     try:
@@ -217,6 +209,38 @@ def consolidate(
                 db.close()
             except Exception:
                 pass
+
+    return merged, merged_ids
+
+
+def consolidate(
+    store: TriviumStore,
+    dry_run: bool = True,
+    sim_threshold: float = 0.85,
+    max_importance: float = 0.8,
+) -> dict:
+    """扫描并合并高相似度 memory 节点。
+
+    dry_run=True  只预览候选，不修改任何数据。
+    dry_run=False 执行合并：新建合并节点，旧节点标 outdated，建 REVISED_BY 边。
+    """
+    candidates = find_candidates(store, sim_threshold=sim_threshold)
+
+    # 过滤保护规则
+    will_merge, skipped_high_value, skipped_both_important, _skipped_ids = (
+        _filter_candidates(candidates, max_importance))
+
+    if dry_run:
+        return {
+            "candidates": candidates,
+            "will_merge": will_merge,
+            "skipped_high_value": skipped_high_value,
+            "skipped_both_important": skipped_both_important,
+            "dry_run": True,
+        }
+
+    # ---- 执行合并 ----
+    merged, merged_ids = _apply_merge(store, will_merge)
 
     return {
         "candidates": candidates,

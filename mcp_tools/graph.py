@@ -69,42 +69,25 @@ def _collect_neighbors(items: list, neighbor_limit: int = 5) -> list:
     return result[:neighbor_limit]
 
 
-@mcp.tool()
-def graph_neighbors(node_id: int, relation: str = "", depth: int = 1,
-                    limit: int = 20, min_weight: float = 0.0,
-                    block: str = "") -> str:
+def _clamp_params(depth, limit, min_weight, relation, block) -> tuple:
+    """钳制 graph_neighbors 参数：depth 1-3，limit >= 1，min_weight >= 0，rel/blk 小写化。
+
+    返回 (depth, limit, min_w, rel, blk)。
     """
-    图谱邻居查询：从 node_id 沿出边 BFS 遍历到 depth 层（1-3）。
-    relation 非空时只保留 label 匹配的边（忽略大小写）；min_weight 过滤弱边；
-    block 非空时只沿 target 节点 domain 匹配区块的边扩散（图谱分区块，防跨域污染）；
-    每节点去重（只出现一次，取最先到达的跳数），结果按 weight 降序截断
-    （精馏：强关联优先，防高节点「先到先得」占满 limit，2026-08-25 主人挑战 #2）。
-    每条邻居返回 {target_id, relation, weight, target_type, target_title}。
-    返回 JSON：{"node_id", "depth", "count", "relations": [...]}。
-    """
-    # 参数钳制：depth 1-3，limit >= 1，min_weight >= 0
     depth = max(1, min(int(depth), 3))
     limit = max(1, int(limit))
     min_w = max(0.0, float(min_weight))
     rel = (relation or "").strip().lower()
     blk = (block or "").strip().lower()
+    return depth, limit, min_w, rel, blk
 
-    if not store.get_node(node_id):
-        return _to_json({"node_id": node_id, "depth": depth, "count": 0,
-                         "relations": [], "hint": f"节点不存在: {node_id}"})
 
-    # 起点自检（主人 2026-08-25 审查补丁）：带 block 时起点必须属于该区块，
-    # 否则直接拦截——堵死跨域起点污染（起点自身不能违规闯入别的区块）
-    if blk:
-        start_payload = (store.get_node(node_id) or {}).get("payload", {}) or {}
-        if not domain_in_block(node_domain(start_payload), blk):
-            return _to_json({
-                "node_id": node_id, "block": blk, "depth": depth, "count": 0,
-                "relations": [],
-                "error": f"起点节点 {node_id} 不属于 {blk} 区块（domain={node_domain(start_payload)}），已拦截",
-            })
+def _bfs_neighbors(node_id: int, depth: int, min_w: float, rel: str,
+                   blk: str) -> list:
+    """BFS 收集出边邻居（min_weight 过滤弱边；block 分区块；去重）。
 
-    # BFS 收集出边（min_weight 过滤弱边；block 分区块；先收集后按 weight 排序截断）
+    返回原始 relations 列表（仅 target_id/relation/weight，target_type/title 留空）。
+    """
     relations = []
     seen = {node_id}
     frontier = [(node_id, 0)]
@@ -141,12 +124,11 @@ def graph_neighbors(node_id: int, relation: str = "", depth: int = 1,
                 "target_title": "",
             })
             frontier.append((tid, hop + 1))
+    return relations
 
-    # 精馏：按 weight 降序截断（强关联优先）
-    relations.sort(key=lambda x: x.get("weight", 0.0), reverse=True)
-    relations = relations[:limit]
 
-    # 补邻居节点摘要（target_type / target_title=content 前 80 字）
+def _fill_neighbor_summaries(relations: list) -> None:
+    """补邻居节点摘要（target_type / target_title=content 前 80 字），原位修改。"""
     for item in relations:
         node = store.get_node(item["target_id"])
         if not node:
@@ -154,6 +136,50 @@ def graph_neighbors(node_id: int, relation: str = "", depth: int = 1,
         payload = node.get("payload", {}) or {}
         item["target_type"] = payload.get("type", "")
         item["target_title"] = _shorten(payload.get("content", ""), 80)
+
+
+@mcp.tool()
+def graph_neighbors(node_id: int, relation: str = "", depth: int = 1,
+                    limit: int = 20, min_weight: float = 0.0,
+                    block: str = "") -> str:
+    """
+    图谱邻居查询：从 node_id 沿出边 BFS 遍历到 depth 层（1-3）。
+    relation 非空时只保留 label 匹配的边（忽略大小写）；min_weight 过滤弱边；
+    block 非空时只沿 target 节点 domain 匹配区块的边扩散（图谱分区块，防跨域污染）；
+    每节点去重（只出现一次，取最先到达的跳数），结果按 weight 降序截断
+    （精馏：强关联优先，防高节点「先到先得」占满 limit，2026-08-25 主人挑战 #2）。
+    每条邻居返回 {target_id, relation, weight, target_type, target_title}。
+    返回 JSON：{"node_id", "depth", "count", "relations": [...]}。
+    （结构已拆分：_clamp_params / _bfs_neighbors / _fill_neighbor_summaries，行为不变。）
+    """
+    # 参数钳制：depth 1-3，limit >= 1，min_weight >= 0
+    depth, limit, min_w, rel, blk = _clamp_params(depth, limit, min_weight,
+                                                  relation, block)
+
+    if not store.get_node(node_id):
+        return _to_json({"node_id": node_id, "depth": depth, "count": 0,
+                         "relations": [], "hint": f"节点不存在: {node_id}"})
+
+    # 起点自检（主人 2026-08-25 审查补丁）：带 block 时起点必须属于该区块，
+    # 否则直接拦截——堵死跨域起点污染（起点自身不能违规闯入别的区块）
+    if blk:
+        start_payload = (store.get_node(node_id) or {}).get("payload", {}) or {}
+        if not domain_in_block(node_domain(start_payload), blk):
+            return _to_json({
+                "node_id": node_id, "block": blk, "depth": depth, "count": 0,
+                "relations": [],
+                "error": f"起点节点 {node_id} 不属于 {blk} 区块（domain={node_domain(start_payload)}），已拦截",
+            })
+
+    # BFS 收集出边（min_weight 过滤弱边；block 分区块；先收集后按 weight 排序截断）
+    relations = _bfs_neighbors(node_id, depth, min_w, rel, blk)
+
+    # 精馏：按 weight 降序截断（强关联优先）
+    relations.sort(key=lambda x: x.get("weight", 0.0), reverse=True)
+    relations = relations[:limit]
+
+    # 补邻居节点摘要（target_type / target_title=content 前 80 字）
+    _fill_neighbor_summaries(relations)
 
     return _to_json({
         "node_id": node_id,

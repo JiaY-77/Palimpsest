@@ -239,22 +239,11 @@ def _count_domain_chunks(store) -> dict:
     return counts
 
 
-def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False) -> dict:
-    """
-    构建知识库向量索引（v2.2 upsert 策略）。
-    full=True：全量模式——所有 active 文件强制 upsert 重建（不删除旧节点，保持 id），
-        并统一执行孤儿/退役文档旧块清理。
-    full=False（默认）：增量更新——对比 mtime，只重建新增/变化的文件；老数据
-        （无 source_mtime）视为未知一律重建；源文件已删除的孤儿块顺带清理。
-    重建时通过 upsert 保持旧节点 id 不变，图谱边（RELATED_TO）不再因重建丢失。
-    返回统计信息 {files, total_chunks, elapsed, mode, rebuilt, skipped, deleted_old,
-        domain_counts}。
-    """
-    store = store or TriviumStore()
-    md_files = _kb_md_files(knowledge_dir)
-    existing = _load_existing_index(store)
+def _detect_retired(md_files: list, knowledge_dir: str) -> tuple:
+    """退役文档预检：只读文件头部检测退役横幅，退役文档不进入索引。
 
-    # ---- v2.1 退役文档预检：只读文件头部检测退役横幅，退役文档不进入索引 ----
+    返回 (retired_rels, active_files)。
+    """
     retired_rels = set()
     active_files = []
     for fp in md_files:
@@ -269,40 +258,49 @@ def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False) ->
             print(f"[退役] 跳过（顶部已退役横幅）: {rel}")
         else:
             active_files.append(fp)
+    return retired_rels, active_files
 
-    t0 = time.time()
-    file_stats = []
-    total_chunks = 0
-    deleted_old = 0
 
-    # ---- v2.2 确定待重建文件列表 ----
+def _determine_pending(full: bool, active_files: list, existing: dict,
+                       knowledge_dir: str) -> tuple:
+    """确定待重建文件列表（v2.2）。
+
+    全量模式：所有 active 文件强制重建；
+    增量模式：新文件 / 老数据无 mtime / mtime 变化 / domain 变化 → 重建，其余跳过。
+    返回 (pending, skipped)。
+    """
     if full:
         # 全量模式：所有 active 文件强制重建（upsert），不再删除旧 kb_chunk 节点
-        pending = active_files
-        skipped = 0
-    else:
-        # ---- 增量模式：筛选需要重建的文件 ----
-        pending = []
-        skipped = 0
-        for fp in active_files:
-            rel = os.path.relpath(fp, knowledge_dir).replace("\\", "/")
-            cur_mtime = os.path.getmtime(fp)
-            entry = existing.get(rel)
-            if entry is None:
-                pending.append(fp)  # 新文件（索引里没有）
-            elif entry["mtime"] is None \
-                    or abs(entry["mtime"] - cur_mtime) > MTIME_TOLERANCE:
-                pending.append(fp)  # 老数据无 mtime（未知）或 mtime 变化
-            elif entry["domain"] != _doc_domain(rel):
-                pending.append(fp)  # v2.0 domain 变化（如 kb→rule），需重建
-            else:
-                skipped += 1  # mtime 未变，跳过
+        return [fp for fp in active_files], 0
 
-    # ---- 两个模式共用：known_paths 构造 + 孤儿/退役清理 ----
-    known_paths = set()
+    # ---- 增量模式：筛选需要重建的文件 ----
+    pending = []
+    skipped = 0
     for fp in active_files:
-        known_paths.add(os.path.relpath(fp, knowledge_dir).replace("\\", "/"))
-    known_paths |= retired_rels  # 退役文档仍在磁盘上（不算孤儿）
+        rel = os.path.relpath(fp, knowledge_dir).replace("\\", "/")
+        cur_mtime = os.path.getmtime(fp)
+        entry = existing.get(rel)
+        if entry is None:
+            pending.append(fp)  # 新文件（索引里没有）
+        elif entry["mtime"] is None \
+                or abs(entry["mtime"] - cur_mtime) > MTIME_TOLERANCE:
+            pending.append(fp)  # 老数据无 mtime（未知）或 mtime 变化
+        elif entry["domain"] != _doc_domain(rel):
+            pending.append(fp)  # v2.0 domain 变化（如 kb→rule），需重建
+        else:
+            skipped += 1  # mtime 未变，跳过
+    return pending, skipped
+
+
+def _cleanup_orphans_and_retired(store, existing: dict, known_paths: set,
+                                 retired_rels: set) -> int:
+    """孤儿与退役文档旧块清理。
+
+    孤儿：existing 中有但磁盘上已不存在的源文件旧块删除；
+    退役：退役文档不进入索引，旧块须一并移除。
+    返回删除节点数 deleted_old。
+    """
+    deleted_old = 0
 
     # 孤儿清理：existing 中有但磁盘上已不存在的源文件旧块删除
     orphan_ids = []
@@ -313,7 +311,7 @@ def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False) ->
         deleted_old += _delete_nodes(store, orphan_ids)
         print(f"[清理] 孤儿：源文件已删除，清理旧 kb_chunk 节点 {len(orphan_ids)} 个")
 
-    # v2.1 退役文档旧节点清理：退役文档不进入索引，旧块须一并移除
+    # v2.1 退役文档旧节点清理
     retired_ids = []
     for rel in sorted(retired_rels):
         entry = existing.get(rel)
@@ -324,65 +322,120 @@ def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False) ->
         print(f"[清理] 退役文档旧 kb_chunk 节点 {len(retired_ids)} 个已删除: "
               f"{sorted(retired_rels)}")
 
+    return deleted_old
+
+
+def _rebuild_file(store, fp: str, knowledge_dir: str, existing: dict) -> tuple:
+    """切片 -> upsert 入库单个文件（v2.2：保持旧节点 id）。
+
+    读取失败返回 (None, 0)（由调用方计入跳过）；成功返回
+    ({"file","chunks","char_lens"}, deleted_old)。
+    """
+    try:
+        with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+            text = f.read()
+    except OSError as e:
+        print(f"[跳过] 读取失败: {fp}: {e}")
+        return None, 0
+
+    rel = os.path.relpath(fp, knowledge_dir).replace("\\", "/")
+    title = os.path.splitext(os.path.basename(fp))[0]
+    cur_mtime = os.path.getmtime(fp)
+    chunks = split_markdown(text)
+
+    # v2.2 构建旧块 {chunk_index: node_id} 映射
+    entry = existing.get(rel)
+    old_index_map = {}
+    if entry and entry["ids"]:
+        for nid in entry["ids"]:
+            node = store.get_node(nid)
+            payload = node.get("payload", {}) if node else {}
+            ci = payload.get("chunk_index")
+            if ci is not None:
+                old_index_map[int(ci)] = nid
+
+    char_lens = []
+    doc_domain = _doc_domain(rel)
+
+    for i, chunk in enumerate(chunks):
+        emb = store.embed_text(chunk)
+        payload = {
+            "type": CHUNK_TYPE,
+            "content": chunk,
+            "source_path": rel,
+            "title": title,
+            "domain": doc_domain,
+            "chunk_index": i,
+            "importance": 0.6,
+            "source_mtime": cur_mtime,
+        }
+        old_nid = old_index_map.get(i)
+        if old_nid is not None:
+            store.update_payload(old_nid, payload)
+            store.update_vector(old_nid, emb)
+        else:
+            store.insert_node(payload, emb)
+        char_lens.append(len(chunk))
+
+    # 删除多余旧块（旧 chunk_index >= 新块数）
+    deleted_old = 0
+    excess_ids = [nid for ci, nid in old_index_map.items() if ci >= len(chunks)]
+    if excess_ids:
+        deleted_old += _delete_nodes(store, excess_ids)
+
+    return {"file": rel, "chunks": len(chunks), "char_lens": char_lens}, deleted_old
+
+
+def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False) -> dict:
+    """
+    构建知识库向量索引（v2.2 upsert 策略）。
+    full=True：全量模式——所有 active 文件强制 upsert 重建（不删除旧节点，保持 id），
+        并统一执行孤儿/退役文档旧块清理。
+    full=False（默认）：增量更新——对比 mtime，只重建新增/变化的文件；老数据
+        （无 source_mtime）视为未知一律重建；源文件已删除的孤儿块顺带清理。
+    重建时通过 upsert 保持旧节点 id 不变，图谱边（RELATED_TO）不再因重建丢失。
+    返回统计信息 {files, total_chunks, elapsed, mode, rebuilt, skipped, deleted_old,
+        domain_counts}。
+    （结构已拆分：_detect_retired / _determine_pending / _cleanup_orphans_and_retired
+     / _rebuild_file，行为不变。）
+    """
+    store = store or TriviumStore()
+    md_files = _kb_md_files(knowledge_dir)
+    existing = _load_existing_index(store)
+
+    # ---- v2.1 退役文档预检 ----
+    retired_rels, active_files = _detect_retired(md_files, knowledge_dir)
+
+    t0 = time.time()
+    file_stats = []
+    total_chunks = 0
+    deleted_old = 0
+
+    # ---- v2.2 确定待重建文件列表 ----
+    pending, skipped = _determine_pending(full, active_files, existing, knowledge_dir)
+
+    # ---- 两个模式共用：known_paths 构造 + 孤儿/退役清理 ----
+    known_paths = set()
+    for fp in active_files:
+        known_paths.add(os.path.relpath(fp, knowledge_dir).replace("\\", "/"))
+    known_paths |= retired_rels  # 退役文档仍在磁盘上（不算孤儿）
+
+    deleted_old += _cleanup_orphans_and_retired(store, existing, known_paths,
+                                                retired_rels)
+
     # ---- 切片 -> upsert 入库（v2.2：保持旧节点 id） ----
     rebuilt = 0
     for fp in pending:
-        try:
-            with open(fp, "r", encoding="utf-8", errors="ignore") as f:
-                text = f.read()
-        except OSError as e:
-            print(f"[跳过] 读取失败: {fp}: {e}")
+        stats_entry, delta = _rebuild_file(store, fp, knowledge_dir, existing)
+        if stats_entry is None:
             skipped += 1
             continue
-
-        rel = os.path.relpath(fp, knowledge_dir).replace("\\", "/")
-        title = os.path.splitext(os.path.basename(fp))[0]
-        cur_mtime = os.path.getmtime(fp)
-        chunks = split_markdown(text)
-
-        # v2.2 构建旧块 {chunk_index: node_id} 映射
-        entry = existing.get(rel)
-        old_index_map = {}
-        if entry and entry["ids"]:
-            for nid in entry["ids"]:
-                node = store.get_node(nid)
-                payload = node.get("payload", {}) if node else {}
-                ci = payload.get("chunk_index")
-                if ci is not None:
-                    old_index_map[int(ci)] = nid
-
-        char_lens = []
-        doc_domain = _doc_domain(rel)
-
-        for i, chunk in enumerate(chunks):
-            emb = store.embed_text(chunk)
-            payload = {
-                "type": CHUNK_TYPE,
-                "content": chunk,
-                "source_path": rel,
-                "title": title,
-                "domain": doc_domain,
-                "chunk_index": i,
-                "importance": 0.6,
-                "source_mtime": cur_mtime,
-            }
-            old_nid = old_index_map.get(i)
-            if old_nid is not None:
-                store.update_payload(old_nid, payload)
-                store.update_vector(old_nid, emb)
-            else:
-                store.insert_node(payload, emb)
-            char_lens.append(len(chunk))
-
-        # 删除多余旧块（旧 chunk_index >= 新块数）
-        excess_ids = [nid for ci, nid in old_index_map.items() if ci >= len(chunks)]
-        if excess_ids:
-            deleted_old += _delete_nodes(store, excess_ids)
-
-        file_stats.append({"file": rel, "chunks": len(chunks), "char_lens": char_lens})
-        total_chunks += len(chunks)
+        file_stats.append(stats_entry)
+        total_chunks += stats_entry["chunks"]
+        deleted_old += delta
         rebuilt += 1
-        print(f"  {rel}: {len(chunks)} 块 {char_lens}")
+        print(f"  {stats_entry['file']}: {stats_entry['chunks']} 块 "
+              f"{stats_entry['char_lens']}")
 
     elapsed = round(time.time() - t0, 2)
     mode = "full" if full else "incremental"
