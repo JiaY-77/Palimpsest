@@ -27,4 +27,4 @@ data/
 TASK_palimpsest_*.md
 
 # 脚本备份（git 历史已有完整旧版，不重复入库）
-*.bak_v*
+*.bak_v*scripts/start_rest.log
