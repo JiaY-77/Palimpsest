@@ -1,15 +1,16 @@
 
-# Palimpsest
+# Palimpsest v2.0
 
-> 为 **Obsidian** 知识库注入 **AI 记忆**：轻量级 GraphRAG + 语义搜索的 MCP 服务器。
+> 为 **Obsidian** 知识库注入 **AI 记忆**：轻量级 GraphRAG + 语义搜索的 MCP 服务器；也是可替换 Agent 记忆层的 **Memory Provider + Context Engine**（双插件换脑）。
 
 Palimpsest 是一个专为 Obsidian 用户和 AI Agent 设计的轻量级记忆服务，基于 TriviumDB（向量 × 图谱 × 文档 三位一体嵌入式数据库）。它将你的 **Obsidian Vault** 和 AI 对话转化为**可检索、可关联、可演进**的结构化资产：
 
 1. **Obsidian 原生集成**：直接扫描 Vault 目录，解析 Frontmatter（Tags/Domain），支持双向链接 `[[ ]]` 上下文切片，将纯 Markdown 笔记向量化入库。
 2. **AI 对话记忆**：事件、角色、状态的结构化记忆，语义检索 + 图谱扩散双通道召回。
 3. **轻量 GraphRAG**：结合向量检索与图谱扩散（RELATED_TO / REVISED_BY），为 Agent 提供深度的知识推理能力。
+4. **Agent 记忆层替换**（v2.0）：通过 MemoryProvider / ContextEngine 插槽把 Agent（如 Hermes）的内置记忆换成 Palimpsest——每轮自动召回、强信号自动沉淀、压缩前图谱提炼。
 
-对外通过 **MCP Server** 暴露工具，Hermes 等 Agent 可通过 MCP 协议直接“理解”并调用你的 Obsidian 知识库。
+对外通过 **MCP / CLI / REST 三通道**暴露能力，Hermes 等 Agent 可原生接入。
 
 ---
 
@@ -27,6 +28,9 @@ Palimpsest 是一个专为 Obsidian 用户和 AI Agent 设计的轻量级记忆�
 | 容量自动合并 consolidate | 相似 memory 节点自动合并（REVISED_BY 保留、kb_chunk 永不参与、高价值保护），dry-run 预览 / --apply 执行 |
 | FTS5 全文搜索 | 中文子串匹配（trigram + 2 字 LIKE 兜底），支持重建索引与即时查询（core/fts_index.py） |
 | 轻量 Dashboard | 独立 Web 服务 http://127.0.0.1:8010，提供统计 / 搜索 / 最近记忆 / 合并治理预览执行 |
+| **三通道对齐**（v2.0） | MCP / CLI / REST 统一语义层：REST 新增 `/mem/search` `/mem/ingest` `/mem/link` `/graph/neighbors` `/mem/router`，与 MCP 工具同一实现，行为一致 |
+| **Agent 记忆层替换**（v2.0） | MemoryProvider 插槽：每轮 `prefetch` 自动召回、`sync_turn` 强信号自动沉淀、`on_session_end` 提炼、`on_pre_compress` 抽取；ContextEngine 插槽：压缩前图谱关键链提炼 |
+| **5 个模型工具**（v2.0） | `palimpsest_search / ingest / link / graph / router`——Agent 可主动检索、写入、建图谱边、规则路由 |
 
 ---
 
@@ -44,6 +48,7 @@ Palimpsest 是一个专为 Obsidian 用户和 AI Agent 设计的轻量级记忆�
 - 编码 agent 做长项目——项目状态 / 踩坑 / 决策理由要记住（Git Memory 把 commit 也变成可检索事实）
 - 创作 / 研究 agent——素材、设定、结论需要积累
 - Obsidian 用户——原生适配（frontmatter / 双链 / 智能切片）
+- **想换掉 Agent 内置记忆的用户**（v2.0）：Agent 若支持 MemoryProvider / ContextEngine 插槽，可直接把记忆层换成 Palimpsest（每轮自动召回 + 强信号自动沉淀 + 压缩前图谱提炼）——已在 Hermes 实测
 
 **不适合什么**（别硬用）：
 - 一次性任务 agent（用完即走，不需要记忆）
@@ -59,7 +64,7 @@ Palimpsest 是一个专为 Obsidian 用户和 AI Agent 设计的轻量级记忆�
 
 **设计哲学**：纯后端为主——agent 是记忆的消费者，前端不是主体。**记忆是给 agent 用的，不是给人看的。**
 
-**成熟度（诚实）**：单用户真实工作流中迭代（当前约 260 节点，语义检索 / 图谱 / 治理均经实战验证）；1.0 前接口可能演进，请固定版本使用。
+**成熟度（诚实）**：单用户真实工作流中迭代（当前约 320 节点，语义检索 / 图谱 / 治理均经实战验证）；v2.0 起接口进入稳定期（MCP / CLI / REST 三通道对齐，Agent 记忆层替换已在 Hermes 实测：自动召回 / 自动沉淀 / 图谱压缩全链路跑通）。仍建议固定版本使用。
 
 ---
 
@@ -126,9 +131,41 @@ Palimpsest 原生支持 **Obsidian** 工作流，将你的笔记 Vault 直接转
 | 存储引擎 | TriviumDB（Rust 嵌入式） | 向量 + 图 + 文档三位一体，单文件部署，Apache-2.0 |
 | Embedding | Ollama `qwen3-embedding:0.6b` | 本地免费，1024 维，中文效果优秀 |
 | MCP | FastMCP | stdio 方式，被 Hermes 等 MCP 客户端拉起 |
-| REST | FastAPI + Uvicorn | 端口 8090（8000 让给 SillyTavern） |
+| REST | FastAPI + Uvicorn | 端口 8090（8000 让给 SillyTavern）；v2.0 起含统一语义层端点（/mem/search /mem/ingest /mem/link /graph/neighbors /mem/router） |
 | Dashboard | 独立 HTTP 服务 | 端口 8010，统计 / 搜索 / 合并治理面板 |
 | LLM 后端 | DeepSeek / Ollama 可配 | 记忆提取与报告生成用 |
+
+---
+
+## Agent 记忆层融合（v2.0，以 Hermes 为例）
+
+Palimpsest v2.0 不只是「给 Agent 用的 MCP 服务」——它可以通过 Agent 的记忆插槽**直接替换内置记忆层**。Hermes 已实测：
+
+```bash
+# 1. 安装插件到 Agent 插件目录（standalone 插件）
+#    $HERMES_HOME/plugins/palimpsest/（plugin.yaml / __init__.py / context_engine.py / cli.py）
+
+# 2. 激活两个槽位
+hermes plugins enable palimpsest
+hermes config set memory.provider palimpsest     # 记忆层：自动召回 + 自动沉淀
+hermes config set context.engine palimpsest-graph # 压缩层：压缩前图谱提炼
+
+# 3. 自检
+hermes palimpsest status
+hermes palimpsest test
+```
+
+生效后的行为（客观描述）：
+- **每轮自动召回**：用户消息触发 `prefetch()` → `/mem/search`（含图谱邻居）→ 相关历史记忆注入上下文；寒暄类消息跳过（省一次 HTTP）
+- **每轮自动沉淀**：`sync_turn()` 只命中强信号（纠正 / 偏好 / 决策 / 规则）才写入，普通轮次不写——避免库被低价值内容污染
+- **会话提炼**：`on_session_end()` 把含强信号的消息提炼成一条要点
+- **压缩保护**：`on_pre_compress()` / `compress()` 压缩前用小帕图谱提炼关键链，合并进压缩 prompt 的 memory_context
+- **5 个模型工具**：Agent 可主动 `palimpsest_search / ingest / link / graph / router`（检索 / 写入 / 建边 / 图谱 / 规则路由）
+
+**边界（诚实）**：
+- 依赖 Palimpsest REST :8090 常驻（服务挂掉时插件 fail-open——Agent 会话不受影响，只是失去记忆增强）
+- 自动沉淀是启发式（正则强信号），不是 LLM 判断——复杂场景建议用工具主动写入
+- 当前为单机单用户验证（约 320 节点）；多 Agent 共享 / 大规模并发未压测
 
 ---
 
@@ -213,6 +250,13 @@ uvicorn main:app --reload
 ```
 
 默认端口 **8090**（`Config.REST_PORT`，8000 让给 SillyTavern），访问 `http://localhost:8090` 查看 API 文档。
+
+v2.0 统一语义层端点（与 MCP 工具同一实现）：
+- `POST /mem/search` — 语义检索（scope=memory/kb/all，含图谱邻居）
+- `POST /mem/ingest` — 写入记忆（冲突检测 + 安全扫描）
+- `POST /mem/link` — 手动建图谱边
+- `POST /graph/neighbors` — 图谱邻居查询
+- `POST /mem/router` — 任务路由查询（规则推荐）
 
 ---
 
@@ -299,6 +343,7 @@ Palimpsest/
 | 3 | 图谱能力（graph_neighbors / mem_link / 分区返回 / 双向建边） | 完成 |
 | 4 | 记忆生命周期（时间衰减已实现；盘点 / 高频升级待启动） | **P0-P3 已落地**：安全扫描 / 自动合并 / Git Memory / FTS5 / Dashboard |
 | 5 | 完备化（远期） | 规划中 |
+| 6 | **Agent 记忆层融合（v2.0）**：REST 三通道对齐 + MemoryProvider / ContextEngine 双插件 | **完成（2026-08-27）**：Hermes 实测自动召回 / 自动沉淀 / 图谱压缩全链路 |
 
 ---
 

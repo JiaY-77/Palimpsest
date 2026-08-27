@@ -53,7 +53,7 @@ class MemoryResponse(BaseModel):
 async def root():
     return {
         "service": "Palimpsest",
-        "version": "0.10.0",
+        "version": "2.0.0",
         "endpoints": ["/extract", "/retrieve", "/import", "/export", "/memory/{id}",
                       "/mem/search", "/mem/ingest", "/mem/link", "/graph/neighbors", "/mem/router"],
     }
