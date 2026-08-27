@@ -22,11 +22,9 @@ import os
 import sys
 
 # 确保能 import 项目 core 模块与 build_kb_index（以项目根为基准）
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_ROOT = os.path.dirname(_SCRIPT_DIR)
-for _p in (_PROJECT_ROOT, _SCRIPT_DIR):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+from _common import SCRIPT_DIR as _SCRIPT_DIR, PROJECT_ROOT as _PROJECT_ROOT
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
 # 切换到项目根目录，保证 config 里的相对路径（data/mh_memory.db）解析正确
 os.chdir(_PROJECT_ROOT)
 
@@ -78,9 +76,7 @@ def check(knowledge_dir: str = KNOWLEDGE_DIR, store=None) -> dict:
 
     # ---- 2. 查库中 domain=rule 切片（source_path -> 数量） ----
     db_map = {}  # rel -> chunk 数
-    for nid in store._get_all_node_ids():
-        node = store.get_node(nid)
-        payload = node.get("payload", {}) if node else {}
+    for nid, payload in store.iter_payloads():
         if payload.get("type") != CHUNK_TYPE:
             continue
         if payload.get("domain") != RULE_DOMAIN:

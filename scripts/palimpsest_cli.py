@@ -30,10 +30,7 @@ import os
 import subprocess
 import sys
 
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_ROOT = os.path.dirname(_SCRIPT_DIR)  # Palimpsest 项目根
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
+from _common import SCRIPT_DIR as _SCRIPT_DIR, PROJECT_ROOT as _PROJECT_ROOT
 
 # 复用 mcp_server 的工具函数（mcp_server 内部会 chdir 到项目根）
 from mcp_server import (  # noqa: E402
@@ -100,11 +97,8 @@ def cmd_review(args):
         from core.trivium_store import TriviumStore
         _store = TriviumStore()
         decision_count = 0
-        for nid in _store._get_all_node_ids():
-            node = _store.get_node(nid)
-            if node:
-                payload = node.get("payload", {}) or {}
-                if payload.get("type") == "decision":
+        for nid, payload in _store.iter_payloads():
+            if payload.get("type") == "decision":
                     decision_count += 1
         stats = data.get("stats", {})
         stats["decision"] = decision_count
@@ -169,13 +163,10 @@ def cmd_ingest_git(args):
     # 幂等检查：遍历库中已有节点，收集已有的 commit_hash
     store = TriviumStore()
     existing_hashes = set()
-    for nid in store._get_all_node_ids():
-        node = store.get_node(nid)
-        if node:
-            payload = node.get("payload", {}) or {}
-            ch = payload.get("commit_hash")
-            if ch:
-                existing_hashes.add(ch)
+    for nid, payload in store.iter_payloads():
+        ch = payload.get("commit_hash")
+        if ch:
+            existing_hashes.add(ch)
 
     added = 0
     skipped = 0

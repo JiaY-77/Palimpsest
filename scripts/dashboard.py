@@ -7,7 +7,7 @@ import sys
 import os
 
 # 确保项目根目录在 sys.path 中，以便导入 core.*
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _common import PROJECT_ROOT
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
@@ -32,15 +32,11 @@ async def dashboard():
 @app.get("/api/mem/stats")
 async def mem_stats():
     """记忆库统计：总数 / 按类型分布 / 过期数"""
-    all_ids = store._get_all_node_ids()
-    total = len(all_ids)
+    total = 0
     by_type: dict[str, int] = {}
     outdated = 0
-    for nid in all_ids:
-        node = store.get_node(nid)
-        if not node:
-            continue
-        payload = node.get("payload", {}) or {}
+    for nid, payload in store.iter_payloads():
+        total += 1
         t = payload.get("type", "unknown")
         by_type[t] = by_type.get(t, 0) + 1
         if payload.get("status") == "outdated":
@@ -51,9 +47,8 @@ async def mem_stats():
 @app.get("/api/mem/recent")
 async def mem_recent(limit: int = 20):
     """最近记忆节点（按 id 倒序取 limit 个）"""
-    all_ids = store._get_all_node_ids()
-    all_ids.sort(reverse=True)
-    recent_ids = all_ids[:limit]
+    all_ids = [nid for nid, _ in store.iter_payloads()]
+    recent_ids = sorted(all_ids, reverse=True)[:limit]
     nodes = []
     for nid in recent_ids:
         node = store.get_node(nid)

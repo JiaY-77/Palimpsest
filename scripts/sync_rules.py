@@ -43,8 +43,7 @@ from datetime import datetime
 # ----------------------------------------------------------------------------
 # 路径常量（环境变量优先；可按需用 --kb-root / --json-path 覆盖）
 # ----------------------------------------------------------------------------
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_ROOT = os.path.dirname(_SCRIPT_DIR)
+from _common import SCRIPT_DIR as _SCRIPT_DIR, PROJECT_ROOT as _PROJECT_ROOT
 # 知识库根目录：环境变量 KNOWLEDGE_ROOT 优先；默认相对项目根的通用路径，不硬编码个人路径
 KNOWLEDGE_ROOT = os.getenv("KNOWLEDGE_ROOT", "") or os.path.normpath(
     os.path.join(_PROJECT_ROOT, "../../../Knowledge")

@@ -49,8 +49,7 @@ import os
 import sys
 from collections import Counter
 
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_ROOT = os.path.dirname(_SCRIPT_DIR)
+from _common import SCRIPT_DIR as _SCRIPT_DIR, PROJECT_ROOT as _PROJECT_ROOT
 
 # 关键：必须在 import config 之前设置 DB_PATH（Config.DB_PATH 在类定义时读 env；
 # .env 里的 DB_PATH=data/mh_memory.db 不会覆盖已设置的变量）
@@ -58,8 +57,6 @@ os.environ["DB_PATH"] = os.path.join(
     _PROJECT_ROOT, "data", "mh_memory_new.db"
 ).replace("\\", "/")
 
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
 os.chdir(_PROJECT_ROOT)
 
 from config import Config  # noqa: E402

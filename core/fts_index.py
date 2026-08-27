@@ -97,11 +97,7 @@ def rebuild(store) -> int:
         conn.execute("DELETE FROM mem_fts")
         conn.commit()
         count = 0
-        for nid in store._get_all_node_ids():
-            node = store.get_node(nid)
-            if not node:
-                continue
-            payload = node.get("payload", {}) or {}
+        for nid, payload in store.iter_payloads():
             content = payload.get("content", "")
             if not content:
                 continue

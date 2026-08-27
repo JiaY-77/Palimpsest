@@ -15,8 +15,7 @@ import sys
 import time
 
 # 项目根 = 脚本上级目录（不硬编码个人路径）
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, _PROJECT_ROOT)
+from _common import PROJECT_ROOT as _PROJECT_ROOT
 from core.trivium_store import TriviumStore  # noqa: E402
 
 # SOUL.md 路径：环境变量 SOUL_PATH 优先；默认 ~/AppData/Local/hermes/SOUL.md（运行时展开，不硬编码用户名）
@@ -52,9 +51,7 @@ def main():
 
     # ---- 增量模式：跳过已存在的版本号（防重复 ingest）----
     existing_map = {}  # version -> node_id
-    for nid in store._get_all_node_ids():
-        node = store.get_node(nid)
-        payload = node.get("payload", {}) if node else {}
+    for nid, payload in store.iter_payloads():
         if payload.get("type") == "event" and payload.get("character_name") == DOMAIN:
             m = re.search(r"版本\s*v?([\d.]+)", payload.get("content", ""))
             if m:

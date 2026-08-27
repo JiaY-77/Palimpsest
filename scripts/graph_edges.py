@@ -24,10 +24,7 @@ import os
 import sys
 
 # 确保能 import 项目 core 模块（以项目根为基准），与 build_kb_index.py 一致
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_ROOT = os.path.dirname(_SCRIPT_DIR)
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
+from _common import SCRIPT_DIR as _SCRIPT_DIR, PROJECT_ROOT as _PROJECT_ROOT
 # 切换到项目根目录，保证 config 里的相对路径（data/mh_memory.db）解析正确
 os.chdir(_PROJECT_ROOT)
 
@@ -44,9 +41,7 @@ BIDIRECTIONAL_RELATIONS = {"RELATED_TO", "CAUSES", "REFERS_TO"}
 def _build_chunk_index(store) -> dict:
     """遍历全部节点，建立 {source_path: [(node_id, payload), ...]} 映射（只收 kb_chunk）"""
     index = {}
-    for nid in store._get_all_node_ids():
-        node = store.get_node(nid)
-        payload = node.get("payload", {}) if node else {}
+    for nid, payload in store.iter_payloads():
         if payload.get("type") != CHUNK_TYPE:
             continue
         rel = payload.get("source_path", "")

@@ -352,6 +352,19 @@ class TriviumStore:
         with self._acquire() as db:
             return db.all_node_ids()
 
+    def iter_payloads(self):
+        """遍历所有节点，yield (node_id, payload)。
+
+        替代外部重复的 `_get_all_node_ids + get_node + if not node` 样板
+        （P0 重构，2026-08-27）。行为与原模式逐字节一致：
+        节点缺失跳过；payload 统一归一为 dict。
+        """
+        for nid in self._get_all_node_ids():
+            node = self.get_node(nid)
+            if not node:
+                continue
+            yield nid, node.get("payload", {}) or {}
+
 
 def _days_since_created(created_at: Any, now: float) -> float:
     """距创建天数；created_at 缺失/非法按 0 天（不衰减）"""

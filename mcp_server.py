@@ -224,11 +224,7 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
 def mem_recent(domain: str = "", limit: int = 10) -> str:
     """最近记忆列表：按 created_at 倒序（时间戳缺失时退化为按 id 倒序，即插入顺序）"""
     items = []
-    for nid in store._get_all_node_ids():
-        node = store.get_node(nid)
-        if not node:
-            continue
-        payload = node.get("payload", {}) or {}
+    for nid, payload in store.iter_payloads():
         if domain and payload.get("character_name") != domain:
             continue
         items.append({
@@ -261,11 +257,7 @@ def mem_review(days: int = 7, domain: str = "") -> str:
     window = max(1, int(days)) * 86400.0
 
     items = []
-    for nid in store._get_all_node_ids():
-        node = store.get_node(nid)
-        if not node:
-            continue
-        payload = node.get("payload", {}) or {}
+    for nid, payload in store.iter_payloads():
         if domain and payload.get("character_name") != domain:
             continue
         items.append({
@@ -347,11 +339,7 @@ def mem_version_history(domain: str = "hermes", full_content: bool = False,
     """
     # 1. 找 domain 下最新的事件节点（created_at 最大，缺失时按 id 最大兜底）
     candidates = []
-    for nid in store._get_all_node_ids():
-        node = store.get_node(nid)
-        if not node:
-            continue
-        payload = node.get("payload", {}) or {}
+    for nid, payload in store.iter_payloads():
         if payload.get("character_name") != domain or payload.get("type") != "event":
             continue
         try:

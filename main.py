@@ -14,6 +14,7 @@ from core.trivium_store import TriviumStore
 from core.merger import Merger
 from core.retriever import Retriever
 from core.importer import ChatImporter
+from core.pipeline import ingest_many
 
 app = FastAPI(title="Palimpsest")
 
@@ -75,15 +76,7 @@ async def extract_memory(req: ExtractRequest):
     for node in nodes:
         node["character_name"] = req.character_name
         node["user_name"] = req.user_name
-    for node in nodes:
-        # 用真实的文本内容生成向量
-        content_to_embed = node.get("content", "") or node.get("label", "")
-        real_vec = store.embed_text(content_to_embed)
-        result = merger.merge(node, real_vec)
-        if result:
-            new_count += 1
-        else:
-            skipped += 1
+    new_count, skipped = ingest_many(store, merger, nodes)
 
     return MemoryResponse(
         status="ok",
@@ -150,14 +143,9 @@ async def import_chat(
             for node in nodes:
                 node["character_name"] = character_name
                 node["user_name"] = user_name
-                # 用真实的文本内容生成向量
-                content_to_embed = node.get("content", "") or node.get("label", "")
-                real_vec = store.embed_text(content_to_embed)
-                result = merger.merge(node, real_vec)
-                if result:
-                    new_count += 1
-                else:
-                    skipped += 1
+            n, s = ingest_many(store, merger, nodes)
+            new_count += n
+            skipped += s
 
         return {
             "status": "ok",
@@ -173,22 +161,17 @@ async def import_chat(
 @app.get("/export")
 async def export_memories():
     """导出所有记忆为精简摘要"""
-    all_ids = store._get_all_node_ids()
-
     nodes = []
-    for nid in all_ids:
-        node_data = store.get_node(nid)
-        if node_data:
-            payload = node_data.get("payload", {})
-            nodes.append(
-                {
-                    "id": node_data.get("id"),
-                    "type": payload.get("type", ""),
-                    "content": payload.get("content", ""),
-                    "importance": payload.get("importance", 0),
-                    "status": payload.get("status", ""),
-                }
-            )
+    for nid, payload in store.iter_payloads():
+        nodes.append(
+            {
+                "id": nid,
+                "type": payload.get("type", ""),
+                "content": payload.get("content", ""),
+                "importance": payload.get("importance", 0),
+                "status": payload.get("status", ""),
+            }
+        )
 
     # 按重要性降序排列
     nodes.sort(key=lambda n: n.get("importance", 0), reverse=True)
@@ -203,17 +186,13 @@ async def export_memories():
 @app.get("/summary")
 async def summary():
     """生成一份人类可读的记忆摘要"""
-    all_ids = store._get_all_node_ids()
-
     events = []
     characters = []
     plots = []
+    total = 0
 
-    for nid in all_ids:
-        node = store.get_node(nid)
-        if not node:
-            continue
-        payload = node.get("payload", {})
+    for nid, payload in store.iter_payloads():
+        total += 1
         t = payload.get("type", "")
         content = payload.get("content", "")
         if t == "event":
@@ -225,7 +204,7 @@ async def summary():
 
     return {
         "status": "ok",
-        "total_memories": len(all_ids),
+        "total_memories": total,
         "summary": {
             "剧情事件": events[:5],
             "角色状态": characters[:5],
@@ -241,14 +220,10 @@ async def generate_report():
     这不再是简单的摘要，而是对角色命运的洞察。
     """
     # 1. 先从数据库获取所有记忆
-    all_ids = store._get_all_node_ids()
     memories = []
-    for nid in all_ids:
-        node = store.get_node(nid)
-        if node:
-            payload = node.get("payload", {})
-            if payload.get("content"):
-                memories.append(f"[{payload.get('type', '')}] {payload['content']}")
+    for nid, payload in store.iter_payloads():
+        if payload.get("content"):
+            memories.append(f"[{payload.get('type', '')}] {payload['content']}")
 
     if not memories:
         return {
