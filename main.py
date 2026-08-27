@@ -54,9 +54,10 @@ class MemoryResponse(BaseModel):
 async def root():
     return {
         "service": "Palimpsest",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "endpoints": ["/extract", "/retrieve", "/import", "/export", "/memory/{id}",
-                      "/mem/search", "/mem/ingest", "/mem/link", "/graph/neighbors", "/mem/router"],
+                      "/mem/search", "/mem/hybrid-search", "/mem/ingest", "/mem/link",
+                      "/graph/neighbors", "/mem/router"],
     }
 
 
@@ -274,6 +275,7 @@ from mcp_server import (
     mem_link as _mcp_mem_link,
     graph_neighbors as _mcp_graph_neighbors,
     router_query as _mcp_router_query,
+    mem_hybrid_search as _mcp_mem_hybrid_search,
 )
 
 
@@ -293,6 +295,19 @@ class MemIngestRequest(BaseModel):
     importance: float = 0.5
     domain: str = ""
     source: str = ""
+
+
+class MemHybridSearchRequest(BaseModel):
+    query: str
+    scope: str = "all"        # memory | kb | all
+    domain: str = ""
+    domain_bias: str = ""     # rule 等
+    top_k: int = 5
+    mode: str = "rrf"         # rrf | cascade
+    fts_limit: int = 50
+    include_neighbors: bool = False
+    neighbor_limit: int = 5
+    block: str = ""
 
 
 class MemLinkRequest(BaseModel):
@@ -330,6 +345,16 @@ async def mem_search(req: MemSearchRequest):
         req.query, scope=req.scope, domain=req.domain,
         domain_bias=req.domain_bias, top_k=req.top_k,
         include_neighbors=req.include_neighbors, block=req.block,
+    ))
+
+
+@app.post("/mem/hybrid-search")
+async def mem_hybrid_search(req: MemHybridSearchRequest):
+    return _as_json(_mcp_mem_hybrid_search(
+        req.query, scope=req.scope, domain=req.domain,
+        domain_bias=req.domain_bias, top_k=req.top_k, mode=req.mode,
+        fts_limit=req.fts_limit, include_neighbors=req.include_neighbors,
+        neighbor_limit=req.neighbor_limit, block=req.block,
     ))
 
 

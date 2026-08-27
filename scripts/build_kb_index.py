@@ -54,6 +54,7 @@ from _common import SCRIPT_DIR as _SCRIPT_DIR, PROJECT_ROOT as _PROJECT_ROOT
 os.chdir(_PROJECT_ROOT)
 
 from config import Config  # noqa: E402
+from core.fts_index import rebuild as fts_rebuild  # noqa: E402
 from core.trivium_store import TriviumStore  # noqa: E402
 
 # 知识库根目录（环境变量 KNOWLEDGE_DIR 优先；默认相对项目根的通用路径，不硬编码个人路径）
@@ -447,6 +448,14 @@ def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False) ->
           f"domain=kb（普通知识）: {domain_counts.get(KB_DOMAIN, 0)} 块")
     if deleted_old:
         print(f"（删除旧 kb_chunk 节点 {deleted_old} 个）")
+    # v2.2b FTS 联动（T056 混合检索依赖）：知识库重建后同步全文索引；
+    # 失败不阻塞主流程（可手动 palimpsest_cli.py fts-rebuild 兜底）
+    fts_count = -1
+    try:
+        fts_count = fts_rebuild(store)
+        print(f"[FTS] 全文索引已同步: {fts_count} 个节点")
+    except Exception as e:
+        print(f"[FTS] 全文索引同步失败（可手动 fts-rebuild）: {e}")
     return {
         "files": file_stats,
         "total_chunks": total_chunks,
@@ -456,6 +465,7 @@ def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False) ->
         "skipped": skipped,
         "deleted_old": deleted_old,
         "domain_counts": domain_counts,  # v2.0: {rule: n, kb: n}
+        "fts_count": fts_count,  # v2.2b: FTS 同步节点数（-1=失败）
     }
 
 

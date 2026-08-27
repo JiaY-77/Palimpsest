@@ -64,7 +64,7 @@ Palimpsest 是一个专为 Obsidian 用户和 AI Agent 设计的轻量级记忆�
 
 **设计哲学**：纯后端为主——agent 是记忆的消费者，前端不是主体。**记忆是给 agent 用的，不是给人看的。**
 
-**成熟度（诚实）**：单用户真实工作流中迭代（当前约 320 节点，语义检索 / 图谱 / 治理均经实战验证）；v2.0 起接口进入稳定期（MCP / CLI / REST 三通道对齐，Agent 记忆层替换已在 Hermes 实测：自动召回 / 自动沉淀 / 图谱压缩全链路跑通）。仍建议固定版本使用。
+**成熟度（诚实）**：单用户真实工作流中迭代（当前约 320 节点，语义检索 / 图谱 / 治理均经实战验证）；v2.0 起接口进入稳定期（MCP / CLI / REST 三通道对齐，Agent 记忆层替换已在 Hermes 实测：自动召回 / 自动沉淀 / 图谱压缩全链路跑通）；v2.1 新增混合检索（T056）。仍建议固定版本使用。
 
 ---
 
@@ -81,6 +81,7 @@ Palimpsest 是一个专为 Obsidian 用户和 AI Agent 设计的轻量级记忆�
 - **知识库统一语义层**：`kb_index` 建索引、`kb_search` 检索，规则类切片（domain=rule）内置 ×1.3 加权
 - **图谱遍历 + 手动建边**：`graph_neighbors` BFS 遍历（`min_weight` 精馏过滤弱边 + 结果按 weight 降序截断，防高节点先到先得；`block` 分区块——主结果与图谱扩散都按区块过滤，起点自检拦截跨域起点，防跨域污染）、`mem_link` 手动建边（双向协议自动补反向）
 - **双接口**：MCP Server（stdio）+ FastAPI REST
+- **混合检索（T056，v2.1）**：`mem_hybrid_search`——FTS5 trigram 精确检索（中文任意子串）+ 语义向量双路召回，RRF（k=60）/ 级联两种融合模式，命中来源（fts_hit/sem_hit）透明标注；全文索引自动同步（mem_ingest 写记忆 / build_kb_index 重建知识库后自动重建 FTS）
 
 ---
 
@@ -265,6 +266,7 @@ v2.0 统一语义层端点（与 MCP 工具同一实现）：
 | 工具 | 功能 |
 |---|---|
 | `mem_search` | 统一检索入口：scope=memory/kb/all 混合检索；rule 切片 ×1.3 加权；`include_neighbors=True` 分区返回图关联区 |
+| `mem_hybrid_search` | 混合检索（T056）：FTS5 trigram 精确 + 语义向量双路召回，RRF（k=60）/ 级联两种融合模式，meta 透明标注 fts_hit/sem_hit 命中来源 |
 | `mem_retrieve` | 语义检索记忆（150 字摘要 + meta，不返回全文） |
 | `mem_get_full` | 按 id 取完整记忆 |
 | `mem_ingest` | 写入新记忆（冲突检测：相似旧记忆 outdated + REVISED_BY 链） |

@@ -20,16 +20,17 @@ from mcp_tools.graph import (  # noqa: E402
 )
 from mcp_tools.kb import kb_index, kb_search  # noqa: E402
 from mcp_tools.memory import (  # noqa: E402
-    _l1_sniff, _mem_search_impl, _parse_version_content, mem_get_full,
-    mem_ingest, mem_recent, mem_retrieve, mem_review, mem_search,
-    mem_version_history,
+    _hybrid_search_impl, _l1_sniff, _mem_search_impl, _parse_version_content,
+    mem_get_full, mem_hybrid_search, mem_ingest, mem_recent, mem_retrieve,
+    mem_review, mem_search, mem_version_history,
 )
 from mcp_tools.routing import _extract_recommendation, router_query  # noqa: E402
 
 __all__ = [
     "store", "mcp", "_to_json", "_shorten", "_kb_md_files", "KNOWLEDGE_DIR",
     "mem_retrieve", "mem_get_full", "mem_ingest", "mem_recent", "mem_review",
-    "mem_version_history", "mem_search", "_mem_search_impl", "_l1_sniff",
+    "mem_version_history", "mem_search", "mem_hybrid_search",
+    "_mem_search_impl", "_hybrid_search_impl", "_l1_sniff",
     "_parse_version_content",
     "kb_index", "kb_search",
     "graph_neighbors", "mem_link", "_collect_neighbors", "_edge_exists",

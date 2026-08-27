@@ -3,13 +3,15 @@
 mcp_tools.memory —— 记忆读写与查询工具
 =====================================
 mem_retrieve / mem_get_full / mem_ingest / mem_recent / mem_review /
-mem_version_history / mem_search（及核心 _mem_search_impl）、L1 嗅探。
+mem_version_history / mem_search（及核心 _mem_search_impl）/ mem_hybrid_search、
+L1 嗅探。
 """
 
 import os  # noqa: E402
 import re  # noqa: E402
 import time  # noqa: E402
 
+from core.fts_index import index_node, search_fts  # noqa: E402
 from core.secret_scan import SecretScanError  # noqa: E402
 from core.trivium_store import domain_in_block, node_domain  # noqa: E402
 
@@ -102,6 +104,12 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
         node_id = store.insert_node(node_data, emb)
     except SecretScanError as e:
         return _to_json({"stored": False, "error": str(e), "rules": e.rules})
+
+    # FTS 全文索引同步（T056 混合检索依赖；失败不阻塞主写入，可手动 fts-rebuild 兜底）
+    try:
+        index_node(node_id, content)
+    except Exception:
+        pass
 
     # 注意：core.insert_node 的基础 payload 固定 created_at=None 且不接收外部传入，
     # 这里补写一次真实时间戳，保证 mem_recent 排序有意义
@@ -482,3 +490,196 @@ def mem_search(query: str, scope: str = "all", domain: str = "",
     """
     return _to_json(_mem_search_impl(query, scope, domain, domain_bias, top_k,
                                      include_neighbors, neighbor_limit, block))
+
+
+# ---- 混合检索（T056：FTS5 精确 + 语义向量 的 RRF 融合 / 级联策略）----
+# 只新增，不改动 mem_search / _mem_search_impl 现有行为。
+# RRF 标准 k=60：单侧命中也算贡献；每项 meta 标出 fts_hit / sem_hit 来源。
+_RRF_K = 60.0
+
+
+def _sem_candidate_items(query: str, scope: str, domain: str,
+                         domain_bias: str, top_k: int, block: str) -> list:
+    """语义候选：复用 _mem_search_impl 宽松召回（top_k*3），按 score 降序排名。"""
+    sem = _mem_search_impl(query, scope, domain, domain_bias,
+                           top_k=max(top_k * 3, 30), include_neighbors=False,
+                           block=block)
+    items = sem.get("results", [])
+    return sorted(items, key=lambda it: it.get("score", 0.0), reverse=True)
+
+
+def _fts_only_item(node_id: int, scope: str, domain: str, block: str):
+    """FTS 命中但语义未命中的节点：按 payload 补全 mem_search 同构条目。
+
+    复用 _mem_search_impl 的 scope/domain/block 过滤语义，
+    避免不同 scope 下 FTS 侧混入越界结果。
+    """
+    node = store.get_node(node_id)
+    if not node:
+        return None
+    payload = node.get("payload", {}) or {}
+    ptype = payload.get("type", "")
+    is_kb = ptype == "kb_chunk"
+    if scope == "memory" and is_kb:
+        return None
+    if scope == "kb" and not is_kb:
+        return None
+    if domain and not is_kb and payload.get("character_name") != domain:
+        return None
+    if block and not domain_in_block(node_domain(payload), block):
+        return None
+    meta = {
+        "type": ptype,
+        "importance": payload.get("importance", 0.5),
+        "status": payload.get("status", ""),
+        "domain": payload.get("character_name", "") or payload.get("domain", ""),
+    }
+    if is_kb:
+        meta["source_path"] = payload.get("source_path", "")
+        meta["title"] = payload.get("title", "")
+    return {
+        "id": node_id,
+        "type": ptype,
+        "score": 0.0,
+        "summary": _shorten(payload.get("content", ""), 150),
+        "meta": meta,
+    }
+
+
+def _hybrid_rrf(query: str, scope: str, domain: str, domain_bias: str,
+                top_k: int, fts_limit: int, block: str) -> list:
+    """RRF 融合：语义排名 + FTS 排名的 reciprocal rank 求和（k=60）。
+
+    两个排名都是 0-based；单侧命中也计入 rrf；按 rrf 降序取 top_k。
+    """
+    sem_items = _sem_candidate_items(query, scope, domain, domain_bias, top_k, block)
+    fts = search_fts(query, limit=fts_limit)
+
+    rrf: dict = {}
+    sem_hit: set = set()
+    fts_hit: set = set()
+    for rank, item in enumerate(sem_items):
+        nid = item.get("id")
+        if nid is None:
+            continue
+        rrf[nid] = rrf.get(nid, 0.0) + 1.0 / (_RRF_K + rank)
+        sem_hit.add(nid)
+    for rank, r in enumerate(fts):
+        nid = r.get("node_id")
+        if nid is None:
+            continue
+        rrf[nid] = rrf.get(nid, 0.0) + 1.0 / (_RRF_K + rank)
+        fts_hit.add(nid)
+
+    # 语义条目按 id 建表，便于合并命中来源标记；FTS-only 节点按 payload 补全
+    by_id = {item.get("id"): item for item in sem_items if item.get("id") is not None}
+    merged = []
+    for nid, score in sorted(rrf.items(), key=lambda kv: kv[1], reverse=True):
+        item = by_id.get(nid)
+        if item is None:
+            item = _fts_only_item(nid, scope, domain, block)
+            if item is None:
+                continue
+        item = dict(item)
+        meta = dict(item.get("meta", {}) or {})
+        meta["fts_hit"] = nid in fts_hit
+        meta["sem_hit"] = nid in sem_hit
+        item["meta"] = meta
+        item["score"] = round(score, 4)
+        merged.append(item)
+        if len(merged) >= top_k:
+            break
+    return merged
+
+
+def _hybrid_cascade(query: str, scope: str, domain: str, domain_bias: str,
+                    top_k: int, fts_limit: int, block: str) -> list:
+    """级联：FTS 粗筛候选集 → 向量精排（只留交集）→ 不足 top_k 从剩余语义补足。
+
+    候选集为空时退化为纯语义结果；兜底条目 fts_hit=False 如实标记未过 FTS 粗筛。
+    """
+    fts = search_fts(query, limit=fts_limit)
+    fts_ids = {r.get("node_id") for r in fts if r.get("node_id") is not None}
+    sem_items = _sem_candidate_items(query, scope, domain, domain_bias, top_k, block)
+
+    in_candidate = [it for it in sem_items if it.get("id") in fts_ids]
+    rest = [it for it in sem_items if it.get("id") not in fts_ids]
+    picked = in_candidate[:top_k]
+    if len(picked) < top_k:
+        picked = picked + rest[:top_k - len(picked)]
+
+    items = []
+    for it in picked:
+        it = dict(it)
+        meta = dict(it.get("meta", {}) or {})
+        meta["fts_hit"] = it.get("id") in fts_ids
+        meta["sem_hit"] = True
+        it["meta"] = meta
+        it["score"] = round(float(it.get("score", 0.0)), 4)
+        items.append(it)
+    return items
+
+
+def _hybrid_search_impl(query: str, scope: str = "all", domain: str = "",
+                        domain_bias: str = "", top_k: int = 5, mode: str = "rrf",
+                        fts_limit: int = 50, include_neighbors: bool = False,
+                        neighbor_limit: int = 5, block: str = "") -> dict:
+    """
+    mem_hybrid_search 的核心实现（返回 dict，供 mem_hybrid_search 工具复用）。
+    T056 混合检索增强：
+      - mode="rrf"（默认）：Reciprocal Rank Fusion（k=60），FTS5 精确 + 语义向量
+        双路排名求和，单侧命中也算贡献；score = RRF 分。
+      - mode="cascade"：FTS 粗筛候选集 → 向量精排只保留交集 → 交集不足 top_k
+        时从剩余语义结果按 score 补足（候选集为空退化为纯语义）；score = 语义分。
+    返回结构与 mem_search 一致：{"results", "scope", "bias"(可选), "mode",
+    "neighbors"/"neighbor_count"(include_neighbors=True 时)}。
+    空 query 返回 hint；任何异常吞掉返回 hint，不抛出。
+    """
+    if scope not in ("memory", "kb", "all"):
+        scope = "all"
+    if domain_bias not in ("memory", "kb", "rule"):
+        domain_bias = ""
+    if mode not in ("rrf", "cascade"):
+        mode = "rrf"
+    query = (query or "").strip()
+    if not query:
+        return {"results": [], "scope": scope, "hint": "查询内容不能为空"}
+    top_k = max(1, int(top_k or 0))
+    fts_limit = max(1, int(fts_limit or 0))
+    try:
+        if mode == "cascade":
+            items = _hybrid_cascade(query, scope, domain, domain_bias,
+                                    top_k, fts_limit, block)
+        else:
+            items = _hybrid_rrf(query, scope, domain, domain_bias,
+                                top_k, fts_limit, block)
+        result = {"results": items, "scope": scope, "mode": mode}
+        if domain_bias:
+            result["bias"] = domain_bias
+        if include_neighbors:
+            neighbors = _collect_neighbors(items, max(1, min(int(neighbor_limit), 20)))
+            result["neighbors"] = neighbors
+            result["neighbor_count"] = len(neighbors)
+        return result
+    except Exception as e:
+        return {"results": [], "scope": scope, "hint": f"混合检索失败: {e}"}
+
+
+@mcp.tool()
+def mem_hybrid_search(query: str, scope: str = "all", domain: str = "",
+                      domain_bias: str = "", top_k: int = 5, mode: str = "rrf",
+                      fts_limit: int = 50, include_neighbors: bool = False,
+                      neighbor_limit: int = 5, block: str = "") -> str:
+    """
+    混合检索（T056）：FTS5 精确检索 + 语义向量检索的融合排序。
+    mode 取值："rrf"（默认，Reciprocal Rank Fusion，k=60，单侧命中也算）/
+              "cascade"（FTS 粗筛候选集 → 向量精排交集，交集不足从剩余语义补足）。
+    scope 同 mem_search（memory/kb/all）；fts_limit 控制 FTS 侧候选量；
+    每项返回 {id, type, score, summary, meta}，meta 含 fts_hit/sem_hit 命中来源标记；
+    include_neighbors=True 时附 neighbors 图关联区（复用 _collect_neighbors）。
+    其余参数（domain/domain_bias/neighbor_limit/block）语义同 mem_search。
+    """
+    return _to_json(_hybrid_search_impl(
+        query, scope, domain, domain_bias, top_k, mode, fts_limit,
+        include_neighbors, neighbor_limit, block,
+    ))

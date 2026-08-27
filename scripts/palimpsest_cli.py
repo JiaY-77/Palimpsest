@@ -11,6 +11,7 @@ Palimpsest CLI —— 本地小兵调用小帕（Palimpsest）的薄封装（202
 
 用法：
   python palimpsest_cli.py search "关键词" [--scope all|memory|kb] [--domain X] [--top-k 5] [--neighbors]
+  python palimpsest_cli.py hybrid-search "关键词" [--scope all] [--domain X] [--top-k 5] [--mode rrf|cascade] [--fts-limit 50]
   python palimpsest_cli.py ingest "记忆内容" [--domain X] [--importance 0.5] [--type memory]
   python palimpsest_cli.py link --source N --target N [--relation RELATED_TO] [--one-way]
   python palimpsest_cli.py index
@@ -34,8 +35,8 @@ from _common import SCRIPT_DIR as _SCRIPT_DIR, PROJECT_ROOT as _PROJECT_ROOT
 
 # 复用 mcp_server 的工具函数（mcp_server 内部会 chdir 到项目根）
 from mcp_server import (  # noqa: E402
-    graph_neighbors, kb_index, kb_search, mem_ingest, mem_link, mem_recent,
-    mem_review, mem_search,
+    graph_neighbors, kb_index, kb_search, mem_hybrid_search, mem_ingest,
+    mem_link, mem_recent, mem_review, mem_search,
 )
 from core.consolidator import consolidate  # noqa: E402
 from core.fts_index import index_node, rebuild as fts_rebuild, remove_node, search_fts  # noqa: E402
@@ -46,6 +47,13 @@ def cmd_search(args):
     print(mem_search(
         query=args.query, scope=args.scope, domain=args.domain,
         top_k=args.top_k, include_neighbors=args.neighbors, block=args.block,
+    ))
+
+
+def cmd_hybrid_search(args):
+    print(mem_hybrid_search(
+        query=args.query, scope=args.scope, domain=args.domain,
+        top_k=args.top_k, mode=args.mode, fts_limit=args.fts_limit,
     ))
 
 
@@ -221,6 +229,15 @@ def main():
     sp.add_argument("--neighbors", action="store_true", help="返回图关联区")
     sp.add_argument("--block", default="", help="图谱扩散只走同区块边（hermes/work/novel/kb/general）")
     sp.set_defaults(fn=cmd_search)
+
+    sp = sub.add_parser("hybrid-search", help="混合检索（FTS5 精确 + 语义向量：RRF 融合 / 级联）")
+    sp.add_argument("query")
+    sp.add_argument("--scope", default="all", choices=["all", "memory", "kb"])
+    sp.add_argument("--domain", default="")
+    sp.add_argument("--top-k", type=int, default=5)
+    sp.add_argument("--mode", default="rrf", choices=["rrf", "cascade"], help="rrf=倒数排名融合；cascade=FTS 粗筛→向量精排")
+    sp.add_argument("--fts-limit", type=int, default=50, help="FTS 侧候选量（粗筛/桶大小）")
+    sp.set_defaults(fn=cmd_hybrid_search)
 
     sp = sub.add_parser("ingest", help="写入记忆（内容/分级由指挥官定）")
     sp.add_argument("content")

@@ -29,6 +29,7 @@ Ollama 的 qwen3-embedding:0.6b 生成（1024 维，已验证可用）。
   10. graph_neighbors  - 图谱邻居查询：从任意节点沿出边 BFS 遍历
                  （relation 过滤 / depth 1-3 / limit 截断，去重）
   11. mem_link         - 手动建边（RELATED_TO / CAUSES / REFERS_TO 等）
+   12. mem_hybrid_search - 混合检索（FTS5 精确 + 语义向量：RRF 融合 k=60 / 级联粗筛→精排）
 
 边类型约定：
   - REVISED_BY : 版本修订链（mem_ingest 自动建，新 → 旧；单向语义）
@@ -44,9 +45,9 @@ Ollama 的 qwen3-embedding:0.6b 生成（1024 维，已验证可用）。
 """
 
 from mcp_tools import (  # noqa: E402
-    graph_neighbors, kb_index, kb_search, mem_get_full, mem_ingest, mem_link,
-    mem_recent, mem_retrieve, mem_review, mem_search, mem_version_history,
-    router_query, store, mcp,
+    graph_neighbors, kb_index, kb_search, mem_get_full, mem_hybrid_search,
+    mem_ingest, mem_link, mem_recent, mem_retrieve, mem_review, mem_search,
+    mem_version_history, router_query, store, mcp,
 )
 from mcp_tools._common import _shorten, _to_json, _kb_md_files, KNOWLEDGE_DIR  # noqa: E402
 from mcp_tools.graph import _BIDIRECTIONAL_RELATIONS, _collect_neighbors, _edge_exists  # noqa: E402
