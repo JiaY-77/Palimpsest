@@ -1,0 +1,3 @@
+CD set, now checking port via python launcher
+Run issued: venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8090 --log-level warning
+Error code: 0 desc: 
