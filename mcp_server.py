@@ -603,7 +603,8 @@ def _collect_neighbors(items: list, neighbor_limit: int = 5) -> list:
     best = {}  # neighbor_id -> 条目（去重后取最高分）
     for item in items:
         nid = item.get("id")
-        if nid is None:
+        # L1 虚拟节点（id=-1，MEMORY.md 命中）无图谱边，跳过——否则 get_edges(-1) 崩溃
+        if nid is None or nid < 0:
             continue
         via_score = float(item.get("score", 0.0))
         for edge in store.get_edges(nid):

@@ -54,7 +54,8 @@ async def root():
     return {
         "service": "Palimpsest",
         "version": "0.10.0",
-        "endpoints": ["/extract", "/retrieve", "/import", "/export", "/memory/{id}"],
+        "endpoints": ["/extract", "/retrieve", "/import", "/export", "/memory/{id}",
+                      "/mem/search", "/mem/ingest", "/mem/link", "/graph/neighbors", "/mem/router"],
     }
 
 
@@ -311,5 +312,105 @@ async def update_memory_vector(node_id: int, vector: list[float]):
         raise
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"更新失败: {str(e)}")
+
+
+# ---- 统一语义层端点（2026-08-27 换脑插件通道）----
+# 对齐 mcp_server 工具（mem_search / mem_ingest / mem_link / graph_neighbors / router_query），
+# 供 Hermes memory provider 插件（plugins/palimpsest/）通过 REST :8090 调用。
+# 返回解析后的 JSON（FastAPI 自动序列化），客户端无需再 parse 字符串。
+import json as _json
+
+from mcp_server import (
+    mem_search as _mcp_mem_search,
+    mem_ingest as _mcp_mem_ingest,
+    mem_link as _mcp_mem_link,
+    graph_neighbors as _mcp_graph_neighbors,
+    router_query as _mcp_router_query,
+)
+
+
+class MemSearchRequest(BaseModel):
+    query: str
+    scope: str = "all"        # memory | kb | all
+    domain: str = ""
+    domain_bias: str = ""     # rule 等
+    top_k: int = 5
+    include_neighbors: bool = False
+    block: str = ""
+
+
+class MemIngestRequest(BaseModel):
+    content: str
+    type: str = "memory"      # memory | plan | record | correction | event | kb_chunk ...
+    importance: float = 0.5
+    domain: str = ""
+    source: str = ""
+
+
+class MemLinkRequest(BaseModel):
+    source_id: int
+    target_id: int
+    relation: str = "RELATED_TO"
+    weight: float = 0.9
+    bidirectional: bool = True
+
+
+class GraphNeighborsRequest(BaseModel):
+    node_id: int
+    relation: str = ""
+    depth: int = 1
+    limit: int = 20
+    min_weight: float = 0.0
+    block: str = ""
+
+
+class RouterQueryRequest(BaseModel):
+    task: str
+    top_k: int = 3
+
+
+def _as_json(text: str):
+    try:
+        return _json.loads(text)
+    except Exception:
+        return {"raw": text}
+
+
+@app.post("/mem/search")
+async def mem_search(req: MemSearchRequest):
+    return _as_json(_mcp_mem_search(
+        req.query, scope=req.scope, domain=req.domain,
+        domain_bias=req.domain_bias, top_k=req.top_k,
+        include_neighbors=req.include_neighbors, block=req.block,
+    ))
+
+
+@app.post("/mem/ingest")
+async def mem_ingest(req: MemIngestRequest):
+    return _as_json(_mcp_mem_ingest(
+        req.content, type=req.type, importance=req.importance,
+        domain=req.domain, source=req.source,
+    ))
+
+
+@app.post("/mem/link")
+async def mem_link(req: MemLinkRequest):
+    return _as_json(_mcp_mem_link(
+        req.source_id, req.target_id, relation=req.relation,
+        weight=req.weight, bidirectional=req.bidirectional,
+    ))
+
+
+@app.post("/graph/neighbors")
+async def graph_neighbors(req: GraphNeighborsRequest):
+    return _as_json(_mcp_graph_neighbors(
+        req.node_id, relation=req.relation, depth=req.depth,
+        limit=req.limit, min_weight=req.min_weight, block=req.block,
+    ))
+
+
+@app.post("/mem/router")
+async def router_query(req: RouterQueryRequest):
+    return _as_json(_mcp_router_query(req.task, top_k=req.top_k))
 
 
