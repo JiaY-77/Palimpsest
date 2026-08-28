@@ -3,50 +3,16 @@ Palimpsest — FastAPI 主入口
 提供记忆提取、检索、导入、导出的完整 API 服务
 """
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Optional
-import tempfile
-import os
 
-from core.thinking_tracker import ThinkingTracker
 from core.trivium_store import TriviumStore
-from core.merger import Merger
-from core.retriever import Retriever
-from core.importer import ChatImporter
-from core.pipeline import ingest_many
 from core.reporting import generate_report
 
 app = FastAPI(title="Palimpsest")
 
 # ---- 全局服务实例（启动时初始化一次） ----
 store = TriviumStore()
-tracker = ThinkingTracker()
-merger = Merger(store)
-retriever = Retriever(store)
-importer = ChatImporter()
-
-
-# ---- 请求/响应模型 ----
-class ExtractRequest(BaseModel):
-    character_name: str
-    user_name: str
-    new_message: str
-    thinking_text: Optional[str] = None
-    recent_messages: list[str] = []
-
-
-class RetrieveRequest(BaseModel):
-    current_message: str
-    character_name: str
-    user_name: str
-    max_tokens: int = 300
-
-
-class MemoryResponse(BaseModel):
-    status: str
-    injected_text: str = ""
-    debug_info: dict = {}
 
 
 # ---- API 端点 ----
@@ -55,110 +21,10 @@ async def root():
     return {
         "service": "Palimpsest",
         "version": "2.1.0",
-        "endpoints": ["/extract", "/retrieve", "/import", "/export", "/memory/{id}",
+        "endpoints": ["/export", "/memory/{id}",
                       "/mem/search", "/mem/hybrid-search", "/mem/ingest", "/mem/link",
                       "/graph/neighbors", "/mem/router"],
     }
-
-
-@app.post("/extract")
-async def extract_memory(req: ExtractRequest):
-    """从 AI 回复中提取并合并记忆"""
-    if not req.thinking_text or "<thinking>" not in req.thinking_text:
-        return MemoryResponse(
-            status="skipped",
-            debug_info={"message": "消息中未包含 thinking 标签，跳过提取"},
-        )
-
-    parsed = tracker.parse_thinking(req.thinking_text)
-    nodes = tracker.to_memory_nodes(parsed)
-
-    new_count = 0
-    skipped = 0
-    # 添加角色隔离字段
-    for node in nodes:
-        node["character_name"] = req.character_name
-        node["user_name"] = req.user_name
-    new_count, skipped = ingest_many(store, merger, nodes)
-
-    return MemoryResponse(
-        status="ok",
-        debug_info={
-            "nodes_extracted": len(nodes),
-            "new": new_count,
-            "skipped": skipped,
-            "character": req.character_name,
-        },
-    )
-
-
-@app.post("/retrieve")
-async def retrieve_memory(req: RetrieveRequest):
-    """检索与当前消息相关的记忆"""
-    results = retriever.retrieve(req.current_message, top_k=5)
-    print("=== 检索结果 ===", results)
-    # 过滤只保留当前角色的记忆
-    results = [r for r in results if r.get("character_name") == req.character_name]
-
-    if not results:
-        return MemoryResponse(
-            status="ok", injected_text="", debug_info={"message": "未找到相关记忆"}
-        )
-
-    # 组装注入文本
-    lines = ["[Palimpsest 记忆注入]"]
-    for r in results:
-        lines.append(f"- [{r['type']}] {r['content']}")
-    injected = "\n".join(lines)
-
-    return MemoryResponse(
-        status="ok",
-        injected_text=injected,
-        debug_info={
-            "results_count": len(results),
-            "top_score": results[0]["score"] if results else 0,
-        },
-    )
-
-
-@app.post("/import")
-async def import_chat(
-    file: UploadFile = File(...),
-    character_name: str = "unknown",
-    user_name: str = "unknown",
-):
-    """导入酒馆聊天文件，批量提取记忆"""
-    # 保存上传文件到临时目录
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode="wb") as tmp:
-        content = await file.read()
-        tmp.write(content)
-        tmp_path = tmp.name
-
-    try:
-        all_messages = importer.load_file(tmp_path)
-        ai_messages = importer.filter_ai_messages(all_messages)
-
-        new_count = 0
-        skipped = 0
-        for msg in ai_messages:
-            parsed = tracker.parse_thinking(msg["reasoning"])
-            nodes = tracker.to_memory_nodes(parsed)
-            for node in nodes:
-                node["character_name"] = character_name
-                node["user_name"] = user_name
-            n, s = ingest_many(store, merger, nodes)
-            new_count += n
-            skipped += s
-
-        return {
-            "status": "ok",
-            "total_messages": len(all_messages),
-            "ai_replies_with_thinking": len(ai_messages),
-            "new_nodes": new_count,
-            "skipped_nodes": skipped,
-        }
-    finally:
-        os.unlink(tmp_path)
 
 
 @app.get("/export")
