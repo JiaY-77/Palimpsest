@@ -14,6 +14,7 @@ mcp_tools —— MCP 工具包
 from mcp_tools._common import (  # noqa: E402
     KNOWLEDGE_DIR, _kb_md_files, _shorten, _to_json, mcp, store,
 )
+from mcp_tools.consolidate_tool import mem_consolidate  # noqa: E402
 from mcp_tools.graph import (  # noqa: E402
     _BIDIRECTIONAL_RELATIONS, _collect_neighbors, _edge_exists, graph_neighbors,
     mem_link,
@@ -29,7 +30,7 @@ from mcp_tools.routing import _extract_recommendation, router_query  # noqa: E40
 __all__ = [
     "store", "mcp", "_to_json", "_shorten", "_kb_md_files", "KNOWLEDGE_DIR",
     "mem_retrieve", "mem_get_full", "mem_ingest", "mem_recent", "mem_review",
-    "mem_version_history", "mem_search", "mem_hybrid_search",
+    "mem_version_history", "mem_search", "mem_hybrid_search", "mem_consolidate",
     "_mem_search_impl", "_hybrid_search_impl", "_l1_sniff",
     "_parse_version_content",
     "kb_index", "kb_search",

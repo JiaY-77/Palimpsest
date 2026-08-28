@@ -34,20 +34,3 @@ class Retriever:
             }
             for r in results
         ]
-
-    def _get_all_nodes(self) -> list[dict[str, Any]]:
-        """直接使用手动遍历获取所有节点"""
-        with self.store._acquire() as db:
-            ids = db.all_node_ids()
-            nodes = []
-            for nid in ids:
-                node = db.get(nid)
-                if node:
-                    nodes.append(
-                        {
-                            "id": node.id,
-                            "payload": node.payload,
-                            "num_edges": node.num_edges,
-                        }
-                    )
-            return nodes

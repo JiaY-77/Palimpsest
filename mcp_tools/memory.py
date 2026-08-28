@@ -15,6 +15,8 @@ from core.fts_index import index_node, search_fts  # noqa: E402
 from core.secret_scan import SecretScanError  # noqa: E402
 from core.trivium_store import domain_in_block, node_domain  # noqa: E402
 
+from config import Config  # noqa: E402
+
 from mcp_tools._common import _shorten, _to_json, mcp, store  # noqa: E402
 from mcp_tools.graph import _collect_neighbors  # noqa: E402
 
@@ -386,11 +388,14 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
     """
     mem_search 的核心实现（返回 dict，供 mem_search 工具与 router_query 复用）。
     v2.0 统一语义层：
-      - 内置 rule 加权：domain="rule" 的 kb_chunk（规则类知识）恒 ×1.3，
-        无论是否显式传 domain_bias（rule 是知识子集，理应排在普通知识前）。
-      - domain_bias："" 不额外 bias；"memory" 非 kb_chunk ×1.15；
-        "kb" 对 kb_chunk（含 rule）×1.15；"rule" 对 rule 节点 ×1.15（叠加内置 ×1.3）。
-      - 最终权重 = base_score × (rule?1.3:1) × (bias 系数)，在过滤之后、排序之前应用。
+      - 内置 rule 加权：domain="rule" 的 kb_chunk（规则类知识）恒 ×RULE_RETRIEVAL_WEIGHT
+        （config 可配，默认 1.3），无论是否显式传 domain_bias（rule 是知识子集，理应排在普通知识前）。
+      - domain_bias："" 不额外 bias；"memory" 非 kb_chunk ×DOMAIN_BIAS_WEIGHT；
+        "kb" 对 kb_chunk（含 rule）×DOMAIN_BIAS_WEIGHT；"rule" 对 rule 节点 ×DOMAIN_BIAS_WEIGHT
+        （叠加内置 ×RULE_RETRIEVAL_WEIGHT）。
+      - 最终权重 = base_score × (rule?RULE_RETRIEVAL_WEIGHT:1) × (bias 系数)，
+        权重来自 config（RULE_RETRIEVAL_WEIGHT / DOMAIN_BIAS_WEIGHT，可配），
+        在过滤之后、排序之前应用。
       - v3.7 L1 嗅探：scope!=kb 时先查 MEMORY.md（HERMES_MEMORY_FILE），命中置顶。
     """
     if scope not in ("memory", "kb", "all"):
@@ -428,13 +433,13 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
         score = float(r.get("score", 0.0))
         is_rule = is_kb and payload.get("domain") == "rule"
         if is_rule:
-            score *= 1.3  # 内置 rule 加权：规则类知识恒优先
+            score *= Config.RULE_RETRIEVAL_WEIGHT  # 内置 rule 加权：规则类知识恒优先
         if domain_bias == "memory" and not is_kb:
-            score *= 1.15
+            score *= Config.DOMAIN_BIAS_WEIGHT
         elif domain_bias == "kb" and is_kb:
-            score *= 1.15
+            score *= Config.DOMAIN_BIAS_WEIGHT
         elif domain_bias == "rule" and is_rule:
-            score *= 1.15
+            score *= Config.DOMAIN_BIAS_WEIGHT
         meta = {
             "type": ptype,
             "importance": payload.get("importance", 0.5),
@@ -478,9 +483,11 @@ def mem_search(query: str, scope: str = "all", domain: str = "",
     scope 取值：memory（只查记忆节点，排除 kb_chunk）/ kb（只查知识库块）/ all（都查）。
     domain 非空时按 character_name 过滤记忆（kb_chunk 的 domain 是 "kb" 或 "rule"，不受影响）。
     domain_bias 取值 "" / "memory" / "kb" / "rule"：为空不额外 bias；"memory" 记忆优先
-        （非 kb_chunk 的 score *= 1.15）；"kb" 知识优先（kb_chunk 的 score *= 1.15）；
-        "rule" 规则优先（rule 节点再 ×1.15）。v2.0 起 domain="rule" 的规则类知识切片
-        内置恒 ×1.3 加权（排在普通知识前），rule 是知识的子集，kb bias 时同样叠加。
+        （非 kb_chunk 的 score *= DOMAIN_BIAS_WEIGHT）；"kb" 知识优先（kb_chunk 的 score
+        *= DOMAIN_BIAS_WEIGHT）；"rule" 规则优先（rule 节点再 ×DOMAIN_BIAS_WEIGHT）。
+        v2.0 起 domain="rule" 的规则类知识切片内置恒乘 RULE_RETRIEVAL_WEIGHT 加权
+        （排在普通知识前），rule 是知识的子集，kb bias 时同样叠加。
+        权重均来自 config（RULE_RETRIEVAL_WEIGHT / DOMAIN_BIAS_WEIGHT，可配）。
         bias 在过滤之后、排序之前应用（先 bias 再按最终 score 排序截断）。
     双层返回原则不变：只返回 150 字摘要 + meta，不返回全文（全文请用 mem_get_full）。
     v3.0 分区返回：include_neighbors=True 时，语义区（results）原样返回，
