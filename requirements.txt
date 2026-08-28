@@ -3,6 +3,6 @@ uvicorn
 openai
 python-dotenv
 pydantic
-triviumdb==0.8.0
+triviumdb==0.8.2
 python-multipart
 requests
