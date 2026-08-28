@@ -7,6 +7,7 @@ from typing import Any
 import triviumdb
 from config import Config
 from core.secret_scan import SecretScanError, scan_secret
+from core.utils import _to_float
 
 logger = logging.getLogger(__name__)
 
@@ -375,11 +376,3 @@ def _days_since_created(created_at: Any, now: float) -> float:
     if ts <= 0:
         return 0.0
     return max(0.0, (now - ts) / 86400.0)
-
-
-def _to_float(value: Any, default: float) -> float:
-    """安全转 float，失败用默认值（payload 字段可能为字符串）"""
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default

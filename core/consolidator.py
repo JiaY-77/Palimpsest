@@ -1,9 +1,9 @@
 """容量自动合并：扫描记忆库，找相似度过高的 memory 节点对，dry-run 先预览、apply 才合并。"""
 
 import logging
-from typing import Any
 
 from core.trivium_store import TriviumStore
+from core.utils import _to_float
 
 logger = logging.getLogger(__name__)
 
@@ -250,11 +250,3 @@ def consolidate(
         "skipped_both_important": skipped_both_important,
         "dry_run": False,
     }
-
-
-def _to_float(value: Any, default: float) -> float:
-    """安全转 float，失败用默认值。"""
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default

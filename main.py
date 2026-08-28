@@ -6,6 +6,7 @@ Palimpsest — FastAPI 主入口
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+from core.fts_index import remove_node
 from core.trivium_store import TriviumStore
 from core.reporting import generate_report
 
@@ -97,6 +98,11 @@ async def delete_memory(node_id: int):
     """删除指定 ID 的记忆节点"""
     try:
         store.delete_node(node_id)
+        # FTS 全文索引同步（失败不阻塞主删除，可手动 fts-rebuild 兜底）
+        try:
+            remove_node(node_id)
+        except Exception:
+            pass
         return {"status": "ok", "message": f"节点 {node_id} 已删除"}
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"删除失败: {str(e)}")
