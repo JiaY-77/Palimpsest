@@ -122,8 +122,10 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
         payload["created_at"] = now
         store.update_payload(node_id, payload)
 
-    # ---- 冲突检测：查找与本次写入相似的旧记忆 ----
-    outdated_ids = resolve_conflict(store, emb, node_id)
+    # ---- 冲突检测：查找与本次写入相似的旧记忆（三层防误标，返回 outdated + related 两档）----
+    conflict = resolve_conflict(store, emb, node_id)
+    outdated_ids = conflict["outdated_ids"]
+    related_ids = conflict["related_ids"]
 
     suggestion = ""
     if outdated_ids:
@@ -135,6 +137,7 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
         "node_id": node_id,
         "conflict_found": bool(outdated_ids),
         "outdated_ids": outdated_ids,
+        "related_ids": related_ids,
         "linked_kb_ids": linked_kb_ids,
         "suggestion": suggestion,
     })
