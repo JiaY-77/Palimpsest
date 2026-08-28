@@ -33,8 +33,8 @@ import sys
 
 from _common import SCRIPT_DIR as _SCRIPT_DIR, PROJECT_ROOT as _PROJECT_ROOT
 
-# 复用 mcp_server 的工具函数（mcp_server 内部会 chdir 到项目根）
-from mcp_server import (  # noqa: E402
+# 复用 mcp_tools 的工具函数（内部会 chdir 到项目根）
+from mcp_tools import (  # noqa: E402
     graph_neighbors, kb_index, kb_search, mem_hybrid_search, mem_ingest,
     mem_link, mem_recent, mem_review, mem_search,
 )

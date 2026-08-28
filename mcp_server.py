@@ -6,10 +6,9 @@ Palimpsest 本地 MCP Server
 底层使用 Palimpsest 的 TriviumStore（向量 + 图 + 文档存储），embedding 由本地
 Ollama 的 qwen3-embedding:0.6b 生成（1024 维，已验证可用）。
 
-本文件作为 MCP 入口与传统 re-export 汇聚点：工具实现已拆分至 mcp_tools/ 包
-（memory.py / kb.py / graph.py / routing.py），此处只负责从 mcp_tools 引入全部
-工具并在 FastMCP 上完成注册，同时保留旧的外部导入接口（main.py / palimpsest_cli
-等继续 from mcp_server import ... 而不改动）。
+本文件作为 MCP 入口：import mcp_tools 包即触发全部 @mcp.tool() 注册
+（FastMCP 装饰器在 import 时执行），mcp.run() 启动 stdio server，
+不再 re-export 任何符号（外部统一改走 from mcp_tools import ...）。
 
 工具列表：
   1. mem_retrieve - 语义检索记忆（只返回 150 字摘要 + meta，绝不返回全文，省 token）
@@ -45,15 +44,7 @@ Ollama 的 qwen3-embedding:0.6b 生成（1024 维，已验证可用）。
     python mcp_server.py
 """
 
-from mcp_tools import (  # noqa: E402
-    graph_neighbors, kb_index, kb_search, mem_consolidate, mem_get_full,
-    mem_hybrid_search, mem_ingest, mem_link, mem_recent, mem_retrieve,
-    mem_review, mem_search, mem_version_history, router_query, store, mcp,
-)
-from mcp_tools._common import _shorten, _to_json, _kb_md_files, KNOWLEDGE_DIR  # noqa: E402
-from mcp_tools.graph import _BIDIRECTIONAL_RELATIONS, _collect_neighbors, _edge_exists  # noqa: E402
-from mcp_tools.memory import _l1_sniff, _mem_search_impl, _parse_version_content  # noqa: E402
-from mcp_tools.routing import _extract_recommendation  # noqa: E402
+from mcp_tools import mcp  # noqa: E402  触发 mcp_tools 包内全部 @mcp.tool() 注册
 
 
 if __name__ == "__main__":

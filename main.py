@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from core.fts_index import remove_node
 from core.trivium_store import TriviumStore
 from core.reporting import generate_report
+from core.version import get_version
 
 app = FastAPI(title="Palimpsest")
 
@@ -21,7 +22,7 @@ store = TriviumStore()
 async def root():
     return {
         "service": "Palimpsest",
-        "version": "2.1.0",
+        "version": get_version(),
         "endpoints": ["/export", "/memory/{id}",
                       "/mem/search", "/mem/hybrid-search", "/mem/ingest", "/mem/link",
                       "/graph/neighbors", "/mem/router"],
@@ -141,7 +142,7 @@ async def update_memory_vector(node_id: int, vector: list[float]):
 # 返回解析后的 JSON（FastAPI 自动序列化），客户端无需再 parse 字符串。
 import json as _json
 
-from mcp_server import (
+from mcp_tools import (
     mem_search as _mcp_mem_search,
     mem_ingest as _mcp_mem_ingest,
     mem_link as _mcp_mem_link,
