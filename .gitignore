@@ -6,6 +6,11 @@ __pycache__/
 *.pyc
 *.pyo
 
+# 打包产物（pip install -e / build 生成）
+*.egg-info/
+build/
+dist/
+
 # 环境变量（包含你的 API 密钥）
 .env
 

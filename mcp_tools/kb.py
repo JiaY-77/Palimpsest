@@ -15,6 +15,11 @@ from mcp_tools._common import (  # noqa: E402
 @mcp.tool()
 def kb_index() -> str:
     """知识库索引：扫描知识库根目录下所有 .md 文件，返回相对路径 + 文件名"""
+    if not os.path.isdir(KNOWLEDGE_DIR):
+        return _to_json({
+            "results": [],
+            "hint": f"知识库目录不存在，请设置 KNOWLEDGE_DIR 或创建 {KNOWLEDGE_DIR}",
+        })
     entries = []
     for fp in _kb_md_files():
         rel = os.path.relpath(fp, KNOWLEDGE_DIR).replace("\\", "/")

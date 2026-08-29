@@ -1,0 +1,2 @@
+# 开发/测试依赖：配合 requirements.txt 一起安装（pip install -r requirements.txt -r requirements-dev.txt）
+pytest==9.1.1

@@ -146,7 +146,7 @@ def _resolve_knowledge_dir(knowledge_dir: str | None = None) -> str:
     if env:
         return os.path.abspath(env)
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.abspath(os.path.join(project_root, "../../../Knowledge"))
+    return os.path.abspath(os.path.join(project_root, "knowledge"))
 
 
 def _unique_target(archive_dir: str, date_str: str, base: str,

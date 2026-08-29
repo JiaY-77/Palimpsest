@@ -23,9 +23,11 @@ if _SCRIPT_DIR not in sys.path:
 # 切换到项目根目录，保证 config 里的相对路径（data/mh_memory.db）解析正确
 os.chdir(_SCRIPT_DIR)
 
-# 知识库根目录（环境变量 KNOWLEDGE_DIR 优先；默认相对项目根的通用路径，不硬编码个人路径）
+# 知识库根目录（环境变量 KNOWLEDGE_DIR 优先）。
+# 默认约定为项目根下的 ./knowledge（相对 _SCRIPT_DIR，即项目根）——这是「约定默认知识库位置」，
+# 目录不存在时调用方（kb_index / kb_search）应给出清晰提示，而不要静默返回空结果。
 KNOWLEDGE_DIR = os.getenv("KNOWLEDGE_DIR", "") or os.path.normpath(
-    os.path.join(_SCRIPT_DIR, "../../../Knowledge")
+    os.path.join(_SCRIPT_DIR, "knowledge")
 )
 
 # 全局存储实例（TriviumDB：向量 + 图 + 文档）+ MCP 实例（各子模块据此注册工具）

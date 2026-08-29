@@ -1,8 +1,11 @@
-fastapi
-uvicorn
-openai
-python-dotenv
-pydantic
+fastapi==0.136.1
+# mcp 锁 1.29.0：mcp_server.py 使用 from mcp.server.fastmcp import FastMCP，
+# mcp 2.x 移除了顶层 fastmcp，故不得升级到 2.x
+mcp==1.29.0
+openai==2.33.0
+pydantic==2.13.3
+python-dotenv==1.2.2
+python-multipart==0.0.27
+requests==2.33.1
 triviumdb==0.8.2
-python-multipart
-requests
+uvicorn==0.46.0

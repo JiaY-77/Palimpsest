@@ -32,7 +32,11 @@ import os
 import subprocess
 import sys
 
-from _common import SCRIPT_DIR as _SCRIPT_DIR, PROJECT_ROOT as _PROJECT_ROOT
+try:
+    # 包形式（import scripts.palimpsest_cli，palimpsest-cli 控制台入口）
+    from ._common import SCRIPT_DIR as _SCRIPT_DIR, PROJECT_ROOT as _PROJECT_ROOT
+except ImportError:  # 直接运行 scripts/palimpsest_cli.py 时退化为同目录导入
+    from _common import SCRIPT_DIR as _SCRIPT_DIR, PROJECT_ROOT as _PROJECT_ROOT
 
 # 复用 mcp_tools 的工具函数（内部会 chdir 到项目根）
 from mcp_tools import (  # noqa: E402

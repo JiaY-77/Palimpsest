@@ -56,11 +56,9 @@ os.chdir(_PROJECT_ROOT)
 from config import Config  # noqa: E402
 from core.fts_index import rebuild as fts_rebuild  # noqa: E402
 from core.trivium_store import TriviumStore  # noqa: E402
-
-# 知识库根目录（环境变量 KNOWLEDGE_DIR 优先；默认相对项目根的通用路径，不硬编码个人路径）
-KNOWLEDGE_DIR = os.getenv("KNOWLEDGE_DIR", "") or os.path.normpath(
-    os.path.join(_PROJECT_ROOT, "../../../Knowledge")
-)
+# 知识库根目录统一由 mcp_tools._common 提供（环境变量 KNOWLEDGE_DIR 优先；
+# 默认约定为项目根下 ./knowledge），避免脚本各自推导本机路径造成分叉
+from mcp_tools._common import KNOWLEDGE_DIR  # noqa: E402
 
 # 每块字符数目标区间（简单实现：超长段按行切，尽量落在区间内）
 MIN_CHUNK_LEN = 300
