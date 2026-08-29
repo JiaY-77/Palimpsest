@@ -37,8 +37,8 @@ def mem_retrieve(query: str, domain: str = "", top_k: int = 5) -> str:
     items = []
     for r in results:
         payload = r.get("payload", {}) or {}
-        # domain 过滤：只保留指定角色/域的记忆
-        if domain and payload.get("character_name") != domain:
+        # domain 过滤：只保留指定角色/域的记忆（domain 正式字段，character_name 兼容镜像已退役）
+        if domain and node_domain(payload) != (domain or "").strip().lower():
             continue
         # 排除知识库块：kb_chunk 只供 kb_search / mem_search(scope=kb) 检索，不混入记忆
         if payload.get("type") == "kb_chunk":
@@ -51,7 +51,7 @@ def mem_retrieve(query: str, domain: str = "", top_k: int = 5) -> str:
                 "type": payload.get("type", ""),
                 "importance": payload.get("importance", 0.5),
                 "status": payload.get("status", ""),
-                "domain": payload.get("character_name", ""),
+                "domain": node_domain(payload),
             },
         })
         if len(items) >= top_k:
@@ -101,7 +101,8 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
         "type": type,
         "content": content,
         "importance": importance,
-        "character_name": domain,
+        "domain": domain,
+        "character_name": domain,  # 兼容镜像：读侧清理完成前保留，两字段始终一致
         "source": source,
         "created_at": now,
         "linked_from": linked_kb_ids,
@@ -140,6 +141,7 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
     return _to_json({
         "stored": True,
         "node_id": node_id,
+        "domain": node_domain(payload),
         "conflict_found": bool(outdated_ids),
         "outdated_ids": outdated_ids,
         "related_ids": related_ids,
@@ -154,7 +156,7 @@ def mem_recent(domain: str = "", limit: int = 10) -> str:
     """最近记忆列表：按 created_at 倒序（时间戳缺失时退化为按 id 倒序，即插入顺序）"""
     items = []
     for nid, payload in store.iter_payloads():
-        if domain and payload.get("character_name") != domain:
+        if domain and node_domain(payload) != (domain or "").strip().lower():
             continue
         items.append({
             "id": nid,
@@ -162,7 +164,7 @@ def mem_recent(domain: str = "", limit: int = 10) -> str:
             "content": _shorten(payload.get("content", ""), 100),
             "importance": payload.get("importance", 0.5),
             "status": payload.get("status", ""),
-            "domain": payload.get("character_name", ""),
+            "domain": node_domain(payload),
             "created_at": payload.get("created_at"),
         })
     # (created_at, id) 双键倒序：时间戳缺失（None→0）时按 id 倒序兜底
@@ -187,7 +189,7 @@ def mem_review(days: int = 7, domain: str = "") -> str:
 
     items = []
     for nid, payload in store.iter_payloads():
-        if domain and payload.get("character_name") != domain:
+        if domain and node_domain(payload) != (domain or "").strip().lower():
             continue
         items.append({
             "id": nid,
@@ -195,7 +197,7 @@ def mem_review(days: int = 7, domain: str = "") -> str:
             "content": _shorten(payload.get("content", ""), 100),
             "importance": payload.get("importance", 0.5),
             "status": payload.get("status", ""),
-            "domain": payload.get("character_name", ""),
+            "domain": node_domain(payload),
             "created_at": payload.get("created_at"),
         })
 
@@ -261,7 +263,7 @@ def mem_version_history(domain: str = "hermes", full_content: bool = False,
     """
     版本历史查询：沿 REVISED_BY 修订链（新版本 → 旧版本）返回版本演进摘要，
     用于查 SOUL 版本日志等历史事件链。
-    参数：domain 按 character_name 过滤（默认 hermes）；full_content=True 时
+    参数：domain 按节点域过滤（默认 hermes）；full_content=True 时
     每条含完整 content 原文；offset/limit 分页（链长 > limit 时分页）。
     返回 JSON：{"found", "start_id", "chain_length", "versions": [...]}，
     每条版本为 {id, version, date, title, importance}。
@@ -269,7 +271,8 @@ def mem_version_history(domain: str = "hermes", full_content: bool = False,
     # 1. 找 domain 下最新的事件节点（created_at 最大，缺失时按 id 最大兜底）
     candidates = []
     for nid, payload in store.iter_payloads():
-        if payload.get("character_name") != domain or payload.get("type") != "event":
+        if (payload.get("type") != "event"
+                or node_domain(payload) != (domain or "").strip().lower()):
             continue
         try:
             ts = float(payload.get("created_at") or 0)
@@ -418,8 +421,8 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
             continue
         if scope == "kb" and not is_kb:
             continue
-        # domain 过滤仅作用于记忆节点（kb_chunk 无 character_name 概念）
-        if domain and not is_kb and payload.get("character_name") != domain:
+        # domain 过滤仅作用于记忆节点（kb_chunk 无 character_name 概念，domain 为正式字段）
+        if domain and not is_kb and node_domain(payload) != (domain or "").strip().lower():
             continue
         # 分区块（主人 2026-08-25 审查补丁）：block 非空时主结果也按区块过滤——
         # 带 --block hermes 的搜索只返回 hermes 区块内容，语义命中的跨区块节点丢弃
@@ -440,7 +443,7 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
             "type": ptype,
             "importance": payload.get("importance", 0.5),
             "status": payload.get("status", ""),
-            "domain": payload.get("character_name", "") or payload.get("domain", ""),
+            "domain": node_domain(payload),
         }
         if is_kb:
             meta["source_path"] = payload.get("source_path", "")
@@ -477,7 +480,7 @@ def mem_search(query: str, scope: str = "all", domain: str = "",
     """
     统一检索入口：记忆 + 知识库混合检索。
     scope 取值：memory（只查记忆节点，排除 kb_chunk）/ kb（只查知识库块）/ all（都查）。
-    domain 非空时按 character_name 过滤记忆（kb_chunk 的 domain 是 "kb" 或 "rule"，不受影响）。
+    domain 非空时按 node_domain 过滤记忆（kb_chunk 的 domain 是 "kb" 或 "rule"，不受影响）。
     domain_bias 取值 "" / "memory" / "kb" / "rule"：为空不额外 bias；"memory" 记忆优先
         （非 kb_chunk 的 score *= DOMAIN_BIAS_WEIGHT）；"kb" 知识优先（kb_chunk 的 score
         *= DOMAIN_BIAS_WEIGHT）；"rule" 规则优先（rule 节点再 ×DOMAIN_BIAS_WEIGHT）。
@@ -527,7 +530,7 @@ def _fts_only_item(node_id: int, scope: str, domain: str, block: str):
         return None
     if scope == "kb" and not is_kb:
         return None
-    if domain and not is_kb and payload.get("character_name") != domain:
+    if domain and not is_kb and node_domain(payload) != (domain or "").strip().lower():
         return None
     if block and not domain_in_block(node_domain(payload), block):
         return None
@@ -535,7 +538,7 @@ def _fts_only_item(node_id: int, scope: str, domain: str, block: str):
         "type": ptype,
         "importance": payload.get("importance", 0.5),
         "status": payload.get("status", ""),
-        "domain": payload.get("character_name", "") or payload.get("domain", ""),
+        "domain": node_domain(payload),
     }
     if is_kb:
         meta["source_path"] = payload.get("source_path", "")

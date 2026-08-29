@@ -25,7 +25,7 @@ Palimpsest 数据库重建脚本
   - 节点插入用 db.insert(emb, payload)：与 store.insert_node 相比省掉了 Python
     层的字段改写（status→"active" / created_at→None / label→""），payload
     原样入库，无需事后 update_payload 还原。
-  - 索引（type/importance/status/character_name）在插入完成后各建一次
+  - 索引（type/importance/status/domain/character_name）在插入完成后各建一次
     （store.insert_node 是每次插入都建，终态一致）。
   - 检索冒烟用 db.search / 余弦 Top-K，在同一个句柄上计算，不再开新库。
 
@@ -66,7 +66,7 @@ EXPORT_PATH = os.path.join("data", "export_backup_20260828.json")
 EXPECTED_NODES = 391   # 全量节点数（2026-08-28 导出：391 总，含 kb_chunk 212）
 EXPECTED_EDGES = 133   # 全部边数（2026-08-28 导出：REVISED_BY 106 + RELATED_TO 27）
 DEFERRED_EDGES = 0     # 全量恢复，无跳过边
-INDEX_FIELDS = ("type", "importance", "status", "character_name")
+INDEX_FIELDS = ("type", "importance", "status", "domain", "character_name")
 
 
 def load_export(path: str) -> dict:

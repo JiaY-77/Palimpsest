@@ -41,14 +41,16 @@ def domain_in_block(node_domain: str, block: str) -> bool:
 
 
 def node_domain(payload: dict) -> str:
-    """节点区块域：memory 用 character_name，kb_chunk 用 domain，缺省 general。
+    """节点区块域：统一读 payload.domain；character_name 为历史兼容回退（2026-08-29 迁移期）。
 
+    迁移目标：所有节点用 domain 字段表达区块归属，character_name 退役。
+    当前兼容期：domain 优先，缺失时回退 character_name（老数据），再缺省 general。
     注意：无 domain 的节点（general）在带 block 的分区查询中会被彻底忽略
     （既不能当起点也不能当邻居）——「无标签 = 未分类」，隔离场景下丢弃防污染；
     只有全量模式（block 为空）才可见。
     """
-    return (payload.get("character_name", "")
-            or payload.get("domain", "") or "general").strip().lower()
+    return (payload.get("domain", "")
+            or payload.get("character_name", "") or "general").strip().lower()
 
 
 class TriviumStore:
@@ -66,15 +68,16 @@ class TriviumStore:
         self._init_indexes()
 
     def _init_indexes(self) -> None:
-        """一次性创建常用 payload 字段倒排索引（type/importance/status/character_name）。
+        """一次性创建常用 payload 字段倒排索引（type/importance/status/domain/character_name）。
 
+        domain 为区块归属正式字段，character_name 为兼容镜像（迁移期保留）。
         triviumdb 0.8.2 的 create_index 幂等：索引已存在或无字段数据均静默成功。
         初始化失败（库被锁/建库异常等）静默降级：仅 log warning，不影响启动。
         """
         db = None
         try:
             db = self._acquire()
-            for field in ("type", "importance", "status", "character_name"):
+            for field in ("type", "importance", "status", "domain", "character_name"):
                 db.create_index(field)
         except Exception as e:
             logger.warning(f"初始化字段索引失败（静默降级）: {e}")
@@ -323,8 +326,7 @@ class TriviumStore:
                         if not nb_node:
                             continue
                         nb_payload = nb_node.payload or {}
-                        nb_domain = (nb_payload.get("character_name", "")
-                                     or nb_payload.get("domain", "") or "general")
+                        nb_domain = node_domain(nb_payload)
                         if not domain_in_block(nb_domain, block):
                             continue
                     else:

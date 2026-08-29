@@ -86,7 +86,7 @@ def _item_from_node(nid: int, payload: dict) -> dict:
 
 
 def _scan(store: TriviumStore) -> tuple[list[dict], int]:
-    """扫描 task 域节点（payload.character_name == task，type ∈ TASK_TYPES）。
+    """扫描 task 域节点（node_domain(payload) == task，type ∈ TASK_TYPES）。
 
     返回 (completed, skipped)：completed 为已完成条目列表，skipped 为未完成任务数。
     """

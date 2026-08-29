@@ -110,8 +110,7 @@ def _bfs_neighbors(node_id: int, depth: int, min_w: float, rel: str,
                 if not tnode:
                     continue
                 tpayload = tnode.get("payload", {}) or {}
-                tdomain = (tpayload.get("character_name", "")
-                           or tpayload.get("domain", "") or "general")
+                tdomain = node_domain(tpayload)
                 if not domain_in_block(tdomain, blk):
                     continue
             seen.add(tid)

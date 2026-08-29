@@ -20,6 +20,32 @@ def _get(result: str) -> dict:
     return json.loads(result)
 
 
+def test_domain_unified(db_path):
+    """写入侧统一 + 读侧统一（2026-08-29 记忆领域无二义性）：
+    mem_ingest 的 domain 写到 payload.domain（并保留 character_name 兼容镜像）；
+    node_domain(payload) 返回 domain；mem_search 按 domain 过滤能命中。
+    """
+    from core.trivium_store import node_domain
+    from mcp_tools import store
+
+    content = "记忆领域防二义性护栏：domain 字段统一冒烟测试内容"
+    r = _get(mem_ingest(content=content, type="memory", domain="testdom"))
+    assert r["stored"] is True, r
+    nid = r["node_id"]
+
+    payload = store.get_node(nid)["payload"]
+    assert payload.get("domain") == "testdom", f"payload 应写 domain: {payload}"
+    assert payload.get("character_name") == "testdom", f"character_name 应为兼容镜像: {payload}"
+    assert node_domain(payload) == "testdom", node_domain(payload)
+
+    # 读侧按 domain 过滤能命中刚写入的节点
+    s = _get(mem_search(content, scope="memory", domain="testdom"))
+    assert any(item["id"] == nid for item in s["results"]), s
+    # domain 过滤反向：错误 domain 查不到该节点
+    s2 = _get(mem_search(content, scope="memory", domain="hermes"))
+    assert not any(item["id"] == nid for item in s2["results"]), s2
+
+
 def test_ingest_search_roundtrip(db_path):
     """写入一条记忆 → mem_search 能检索到 → mem_get_full 能取全文。"""
     content = "护栏冒烟：小帕在临时库写下的一条独一无二的记忆片段"

@@ -225,6 +225,8 @@ python scripts/palimpsest_cli.py consolidate --apply      # 合并
 
 `block` 是「域分组」概念：图谱按区块隔离，扩散检索只沿同区块的边，防止跨域污染。出厂内置通用区块：`task`（任务）、`kb`（知识库）、`hermes`（助手自身记忆）、`general`（未分类兜底）；其中 `rule` 是 `kb` 的子集（规则切片，归入 `kb` 区块）。你也可以把自己的 `domain` 当作区块使用（如 `--block myproject`）。`--block` 留空则按全量模式检索。
 
+节点归属统一由 `payload.domain` 字段表达（v2.2.0 起；历史字段 `character_name` 已退役）。写入记忆时通过 `--domain X` 或 `mem_ingest(domain=...)` 指定区块；`kb` 类型节点由知识库索引自动设置（`kb` / `rule`）。
+
 ### REST API — `main.py`，端口 8090
 
 | 方法 | 路径 | 说明 |

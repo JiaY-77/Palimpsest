@@ -245,6 +245,8 @@ python scripts/palimpsest_cli.py consolidate --apply      # merge
 
 A `block` is a domain-grouping concept: the graph is partitioned by block, so diffusion retrieval only walks edges within the same block, preventing cross-domain pollution. Built-in blocks are `task`, `kb` (knowledge base), `hermes` (the assistant's own memory), and `general` (an uncategorized fallback); `rule` is a subset of `kb` (rule slices, grouped under the `kb` block). You can also use your own `domain` as a block (e.g. `--block myproject`). Leaving `--block` empty switches to full-scope retrieval.
 
+Node membership is expressed by the `payload.domain` field (since v2.2.0; the legacy `character_name` field is retired). Specify a block when writing via `--domain X` or `mem_ingest(domain=...)`; `kb` nodes are set automatically by the knowledge-base index (`kb` / `rule`).
+
 ### REST API — `main.py`, port 8090
 
 | Method | Path | Description |

@@ -2,7 +2,7 @@
 
 import logging
 
-from core.trivium_store import TriviumStore
+from core.trivium_store import TriviumStore, node_domain
 
 logger = logging.getLogger(__name__)
 
@@ -93,12 +93,16 @@ def _apply_merge(store: TriviumStore, will_merge: list[dict]) -> tuple[int, list
             + f"\n\n（由 Palimpsest 自动合并自节点 {low_id}，原内容见 REVISED_BY 链）"
         )
         merge_importance = max(c["a_imp"], c["b_imp"])
+        # domain 统一（2026-08-29）：合并节点以 node_domain 为准，domain 与
+        # character_name 镜像同值（消除二义性）。general 为未分类兜底。
+        merge_domain = node_domain(high_payload)
 
         new_node_data = {
             "type": "memory",
             "content": merge_content,
             "importance": merge_importance,
-            "character_name": high_payload.get("character_name", ""),
+            "domain": merge_domain,
+            "character_name": merge_domain,
             "label": high_payload.get("label", ""),
             "source": "consolidate",
         }
