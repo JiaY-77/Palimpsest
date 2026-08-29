@@ -64,6 +64,71 @@ Palimpsest 用 **一个本地内核** 同时解决「检索、关联、演进」
 
 ---
 
+### 使用场景
+
+#### 场景 1 · 长期陪伴 / 个人助理 agent 的跨会话记忆（Hermes 等）
+
+把 Palimpsest 接入 agent 后，它就是你的「记忆底座」：每轮对话自动召回相关历史、把强信号记忆自动沉淀，会话结束时再提炼本轮要点；上下文压缩之前，图谱还会先提炼一次，把散落的片段织成可检索的网络。会话关闭也没关系——下次见面它依然记得住、想得起。
+
+#### 场景 2 · 知识库语义化（Obsidian 用户）
+
+把积累了多年的 Obsidian Vault 变成可语义检索的资产：`build_kb_index.py` 扫描全部 `.md`，按 Markdown 标题切片、向量化入库，`[[双链]]` 上下文原样保留。搜索不再是「关键词碰运气」，而是「语义相关、附带图谱邻居」。
+
+#### 场景 3 · 记忆治理（防污染 / 防膨胀 / 可追溯）
+
+记忆库不会越用越乱：写入前敏感扫描拦下密钥，冲突检测 + 版本链让每次改写都有迹可循，容量合并把近似重复收缩成一条，时间衰减淡化陈旧记忆。记忆是资产，不是垃圾场。
+
+---
+
+### 给 Hermes 用户：把它变成你的记忆插件
+
+Hermes 预留了 memory provider / context engine 插槽，Palimpsest 为此提供**双插件**：**Memory Provider**（记忆读写）+ **Context Engine**（上下文压缩前提炼）。插件实际位于 `$HERMES_HOME/plugins/palimpsest/`（`plugin.yaml`，`kind=standalone`），挂载两个 hooks：`on_session_end`（会话结束提炼要点）与 `on_pre_compress`（压缩前图谱提炼）。
+
+激活（一行一件）：
+
+```bash
+hermes plugins enable palimpsest
+hermes config set memory.provider palimpsest
+hermes config set context.engine palimpsest-graph
+```
+
+激活后，每轮对话都会自动发生这些事：
+
+- **自动召回** —— 每轮经 REST `:8090` 检索相关历史（`memory.provider=palimpsest`）。
+- **强信号自动沉淀** —— 高信号的事实自动写入记忆（启发式判断，不依赖 LLM）。
+- **会话结束提炼** —— `on_session_end` 把本轮要点沉淀为结构化记忆。
+- **压缩前图谱提炼** —— `on_pre_compress` 用 `context.engine=palimpsest-graph` 提炼图谱要点，喂给压缩阶段。
+- **5 个模型工具** —— `palimpsest_search` / `palimpsest_ingest` / `palimpsest_link` / `palimpsest_graph` / `palimpsest_router`，供 agent 主动调用。
+
+两点注意：
+
+- REST 服务（`:8090`）需**常驻运行**（如 `scripts/start_rest.vbs` 开机自启）。
+- 自动沉淀是**启发式**判断（相似度、重要度阈值），不是 LLM 判断——它求「快、稳、不花钱」，而非「聪明」。
+
+---
+
+### Obsidian 用户：我们的读取思路（即使不用 Palimpsest）
+
+> 这一节讲的是「思路」，不是广告——就算你完全不用 Palimpsest，也能照此用任何工具链复刻。
+
+我们不把 Vault 当「文件」看待，而是当作**知识源**。读取分五步：
+
+1. **Vault 目录即知识源** —— 递归扫描 `KNOWLEDGE_DIR` 下的全部 `.md`（自动跳过 `.obsidian` 等配置目录），每个笔记就是一个待处理文档。
+2. **Frontmatter 解析** —— 读取 YAML Frontmatter，用 `tags` 驱动规则识别：含 `rule` 标签的笔记划入规则域（`domain=rule`），其余归 `kb`。
+3. **按 Markdown 标题智能切片** —— 以 `##` / `###` 为边界切成 300~800 字符的块，块内**原样保留 `[[双链]]`**，让「哪篇关联哪篇」的上下文不丢。
+4. **向量化入库** —— 每个切片经 embedding 编码，作为 `kb_chunk` 节点写入存储，构成可语义检索的知识资产。
+5. **规则加权** —— 规则域切片检索时 **×1.3 加权**，让「该怎么做」的规则压过普通知识浮上来。
+
+**想自己实现？** 这套流程的骨架很简单：一个向量库（sqlite-vec / chroma 皆可）+ 一个 embedding 服务就能复刻。真正的设计点有三个：
+
+- **切片粒度** —— 太粗检索不准、太碎丢上下文。
+- **规则识别** —— 用 frontmatter / 路径 / 命名约定，把「该执行的规则」和「普通笔记」分开。
+- **双链保留** —— 让 `[[A]]⇄[[B]]` 的关系进入检索结果，而不是只在正文里躺着。
+
+本思路的现成实现即 `scripts/build_kb_index.py`（全量 `--full` / 增量默认，增量按 `mtime` 对比只重建变化文件）。
+
+---
+
 ## 快速上手
 
 ### 安装

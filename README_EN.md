@@ -83,6 +83,71 @@ The dashboard (`scripts/dashboard.py`, port 8010) provides a lightweight human-f
 
 ---
 
+## Use cases
+
+### Use case 1 · Long-term companion / personal-assistant memory across sessions (Hermes & co.)
+
+Once Palimpsest is wired up as an agent's memory backend, every turn automatically recalls the relevant history, auto-sediments high-signal facts, and distills the round into highlights at session end; right before context compression, the graph layer distills once more, weaving scattered fragments into a searchable network. Closing the conversation doesn't matter — next time we meet, it still remembers and recalls.
+
+### Use case 2 · Making a knowledge base semantic (Obsidian users)
+
+Turn years of Obsidian notes into semantically searchable assets: `build_kb_index.py` scans every `.md`, slices by Markdown headings, vectorizes the chunks, and keeps `[[wikilinks]]` intact. Search is no longer keyword roulette — it returns semantically relevant hits with graph neighbors attached.
+
+### Use case 3 · Memory governance (anti-pollution / anti-bloat / traceable)
+
+Your store won't get messier over time: a pre-write secret scan blocks keys, conflict detection + version chains make every rewrite traceable, consolidation collapses near-duplicates into one node, and time decay fades stale facts. Memory is an asset, not a landfill.
+
+---
+
+## For Hermes users: turn it into your memory plugin
+
+Hermes exposes a memory provider / context engine slot, and Palimpsest ships **both plugins**: a **Memory Provider** (read/write) and a **Context Engine** (pre-compression distillation). The plugin actually lives at `$HERMES_HOME/plugins/palimpsest/` (`plugin.yaml`, `kind=standalone`) and hooks `on_session_end` (session-end highlight distillation) and `on_pre_compress` (graph distillation before compression).
+
+Activate (one line per item):
+
+```bash
+hermes plugins enable palimpsest
+hermes config set memory.provider palimpsest
+hermes config set context.engine palimpsest-graph
+```
+
+Once active, every round of conversation does this automatically:
+
+- **Auto recall** — each turn queries `:8090` REST and retrieves the relevant history (`memory.provider=palimpsest`).
+- **Auto sedimentation** — high-signal facts are written into memory automatically, via heuristics, no LLM involved.
+- **Session-end distillation** — `on_session_end` condenses the round into structured memory.
+- **Pre-compress graph distillation** — `on_pre_compress` distills graph highlights for the compression stage (`context.engine=palimpsest-graph`).
+- **5 model tools** — `palimpsest_search` / `palimpsest_ingest` / `palimpsest_link` / `palimpsest_graph` / `palimpsest_router` for the agent to call proactively.
+
+Two notes:
+
+- The REST service (`:8090`) must **stay running** (e.g. `scripts/start_rest.vbs` at login).
+- Auto-sedimentation is **heuristic** (similarity / importance thresholds), not an LLM judgment — it favors fast, stable, cost-free over clever.
+
+---
+
+## Obsidian users: how we read your vault (even if you don't use Palimpsest)
+
+> This section is about the *approach*, not an ad — even if you never use Palimpsest, you can replicate this pipeline with any toolchain.
+
+We don't treat a vault as "files" but as a **source of knowledge**. Reading takes five steps:
+
+1. **The vault directory is the source** — recursively scan every `.md` under `KNOWLEDGE_DIR` (skipping config dirs like `.obsidian`); each note is one document.
+2. **Frontmatter parsing** — read the YAML frontmatter and use its `tags` to drive rule detection: notes tagged `rule` are classified as rule-domain (`domain=rule`), the rest go to `kb`.
+3. **Smart slicing by Markdown headings** — split on `##` / `###` into 300–800 char chunks, keeping `[[wikilinks]]` verbatim so cross-note context survives.
+4. **Vectorize into the store** — each slice is embedded and stored as a `kb_chunk` node, becoming a semantically searchable asset.
+5. **Rule weighting** — rule-domain slices get a **×1.3 weight** at retrieval, so "how it should be done" rules surface above ordinary knowledge.
+
+**Want to build it yourself?** The skeleton is simple: one vector store (sqlite-vec, chroma, …) plus one embedding service is enough. The real design points are three:
+
+- **Chunk granularity** — too coarse hurts precision, too fine loses context.
+- **Rule detection** — use frontmatter / path / naming conventions to separate "rules to follow" from ordinary notes.
+- **Wikilink preservation** — let `[[A]]⇄[[B]]` relationships enter retrieval results instead of lying inert in the body text.
+
+A working implementation of this approach is `scripts/build_kb_index.py` (full `--full` / incremental by default; incremental mode diffs `mtime` and only rebuilds changed files).
+
+---
+
 ## Quick Start
 
 ### Install

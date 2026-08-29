@@ -1,0 +1,59 @@
+name: Bug report
+description: Report a bug so we can fix it
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill in as much as you can. Do **not** paste real secrets, API keys, or tokens into this issue — redact them first.
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, Palimpsest version, and Ollama model.
+      placeholder: |
+        - OS: (e.g. Windows 11 / macOS 14 / Ubuntu 22.04)
+        - Python: (e.g. 3.11.9)
+        - Palimpsest version: (e.g. v1.0.0 — from `curl http://127.0.0.1:8090/` or `git describe --tags`)
+        - Ollama model: (e.g. qwen3-embedding:0.6b)
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened vs. what you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal, concrete steps (commands, MCP tool calls, REST requests).
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / error messages
+      description: Relevant error output, traceback, or log lines. Redact anything that looks like a secret.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: configuration
+    attributes:
+      label: Related configuration (.env)
+      description: Any non-secret configuration bits relevant to the bug. **Sanitize .env — never paste real API keys, tokens, or private keys.** You may show variable names with values redacted (e.g. `EMBEDDING_PROVIDER=ollama`, `DEEPSEEK_API_KEY=<redacted>`).
+    validations:
+      required: false

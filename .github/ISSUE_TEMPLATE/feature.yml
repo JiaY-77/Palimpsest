@@ -1,0 +1,41 @@
+name: Feature request
+description: Suggest an idea for Palimpsest
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an idea. A clear motivation and a concrete proposal make it much easier to discuss.
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: What problem are you trying to solve? What is missing today and how does it affect you?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How should the feature work? Include API / CLI / MCP tool signatures, behavior, and rough scope if you have them in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What other approaches (or existing workarounds) did you consider, and why do they fall short?
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: References, links, screenshots, or examples that help explain the request.
+    validations:
+      required: false
