@@ -63,6 +63,42 @@ def test_secret_scan(db_path):
     assert "openai_key" in r.get("rules", []), r
 
 
+def test_secret_scan_weak_phone(db_path):
+    """写入含手机号 → 弱规则放行，stored:True，且 payload 含 secret_hint 含 phone。"""
+    content = "客户联系方式 13800138000 请参考办理"
+    r = _get(mem_ingest(content=content, type="memory"))
+    assert r["stored"] is True, r
+    assert "phone" in r.get("secret_hint", []), r
+    nid = r["node_id"]
+    full = _get(mem_get_full(nid))
+    assert "phone" in full["payload"].get("secret_hint", []), full
+
+
+def test_secret_scan_weak_idcard(db_path):
+    """写入含 18 位身份证格式数字 → 弱规则放行，stored:True，secret_hint 含 id_card。"""
+    content = "登记信息 11010119900307749X 已录入系统"
+    r = _get(mem_ingest(content=content, type="memory"))
+    assert r["stored"] is True, r
+    assert "id_card" in r.get("secret_hint", []), r
+    nid = r["node_id"]
+    full = _get(mem_get_full(nid))
+    assert "id_card" in full["payload"].get("secret_hint", []), full
+
+
+def test_fts_check(db_path):
+    """临时库写入后 check_fts_consistency 应判定主库与 FTS 索引一致。"""
+    from scripts.check_fts_consistency import check
+    from mcp_tools import store
+
+    for i in range(3):
+        mem_ingest(content=f"巡检护栏记忆片段编号{i:02d}内容唯一", type="memory")
+
+    result = check(store)
+    assert result["consistent"] is True, result
+    assert result["total_nodes"] >= 3, result
+    assert result["total_nodes"] == result["fts_count"], result
+
+
 def test_fts_hybrid(db_path):
     """写入后 mem_hybrid_search 应能命中（FTS 侧 trigram 精确子串）。"""
     needle = "混合检索护栏标记词xyzabc"

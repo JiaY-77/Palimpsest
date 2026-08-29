@@ -6,7 +6,7 @@ from typing import Any
 
 import triviumdb
 from config import Config
-from core.secret_scan import SecretScanError, scan_secret
+from core.secret_scan import SecretScanError, scan_secret_classified
 from core.utils import _to_float
 
 logger = logging.getLogger(__name__)
@@ -173,13 +173,17 @@ class TriviumStore:
             }
             payload.update(extra_fields)
 
-            # 敏感信息扫描：拼接所有字符串字段值扫描，命中则拒绝入库
+            # 敏感信息强/弱分级扫描（T060 审计整改）：
+            #   强规则命中（API key/token/私钥）→ 拒绝入库
+            #   弱规则命中（身份证/手机号）→ 放行但打 secret_hint 标记供审计
             scan_text = " ".join(
                 str(v) for v in payload.values() if isinstance(v, str)
             )
-            secret_hits = scan_secret(scan_text)
-            if secret_hits:
-                raise SecretScanError(secret_hits)
+            classified = scan_secret_classified(scan_text)
+            if classified["strong"]:
+                raise SecretScanError(classified["strong"])
+            if classified["weak"]:
+                payload["secret_hint"] = classified["weak"]
 
             node_id = db.insert(embedding, payload)
             return node_id

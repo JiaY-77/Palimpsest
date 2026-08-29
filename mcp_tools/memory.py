@@ -7,9 +7,12 @@ mem_version_history / mem_search（及核心 _mem_search_impl）/ mem_hybrid_sea
 L1 嗅探。
 """
 
+import logging  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
 import time  # noqa: E402
+
+logger = logging.getLogger(__name__)
 
 from core.conflict import resolve_conflict  # noqa: E402
 from core.fts_index import index_node, search_fts  # noqa: E402
@@ -111,8 +114,8 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
     # FTS 全文索引同步（T056 混合检索依赖；失败不阻塞主写入，可手动 fts-rebuild 兜底）
     try:
         index_node(node_id, content)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("FTS 索引同步失败 node=%s: %s", node_id, e)
 
     # 注意：core.insert_node 的基础 payload 固定 created_at=None 且不接收外部传入，
     # 这里补写一次真实时间戳，保证 mem_recent 排序有意义
@@ -121,6 +124,8 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
     if payload.get("created_at") is None:
         payload["created_at"] = now
         store.update_payload(node_id, payload)
+    # 弱规则命中标记（身份证/手机号）：弱规则放行但打 secret_hint 供审计
+    secret_hint = payload.get("secret_hint", [])
 
     # ---- 冲突检测：查找与本次写入相似的旧记忆（三层防误标，返回 outdated + related 两档）----
     conflict = resolve_conflict(store, emb, node_id)
@@ -139,6 +144,7 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
         "outdated_ids": outdated_ids,
         "related_ids": related_ids,
         "linked_kb_ids": linked_kb_ids,
+        "secret_hint": secret_hint,
         "suggestion": suggestion,
     })
 

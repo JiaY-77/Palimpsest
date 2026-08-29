@@ -128,8 +128,8 @@ async def delete_memory(node_id: int):
         # FTS 全文索引同步（失败不阻塞主删除，可手动 fts-rebuild 兜底）
         try:
             remove_node(node_id)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("FTS 索引同步失败 node=%s: %s", node_id, e)
         return {"status": "ok", "message": f"节点 {node_id} 已删除"}
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"删除失败: {str(e)}")

@@ -107,15 +107,18 @@ def _apply_merge(store: TriviumStore, will_merge: list[dict]) -> tuple[int, list
                     if a_imp >= b_imp else b_node.get("vector"))
         new_id = store.insert_node(new_node_data, high_vec)
 
+        # 崩溃安全合并顺序（T060 审计整改）：先建边、后标脏。
+        # 破坏性操作（update_payload 标 outdated 旧节点）放最后——若建边失败，
+        # 旧节点仍 active，不会出现「旧已脏、新没连」的半合并状态；新建节点即使
+        # 孤立也比数据损坏好（可由 consolidate 重跑或手动清理）。
+        store.create_edge(new_id, a_id, "REVISED_BY", weight=c["score"])
+        store.create_edge(new_id, b_id, "REVISED_BY", weight=c["score"])
+
         # 旧节点标 outdated
         a_payload["status"] = "outdated"
         store.update_payload(a_id, a_payload)
         b_payload["status"] = "outdated"
         store.update_payload(b_id, b_payload)
-
-        # 建边：新节点 REVISED_BY -> 两个旧节点
-        store.create_edge(new_id, a_id, "REVISED_BY", weight=c["score"])
-        store.create_edge(new_id, b_id, "REVISED_BY", weight=c["score"])
 
         merged += 1
         merged_ids.append({
