@@ -3,7 +3,6 @@
 import logging
 
 from core.trivium_store import TriviumStore
-from core.utils import _to_float
 
 logger = logging.getLogger(__name__)
 
@@ -18,93 +17,12 @@ def find_candidates(
              'a_imp': importance_a, 'b_imp': importance_b,
              'a_content': 前80字, 'b_content': 前80字}]
     去重：a<b 按 id 排序，避免重复对。
+
+    P2 重构（T054）：改为调用 store.find_similar_pairs(sim_threshold)，
+    由 store 负责原始扫描（单连接、a<b 去重、双方须 active+memory、按 score 降序）；
+    此处保留 sim_threshold 阈值过滤语义（find_similar_pairs 内部已按该阈值过滤+排序）。
     """
-    # 收集所有 active + type=memory 节点的 id 和向量
-    memory_nodes: list[dict] = []
-    db = None
-    try:
-        db = store._acquire()
-        for nid in db.all_node_ids():
-            node = db.get(nid)
-            if not node:
-                continue
-            payload = node.payload or {}
-            if payload.get("type") != "memory":
-                continue
-            if payload.get("status") != "active":
-                continue
-            vec = node.vector
-            if not vec:
-                continue
-            memory_nodes.append({
-                "id": nid,
-                "vector": vec,
-                "payload": payload,
-            })
-    finally:
-        if db is not None:
-            try:
-                db.close()
-            except Exception:
-                pass
-
-    # 对每个节点做向量 search 找相似
-    seen_pairs: set[tuple[int, int]] = set()
-    candidates: list[dict] = []
-
-    db2 = None
-    try:
-        db2 = store._acquire()
-        for mn in memory_nodes:
-            nid = mn["id"]
-            vec = mn["vector"]
-            hits = db2.search(vec, top_k=6, min_score=0.0, expand_depth=0)
-            for hit in hits or []:
-                hid = hit.id
-                score = float(hit.score)
-                if hid == nid:
-                    continue
-                if score < sim_threshold:
-                    continue
-                # 只接受对方也是 active + memory
-                hnode = db2.get(hid)
-                if not hnode:
-                    continue
-                hpayload = hnode.payload or {}
-                if hpayload.get("type") != "memory":
-                    continue
-                if hpayload.get("status") != "active":
-                    continue
-                # 去重：a<b 按 id 排序
-                a, b = (nid, hid) if nid < hid else (hid, nid)
-                pair = (a, b)
-                if pair in seen_pairs:
-                    continue
-                seen_pairs.add(pair)
-                # 取双方 payload
-                a_payload = mn["payload"] if a == nid else hpayload
-                b_payload = hpayload if b == hid else mn["payload"]
-                a_imp = _to_float(a_payload.get("importance"), 0.5)
-                b_imp = _to_float(b_payload.get("importance"), 0.5)
-                candidates.append({
-                    "a": a,
-                    "b": b,
-                    "score": round(score, 4),
-                    "a_imp": round(a_imp, 2),
-                    "b_imp": round(b_imp, 2),
-                    "a_content": (a_payload.get("content") or "")[:80],
-                    "b_content": (b_payload.get("content") or "")[:80],
-                })
-    finally:
-        if db2 is not None:
-            try:
-                db2.close()
-            except Exception:
-                pass
-
-    # 按 score 降序
-    candidates.sort(key=lambda x: x["score"], reverse=True)
-    return candidates
+    return store.find_similar_pairs(sim_threshold=sim_threshold)
 
 
 def _filter_candidates(
@@ -142,73 +60,70 @@ def _apply_merge(store: TriviumStore, will_merge: list[dict]) -> tuple[int, list
     """真正执行合并：新建合并节点、旧节点标 outdated、建 REVISED_BY 边。
 
     返回 (merged, merged_ids)。
+
+    P2 重构（T054）：改用 store 公共方法——store.insert_node / store.update_payload /
+    store.create_edge，不再直接 _acquire。注意 store.insert_node 会触发 secret_scan
+    （原 db.insert 不会）：合并节点内容来自库内已有记忆（尾部含「由 Palimpsest 自动
+    合并自节点」字样，不含敏感信息），正常能通过。
     """
     merged = 0
     merged_ids: list[dict] = []
-    db = None
-    try:
-        db = store._acquire()
-        for c in will_merge:
-            a_id, b_id = c["a"], c["b"]
-            a_node = db.get(a_id)
-            b_node = db.get(b_id)
-            if not a_node or not b_node:
-                continue
-            a_payload = a_node.payload or {}
-            b_payload = b_node.payload or {}
+    for c in will_merge:
+        a_id, b_id = c["a"], c["b"]
+        a_node = store.get_node(a_id)
+        b_node = store.get_node(b_id)
+        if not a_node or not b_node:
+            continue
+        a_payload = a_node.get("payload") or {}
+        b_payload = b_node.get("payload") or {}
 
-            # 高 importance 方保留内容
-            a_imp = c["a_imp"]
-            b_imp = c["b_imp"]
-            if a_imp >= b_imp:
-                high_payload, low_payload = a_payload, b_payload
-                low_id = b_id
-            else:
-                high_payload, low_payload = b_payload, a_payload
-                low_id = a_id
+        # 高 importance 方保留内容
+        a_imp = c["a_imp"]
+        b_imp = c["b_imp"]
+        if a_imp >= b_imp:
+            high_payload, low_payload = a_payload, b_payload
+            low_id = b_id
+        else:
+            high_payload, low_payload = b_payload, a_payload
+            low_id = a_id
 
-            high_content = high_payload.get("content") or ""
-            merge_content = (
-                high_content
-                + f"\n\n（由 Palimpsest 自动合并自节点 {low_id}，原内容见 REVISED_BY 链）"
-            )
-            merge_importance = max(c["a_imp"], c["b_imp"])
+        high_content = high_payload.get("content") or ""
+        merge_content = (
+            high_content
+            + f"\n\n（由 Palimpsest 自动合并自节点 {low_id}，原内容见 REVISED_BY 链）"
+        )
+        merge_importance = max(c["a_imp"], c["b_imp"])
 
-            new_node_data = {
-                "type": "memory",
-                "content": merge_content,
-                "importance": merge_importance,
-                "character_name": high_payload.get("character_name", ""),
-                "label": high_payload.get("label", ""),
-                "source": "consolidate",
-            }
-            # 用高 importance 方的向量作为合并节点向量
-            high_vec = a_node.vector if (a_imp >= b_imp) else b_node.vector
-            new_id = db.insert(high_vec, new_node_data)
+        new_node_data = {
+            "type": "memory",
+            "content": merge_content,
+            "importance": merge_importance,
+            "character_name": high_payload.get("character_name", ""),
+            "label": high_payload.get("label", ""),
+            "source": "consolidate",
+        }
+        # 用高 importance 方的向量作为合并节点向量
+        high_vec = (a_node.get("vector")
+                    if a_imp >= b_imp else b_node.get("vector"))
+        new_id = store.insert_node(new_node_data, high_vec)
 
-            # 旧节点标 outdated
-            a_payload["status"] = "outdated"
-            db.update_payload(a_id, a_payload)
-            b_payload["status"] = "outdated"
-            db.update_payload(b_id, b_payload)
+        # 旧节点标 outdated
+        a_payload["status"] = "outdated"
+        store.update_payload(a_id, a_payload)
+        b_payload["status"] = "outdated"
+        store.update_payload(b_id, b_payload)
 
-            # 建边：新节点 REVISED_BY -> 两个旧节点
-            db.link(new_id, a_id, label="REVISED_BY", weight=c["score"])
-            db.link(new_id, b_id, label="REVISED_BY", weight=c["score"])
+        # 建边：新节点 REVISED_BY -> 两个旧节点
+        store.create_edge(new_id, a_id, "REVISED_BY", weight=c["score"])
+        store.create_edge(new_id, b_id, "REVISED_BY", weight=c["score"])
 
-            merged += 1
-            merged_ids.append({
-                "new_id": new_id,
-                "old_a": a_id,
-                "old_b": b_id,
-                "score": c["score"],
-            })
-    finally:
-        if db is not None:
-            try:
-                db.close()
-            except Exception:
-                pass
+        merged += 1
+        merged_ids.append({
+            "new_id": new_id,
+            "old_a": a_id,
+            "old_b": b_id,
+            "score": c["score"],
+        })
 
     return merged, merged_ids
 

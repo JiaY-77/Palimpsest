@@ -56,9 +56,8 @@ def export_via_store(store: TriviumStore) -> dict:
     type_counter = Counter()
     label_counter = Counter()
 
-    for nid in store._get_all_node_ids():
-        node = store.get_node(nid)
-        if not node:
+    for nid, node in store.iter_nodes():
+        if not node or not (node.get("payload") or {}):
             print(f"  警告: 节点 {nid} 读取失败，跳过")
             continue
         payload = node.get("payload") or {}

@@ -76,3 +76,37 @@ def test_fts_hybrid(db_path):
     assert hit is not None, f"混合检索未命中刚写入节点 {nid}: {h}"
     # FTS 侧应标记命中（mem_ingest 已同步 index_node 到临时 fts.db）
     assert hit["meta"].get("fts_hit") is True, hit
+
+
+def test_consolidate_dryrun(db_path):
+    """写入两条几乎相同的记忆 → consolidate(dry_run=True) 只预览候选，不真正合并。
+
+    用 store.insert_node 直写（绕过 mem_ingest 的冲突检测会自动把相似旧记忆标
+    outdated，导致找不到 active+active 对）。两条内容几乎一致、均为 active，
+    应能被 find_similar_pairs 扫出为候选对。
+    """
+    from core.consolidator import consolidate
+    from mcp_tools import store
+
+    base = "容量合并护栏：一条几乎完全相同的记忆内容，用于验证 dry-run 预览候选"
+    emb_a = store.embed_text(base)
+    emb_b = store.embed_text(base + "（副本甲）")
+    a_id = store.insert_node({"type": "memory", "content": base}, emb_a)
+    b_id = store.insert_node({"type": "memory", "content": base + "（副本甲）"}, emb_b)
+    assert a_id != b_id
+
+    r = consolidate(store, dry_run=True)
+    assert r["dry_run"] is True, r
+    assert isinstance(r.get("candidates"), list), r
+    assert r["candidates"], "高相似记忆应产生至少一对候选"
+
+    # 单个候选对结构完整（a/b/score/a_imp/b_imp/a_content/b_content）
+    c = r["candidates"][0]
+    for k in ("a", "b", "score", "a_imp", "b_imp", "a_content", "b_content"):
+        assert k in c, f"候选缺字段 {k}: {c}"
+    assert {c["a"], c["b"]} == {a_id, b_id}, c
+
+    # dry_run 不真正合并：不应包含 merged 结果，两个原始节点仍在库中（active）
+    assert "merged" not in r, r
+    assert store.get_node(a_id)["payload"]["status"] == "active"
+    assert store.get_node(b_id)["payload"]["status"] == "active"

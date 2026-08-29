@@ -366,6 +366,126 @@ class TriviumStore:
                 continue
             yield nid, node.get("payload", {}) or {}
 
+    def iter_nodes(self):
+        """遍历所有节点，yield (node_id, {"id", "payload", "num_edges", "vector"})。
+
+        替代外部 `_get_all_node_ids + get_node` 的重复样板
+        （P2 重构，2026-08-29）。节点缺失跳过；
+        向量为 1024 维浮点数组，调用方按需取用即可（体量大，勿无条件拷贝）。
+        行为与原模式一致：只 yield 存在节点，缺失即跳过。
+        """
+        for nid in self._get_all_node_ids():
+            node = self.get_node(nid)
+            if not node:
+                continue
+            yield nid, node
+
+    def count_by_type(self) -> dict[str, int]:
+        """统计各节点类型数量，返回 {type: count}。
+
+        遍历 iter_nodes 统计 payload.type，缺失/空值归入 "unknown"。
+        空库返回空 dict。
+        """
+        counter: dict[str, int] = {}
+        for _, node in self.iter_nodes():
+            t = (node.get("payload") or {}).get("type") or "unknown"
+            counter[t] = counter.get(t, 0) + 1
+        return counter
+
+    def recent_ids(self, limit: int = 20) -> list[int]:
+        """返回最近写入的节点 ID 列表（按 id 倒序取前 limit 个）。
+
+        供 dashboard/recent 等「最新节点」场景使用。空库返回空列表。
+        """
+        ids = self._get_all_node_ids()
+        ids.sort(reverse=True)
+        return ids[:limit]
+
+    def find_similar_pairs(self, sim_threshold: float = 0.85) -> list[dict]:
+        """单连接内扫描高相似 memory 节点对。
+
+        遍历 active + type=memory 节点，对每个节点用原生
+        db.search(vec, top_k=6, min_score=0.0, expand_depth=0) 找相似候选。
+        返回原始候选列表 [{a, b, score, a_imp, b_imp, a_content, b_content}]：
+          - a<b 按 id 去重（避免重复对）；
+          - 双方均须为 active + memory；
+          - score 低于 sim_threshold 的候选对被过滤（阈值由本方法直接应用），
+            通过的对 score 原样保留（round 4 位），最终按 score 降序返回。
+        方法内用 with self._acquire() as db 管理连接；异常返回空列表不抛出。
+        """
+        memory_nodes: list[dict] = []
+        with self._acquire() as db:
+            try:
+                for nid in db.all_node_ids():
+                    node = db.get(nid)
+                    if not node:
+                        continue
+                    payload = node.payload or {}
+                    if payload.get("type") != "memory":
+                        continue
+                    if payload.get("status") != "active":
+                        continue
+                    vec = node.vector
+                    if not vec:
+                        continue
+                    memory_nodes.append({
+                        "id": nid,
+                        "vector": vec,
+                        "payload": payload,
+                    })
+            except Exception as e:
+                logger.warning(f"find_similar_pairs 收集节点失败，返回空列表: {e}")
+                return []
+
+        seen_pairs: set[tuple[int, int]] = set()
+        candidates: list[dict] = []
+        try:
+            with self._acquire() as db:
+                for mn in memory_nodes:
+                    nid = mn["id"]
+                    vec = mn["vector"]
+                    hits = db.search(
+                        vec, top_k=6, min_score=0.0, expand_depth=0)
+                    for hit in hits or []:
+                        hid = hit.id
+                        score = float(hit.score)
+                        if hid == nid:
+                            continue
+                        if score < sim_threshold:
+                            continue
+                        hnode = db.get(hid)
+                        if not hnode:
+                            continue
+                        hpayload = hnode.payload or {}
+                        if hpayload.get("type") != "memory":
+                            continue
+                        if hpayload.get("status") != "active":
+                            continue
+                        # 去重：a<b 按 id 排序
+                        a, b = (nid, hid) if nid < hid else (hid, nid)
+                        pair = (a, b)
+                        if pair in seen_pairs:
+                            continue
+                        seen_pairs.add(pair)
+                        a_payload = mn["payload"] if a == nid else hpayload
+                        b_payload = hpayload if b == hid else mn["payload"]
+                        a_imp = _to_float(a_payload.get("importance"), 0.5)
+                        b_imp = _to_float(b_payload.get("importance"), 0.5)
+                        candidates.append({
+                            "a": a,
+                            "b": b,
+                            "score": round(score, 4),
+                            "a_imp": round(a_imp, 2),
+                            "b_imp": round(b_imp, 2),
+                            "a_content": (a_payload.get("content") or "")[:80],
+                            "b_content": (b_payload.get("content") or "")[:80],
+                        })
+        except Exception as e:
+            logger.warning(f"find_similar_pairs 扫描失败，返回已收集候选: {e}")
+
+        candidates.sort(key=lambda x: x["score"], reverse=True)
+        return candidates
+
 
 def _days_since_created(created_at: Any, now: float) -> float:
     """距创建天数；created_at 缺失/非法按 0 天（不衰减）"""

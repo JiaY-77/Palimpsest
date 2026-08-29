@@ -231,7 +231,7 @@ def main() -> None:
 
     # ---- 单句柄：幂等判断 -> 恢复（如需要）-> 验证 ----
     id_map: dict[int, int] = {}
-    with store._acquire() as db:  # 全程一个句柄，规避 0.7.6 开/关锁竞态
+    with store._acquire() as db:  # 恢复脚本单句柄规避 0.7.6 锁竞态，保留私有调用属特例
         existing = db.node_count()
         if existing == 0:
             print(f"\n目标库为空（{existing} 节点），执行全新恢复 ...")
