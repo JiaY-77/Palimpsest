@@ -15,6 +15,7 @@ Pa·limp·sest: *a writing surface that is overwritten again and again while old
 | License | MIT |
 | Storage | TriviumDB 0.8.2 (vector + graph + document, embedded) |
 | Backends | DeepSeek / Ollama (LLM), Ollama / OpenAI-compatible (embeddings) |
+| CI | [![CI](https://github.com/JiaY-77/Palimpsest/actions/workflows/ci.yml/badge.svg)](https://github.com/JiaY-77/Palimpsest/actions/workflows/ci.yml) |
 
 </div>
 

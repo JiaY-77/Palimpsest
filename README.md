@@ -15,6 +15,7 @@
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Storage](https://img.shields.io/badge/TriviumDB-0.8.2-2d9cdb.svg)](/)
 [![LLM](https://img.shields.io/badge/Backends-DeepSeek%E2%80%A2Ollama-6f42c1.svg)](/)
+[![CI](https://github.com/JiaY-77/Palimpsest/actions/workflows/ci.yml/badge.svg)](https://github.com/JiaY-77/Palimpsest/actions/workflows/ci.yml)
 
 **中文** | [English](./README_EN.md)
 
