@@ -114,6 +114,50 @@ def test_fts_hybrid(db_path):
     assert hit["meta"].get("fts_hit") is True, hit
 
 
+def test_l1_no_magic_id(db_path, tmp_path):
+    """L1 不再伪造 id=-1 假节点置顶：命中进独立 memory_file_hits 附加区。
+
+    - HERMES_MEMORY_FILE 指向含唯一标记词的临时 MEMORY.md → mem_search 命中时：
+      results 里没有负 ID 节点；memory_file_hits 非空且含该词（元素无 id/type/score）。
+    - 不设置 HERMES_MEMORY_FILE 时：memory_file_hits 字段不存在或为空。
+    """
+    import os
+
+    marker = "PALIMPSEST_L1_TEST_MARKER"
+    md_file = tmp_path / "L1_MEMORY.md"
+    md_file.write_text(f"固定记忆：{marker} 是本层唯一标记词，供 L1 嗅探测试。\n",
+                       encoding="utf-8")
+
+    old = os.environ.get("HERMES_MEMORY_FILE")
+    try:
+        # ③ 不设置时：memory_file_hits 不存在，results 全是真实节点
+        os.environ.pop("HERMES_MEMORY_FILE", None)
+        s0 = _get(mem_search(marker, scope="memory"))
+        assert not s0.get("memory_file_hits"), s0
+        assert all(item.get("id", 0) >= 0 for item in s0.get("results", [])), s0
+
+        # ② 指向临时 MEMORY.md：L1 命中进独立附加区，不混入 results
+        os.environ["HERMES_MEMORY_FILE"] = str(md_file)
+        s1 = _get(mem_search(marker, scope="memory"))
+        hits = s1.get("memory_file_hits")
+        assert hits, f"应产生 memory_file_hits: {s1}"
+        assert marker in json.dumps(hits, ensure_ascii=False), hits
+        for h in hits:
+            assert h.get("source") == "MEMORY.md", h
+            assert "content_snippet" in h, h
+            assert "matched_terms" in h, h
+            assert not any(k in h for k in ("id", "type", "score")), h
+        # ① results 里没有负 ID 假节点
+        for item in s1.get("results", []):
+            assert item.get("id", 0) >= 0, f"results 混入负 ID 节点: {s1}"
+        assert "memory_l1" not in json.dumps(s1.get("results", []), ensure_ascii=False), s1
+    finally:
+        if old is not None:
+            os.environ["HERMES_MEMORY_FILE"] = old
+        else:
+            os.environ.pop("HERMES_MEMORY_FILE", None)
+
+
 def test_consolidate_dryrun(db_path):
     """写入两条几乎相同的记忆 → consolidate(dry_run=True) 只预览候选，不真正合并。
 
