@@ -1,134 +1,117 @@
 # Palimpsest
 
-**A local-first long-term memory system** that stores, retrieves, and evolves an AI assistant's memories through semantic vector search, a weighted knowledge graph, and full-text retrieval — all in a single embedded database.
+**本地优先的长期记忆系统 · AI 助手的跨会话记忆底座**
 
-Pa·limp·sest: *a writing surface that is overwritten again and again while older incisions survive beneath the new text.* Palimpsest applies the same idea to memory: nothing is ever silently lost — new facts supersede old ones through an explicit, traceable **version chain** (`REVISED_BY`), and near-duplicates are passively consolidated instead of cluttering the store.
+**Local-first, battle-tested, memory that never disappears.**
 
-| | |
-|---|---|
-| Version | v2.2.0 |
-| Python | 3.10+ |
-| License | MIT |
-| Storage | TriviumDB 0.8.2 (vector + graph + document, embedded) |
-| Backends | DeepSeek / Ollama (LLM), Ollama / OpenAI-compatible (embeddings) |
+> _Palimpsest_ ：拉丁语，原指「重写的羊皮纸」——旧字迹被覆写抹去，却又在岁月里重新透出。
+>
+> 我们把这个意象搬进记忆里：**新的事实覆盖旧的事实，但旧迹永不真正丢失**——每一次改写都通过一条有迹可循的 **版本链**（`REVISED_BY`）连接，新旧记忆可查可溯。
 
----
+[![Version](https://img.shields.io/badge/Version-v2.2.0-4c6ef5.svg)](/)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](/)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Storage](https://img.shields.io/badge/TriviumDB-0.8.2-2d9cdb.svg)](/)
+[![LLM](https://img.shields.io/badge/Backends-DeepSeek%E2%80%A2Ollama-6f42c1.svg)](/)
 
-## Features
-
-- **Hybrid retrieval.** Semantic vector search (cosine) fused with an FTS5 full-text index (`trigram` tokenizer for Chinese substring matching) via Reciprocal Rank Fusion (RRF) or a cascade (FTS coarse-filter → vector re-rank). Every hit is labeled with its source — `fts_hit` / `sem_hit`.
-- **Knowledge-graph recall.** Nodes are connected by **directed, weighted edges** (`RELATED_TO`, `REVISED_BY`, with `CAUSES` / `REFERS_TO` reserved). Retrieval expands along edges with BFS: per-node expansion is pruned to the strongest edges, weak edges are filtered, and diffusion can be scoped to a single domain "block" to prevent cross-domain pollution.
-- **Conflict detection & version chains.** Every write is compared against similar existing memories. A superseded record is marked `outdated` and linked to its replacement with a `REVISED_BY` edge, preserving a browsable history of how a fact evolved. Multi-layer guards (type whitelist, type isolation, domain isolation) prevent false marking.
-- **Pre-write secret scan.** Before anything is stored, content is scanned against **10 regular-expression rules** (API keys, tokens, private keys, card/phone numbers, bearer tokens, …). A match **rejects the write** and reports which rule fired.
-- **Capacity consolidation.** `mem_consolidate` finds near-duplicate `memory` node pairs (similarity ≥ 0.85), protecting high-value memories (`importance ≥ 0.8`). `dry_run` previews candidates; `apply` merges them into a new node and chains the old ones via `REVISED_BY`.
-- **Memory lifecycle.** Time decay weighting (`MEMORY_DECAY_FACTOR`, default 0.95 /month) fades stale memories in ranking without touching storage; `kb_chunk` knowledge slices are exempt.
-- **Task auto-archiving.** Completed task nodes are moved out of the hot store into markdown archives under the knowledge base (`05_任务归档/`), then deleted — dry-run first, `apply` to commit.
-- **Startup self-check.** `startup-check` verifies critical files, storage initialization, and the FTS index, emitting a structured report and a non-zero exit code on failure.
-- **Token-efficient by design.** Retrieval returns a **150-character summary plus metadata** instead of full text; full content is fetched on demand.
-- **Three interfaces, one core.** MCP (stdio) for agent tooling, a FastAPI REST service, and a full CLI — all reuse the same underlying tools, so behavior never drifts.
+**中文** | [English](./README_EN.md)
 
 ---
 
-## Architecture
+## 一句话介绍
 
-```
-                         ┌──────────────────────────────────────┐
-                         │              Clients                 │
-                         │   MCP        REST         CLI        │
-                         │  (stdio)   (:8090)      (scripts/    │
-                         │             │           palimpsest)  │
-                         └──────────┬───┴───────────┬───────────┘
-                                    │               │
-                    ┌───────────────▼───────────────▼───────────┐
-                    │                 Palimpsest                │
-                    │                                           │
-                    │   mcp_server.py    main.py  (FastAPI)     │
-                    │   mcp_tools/*   (14 tools, shared)        │
-                    │                                           │
-                    │   ┌───────────────────────────────────┐   │
-                    │   │             core/                 │   │
-                    │   │  trivium_store   ·   conflict     │   │
-                    │   │  consolidator    ·   reporting    │   │
-                    │   │  fts_index       ·   secret_scan  │   │
-                    │   │  startup_check   ·   task_archive │   │
-                    │   │  utils           ·   version      │   │
-                    │   └───────────────┬───────────────────┘   │
-                    └───────────────────┼───────────────────────┘
-                                        │
-       ┌────────────────────────────────┼──────────────────────────────┐
-       │                    ┌───────────▼───────────┐    ┌─────────────▼──────┐
-       │                    │     TriviumDB 0.8.2   │    │   SQLite FTS5      │
-       │                    │  vector + graph + doc │    │   fts.db (trigram) │
-       │                    └───────────┬───────────┘    └────────────────────┘
-       │                                │  embeddings
-       └────────────────────────────────┴──────────────────────────────────
-                      Ollama (qwen3-embedding:0.6b, 1024-d)
-                               or OpenAI-compatible API
-```
+Palimpsest 是一个 **本地优先的嵌入式长期记忆系统**，将 **向量检索（Vector Search）、加权知识图谱（Knowledge Graph）与全文检索（Full-Text Retrieval）** 三合一，把 AI 助手的跨会话记忆统一存放、管理、演化在一座本地数据库里。
 
-Three independently usable entry points share one `mcp_tools` layer and one `core` store:
+我们的目标是成为 **AI 助手的「记忆底座」** —— 让每一次对话的收获都不再随会话关闭而烟消云散，而是**可检索、可关联、可演进**：
 
-1. **MCP server** (`mcp_server.py`) — exposes 14 tools over stdio for any Model Context Protocol client.
-2. **REST service** (`main.py`) — FastAPI on port 8090, including a startup self-check and a JSON memory export for backups.
-3. **CLI** (`scripts/palimpsest_cli.py`) — 15 subcommands for scripting, cron, and operations without a server.
-
-The dashboard (`scripts/dashboard.py`, port 8010) provides a lightweight human-facing view of the store.
+- 🗃️ **混合检索** —— 语义向量（cosine）与 FTS5 全文索引（`trigram` 分词，支持中文子串匹配）通过 RRF 或级联方式融合，每条命中都标注来源 `fts_hit` / `sem_hit`
+- 🔗 **图谱扩散召回** —— 节点由 **有向加权边**（`RELATED_TO` / `REVISED_BY`）相连，BFS 沿边扩散召回，支持单域「块」级别隔离，防止跨域污染
+- 🔄 **冲突检测与版本链** —— 每次写入都与相似旧记忆比对，被覆盖的记录标记为 `outdated` 并通过 `REVISED_BY` 链向新版，事实的演化历史完整可查
+- 🛡️ **写入前敏感扫描** —— 存储前按 **10 条正则规则**（API Key、令牌、私钥、银行卡/手机号、Bearer Token 等）扫描，命中即**拒绝写入**并报告命中的规则
+- 🧹 **容量合并** —— `mem_consolidate` 找出近似重复的记忆节点对（相似度 ≥ 0.85），保护高价值记忆（`importance ≥ 0.8`）；`dry_run` 预览、`apply` 合并成新节点并按 `REVISED_BY` 串联旧节点
+- ⏳ **记忆生命周期** —— 时间衰减加权（`MEMORY_DECAY_FACTOR`，默认 0.95/月）在排序中淡化陈旧记忆而不动存储；`kb_chunk` 知识切片豁免衰减
+- 📁 **任务自动归档** —— 完成任务自动移出热库，写成 markdown 归档至知识库 `05_任务归档/` 后删除——先 `dry-run` 预览，`apply` 提交
+- ✅ **启动自检** —— `startup-check` 校验关键文件、存储初始化与 FTS 索引，输出结构化报告，失败时以非零退出码结束
+- ✂️ **省 token 设计** —— 检索默认只返回 **150 字摘要 + 元数据**，而非全文；完整内容按需二次拉取
+- 🎯 **三接口、一核心** —— MCP（stdio）、FastAPI REST、完整 CLI 三套接入共用同一套底层工具，行为永不割裂
 
 ---
 
-## Quick Start
+## 为什么需要 Palimpsest？
 
-### Install
+### 当前 AI 助手的三类「记忆困境」
+
+绝大多数 AI 应用同时面临三类数据能力的割裂：
+
+| 场景 | 传统做法 | 问题 |
+|---|---|---|
+| 跨会话记忆 | 每次会话从零开始 | 历史经验与事实随会话关闭而丢失 |
+| 知识库语义化 | 简单关键词匹配 | 无法理解语义，无法在概念间关联 |
+| 记忆治理 | 无序堆积/手动清理 | 重复、过期、矛盾的信息越来越多 |
+
+Palimpsest 用 **一个本地内核** 同时解决「检索、关联、演进」三件事，避免在向量库、文档库、图谱库之间搬运与同步。
+
+### 「记忆不丢」的一个例子
+
+> 你告诉助手「服务监听 8090 端口」。后来设计变更，又说「端口改为 8090→8095」。
+>
+> 旧记忆并不会被粗暴覆盖——它被标记为 `outdated`，通过 `REVISED_BY` 指向新版本。任何时候 `mem_version_history` 都能展开这条版本链，看清这个事实**如何一步步演变成今天的样子**。这就是 Palimpsest：覆而不失，改写可溯。
+
+---
+
+## 快速上手
+
+### 安装
 
 ```bash
-# 1. Python 3.10+ required
+# 1. 需要 Python 3.10+
 python -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
 
-# 2. Dependencies
+# 2. 安装依赖
 pip install -r requirements.txt
 
-# 3. Local embeddings (default provider) — needs Ollama running
+# 3. 本地向量模型（默认向量后端）—— 需先启动 Ollama
 ollama pull qwen3-embedding:0.6b
 ```
 
-### Configure
+### 配置
 
 ```bash
 cp .env.example .env
-# edit .env:
-#   - LLM_BACKEND=deepseek   → set DEEPSEEK_API_KEY
-#   - LLM_BACKEND=ollama      → keep OLLAMA_* defaults
-#   - EMBEDDING_PROVIDER=ollama  (local, default) or openai (cloud, needs EMBEDDING_API_KEY)
+# 编辑 .env:
+#   - LLM_BACKEND=deepseek   → 填入 DEEPSEEK_API_KEY
+#   - LLM_BACKEND=ollama      → 保持 OLLAMA_* 默认即可
+#   - EMBEDDING_PROVIDER=ollama  (本地, 默认) 或 openai (云端, 需 EMBEDDING_API_KEY)
 ```
 
-> **Note:** Changing the embedding provider changes the vector space. You must fully rebuild the knowledge-base index afterwards (`python scripts/build_kb_index.py`).
+> **注意：** 更换向量后端会改变向量空间，事后必须重建知识库索引：`python scripts/build_kb_index.py`。
 
-### Run
+### 启动
 
 ```bash
-# Optional pre-flight check
+# 可选：启动前自检
 python scripts/palimpsest_cli.py startup-check
 
-# REST API (:8090)
+# REST 服务 (:8090)
 python -m uvicorn main:app --host 127.0.0.1 --port 8090
 
-# MCP server (stdio — add to any MCP client)
+# MCP 服务（stdio —— 接入任意 MCP 客户端）
 python mcp_server.py
 
-# CLI (example)
-python scripts/palimpsest_cli.py search "what changed in the architecture?"
+# CLI（示例）
+python scripts/palimpsest_cli.py search "架构最近发生了什么变化？"
 
-# Dashboard (:8010)
+# 监控面板 (:8010)
 python scripts/dashboard.py
 
-# Index your knowledge base (Obsidian .md files under KNOWLEDGE_DIR)
+# 索引知识库（KNOWLEDGE_DIR 下的 Obsidian .md 文件）
 python scripts/build_kb_index.py
 ```
 
-On Windows, `scripts/start_rest.vbs` launches the REST service in a hidden window (e.g. at login) and logs to `scripts/start_rest.log`.
+Windows 下 `scripts/start_rest.vbs` 可以隐藏窗口启动 REST 服务（如开机自启），日志写入 `scripts/start_rest.log`。
 
-**MCP client integration** (generic MCP servers config):
+**MCP 客户端接入**（通用 MCP servers 配置）：
 
 ```json
 {
@@ -144,201 +127,202 @@ On Windows, `scripts/start_rest.vbs` launches the REST service in a hidden windo
 
 ---
 
-## Configuration
+## 配置
 
-All configuration is read from environment variables (a `.env` file is loaded automatically via `python-dotenv`).
+所有配置均从环境变量读取（`.env` 文件由 `python-dotenv` 自动加载）。
 
-| Variable | Default | Description |
+| 变量 | 默认值 | 说明 |
 |---|---|---|
-| `REST_PORT` | `8090` | Port for the FastAPI REST service |
-| `DASHBOARD_PORT` | `8010` | Port for the dashboard service |
-| `DB_PATH` | `data/mh_memory.db` | Path to the embedded TriviumDB database |
-| `LLM_BACKEND` | `deepseek` | LLM backend: `deepseek` or `ollama` |
-| `DEEPSEEK_API_KEY` | *(empty)* | API key for the DeepSeek API |
-| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | DeepSeek API base URL |
-| `DEEPSEEK_MODEL` | `deepseek-v4-flash` | DeepSeek model identifier |
-| `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Ollama OpenAI-compatible base URL |
-| `OLLAMA_MODEL` | `deepseek-r1:7b` | Ollama chat model used as the LLM |
-| `EMBEDDING_PROVIDER` | `ollama` | Embedding backend: `ollama` (local, private) or `openai` (OpenAI-compatible cloud, e.g. Voyage) |
-| `OLLAMA_EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | Local Ollama embedding model |
-| `OLLAMA_EMBEDDING_DIM` | `1024` | Embedding dimension (local backend) |
-| `EMBEDDING_API_KEY` | *(empty)* | API key for the cloud embedding endpoint |
-| `EMBEDDING_BASE_URL` | `https://api.voyageai.com/v1` | Cloud embedding base URL (any OpenAI-compatible endpoint) |
-| `EMBEDDING_MODEL` | `voyage-3` | Cloud embedding model |
-| `EMBEDDING_DIM` | `1024` | Embedding dimension (cloud backend) |
-| `MEMORY_DECAY_FACTOR` | `0.95` | Monthly memory decay used in ranking (`score × importance × factor^(days/30)`); `1.0` disables decay; `kb_chunk` nodes never decay |
-| `RULE_RETRIEVAL_WEIGHT` | `1.3` | Score multiplier for rule-domain knowledge slices |
-| `DOMAIN_BIAS_WEIGHT` | `1.15` | Extra weight for domain-biased retrieval |
-| `KNOWLEDGE_DIR` | *(optional)* | Root of the knowledge base (Obsidian `.md` files) to index |
-| `HERMES_MEMORY_FILE` | *(empty)* | Optional path to an external plain-text memory file used as an additional memory source; leave empty to disable |
+| `REST_PORT` | `8090` | FastAPI REST 服务端口 |
+| `DASHBOARD_PORT` | `8010` | 监控面板服务端口 |
+| `DB_PATH` | `data/mh_memory.db` | 嵌入式 TriviumDB 数据库路径 |
+| `LLM_BACKEND` | `deepseek` | LLM 后端：`deepseek` 或 `ollama` |
+| `DEEPSEEK_API_KEY` | *（空）* | DeepSeek API 密钥 |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | DeepSeek API 基础地址 |
+| `DEEPSEEK_MODEL` | `deepseek-v4-flash` | DeepSeek 模型标识 |
+| `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Ollama OpenAI 兼容基础地址 |
+| `OLLAMA_MODEL` | `deepseek-r1:7b` | 作为 LLM 的 Ollama 对话模型 |
+| `EMBEDDING_PROVIDER` | `ollama` | 向量后端：`ollama`（本地、私有）或 `openai`（OpenAI 兼容云端，如 Voyage） |
+| `OLLAMA_EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | 本地 Ollama 向量模型 |
+| `OLLAMA_EMBEDDING_DIM` | `1024` | 向量维度（本地后端） |
+| `EMBEDDING_API_KEY` | *（空）* | 云端向量端点的 API 密钥 |
+| `EMBEDDING_BASE_URL` | `https://api.voyageai.com/v1` | 云端向量基础地址（任意 OpenAI 兼容端点） |
+| `EMBEDDING_MODEL` | `voyage-3` | 云端向量模型 |
+| `EMBEDDING_DIM` | `1024` | 向量维度（云端后端） |
+| `MEMORY_DECAY_FACTOR` | `0.95` | 月度记忆衰减（排序用，`score × importance × factor^(天/30)`）；`1.0` 关闭衰减；`kb_chunk` 节点永不衰减 |
+| `RULE_RETRIEVAL_WEIGHT` | `1.3` | 规则域知识切片的分数倍率 |
+| `DOMAIN_BIAS_WEIGHT` | `1.15` | 域偏置检索的额外权重 |
+| `KNOWLEDGE_DIR` | *（可选）* | 知识库根目录（待索引的 Obsidian `.md` 文件） |
+| `HERMES_MEMORY_FILE` | *（空）* | 可选的外部纯文本记忆文件路径，作为额外记忆来源；留空则禁用 |
 
-See `.env.example` for a commented template.
+带注释的完整模板参见 `.env.example`。
 
 ---
 
-## Usage
+## 使用
 
-### MCP tools (14) — `mcp_tools/*`
+### MCP 工具（14 个）— `mcp_tools/*`
 
-| Tool | Description |
+| 工具 | 说明 |
 |---|---|
-| `mem_search` | Unified retrieval across memory / knowledge base / both; optional graph-neighbor expansion, domain bias, block-scoped diffusion |
-| `mem_hybrid_search` | Hybrid FTS5 + vector retrieval; `mode=rrf` (k=60) or `cascade`; each hit labeled `fts_hit` / `sem_hit` |
-| `mem_retrieve` | Semantic retrieval returning a 150-char summary + metadata (never full text) |
-| `mem_get_full` | Fetch the full content of a node by ID |
-| `mem_ingest` | Write a new memory — with conflict detection, `REVISED_BY` version chaining, and secret scanning |
-| `mem_recent` | Most recent memories (newest first) |
-| `mem_review` | Periodic recap of the last N days plus governance candidates |
-| `mem_version_history` | Walk the `REVISED_BY` chain to show how a fact evolved |
-| `mem_consolidate` | Near-duplicate detection; dry-run preview or apply merge |
-| `kb_index` | Index knowledge-base `.md` files into `kb_chunk` nodes (vectorized) |
-| `kb_search` | Semantic search over indexed knowledge chunks |
-| `graph_neighbors` | BFS over the knowledge graph from a node (relation filter, depth 1–3) |
-| `mem_link` | Manually create graph edges (`RELATED_TO` / `CAUSES` / `REFERS_TO`; bidirectional by default) |
-| `router_query` | Query rule-domain knowledge slices and extract model/configuration recommendations |
+| `mem_search` | 统一检索：记忆 / 知识库 / 两者；可选图谱邻居扩展、域偏置、块级扩散 |
+| `mem_hybrid_search` | 混合检索：FTS5 + 向量；`mode=rrf`（k=60）或 `cascade`；命中标注 `fts_hit` / `sem_hit` |
+| `mem_retrieve` | 语义检索，返回 150 字摘要 + 元数据（绝不返回全文） |
+| `mem_get_full` | 按 ID 拉取节点完整内容 |
+| `mem_ingest` | 写入新记忆——含冲突检测、`REVISED_BY` 版本链、敏感扫描 |
+| `mem_recent` | 最近的记忆（新的在前） |
+| `mem_review` | 最近 N 天的周期性回顾 + 治理候选 |
+| `mem_version_history` | 沿 `REVISED_BY` 链展开，查看事实演化过程 |
+| `mem_consolidate` | 近似重复检测；dry-run 预览或 apply 合并 |
+| `kb_index` | 将知识库 `.md` 文件索引为 `kb_chunk` 节点（向量化） |
+| `kb_search` | 对已索引知识切片的语义搜索 |
+| `graph_neighbors` | 从某节点出发对知识图谱做 BFS（关系过滤、深度 1–3） |
+| `mem_link` | 手动创建图边（`RELATED_TO` / `CAUSES` / `REFERS_TO`；默认双向） |
+| `router_query` | 查询规则域知识切片，提取模型/配置推荐 |
 
-### CLI (15) — `scripts/palimpsest_cli.py`
+### CLI 命令（15 个）— `scripts/palimpsest_cli.py`
 
-| Command | Description |
+| 命令 | 说明 |
 |---|---|
-| `search "QUERY"` | Unified retrieval (`--scope all\|memory\|kb`, `--neighbors`, `--block`) |
-| `hybrid-search "QUERY"` | FTS5 + vector hybrid retrieval (`--mode rrf\|cascade`) |
-| `ingest "CONTENT"` | Write a new memory (`--importance 0.5`, `--type memory`, `--domain`) |
-| `link --source N --target N` | Create a graph edge (`--relation`, `--one-way`) |
-| `index` | Scan and index the knowledge base |
-| `graph --id N` | Graph neighbors of a node (`--depth`, `--relation`, `--min-weight`) |
-| `recent` | Recent memories (`--limit`, `--domain`) |
-| `review` | Period review over the last N days |
-| `kb "QUERY"` | Semantic search over knowledge chunks |
-| `consolidate` | Consolidation preview; `--apply` merges (`--threshold 0.85`, `--max-importance 0.8`) |
-| `ingest-git` | Index recent git commits as `git_commit` nodes (idempotent) |
-| `fts-rebuild` | Rebuild the full FTS5 index |
-| `fts-search "QUERY"` | Raw FTS5 search (trigram substring) |
-| `startup-check` | Run the startup self-check (exit code 1 on failure) |
-| `task-archive` | Archive completed tasks; `--apply` writes markdown and deletes nodes |
+| `search "QUERY"` | 统一检索（`--scope all\|memory\|kb`、`--neighbors`、`--block`） |
+| `hybrid-search "QUERY"` | FTS5 + 向量混合检索（`--mode rrf\|cascade`） |
+| `ingest "CONTENT"` | 写入新记忆（`--importance 0.5`、`--type memory`、`--domain`） |
+| `link --source N --target N` | 创建图边（`--relation`、`--one-way`） |
+| `index` | 扫描并索引知识库 |
+| `graph --id N` | 某节点的图谱邻居（`--depth`、`--relation`、`--min-weight`） |
+| `recent` | 最近的记忆（`--limit`、`--domain`） |
+| `review` | 最近 N 天的周期回顾 |
+| `kb "QUERY"` | 知识切片的语义搜索 |
+| `consolidate` | 合并预览；`--apply` 执行合并（`--threshold 0.85`、`--max-importance 0.8`） |
+| `ingest-git` | 将近期 git 提交索引为 `git_commit` 节点（幂等） |
+| `fts-rebuild` | 重建完整 FTS5 索引 |
+| `fts-search "QUERY"` | 原始 FTS5 搜索（trigram 子串） |
+| `startup-check` | 运行启动自检（失败时退出码 1） |
+| `task-archive` | 归档已完成任务；`--apply` 写入 markdown 并删除节点 |
 
-Examples:
+示例：
 
 ```bash
-python scripts/palimpsest_cli.py ingest "The service listens on port 8090" --domain work --importance 0.6
-python scripts/palimpsest_cli.py search "port 8090" --neighbors
+python scripts/palimpsest_cli.py ingest "服务监听 8090 端口" --domain work --importance 0.6
+python scripts/palimpsest_cli.py search "8090 端口" --neighbors
 python scripts/palimpsest_cli.py fts-search "8090"
-python scripts/palimpsest_cli.py consolidate              # preview
-python scripts/palimpsest_cli.py consolidate --apply      # merge
+python scripts/palimpsest_cli.py consolidate              # 预览
+python scripts/palimpsest_cli.py consolidate --apply      # 合并
 ```
 
-### REST API — `main.py`, port 8090
+### REST API — `main.py`，端口 8090
 
-| Method | Path | Description |
+| 方法 | 路径 | 说明 |
 |---|---|---|
-| `GET` | `/` | Service info + version + endpoint index |
-| `GET` | `/export` | Export all memories as a compact JSON snapshot (by importance) |
-| `GET` | `/summary` | Human-readable memory summary (events / character state / plans) |
-| `POST` | `/report` | Generate a LLM-based analysis report from the current store |
-| `DELETE` | `/memory/{id}` | Delete a memory node (FTS index kept in sync) |
-| `PUT` | `/memory/{id}` | Update a node's payload/metadata |
-| `PATCH` | `/memory/{id}/vector` | Update a node's vector (dimension must match) |
-| `POST` | `/mem/search` | Unified retrieval |
-| `POST` | `/mem/hybrid-search` | Hybrid FTS5 + vector retrieval |
-| `POST` | `/mem/ingest` | Write a new memory (with conflict detection + secret scan) |
-| `POST` | `/mem/link` | Create a graph edge |
-| `POST` | `/graph/neighbors` | Graph neighbors of a node |
-| `POST` | `/mem/router` | Task-routing query |
+| `GET` | `/` | 服务信息 + 版本 + 端点索引 |
+| `GET` | `/export` | 导出全部记忆为紧凑 JSON 快照（按重要度） |
+| `GET` | `/summary` | 人类可读的记忆摘要（事件 / 角色状态 / 计划） |
+| `POST` | `/report` | 基于当前存储生成 LLM 分析报告 |
+| `DELETE` | `/memory/{id}` | 删除记忆节点（FTS 索引同步） |
+| `PUT` | `/memory/{id}` | 更新节点的 payload / 元数据 |
+| `PATCH` | `/memory/{id}/vector` | 更新节点的向量（维度需一致） |
+| `POST` | `/mem/search` | 统一检索 |
+| `POST` | `/mem/hybrid-search` | FTS5 + 向量混合检索 |
+| `POST` | `/mem/ingest` | 写入新记忆（含冲突检测 + 敏感扫描） |
+| `POST` | `/mem/link` | 创建图边 |
+| `POST` | `/graph/neighbors` | 某节点的图谱邻居 |
+| `POST` | `/mem/router` | 任务路由查询 |
 
-Example:
+示例：
 
 ```bash
 curl -X POST http://127.0.0.1:8090/mem/search \
   -H "Content-Type: application/json" \
-  -d '{"query": "architecture", "scope": "all", "top_k": 5}'
+  -d '{"query": "架构", "scope": "all", "top_k": 5}'
 ```
 
 ---
 
-## Testing
+## 测试
 
 ```bash
-# from the repository root
+# 在仓库根目录执行
 python -m pytest tests/ -v
 ```
 
-The suite is 6 smoke tests covering the core loop:
+测试套件共 **6 条冒烟测试**，覆盖核心闭环：
 
-- ingest → `mem_search` hit → `mem_get_full` full-text roundtrip
-- graph edge creation → `graph_neighbors`
-- secret scan **rejects** content containing an API key (and reports the matching rule)
-- hybrid retrieval — FTS side (trigram substring) hit marked `fts_hit`
-- `consolidate` dry-run surfaces candidates without mutating nodes
-- `task_archive` dry-run vs apply (archival markdown + node deletion)
+- 写入 → `mem_search` 命中 → `mem_get_full` 全文往返
+- 创建图边 → `graph_neighbors`
+- 敏感扫描 **拒绝** 含 API Key 的内容（并报告命中规则）
+- 混合检索 — FTS 侧（trigram 子串）命中标记 `fts_hit`
+- `consolidate` 干跑找出候选且不改动节点
+- `task_archive` 干跑对比应用（归档 markdown + 删除节点）
 
-`tests/conftest.py` redirects `DB_PATH` to a **temporary database** (and isolates the knowledge base) before anything is imported — the suite never touches `data/mh_memory.db`.
+`tests/conftest.py` 在一切导入之前将 `DB_PATH` 重定向到 **临时数据库**（并隔离知识库）—— 测试套件永远不碰 `data/mh_memory.db`。
 
 ---
 
-## Project Structure
+## 项目结构
 
 ```
 Palimpsest/
-├── README.md
+├── README.md                     # 中文主版
+├── README_EN.md                  # 英文版
 ├── LICENSE
-├── .env.example
+├── .env.example                  # 配置模板（带注释）
 ├── .gitignore
 ├── requirements.txt
-├── config.py                     # environment-driven configuration
-├── main.py                       # FastAPI REST entry point (:8090)
-├── mcp_server.py                 # MCP stdio entry point (FastMCP)
+├── config.py                     # 环境变量驱动配置
+├── main.py                       # FastAPI REST 入口 (:8090)
+├── mcp_server.py                 # MCP stdio 入口 (FastMCP)
 ├── dashboard.html
-├── core/                         # shared engine, no framework dependencies
-│   ├── trivium_store.py          #   TriviumDB wrapper (vector+graph+document)
-│   ├── conflict.py               #   conflict detection / version chaining
-│   ├── consolidator.py           #   near-duplicate memory consolidation
-│   ├── fts_index.py              #   FTS5 full-text index (trigram, fts.db)
-│   ├── reporting.py              #   LLM-generated memory reports
-│   ├── secret_scan.py            #   pre-write secret scanning (10 rules)
-│   ├── startup_check.py          #   startup self-check
-│   ├── task_archive.py           #   completed-task auto-archiving
+├── core/                         # 共享引擎，无框架依赖
+│   ├── trivium_store.py          #   TriviumDB 封装（向量+图谱+文档）
+│   ├── conflict.py               #   冲突检测 / 版本链
+│   ├── consolidator.py           #   近似重复记忆合并
+│   ├── fts_index.py              #   FTS5 全文索引（trigram, fts.db）
+│   ├── reporting.py              #   LLM 生成的记忆报告
+│   ├── secret_scan.py            #   写入前敏感扫描（10 条规则）
+│   ├── startup_check.py          #   启动自检
+│   ├── task_archive.py           #   完成任务自动归档
 │   ├── utils.py
-│   └── version.py                #   version from git tags (fallback: dev)
-├── mcp_tools/                    # 14 MCP tools (shared by MCP/REST/CLI)
+│   └── version.py                #   版本号来自 git tag（兜底 dev）
+├── mcp_tools/                    # 14 个 MCP 工具（MCP/REST/CLI 共用）
 │   ├── __init__.py
-│   ├── _common.py                #   shared store / mcp / serialization helpers
-│   ├── memory.py                 #   mem_* tools
+│   ├── _common.py                #   共享 store / mcp / 序列化助手
+│   ├── memory.py                 #   mem_* 工具
 │   ├── kb.py                     #   kb_index / kb_search
 │   ├── graph.py                  #   graph_neighbors / mem_link
 │   ├── routing.py                #   router_query
 │   └── consolidate_tool.py       #   mem_consolidate
-├── scripts/                      # operational tooling
-│   ├── palimpsest_cli.py         #   15-command CLI
-│   ├── dashboard.py              #   dashboard service (:8010)
-│   ├── build_kb_index.py         #   knowledge-base chunking & vectorization
-│   ├── sync_rules.py             #   rule notes → model-routing decision tree
-│   ├── check_kb_consistency.py   #   KB vs DB consistency checks
-│   ├── export_all_data.py        #   read-only JSON backup export
-│   ├── graph_edges.py            #   persistent knowledge-graph edges
-│   ├── rebuild_db.py             #   rebuild DB from an export snapshot
-│   ├── start_rest.vbs            #   Windows hidden-window REST launcher
-│   └── tdb_stress/               #   TriviumDB stress tests
+├── scripts/                      # 运维工具
+│   ├── palimpsest_cli.py         #   15 命令 CLI
+│   ├── dashboard.py              #   监控面板 (:8010)
+│   ├── build_kb_index.py         #   知识库分块 & 向量化
+│   ├── sync_rules.py             #   规则笔记 → 模型路由决策树
+│   ├── check_kb_consistency.py   #   知识库 vs 数据库一致性检查
+│   ├── export_all_data.py        #   只读 JSON 备份导出
+│   ├── graph_edges.py            #   持久化知识图谱边
+│   ├── rebuild_db.py             #   从导出快照重建数据库
+│   ├── start_rest.vbs            #   Windows 隐藏窗口 REST 启动器
+│   └── tdb_stress/               #   TriviumDB 压力测试
 │       ├── tdb_stress.py
 │       └── tdb_stress2.py
 ├── tests/
-│   ├── conftest.py               # temporary-DB isolation
-│   └── test_smoke.py             # 6 smoke tests
-└── data/                         # runtime databases (gitignored)
-    ├── mh_memory.db              #   main TriviumDB store
-    └── fts.db                    #   FTS5 full-text index
+│   ├── conftest.py               # 临时数据库隔离
+│   └── test_smoke.py             # 6 条冒烟测试
+└── data/                         # 运行时数据库（gitignore）
+    ├── mh_memory.db              #   主 TriviumDB 存储
+    └── fts.db                    #   FTS5 全文索引
 ```
 
 ---
 
-## Development
+## 开发指南
 
-- **Virtual environment:** create one per checkout (`python -m venv venv`) and `pip install -r requirements.txt`.
-- **Adding a tool:** register it inside `mcp_tools/` with the shared `@mcp.tool()` decorator — it becomes immediately available to the MCP server, the REST layer, and the CLI.
-- **Adding a core module:** keep `core/` free of FastAPI/MCP imports; consume it through `mcp_tools/` and `main.py`. `versions` are discovered from git tags (`git describe --tags`) by `core/version.py`.
-- **Breaking a schema?** rebuild the FTS index (`fts-search`... `fts-rebuild`) and the knowledge-base index (`build_kb_index.py`); export/rebuild tooling lives in `scripts/`.
-- **Tests:** keep them isolated — never point a test at `data/mh_memory.db`.
+- **虚拟环境：** 每个 checkout 单独建一个（`python -m venv venv`）并 `pip install -r requirements.txt`。
+- **新增工具：** 在 `mcp_tools/` 内用共享的 `@mcp.tool()` 装饰器注册——它会立即同时出现在 MCP 服务、REST 层与 CLI 中。
+- **新增核心模块：** 保持 `core/` 不引入 FastAPI/MCP；经由 `mcp_tools/` 与 `main.py` 消费。版本号由 `core/version.py` 从 git tag 获取（`git describe --tags`）。
+- **改了 schema？** 重建 FTS 索引（`fts-rebuild`）与知识库索引（`build_kb_index.py`）；导出 / 重建工具在 `scripts/`。
+- **测试：** 保持隔离——绝不让测试指向 `data/mh_memory.db`。
 
-Before opening a pull request, run the smoke suite:
+提交 PR 前请先跑冒烟测试：
 
 ```bash
 python -m pytest tests/ -v
