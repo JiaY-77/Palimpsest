@@ -345,6 +345,8 @@ Palimpsest/
 python -m pytest tests/ -v
 ```
 
+版本发布遵循 [语义化版本](https://semver.org/lang/zh-CN/)，流程见 [RELEASING.md](docs/RELEASING.md)，历史见 [CHANGELOG.md](CHANGELOG.md)。
+
 ---
 
 ## License

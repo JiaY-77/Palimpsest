@@ -364,6 +364,8 @@ Before opening a pull request, run the smoke suite:
 python -m pytest tests/ -v
 ```
 
+Releases follow [Semantic Versioning](https://semver.org/); see [RELEASING.md](docs/RELEASING.md) for the process and [CHANGELOG.md](CHANGELOG.md) for history.
+
 ---
 
 ## License
