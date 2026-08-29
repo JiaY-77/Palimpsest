@@ -62,6 +62,28 @@ class TriviumStore:
             self.dim = Config.EMBEDDING_DIM
         else:
             self.dim = Config.OLLAMA_EMBEDDING_DIM
+        # T060 阶段5：常用字段索引建一次即可，不再随每次 insert_node 重建
+        self._init_indexes()
+
+    def _init_indexes(self) -> None:
+        """一次性创建常用 payload 字段倒排索引（type/importance/status/character_name）。
+
+        triviumdb 0.8.2 的 create_index 幂等：索引已存在或无字段数据均静默成功。
+        初始化失败（库被锁/建库异常等）静默降级：仅 log warning，不影响启动。
+        """
+        db = None
+        try:
+            db = self._acquire()
+            for field in ("type", "importance", "status", "character_name"):
+                db.create_index(field)
+        except Exception as e:
+            logger.warning(f"初始化字段索引失败（静默降级）: {e}")
+        finally:
+            if db is not None:
+                try:
+                    db.close()
+                except Exception:
+                    pass
 
     def _acquire(self):
         """
@@ -160,10 +182,6 @@ class TriviumStore:
                 raise SecretScanError(secret_hits)
 
             node_id = db.insert(embedding, payload)
-            db.create_index("type")
-            db.create_index("importance")
-            db.create_index("status")
-            db.create_index("character_name")  # 新增索引，加速过滤
             return node_id
 
     def create_edge(
@@ -367,29 +385,53 @@ class TriviumStore:
     def iter_payloads(self):
         """遍历所有节点，yield (node_id, payload)。
 
-        替代外部重复的 `_get_all_node_ids + get_node + if not node` 样板
-        （P0 重构，2026-08-27）。行为与原模式逐字节一致：
-        节点缺失跳过；payload 统一归一为 dict。
+        单连接遍历（T060 阶段4 优化）：一次 _acquire 拿全部 node_id，
+        同一连接内逐个 db.get，替代原「_get_all_node_ids + 每节点 get_node」
+        （N+1 次开/关连接）。行为与原版逐字节一致：
+        节点缺失跳过；payload 统一归一为 dict（只取 payload，不读 vector）。
         """
-        for nid in self._get_all_node_ids():
-            node = self.get_node(nid)
-            if not node:
-                continue
-            yield nid, node.get("payload", {}) or {}
+        db = None
+        try:
+            db = self._acquire()
+            for nid in db.all_node_ids():
+                node = db.get(nid)
+                if not node:
+                    continue
+                yield nid, node.payload or {}
+        finally:
+            # 0.7.6 的 with 退出不释放锁，必须显式 close；0.8.2 兼容（close 幂等）
+            if db is not None:
+                try:
+                    db.close()
+                except Exception:
+                    pass
 
     def iter_nodes(self):
         """遍历所有节点，yield (node_id, {"id", "payload", "num_edges", "vector"})。
 
-        替代外部 `_get_all_node_ids + get_node` 的重复样板
-        （P2 重构，2026-08-29）。节点缺失跳过；
-        向量为 1024 维浮点数组，调用方按需取用即可（体量大，勿无条件拷贝）。
-        行为与原模式一致：只 yield 存在节点，缺失即跳过。
+        单连接遍历（2026-08-29 优化，与 iter_payloads 同模式）：一次 _acquire
+        拿全部 node_id，同一连接内逐个 db.get，替代 N+1 次开/关连接。
+        节点缺失跳过；向量为 1024 维浮点数组，调用方按需取用（体量大，勿无条件拷贝）。
         """
-        for nid in self._get_all_node_ids():
-            node = self.get_node(nid)
-            if not node:
-                continue
-            yield nid, node
+        db = None
+        try:
+            db = self._acquire()
+            for nid in db.all_node_ids():
+                node = db.get(nid)
+                if not node:
+                    continue
+                yield nid, {
+                    "id": node.id,
+                    "payload": node.payload or {},
+                    "num_edges": node.num_edges,
+                    "vector": node.vector,
+                }
+        finally:
+            if db is not None:
+                try:
+                    db.close()
+                except Exception:
+                    pass
 
     def count_by_type(self) -> dict[str, int]:
         """统计各节点类型数量，返回 {type: count}。
