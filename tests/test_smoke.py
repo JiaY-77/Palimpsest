@@ -206,3 +206,28 @@ def test_startup_check_embedding():
     assert isinstance(item, dict)
     assert "ok" in item and isinstance(item["ok"], bool), item
     assert "detail" in item and isinstance(item["detail"], str), item
+
+
+def test_block_validation():
+    """出厂默认不含 personal block（novel/work），只含通用 block。"""
+    from core.trivium_store import is_valid_block
+
+    assert is_valid_block("task") is True
+    assert is_valid_block("kb") is True
+    assert is_valid_block("hermes") is True
+    assert is_valid_block("general") is True
+    assert is_valid_block("") is True
+    assert is_valid_block("novel") is False
+    assert is_valid_block("work") is False
+    assert is_valid_block("随便") is False
+
+
+def test_block_custom_domain_not_blocked():
+    """自定义 domain 作为 block 应放行（提示而非拦截退出）——CLI _validate_block 行为。"""
+    from scripts.palimpsest_cli import _validate_block
+
+    # 内置 block 原样返回，无提示
+    assert _validate_block("task") == "task"
+    # 自定义 domain 也原样返回（放行），不抛异常、不退出
+    assert _validate_block("myproject") == "myproject"
+    assert _validate_block("") == ""

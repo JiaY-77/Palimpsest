@@ -49,7 +49,7 @@ try:
     from core.consolidator import consolidate  # noqa: E402
     from core.fts_index import index_node, rebuild as fts_rebuild, remove_node, search_fts  # noqa: E402
     from core.startup_check import run_startup_check  # noqa: E402
-    from core.trivium_store import TriviumStore  # noqa: E402
+    from core.trivium_store import TriviumStore, is_valid_block  # noqa: E402
 except ImportError as _import_err:
     _hint = (
         "\n"
@@ -70,7 +70,21 @@ except ImportError as _import_err:
     sys.exit(1)
 
 
+def _validate_block(block: str) -> str:
+    """校验 --block 参数：出厂通用区块直接通过；自定义 domain 放行但给提示（防拼写错误，不拦截）。"""
+    if block and not is_valid_block(block):
+        hint = (
+            f"提示：{block} 不是出厂内置区块（task / kb / hermes / general，rule 归入 kb）。"
+            "若为自定义 domain 可正常使用，若为拼写错误请检查。\n"
+            f"Note: {block} is not a built-in block (task / kb / hermes / general, "
+            "rule is part of kb). Custom domains work as blocks; check for typos."
+        )
+        print(hint, file=sys.stderr)
+    return block
+
+
 def cmd_search(args):
+    _validate_block(args.block)
     print(mem_search(
         query=args.query, scope=args.scope, domain=args.domain,
         top_k=args.top_k, include_neighbors=args.neighbors, block=args.block,
@@ -114,6 +128,7 @@ def cmd_index(args):
 
 
 def cmd_graph(args):
+    _validate_block(args.block)
     print(graph_neighbors(
         node_id=args.id, relation=args.relation, depth=args.depth,
         limit=args.limit, min_weight=args.min_weight, block=args.block,
@@ -272,7 +287,7 @@ def main():
     sp.add_argument("--domain", default="")
     sp.add_argument("--top-k", type=int, default=5)
     sp.add_argument("--neighbors", action="store_true", help="返回图关联区")
-    sp.add_argument("--block", default="", help="图谱扩散只走同区块边（hermes/work/novel/kb/general）")
+    sp.add_argument("--block", default="", help="图谱扩散只走同区块边（内置：task/kb/hermes/general；可传自定义 domain）")
     sp.set_defaults(fn=cmd_search)
 
     sp = sub.add_parser("hybrid-search", help="混合检索（FTS5 精确 + 语义向量：RRF 融合 / 级联）")
@@ -307,7 +322,7 @@ def main():
     sp.add_argument("--relation", default="")
     sp.add_argument("--min-weight", type=float, default=0.0, help="精馏：只保留 weight 不低于此值的边")
     sp.add_argument("--limit", type=int, default=20)
-    sp.add_argument("--block", default="", help="只沿 target 节点 domain 匹配区块的边扩散（hermes/work/novel/kb/general）")
+    sp.add_argument("--block", default="", help="只沿 target 节点 domain 匹配区块的边扩散（内置：task/kb/hermes/general；可传自定义 domain）")
     sp.set_defaults(fn=cmd_graph)
 
     sp = sub.add_parser("recent", help="最近记忆列表")

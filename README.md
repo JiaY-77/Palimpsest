@@ -221,6 +221,10 @@ python scripts/palimpsest_cli.py consolidate              # 预览
 python scripts/palimpsest_cli.py consolidate --apply      # 合并
 ```
 
+### 区块（Blocks）
+
+`block` 是「域分组」概念：图谱按区块隔离，扩散检索只沿同区块的边，防止跨域污染。出厂内置通用区块：`task`（任务）、`kb`（知识库）、`hermes`（助手自身记忆）、`general`（未分类兜底）；其中 `rule` 是 `kb` 的子集（规则切片，归入 `kb` 区块）。你也可以把自己的 `domain` 当作区块使用（如 `--block myproject`）。`--block` 留空则按全量模式检索。
+
 ### REST API — `main.py`，端口 8090
 
 | 方法 | 路径 | 说明 |

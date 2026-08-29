@@ -15,6 +15,17 @@ logger = logging.getLogger(__name__)
 EXPAND_MAX_EDGES_PER_NODE = 20   # 防高节点（500 邻居）全量扩散
 EXPAND_MIN_EDGE_WEIGHT = 0.0     # 弱边过滤阈值（默认不启用，可调）
 
+# 出厂通用区块（domain 分组概念：图谱分区块防跨域污染）。
+# rule 归入 kb 区块的兼容已有逻辑（domain_in_block），单独列出便于校验。
+DEFAULT_BLOCKS = ("task", "kb", "rule", "hermes", "general")
+
+
+def is_valid_block(block: str) -> bool:
+    """区块合法性校验：空串（全量模式）或出厂通用区块为 True，否则 False。"""
+    if not block:
+        return True
+    return (block or "").strip().lower() in DEFAULT_BLOCKS
+
 
 def domain_in_block(node_domain: str, block: str) -> bool:
     """区块匹配（分区块）：domain 是否属于 block。kb 区块兼容 rule（rule 是知识子集）。"""
