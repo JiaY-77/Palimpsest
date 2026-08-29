@@ -11,9 +11,7 @@ from core.utils import _to_float
 
 logger = logging.getLogger(__name__)
 
-# 图谱扩散精馏（2026-08-25 主人挑战 #2）：每节点最多扩散最强 N 条边；弱边阈值
-EXPAND_MAX_EDGES_PER_NODE = 20   # 防高节点（500 邻居）全量扩散
-EXPAND_MIN_EDGE_WEIGHT = 0.0     # 弱边过滤阈值（默认不启用，可调）
+# 图谱扩散参数来自 Config（性能优化）：每节点最多扩散最强 N 条边；弱边阈值。
 
 # 出厂通用区块（domain 分组概念：图谱分区块防跨域污染）。
 # rule 归入 kb 区块的兼容已有逻辑（domain_in_block），单独列出便于校验。
@@ -64,7 +62,7 @@ class TriviumStore:
             self.dim = Config.EMBEDDING_DIM
         else:
             self.dim = Config.OLLAMA_EMBEDDING_DIM
-        # T060 阶段5：常用字段索引建一次即可，不再随每次 insert_node 重建
+        # 性能优化：常用字段索引建一次即可，不再随每次 insert_node 重建
         self._init_indexes()
 
     def _init_indexes(self) -> None:
@@ -176,7 +174,7 @@ class TriviumStore:
             }
             payload.update(extra_fields)
 
-            # 敏感信息强/弱分级扫描（T060 审计整改）：
+            # 敏感信息强/弱分级扫描（安全审计整改）：
             #   强规则命中（API key/token/私钥）→ 拒绝入库
             #   弱规则命中（身份证/手机号）→ 放行但打 secret_hint 标记供审计
             scan_text = " ".join(
@@ -289,7 +287,7 @@ class TriviumStore:
                           block: str = "") -> list:
         """沿边 BFS 扩散邻居，去重后按 score 重排。
 
-        精馏（2026-08-25 主人挑战 #2 + 分区块）：
+        精馏（性能优化 + 分区块）：
         - 每节点只扩散按 weight 降序的最强 max_edges_per_node 条边（默认 20），
           防高节点（如 500 邻居）全量扩散撑爆计算/污染结果；
         - 扩散分数 = 当前分数 × 边 weight（替代旧固定 ×0.8），强边自然靠前；
@@ -297,9 +295,9 @@ class TriviumStore:
         - block 非空时只扩散 target 节点 domain 匹配区块的边（图谱分区块，防跨域污染）。
         """
         max_edges = (max_edges_per_node if max_edges_per_node is not None
-                     else EXPAND_MAX_EDGES_PER_NODE)
+                     else Config.EXPAND_MAX_EDGES_PER_NODE)
         min_w = (min_edge_weight if min_edge_weight is not None
-                 else EXPAND_MIN_EDGE_WEIGHT)
+                 else Config.EXPAND_MIN_EDGE_WEIGHT)
         merged = {node.get("id"): (score, node) for score, node in top}
         seen = set(merged.keys())
         frontier = [(score, node.get("id"), 0) for score, node in top]
@@ -391,7 +389,7 @@ class TriviumStore:
     def iter_payloads(self):
         """遍历所有节点，yield (node_id, payload)。
 
-        单连接遍历（T060 阶段4 优化）：一次 _acquire 拿全部 node_id，
+        单连接遍历（性能优化）：一次 _acquire 拿全部 node_id，
         同一连接内逐个 db.get，替代原「_get_all_node_ids + 每节点 get_node」
         （N+1 次开/关连接）。行为与原版逐字节一致：
         节点缺失跳过；payload 统一归一为 dict（只取 payload，不读 vector）。

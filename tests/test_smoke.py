@@ -337,3 +337,64 @@ def test_block_custom_domain_not_blocked():
     # 自定义 domain 也原样返回（放行），不抛异常、不退出
     assert _validate_block("myproject") == "myproject"
     assert _validate_block("") == ""
+
+
+def test_sanitize_filename_dotdot():
+    """_sanitize_filename 路径遍历防护：危险文件名回退 fallback，正常标题不变。"""
+    from core.task_archive import _sanitize_filename
+
+    # 路径遍历意图 → 返回 fallback（默认 "task"）
+    assert _sanitize_filename("..") == "task"
+    assert _sanitize_filename("..secret") == "task"
+    assert _sanitize_filename("...foo") == "task"
+    assert _sanitize_filename(".") == "task"
+    # 显式自定义 fallback
+    assert _sanitize_filename("..", fallback="memo_1") == "memo_1"
+    # 正常中文标题清洗后不变（含空白则去除空白）
+    assert _sanitize_filename("正常标题") == "正常标题"
+    assert _sanitize_filename("优化 流程") == "优化流程"
+    # 尾部点/空格正常剥离，不触发防护
+    assert _sanitize_filename("hello.") == "hello"
+    # 中间含 ".." 但非开头 → 不拦截
+    assert _sanitize_filename("a..b") == "a..b"
+
+
+def test_transaction_merge(db_path):
+    """consolidate(dry_run=False) 走事务合并路径：合并节点/边/标脏状态正确。"""
+    from core.consolidator import consolidate
+    from mcp_tools import store
+
+    base = "事务合并护栏：一条用于验证事务合并路径的记忆内容"
+    emb_a = store.embed_text(base)
+    emb_b = store.embed_text(base + "（副本乙）")
+    # importance 一高一低（0.3 / 0.5）且均 < max_importance(0.8)：既非 both_important
+    # 也非 high_value，确保真正走合并路径（双方都高会被 _filter_candidates 跳过）
+    a_id = store.insert_node(
+        {"type": "memory", "content": base, "importance": 0.3}, emb_a)
+    b_id = store.insert_node(
+        {"type": "memory", "content": base + "（副本乙）", "importance": 0.5}, emb_b)
+    assert a_id != b_id
+
+    r = consolidate(store, dry_run=False)
+    assert r["dry_run"] is False, r
+    assert r["merged"] >= 1, r
+
+    merged_ids = [m for m in r["merged_ids"]
+                  if {m["old_a"], m["old_b"]} == {a_id, b_id}]
+    assert merged_ids, f"本测试的合并对应出现在 merged_ids: {r['merged_ids']}"
+    m = merged_ids[0]
+    new_id = m["new_id"]
+
+    # 新合并节点存在、status=active、内容含合并标记
+    new_payload = store.get_node(new_id)["payload"]
+    assert new_payload["status"] == "active", new_payload
+    assert "由 Palimpsest 自动合并自节点" in new_payload.get("content", ""), new_payload
+
+    # 两个旧节点被标 outdated
+    assert store.get_node(a_id)["payload"]["status"] == "outdated"
+    assert store.get_node(b_id)["payload"]["status"] == "outdated"
+
+    # 新节点到两个旧节点各建了一条 REVISED_BY 边
+    edges = store.get_node(new_id)["num_edges"]
+    assert edges >= 2, f"新合并节点应有 >=2 条 REVISED_BY 边, 实际 {edges}"
+

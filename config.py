@@ -40,6 +40,20 @@ class Config:
     RULE_RETRIEVAL_WEIGHT = float(os.getenv("RULE_RETRIEVAL_WEIGHT", "1.3"))
     DOMAIN_BIAS_WEIGHT = float(os.getenv("DOMAIN_BIAS_WEIGHT", "1.15"))
 
+    # ---- 图谱扩散精馏（魔法数字配置化）----
+    # 每节点最多扩散的最强边数（防高节点全量扩散撑爆计算/污染结果）
+    EXPAND_MAX_EDGES_PER_NODE = int(os.getenv("EXPAND_MAX_EDGES_PER_NODE", "20"))
+    # 扩散时弱边过滤阈值（默认 0.0 不启用）
+    EXPAND_MIN_EDGE_WEIGHT = float(os.getenv("EXPAND_MIN_EDGE_WEIGHT", "0.0"))
+
+    # ---- L1 MEMORY.md 嗅探（魔法数字配置化）----
+    # 超过该大小（字节）的 MEMORY.md 不读入内存缓存
+    L1_MAX_SIZE = int(os.getenv("L1_MAX_SIZE", str(5 * 1024)))
+
+    # ---- 混合检索 RRF（魔法数字配置化）----
+    # Reciprocal Rank Fusion 标准 k 值：单侧命中也算贡献
+    RRF_K = float(os.getenv("RRF_K", "60.0"))
+
     # ---- LLM 后端选择 ----
     # 可选: "ollama" 或 "deepseek"
     LLM_BACKEND = os.getenv("LLM_BACKEND", "deepseek")

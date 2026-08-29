@@ -145,7 +145,7 @@ def graph_neighbors(node_id: int, relation: str = "", depth: int = 1,
     relation 非空时只保留 label 匹配的边（忽略大小写）；min_weight 过滤弱边；
     block 非空时只沿 target 节点 domain 匹配区块的边扩散（图谱分区块，防跨域污染）；
     每节点去重（只出现一次，取最先到达的跳数），结果按 weight 降序截断
-    （精馏：强关联优先，防高节点「先到先得」占满 limit，2026-08-25 主人挑战 #2）。
+    （精馏：强关联优先，防高节点「先到先得」占满 limit，性能优化）。
     每条邻居返回 {target_id, relation, weight, target_type, target_title}。
     返回 JSON：{"node_id", "depth", "count", "relations": [...]}。
     （结构已拆分：_clamp_params / _bfs_neighbors / _fill_neighbor_summaries，行为不变。）
@@ -158,7 +158,7 @@ def graph_neighbors(node_id: int, relation: str = "", depth: int = 1,
         return _to_json({"node_id": node_id, "depth": depth, "count": 0,
                          "relations": [], "hint": f"节点不存在: {node_id}"})
 
-    # 起点自检（主人 2026-08-25 审查补丁）：带 block 时起点必须属于该区块，
+    # 起点自检（审查补丁）：带 block 时起点必须属于该区块，
     # 否则直接拦截——堵死跨域起点污染（起点自身不能违规闯入别的区块）
     if blk:
         start_payload = (store.get_node(node_id) or {}).get("payload", {}) or {}

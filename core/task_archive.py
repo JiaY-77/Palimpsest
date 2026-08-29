@@ -41,10 +41,18 @@ _LEADING_PREFIX_RE = re.compile(r"^[A-Za-z]*\d+[：:]\s*")
 _LEADING_TRIM_CHARS = " \t-–—•·。：:,.，"
 
 
-def _sanitize_filename(name: str) -> str:
-    """文件名安全化：剔除 Windows 非法字符（反斜杠、/、:、*、?、"、<、>、|）与空白，并去尾部点/空格。"""
+def _sanitize_filename(name: str, fallback: str = "task") -> str:
+    """文件名安全化：剔除 Windows 非法字符（反斜杠、/、:、*、?、"、<、>、|）与空白，去尾部点/空格。
+
+    安全护栏：清洗后若结果为 "."、".." 或仍以 ".." 开头（路径遍历意图），
+    返回 fallback 兜底名，防止归档时逃逸出目标目录。
+    """
     name = re.sub(r'[\\/:*?"<>|\r\n]', "", name or "")
     name = re.sub(r"\s+", "", name)
+    # 路径遍历防护：检测连续点号开头（"."、".."、"..secret" 等），
+    # 在剥离首尾点/空格之前判断，否则 ".." 会被 strip 成空串而漏网
+    if name in (".", "..") or name.startswith(".."):
+        return fallback
     return name.strip(" .")
 
 

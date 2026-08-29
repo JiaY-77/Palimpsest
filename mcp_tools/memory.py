@@ -112,7 +112,7 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
     except SecretScanError as e:
         return _to_json({"stored": False, "error": str(e), "rules": e.rules})
 
-    # FTS 全文索引同步（T056 混合检索依赖；失败不阻塞主写入，可手动 fts-rebuild 兜底）
+    # FTS 全文索引同步（混合检索依赖；失败不阻塞主写入，可手动 fts-rebuild 兜底）
     try:
         index_node(node_id, content)
     except Exception as e:
@@ -174,7 +174,7 @@ def mem_recent(domain: str = "", limit: int = 10) -> str:
 
 @mcp.tool()
 def mem_review(days: int = 7, domain: str = "") -> str:
-    """复盘盘点（2026-08-25 主人批准：复盘机制融入小帕，复盘=记忆治理）。
+    """复盘盘点（复盘机制融入系统，复盘=记忆治理）。
 
     统计全库节点 + 盘点最近 days 天 ingest 的记忆，输出复盘草稿：
       - recent_ingests：窗口内新增记忆（type=memory，按 created_at 倒序）
@@ -327,11 +327,10 @@ def mem_version_history(domain: str = "hermes", full_content: bool = False,
     })
 
 
-# ---- L1 嗅探（2026-08-25 主人建议：mem_search 一体化检索 L1 MEMORY.md）----
-# MEMORY.md（<5KB）读入内存缓存；命中查询词则进入独立附加区 memory_file_hits，
-# 不伪造节点置顶（记忆领域无魔法 ID）。底层仍物理隔离于 TriviumDB。
+# ---- L1 嗅探（检索优化：mem_search 一体化检索 L1 MEMORY.md）----
+# MEMORY.md（大小上限见 Config.L1_MAX_SIZE）读入内存缓存；命中查询词则进入独立
+# 附加区 memory_file_hits，不伪造节点置顶（记忆领域无魔法 ID）。底层仍物理隔离于 TriviumDB。
 _L1_CACHE: dict = {"path": "", "mtime": 0.0, "content": ""}
-_L1_MAX_SIZE = 5 * 1024  # <5KB 直接读进内存缓存
 
 
 def _l1_sniff(query: str) -> dict:
@@ -349,7 +348,7 @@ def _l1_sniff(query: str) -> dict:
     try:
         mtime = os.path.getmtime(path)
         if _L1_CACHE["path"] != path or _L1_CACHE["mtime"] != mtime:
-            if os.path.getsize(path) > _L1_MAX_SIZE:
+            if os.path.getsize(path) > Config.L1_MAX_SIZE:
                 _L1_CACHE.update(path=path, mtime=mtime, content="")  # 过大不缓存
             else:
                 with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -403,7 +402,7 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
     query = (query or "").strip()
     if not query:
         return {"results": [], "scope": scope, "hint": "查询内容不能为空"}
-    # 前置 L1 嗅探（2026-08-25 主人建议）：MEMORY.md 一体化检索（scope=kb 跳过；
+    # 前置 L1 嗅探（检索优化）：MEMORY.md 一体化检索（scope=kb 跳过；
     # block 非空且不是 hermes 时跳过——L1 属于 hermes 区块，分区查询不跨区块）。
     # 命中只进 memory_file_hits，不再伪造 -1 节点混入 results（消除魔法 ID）。
     l1_hits = ({"hits": []} if scope == "kb" or (block and block.strip().lower() != "hermes")
@@ -424,7 +423,7 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
         # domain 过滤仅作用于记忆节点（kb_chunk 无 character_name 概念，domain 为正式字段）
         if domain and not is_kb and node_domain(payload) != (domain or "").strip().lower():
             continue
-        # 分区块（主人 2026-08-25 审查补丁）：block 非空时主结果也按区块过滤——
+        # 分区块（审查补丁）：block 非空时主结果也按区块过滤——
         # 带 --block hermes 的搜索只返回 hermes 区块内容，语义命中的跨区块节点丢弃
         if block and not domain_in_block(node_domain(payload), block):
             continue
@@ -498,10 +497,9 @@ def mem_search(query: str, scope: str = "all", domain: str = "",
                                      include_neighbors, neighbor_limit, block))
 
 
-# ---- 混合检索（T056：FTS5 精确 + 语义向量 的 RRF 融合 / 级联策略）----
+# ---- 混合检索（FTS5 精确 + 语义向量 的 RRF 融合 / 级联策略）----
 # 只新增，不改动 mem_search / _mem_search_impl 现有行为。
-# RRF 标准 k=60：单侧命中也算贡献；每项 meta 标出 fts_hit / sem_hit 来源。
-_RRF_K = 60.0
+# RRF 标准 k（见 Config.RRF_K）：单侧命中也算贡献；每项 meta 标出 fts_hit / sem_hit 来源。
 
 
 def _sem_candidate_items(query: str, scope: str, domain: str,
@@ -568,13 +566,13 @@ def _hybrid_rrf(query: str, scope: str, domain: str, domain_bias: str,
         nid = item.get("id")
         if nid is None:
             continue
-        rrf[nid] = rrf.get(nid, 0.0) + 1.0 / (_RRF_K + rank)
+        rrf[nid] = rrf.get(nid, 0.0) + 1.0 / (Config.RRF_K + rank)
         sem_hit.add(nid)
     for rank, r in enumerate(fts):
         nid = r.get("node_id")
         if nid is None:
             continue
-        rrf[nid] = rrf.get(nid, 0.0) + 1.0 / (_RRF_K + rank)
+        rrf[nid] = rrf.get(nid, 0.0) + 1.0 / (Config.RRF_K + rank)
         fts_hit.add(nid)
 
     # 语义条目按 id 建表，便于合并命中来源标记；FTS-only 节点按 payload 补全
@@ -632,7 +630,7 @@ def _hybrid_search_impl(query: str, scope: str = "all", domain: str = "",
                         neighbor_limit: int = 5, block: str = "") -> dict:
     """
     mem_hybrid_search 的核心实现（返回 dict，供 mem_hybrid_search 工具复用）。
-    T056 混合检索增强：
+    混合检索增强：
       - mode="rrf"（默认）：Reciprocal Rank Fusion（k=60），FTS5 精确 + 语义向量
         双路排名求和，单侧命中也算贡献；score = RRF 分。
       - mode="cascade"：FTS 粗筛候选集 → 向量精排只保留交集 → 交集不足 top_k
@@ -677,7 +675,7 @@ def mem_hybrid_search(query: str, scope: str = "all", domain: str = "",
                       fts_limit: int = 50, include_neighbors: bool = False,
                       neighbor_limit: int = 5, block: str = "") -> str:
     """
-    混合检索（T056）：FTS5 精确检索 + 语义向量检索的融合排序。
+    混合检索：FTS5 精确检索 + 语义向量检索的融合排序。
     mode 取值："rrf"（默认，Reciprocal Rank Fusion，k=60，单侧命中也算）/
               "cascade"（FTS 粗筛候选集 → 向量精排交集，交集不足从剩余语义补足）。
     scope 同 mem_search（memory/kb/all）；fts_limit 控制 FTS 侧候选量；

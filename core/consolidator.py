@@ -2,6 +2,7 @@
 
 import logging
 
+from core.secret_scan import SecretScanError, scan_secret_classified
 from core.trivium_store import TriviumStore, node_domain
 
 logger = logging.getLogger(__name__)
@@ -18,7 +19,7 @@ def find_candidates(
              'a_content': 前80字, 'b_content': 前80字}]
     去重：a<b 按 id 排序，避免重复对。
 
-    P2 重构（T054）：改为调用 store.find_similar_pairs(sim_threshold)，
+    架构重构：改为调用 store.find_similar_pairs(sim_threshold)，
     由 store 负责原始扫描（单连接、a<b 去重、双方须 active+memory、按 score 降序）；
     此处保留 sim_threshold 阈值过滤语义（find_similar_pairs 内部已按该阈值过滤+排序）。
     """
@@ -61,76 +62,101 @@ def _apply_merge(store: TriviumStore, will_merge: list[dict]) -> tuple[int, list
 
     返回 (merged, merged_ids)。
 
-    P2 重构（T054）：改用 store 公共方法——store.insert_node / store.update_payload /
-    store.create_edge，不再直接 _acquire。注意 store.insert_node 会触发 secret_scan
-    （原 db.insert 不会）：合并节点内容来自库内已有记忆（尾部含「由 Palimpsest 自动
-    合并自节点」字样，不含敏感信息），正常能通过。
+    架构重构 + 崩溃安全终极版：整批合并（新建节点 + 建边×2 + 标脏×2）包进
+    【单个事务】，同一条数据库连接内用 tx.insert_with_id / tx.link / tx.update_payload
+    原子提交。事务内任一操作抛异常 → 自动 rollback（新节点、边、标脏全部回滚），
+    不再出现「旧已脏、新没连」的半合并状态。
+
+    安全注意：合并内容来自库内已有记忆，但为保留 secret_scan 语义，事务内先
+    手动 scan_secret_classified（strong 命中 → raise，触发回滚），再 tx.insert_with_id。
     """
     merged = 0
     merged_ids: list[dict] = []
-    for c in will_merge:
-        a_id, b_id = c["a"], c["b"]
-        a_node = store.get_node(a_id)
-        b_node = store.get_node(b_id)
-        if not a_node or not b_node:
-            continue
-        a_payload = a_node.get("payload") or {}
-        b_payload = b_node.get("payload") or {}
+    db = None
+    try:
+        db = store._acquire()
+        # 为整个批次挑一个安全的起始 id：大于当前最大已提交 id，后续新节点顺序递增
+        existing = db.all_node_ids()
+        next_id = (max(existing) + 1) if existing else 1
+        with db.transaction() as tx:
+            for c in will_merge:
+                a_id, b_id = c["a"], c["b"]
+                a_node = db.get(a_id)
+                b_node = db.get(b_id)
+                if not a_node or not b_node:
+                    continue
+                a_payload = dict(a_node.payload or {})
+                b_payload = dict(b_node.payload or {})
 
-        # 高 importance 方保留内容
-        a_imp = c["a_imp"]
-        b_imp = c["b_imp"]
-        if a_imp >= b_imp:
-            high_payload, low_payload = a_payload, b_payload
-            low_id = b_id
-        else:
-            high_payload, low_payload = b_payload, a_payload
-            low_id = a_id
+                # 高 importance 方保留内容
+                a_imp = c["a_imp"]
+                b_imp = c["b_imp"]
+                if a_imp >= b_imp:
+                    high_payload, low_payload = a_payload, b_payload
+                    low_id = b_id
+                else:
+                    high_payload, low_payload = b_payload, a_payload
+                    low_id = a_id
 
-        high_content = high_payload.get("content") or ""
-        merge_content = (
-            high_content
-            + f"\n\n（由 Palimpsest 自动合并自节点 {low_id}，原内容见 REVISED_BY 链）"
-        )
-        merge_importance = max(c["a_imp"], c["b_imp"])
-        # domain 统一（2026-08-29）：合并节点以 node_domain 为准，domain 与
-        # character_name 镜像同值（消除二义性）。general 为未分类兜底。
-        merge_domain = node_domain(high_payload)
+                high_content = high_payload.get("content") or ""
+                merge_content = (
+                    high_content
+                    + f"\n\n（由 Palimpsest 自动合并自节点 {low_id}，原内容见 REVISED_BY 链）"
+                )
+                merge_importance = max(c["a_imp"], c["b_imp"])
+                # domain 统一：合并节点以 node_domain 为准，domain 与
+                # character_name 镜像同值（消除二义性）。general 为未分类兜底。
+                merge_domain = node_domain(high_payload)
 
-        new_node_data = {
-            "type": "memory",
-            "content": merge_content,
-            "importance": merge_importance,
-            "domain": merge_domain,
-            "character_name": merge_domain,
-            "label": high_payload.get("label", ""),
-            "source": "consolidate",
-        }
-        # 用高 importance 方的向量作为合并节点向量
-        high_vec = (a_node.get("vector")
-                    if a_imp >= b_imp else b_node.get("vector"))
-        new_id = store.insert_node(new_node_data, high_vec)
+                new_node_data = {
+                    "type": "memory",
+                    "content": merge_content,
+                    "importance": merge_importance,
+                    "domain": merge_domain,
+                    "character_name": merge_domain,
+                    "label": high_payload.get("label", ""),
+                    "source": "consolidate",
+                    "status": "active",
+                }
+                # 敏感信息扫描（与 store.insert_node 语义一致）：strong → 拒绝并入
+                scan_text = " ".join(
+                    str(v) for v in new_node_data.values() if isinstance(v, str)
+                )
+                classified = scan_secret_classified(scan_text)
+                if classified["strong"]:
+                    raise SecretScanError(classified["strong"])
+                if classified["weak"]:
+                    new_node_data["secret_hint"] = classified["weak"]
 
-        # 崩溃安全合并顺序（T060 审计整改）：先建边、后标脏。
-        # 破坏性操作（update_payload 标 outdated 旧节点）放最后——若建边失败，
-        # 旧节点仍 active，不会出现「旧已脏、新没连」的半合并状态；新建节点即使
-        # 孤立也比数据损坏好（可由 consolidate 重跑或手动清理）。
-        store.create_edge(new_id, a_id, "REVISED_BY", weight=c["score"])
-        store.create_edge(new_id, b_id, "REVISED_BY", weight=c["score"])
+                # 用高 importance 方的向量作为合并节点向量
+                high_vec = (a_node.vector
+                            if a_imp >= b_imp else b_node.vector)
 
-        # 旧节点标 outdated
-        a_payload["status"] = "outdated"
-        store.update_payload(a_id, a_payload)
-        b_payload["status"] = "outdated"
-        store.update_payload(b_id, b_payload)
+                new_id = next_id
+                next_id += 1
+                tx.insert_with_id(new_id, high_vec, new_node_data)
+                tx.link(new_id, a_id, "REVISED_BY", weight=c["score"])
+                tx.link(new_id, b_id, "REVISED_BY", weight=c["score"])
 
-        merged += 1
-        merged_ids.append({
-            "new_id": new_id,
-            "old_a": a_id,
-            "old_b": b_id,
-            "score": c["score"],
-        })
+                # 旧节点标 outdated
+                a_payload["status"] = "outdated"
+                tx.update_payload(a_id, a_payload)
+                b_payload["status"] = "outdated"
+                tx.update_payload(b_id, b_payload)
+
+                merged += 1
+                merged_ids.append({
+                    "new_id": new_id,
+                    "old_a": a_id,
+                    "old_b": b_id,
+                    "score": c["score"],
+                })
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
 
     return merged, merged_ids
 
