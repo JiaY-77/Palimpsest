@@ -223,6 +223,17 @@ def cmd_startup_check(args):
     sys.exit(0 if result.get("ok") else 1)
 
 
+def cmd_task_archive(args):
+    """已完成任务节点自动归档：默认 dry-run 预览（JSON），--apply 真正执行归档+删节点。"""
+    from core.task_archive import archive_tasks
+    from mcp_tools._common import KNOWLEDGE_DIR
+
+    store = TriviumStore()
+    kb_dir = args.knowledge_dir or KNOWLEDGE_DIR
+    result = archive_tasks(store, dry_run=not args.apply, knowledge_dir=kb_dir)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
 def main():
     p = argparse.ArgumentParser(
         prog="palimpsest_cli",
@@ -311,6 +322,11 @@ def main():
 
     sp = sub.add_parser("startup-check", help="启动自检（文件/存储/FTS/依赖），失败退出码 1")
     sp.set_defaults(fn=cmd_startup_check)
+
+    sp = sub.add_parser("task-archive", help="已完成任务节点自动归档到知识库（05_任务归档/），默认 dry-run 预览")
+    sp.add_argument("--apply", action="store_true", help="真正执行：写归档 md + 删节点（默认只预览不落盘）")
+    sp.add_argument("--knowledge-dir", default="", help="知识库根目录（默认 KNOWLEDGE_DIR 环境变量对应的知识库根）")
+    sp.set_defaults(fn=cmd_task_archive)
 
     args = p.parse_args()
     args.fn(args)

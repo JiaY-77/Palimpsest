@@ -110,3 +110,80 @@ def test_consolidate_dryrun(db_path):
     assert "merged" not in r, r
     assert store.get_node(a_id)["payload"]["status"] == "active"
     assert store.get_node(b_id)["payload"]["status"] == "active"
+
+
+def test_task_archive(db_path):
+    """已完成任务节点自动归档：dry-run 只预览；apply 写归档 md + 删节点。
+
+    用 store.insert_node 直写 3 个 domain=task 节点（绕过 mem_ingest 冲突检测，
+    与 test_consolidate_dryrun 同风格）：
+      ① status=completed（type=task）
+      ② content 含「已完成」（type=plan）
+      ③ 未完成（type=task，content 含「待启动」）
+    归档到独立临时知识库目录（05_任务归档/），不碰真实知识库。
+    """
+    import os
+
+    from core.task_archive import archive_tasks
+    from mcp_tools import store
+
+    emb = store.embed_text("任务归档冒烟向量")
+    a_id = store.insert_node({
+        "type": "task",
+        "character_name": "task",
+        "content": "冒烟任务甲：完成状态直写节点，验证 status 级归档判定",
+        "importance": 0.7,
+    }, emb)
+    store.update_payload(a_id, {**store.get_node(a_id)["payload"], "status": "completed"})
+    b_id = store.insert_node({
+        "type": "plan",
+        "character_name": "task",
+        "content": "冒烟任务乙：优化流程已完成，验证内容级归档判定",
+        "importance": 0.5,
+    }, emb)
+    c_id = store.insert_node({
+        "type": "task",
+        "character_name": "task",
+        "content": "冒烟任务丙：待启动，尚未开工，属未完成任务",
+        "importance": 0.3,
+    }, emb)
+
+    # 独立临时知识库目录（与正式 KNOWLEDGE_DIR 完全隔离）
+    kb_dir = os.path.join(os.path.dirname(db_path), "kb_archive")
+
+    # ---- dry_run：只预览，不写文件、不删节点 ----
+    r = archive_tasks(store, dry_run=True, knowledge_dir=kb_dir)
+    assert r["dry_run"] is True, r
+    cands = r["candidates"]
+    assert len(cands) == 2, f"应识别 2 个已完成任务: {cands}"
+    assert {c["id"] for c in cands} == {a_id, b_id}, cands
+    assert c_id not in {c["id"] for c in cands}, cands
+    for c in cands:
+        assert c["title"], f"候选缺标题: {c}"
+        assert c["target_path"].endswith(".md"), c
+        assert "05_任务归档" in c["target_path"], c
+    assert r["archived"] == [] and r["errors"] == [], r
+    assert r["skipped"] == 1, r
+    assert not os.path.exists(os.path.join(kb_dir, "05_任务归档")), "dry-run 不应写归档目录"
+    assert store.get_node(a_id) is not None and store.get_node(b_id) is not None, "dry-run 不应删节点"
+
+    # ---- apply：写归档 md + 删节点 ----
+    r2 = archive_tasks(store, dry_run=False, knowledge_dir=kb_dir)
+    assert r2["dry_run"] is False, r2
+    assert len(r2["archived"]) == 2, r2
+    assert r2["errors"] == [], r2
+    assert store.get_node(a_id) is None, "已归档节点应被删除"
+    assert store.get_node(b_id) is None, "已归档节点应被删除"
+    assert store.get_node(c_id) is not None, "未完成任务不应被删除"
+    assert r2["skipped"] == 1, r2
+
+    archive_dir = os.path.join(kb_dir, "05_任务归档")
+    files = [f for f in os.listdir(archive_dir) if f.endswith(".md")]
+    assert len(files) == 2, f"应生成 2 个归档 md: {files}"
+    texts = []
+    for fname in files:
+        with open(os.path.join(archive_dir, fname), encoding="utf-8") as f:
+            texts.append(f.read())
+    joined = "\n".join(texts)
+    assert "冒烟任务甲：完成状态直写节点" in joined, "归档内容应含任务①原文"
+    assert "冒烟任务乙：优化流程已完成" in joined, "归档内容应含任务②原文"
