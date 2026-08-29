@@ -1,0 +1,99 @@
+# -*- coding: utf-8 -*-
+"""
+启动自检模块 —— 工程护栏
+========================
+服务/CLI 启动前快速体检核心依赖，返回结构化结果：
+
+    {"ok": bool, "checks": [{"name": str, "ok": bool, "detail": str}, ...]}
+
+检查项：
+  ① 关键文件存在（config.py / requirements.txt / data 目录）
+  ② TriviumStore 能初始化（无需 embedding 在线，初始化失败才报告）
+  ③ FTS5 全文索引能连接
+  ④ 核心依赖可导入（fastapi / triviumdb / dotenv / requests 等）
+
+设计原则：任何单项失败只记录，不抛异常，不阻断服务启动（可用性优先）。
+"""
+
+import importlib
+import importlib.util
+import logging
+import os
+import sqlite3
+
+logger = logging.getLogger(__name__)
+
+
+def _probe(name: str, fn) -> dict:
+    """执行单项检查：捕获异常转为结构化结果，内部永不抛异常。"""
+    try:
+        detail = fn()
+        return {"name": name, "ok": True, "detail": str(detail)}
+    except Exception as e:  # noqa: BLE001 —— 护栏要吞掉所有单项异常
+        logger.warning("启动自检项「%s」失败: %s", name, e)
+        return {"name": name, "ok": False, "detail": str(e)}
+
+
+def _check_key_files() -> str:
+    """检查①：config.py、requirements.txt、data 目录是否存在。"""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    missing = []
+    for rel in ("config.py", "requirements.txt", "data"):
+        if not os.path.exists(os.path.join(root, rel)):
+            missing.append(rel)
+    if missing:
+        raise FileNotFoundError(f"缺失关键文件/目录: {', '.join(missing)}")
+    return "config.py / requirements.txt / data 均存在"
+
+
+def _check_store_init() -> str:
+    """检查②：TriviumStore 能初始化。
+
+    仅验证构造与取库路径不抛错；embedding 服务（ollama/云端）是否在线
+    属于运行时能力，不要求此时在线。
+    """
+    from core.trivium_store import TriviumStore  # 延迟导入，避免重 import 副作用
+
+    store = TriviumStore()
+    db_path = store.db_path
+    return f"TriviumStore 初始化成功 (DB={db_path}, dim={store.dim})"
+
+
+def _check_fts() -> str:
+    """检查③：FTS5 索引能连接（能否建/查虚拟表）。"""
+    from core.fts_index import _db_path, search_fts  # 延迟导入
+
+    path = _db_path()
+    # 连接并触发建表（trigram 分词），随后做一次空查询验证可用
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS mem_fts USING fts5("
+            "content, node_id UNINDEXED, source_path UNINDEXED, "
+            "tokenize='trigram')"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    search_fts("护栏")  # 容错空查询，抛异常即判定失败
+    return f"FTS5 索引可用 (fts.db={path})"
+
+
+def _check_dependencies() -> str:
+    """检查④：核心依赖可导入。"""
+    required = ("fastapi", "triviumdb", "pydantic", "dotenv", "requests")
+    missing = [m for m in required if importlib.util.find_spec(m) is None]
+    if missing:
+        raise ImportError(f"缺失依赖包: {', '.join(missing)}")
+    return "依赖可导入: " + ", ".join(required)
+
+
+def run_startup_check() -> dict:
+    """执行全部自检，返回结构化结果（永不抛异常）。"""
+    checks = [
+        _probe("关键文件存在", _check_key_files),
+        _probe("TriviumStore 初始化", _check_store_init),
+        _probe("FTS5 索引连接", _check_fts),
+        _probe("依赖可导入", _check_dependencies),
+    ]
+    return {"ok": all(c["ok"] for c in checks), "checks": checks}

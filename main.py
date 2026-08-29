@@ -3,15 +3,41 @@ Palimpsest — FastAPI 主入口
 提供记忆提取、检索、导入、导出的完整 API 服务
 """
 
+import logging
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from core.fts_index import remove_node
+from core.startup_check import run_startup_check
 from core.trivium_store import TriviumStore
 from core.reporting import generate_report
 from core.version import get_version
 
+logger = logging.getLogger(__name__)
+
 app = FastAPI(title="Palimpsest")
+
+
+@app.on_event("startup")
+async def _startup_self_check():
+    """启动自检（工程护栏）：只记录，不阻断 —— 避免自检失败拖垮服务可用性。
+
+    结果可通过 CLI 子命令 `palimpsest_cli.py startup-check` 手动触发查看完整明细。
+    """
+    import json
+
+    result = run_startup_check()
+    if result["ok"]:
+        logger.info("启动自检全部通过（%s 项）", len(result["checks"]))
+    else:
+        failed = [c for c in result["checks"] if not c["ok"]]
+        logger.error(
+            "启动自检存在失败项（%s/%s）：%s",
+            len(failed),
+            len(result["checks"]),
+            json.dumps({c["name"]: c["detail"] for c in failed}, ensure_ascii=False),
+        )
 
 # ---- 全局服务实例（启动时初始化一次） ----
 store = TriviumStore()

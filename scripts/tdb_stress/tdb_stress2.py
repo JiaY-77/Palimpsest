@@ -12,7 +12,7 @@ import os, sys, time, json, random, tempfile, subprocess, gc
 from datetime import datetime
 import threading
 
-sys.path.insert(0, r"D:\HeJiaQi\Documents\Code\Python\Palimpsest")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import triviumdb
 
 DIM = 1024

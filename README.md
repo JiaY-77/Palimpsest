@@ -238,10 +238,10 @@ python scripts/dashboard.py
 
 访问 `http://127.0.0.1:8010`（`Config.DASHBOARD_PORT`），提供统计 / 搜索 / 最近记忆 / 合并治理预览执行。
 
-**CLI 子命令（12 个）**：
+**CLI 子命令（13 个）**：
 
 ```bash
-palimpsest_cli search / ingest / link / index / graph / recent / review / kb / consolidate / ingest-git / fts-rebuild / fts-search
+palimpsest_cli search / ingest / link / index / graph / recent / review / kb / consolidate / ingest-git / fts-rebuild / fts-search / startup-check
 ```
 
 **REST 服务（可选）**：
@@ -258,6 +258,26 @@ v2.0 统一语义层端点（与 MCP 工具同一实现）：
 - `POST /mem/link` — 手动建图谱边
 - `POST /graph/neighbors` — 图谱邻居查询
 - `POST /mem/router` — 任务路由查询（规则推荐）
+
+### 启动自检（工程护栏）
+
+服务/CLI 启动时可选执行核心依赖体检（关键文件、TriviumStore 初始化、FTS5 索引连接、依赖可导入），返回结构化结果 `{ok, checks}`。FastAPI 启动事件自动触发（失败只记录、不阻断服务）；也可手动运行：
+
+```bash
+venv\Scripts\python.exe scripts\palimpsest_cli.py startup-check
+```
+
+### 测试
+
+运行核心冒烟测试（需先安装 pytest：`venv\Scripts\pip.exe install pytest`，从项目根执行）：
+
+```bash
+venv\Scripts\python.exe -m pytest tests/ -v
+```
+
+**冒烟覆盖**：①写→查→取全文主链路（`mem_ingest`/`mem_search`/`mem_get_full`）；②双记忆建边→图谱邻居（`mem_link`/`graph_neighbors`）；③敏感信息拦截（写入 `sk-xxx` 格式 API key 拒绝入库并命中 `openai_key` 规则）；④混合检索 FTS 侧命中（`mem_hybrid_search`）。
+
+**临时 DB 隔离**：`tests/conftest.py` 会在导入任何本项目模块前把 `DB_PATH` 环境变量指向系统临时目录下新建的 `mh_test.db`（FTS 索引 `fts.db` 随之落在同目录），绝不触碰正式库 `data/mh_memory.db`。测试结束自动删除临时目录。知识库（kb_chunk / 真实 Knowledge 目录）相关链路不在冒烟范围，测试运行时已把 `KNOWLEDGE_DIR` 指到临时目录避免误碰真实知识库。
 
 ---
 
@@ -321,6 +341,7 @@ Palimpsest/
 │   ├── importer.py         # 聊天文件导入
 │   ├── thinking_tracker.py # 思维链解析
 │   ├── secret_scan.py      # Ingest 安全扫描（10 条正则规则）
+│   ├── startup_check.py    # 启动自检（文件/存储/FTS/依赖，返回 {ok, checks}）
 │   └── fts_index.py        # FTS5 全文搜索（trigram + LIKE 兜底）
 ├── scripts/
 │   ├── build_kb_index.py   # 知识库向量化
@@ -329,6 +350,7 @@ Palimpsest/
 │   ├── migrate_soul_logs.py
 │   └── dashboard.py        # 轻量 Web Dashboard（8010）
 ├── data/                   # 数据库（mh_memory.db）
+├── tests/                  # pytest 冒烟测试（临时库隔离，不碰正式库）
 ├── requirements.txt
 └── .env                    # 环境变量
 ```

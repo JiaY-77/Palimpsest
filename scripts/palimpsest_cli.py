@@ -20,6 +20,7 @@ Palimpsest CLI —— 本地小兵调用小帕（Palimpsest）的薄封装（202
   python palimpsest_cli.py kb "关键词" [--top-k 5]
   python palimpsest_cli.py consolidate [--apply] [--threshold 0.85] [--max-importance 0.8]
   python palimpsest_cli.py ingest-git [--repo PATH] [--since N] [--db-path PATH]
+  python palimpsest_cli.py startup-check
 
 边界（指挥官铁律，CLI 不越权）：
   - importance 分级 / 记忆内容撰写 / 建边决策 = 指挥官（小七）负责；
@@ -40,6 +41,7 @@ from mcp_tools import (  # noqa: E402
 )
 from core.consolidator import consolidate  # noqa: E402
 from core.fts_index import index_node, rebuild as fts_rebuild, remove_node, search_fts  # noqa: E402
+from core.startup_check import run_startup_check  # noqa: E402
 from core.trivium_store import TriviumStore  # noqa: E402
 
 
@@ -214,6 +216,13 @@ def cmd_fts_search(args):
     print(f"共 {len(results)} 条命中")
 
 
+def cmd_startup_check(args):
+    """启动自检（工程护栏）：输出结构化结果，失败退出码 1。"""
+    result = run_startup_check()
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    sys.exit(0 if result.get("ok") else 1)
+
+
 def main():
     p = argparse.ArgumentParser(
         prog="palimpsest_cli",
@@ -299,6 +308,9 @@ def main():
     sp.add_argument("query")
     sp.add_argument("--limit", type=int, default=10)
     sp.set_defaults(fn=cmd_fts_search)
+
+    sp = sub.add_parser("startup-check", help="启动自检（文件/存储/FTS/依赖），失败退出码 1")
+    sp.set_defaults(fn=cmd_startup_check)
 
     args = p.parse_args()
     args.fn(args)
