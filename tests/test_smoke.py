@@ -398,3 +398,83 @@ def test_transaction_merge(db_path):
     edges = store.get_node(new_id)["num_edges"]
     assert edges >= 2, f"新合并节点应有 >=2 条 REVISED_BY 边, 实际 {edges}"
 
+
+def test_insert_tx_success(db_path):
+    """事务写入链路正常路径：insert_node_tx 在事务内落 SQL，created_at 一并入 payload。
+
+    验证 mem_ingest 事务化后：节点真实写入、created_at 不再为 None（事务内透传，
+    不再依赖事务外补写）、clash 检测正常。
+    """
+    from mcp_tools import store
+
+    content = "事务成功护栏：一条标记为成功写入路径的独特记忆内容"
+    r = _get(mem_ingest(content=content, type="memory", domain="hero"))
+    assert r["stored"] is True, r
+    nid = r["node_id"]
+
+    node = store.get_node(nid)
+    assert node is not None, f"事务提交后节点应可见: {nid}"
+    payload = node["payload"]
+    assert payload.get("created_at") is not None, f"created_at 应为事务内写入: {payload}"
+    assert payload.get("content") == content
+    assert payload.get("domain") == "hero"
+    assert payload.get("type") == "memory"
+    assert r["domain"] == "hero"
+
+
+def test_ingest_tx_rollback(db_path, monkeypatch):
+    """mem_ingest 事务回滚：resolve_conflict 在事务内抛异常时，插入的新节点一并回滚。
+
+    核心止血目标：不允许「新节点已写、旧记忆未标 outdated」的半状态。
+    注入方式：把 mcp_tools.memory.resolve_conflict 替换为抛异常的版本（模拟
+    resolve_conflict 中途失败，如事务期间撞锁）。则 insert_node_tx 已写入的
+    新节点会随事务 rollback 一起消失 → mem_ingest 返回 stored:False，节点数不变。
+    """
+    from mcp_tools import store
+
+    before = set(store._get_all_node_ids())
+    n_before = len(before)
+
+    def _boom(store_, embedding, node_id, tx=None, db=None, new_payload=None):
+        raise RuntimeError("注入的冲突检测失败（模拟中途再开库撞锁）")
+
+    monkeypatch.setattr("mcp_tools.memory.resolve_conflict", _boom)
+    try:
+        r = _get(mem_ingest(content="事务回滚护栏：这条记忆不应残留在库中", type="memory"))
+    finally:
+        monkeypatch.setattr("mcp_tools.memory.resolve_conflict",
+                            __import__("core.conflict", fromlist=["resolve_conflict"]).resolve_conflict)
+
+    assert r["stored"] is False, f"应返回 stored:False: {r}"
+    assert "回滚" in r["error"], r
+
+    after = set(store._get_all_node_ids())
+    assert after == before, (
+        f"回滚后不应残留新节点（无半状态）：before={before} after={after}"
+    )
+
+
+def test_insert_node_tx_rollback(db_path):
+    """insert_node_tx 单事务回滚：事务内 insert 后抛异常 → 提交态下节点不存在。
+
+    直接验证事务边界最底层保证（供他人 fork 重构时防回归）。
+    """
+    from mcp_tools import store
+
+    existing = store._get_all_node_ids()
+    next_id = (max(existing) + 1) if existing else 1
+
+    db = store._acquire()
+    try:
+        with db.transaction() as tx:
+            store.insert_node_tx(tx, {"type": "memory", "content": "回滚单元护栏"},
+                                 store.embed_text("回滚单元护栏"), next_id=next_id)
+            raise RuntimeError("中途抛错触发回滚")
+    except RuntimeError:
+        pass
+    finally:
+        db.close()
+
+    current = store._get_all_node_ids()
+    assert next_id not in current, f"事务回滚后新节点 {next_id} 不应存在: {current}"
+

@@ -107,29 +107,73 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
         "created_at": now,
         "linked_from": linked_kb_ids,
     }
+
+    # ---- 事务化写入链路（2026-08-29 止血加事务） ----
+    # 此前 insert_node 成功后若 resolve_conflict 中途失败（如事务期间重开库撞锁），
+    # 会出现「新节点已写入、旧记忆未标 outdated」的半状态。现将
+    # 「insert（含 created_at）+ resolve_conflict 标脏」整体包进单事务：
+    #   - 知识关联检测的 kb_similar 搜索为只读，留在事务外做；
+    #   - 冲突检测的相似旧记忆搜索经同一连接 db 在事务内做（db.search 只返回已
+    #     提交节点，不影响正确性），写操作（insert/标脏/建边）全走 tx，
+    #     任一步抛异常 → 自动 rollback → 无半状态。
+    node_id = None
+    conflict = {"outdated_ids": [], "related_ids": []}
+    secret_hint = []
+    db = None
     try:
-        node_id = store.insert_node(node_data, emb)
+        db = store._acquire()
+        existing = db.all_node_ids()
+        next_id = (max(existing) + 1) if existing else 1
+        with db.transaction() as tx:
+            # insert_node_tx 已把 created_at 透传进 payload（事务模式下新节点不可
+            # 读回，避免 tx.update_payload 整包覆盖）；此处仅做冲突检测标脏。
+            node_id = store.insert_node_tx(tx, node_data, emb, next_id=next_id)
+            # 冲突检测：查找/标脏旧记忆（事务内标脏 + 建 REVISED_BY 边）
+            conflict = resolve_conflict(store, emb, node_id, tx=tx, db=db,
+                                        new_payload=node_data)
+        # ---- 事务已提交 ----
+        # 立即释放本连接的库锁，后续 FTS / 读回节点都经由 store._acquire() 重开，
+        # 若此处不关闭，重开会触发 "Database locked"（同库双连接）。
+        try:
+            db.close()
+        except Exception:
+            pass
+        db = None
+
+        # FTS 全文索引同步（混合检索依赖；失败仅 warning，不阻塞主写入，
+        # 可手动 fts-rebuild 兜底）。因事务已提交，node_id 在此对 store 可见。
+        try:
+            index_node(node_id, content)
+        except Exception as e:
+            logger.warning("FTS 索引同步失败 node=%s: %s", node_id, e)
+
+        # 弱规则命中标记（身份证/手机号）：弱规则放行但打 secret_hint 供审计。
+        # 读回已提交节点取 secret_hint（事务内新节点不可见，此处已提交可读）。
+        node = store.get_node(node_id)
+        payload = node.get("payload", {}) if node else {}
+        secret_hint = payload.get("secret_hint", [])
+        if payload.get("created_at") is None:
+            payload["created_at"] = now
+            store.update_payload(node_id, payload)
+        domain_out = node_domain(payload)
     except SecretScanError as e:
+        # 强规则拒绝：事务回滚（未写任何节点），返回 stored:False
         return _to_json({"stored": False, "error": str(e), "rules": e.rules})
-
-    # FTS 全文索引同步（混合检索依赖；失败不阻塞主写入，可手动 fts-rebuild 兜底）
-    try:
-        index_node(node_id, content)
     except Exception as e:
-        logger.warning("FTS 索引同步失败 node=%s: %s", node_id, e)
+        # 事务内其他异常：整条写入链路回滚，无半状态；返回 stored:False + hint
+        logger.error("mem_ingest 写入失败（事务已回滚）: %s", e)
+        return _to_json({
+            "stored": False,
+            "error": "写入事务失败，已回滚，无残留节点",
+            "hint": str(e),
+        })
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
 
-    # 注意：core.insert_node 的基础 payload 固定 created_at=None 且不接收外部传入，
-    # 这里补写一次真实时间戳，保证 mem_recent 排序有意义
-    node = store.get_node(node_id)
-    payload = node.get("payload", {}) if node else {}
-    if payload.get("created_at") is None:
-        payload["created_at"] = now
-        store.update_payload(node_id, payload)
-    # 弱规则命中标记（身份证/手机号）：弱规则放行但打 secret_hint 供审计
-    secret_hint = payload.get("secret_hint", [])
-
-    # ---- 冲突检测：查找与本次写入相似的旧记忆（三层防误标，返回 outdated + related 两档）----
-    conflict = resolve_conflict(store, emb, node_id)
     outdated_ids = conflict["outdated_ids"]
     related_ids = conflict["related_ids"]
 
@@ -141,7 +185,7 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
     return _to_json({
         "stored": True,
         "node_id": node_id,
-        "domain": node_domain(payload),
+        "domain": domain_out,
         "conflict_found": bool(outdated_ids),
         "outdated_ids": outdated_ids,
         "related_ids": related_ids,
@@ -550,6 +594,34 @@ def _fts_only_item(node_id: int, scope: str, domain: str, block: str):
     }
 
 
+def _rrf_fuse(sem_ids: list, fts_ids: list, top_k: int,
+              k: float = 60.0) -> list:
+    """纯 RRF 融合打分（不碰库，供单测与 _hybrid_rrf 复用）。
+
+    sem_ids：语义侧排名（按 rank 顺序的 node_id 列表）；fts_ids：FTS 侧排名
+    （按 rank 顺序的 node_id 列表）。0-based rank；单侧命中同样计入；
+    k 为标准 reciprocal rank 常数（默认 60）。
+
+    返回按 RRF 分降序的 [(node_id, rrf_score, fts_hit, sem_hit), ...] 直至 top_k。
+    """
+    rrf: dict = {}
+    sem_hit: set = set()
+    fts_hit: set = set()
+    for rank, nid in enumerate(sem_ids):
+        if nid is None:
+            continue
+        rrf[nid] = rrf.get(nid, 0.0) + 1.0 / (k + rank)
+        sem_hit.add(nid)
+    for rank, nid in enumerate(fts_ids):
+        if nid is None:
+            continue
+        rrf[nid] = rrf.get(nid, 0.0) + 1.0 / (k + rank)
+        fts_hit.add(nid)
+    return [(nid, score, nid in fts_hit, nid in sem_hit)
+            for nid, score in sorted(rrf.items(), key=lambda kv: kv[1],
+                                     reverse=True)][:top_k]
+
+
 def _hybrid_rrf(query: str, scope: str, domain: str, domain_bias: str,
                 top_k: int, fts_limit: int, block: str) -> list:
     """RRF 融合：语义排名 + FTS 排名的 reciprocal rank 求和（k=60）。
@@ -559,26 +631,17 @@ def _hybrid_rrf(query: str, scope: str, domain: str, domain_bias: str,
     sem_items = _sem_candidate_items(query, scope, domain, domain_bias, top_k, block)
     fts = search_fts(query, limit=fts_limit)
 
-    rrf: dict = {}
-    sem_hit: set = set()
-    fts_hit: set = set()
-    for rank, item in enumerate(sem_items):
-        nid = item.get("id")
-        if nid is None:
-            continue
-        rrf[nid] = rrf.get(nid, 0.0) + 1.0 / (Config.RRF_K + rank)
-        sem_hit.add(nid)
-    for rank, r in enumerate(fts):
-        nid = r.get("node_id")
-        if nid is None:
-            continue
-        rrf[nid] = rrf.get(nid, 0.0) + 1.0 / (Config.RRF_K + rank)
-        fts_hit.add(nid)
+    ranked = _rrf_fuse(
+        [it.get("id") for it in sem_items if it.get("id") is not None],
+        [r.get("node_id") for r in fts if r.get("node_id") is not None],
+        top_k,
+        Config.RRF_K,
+    )
 
     # 语义条目按 id 建表，便于合并命中来源标记；FTS-only 节点按 payload 补全
     by_id = {item.get("id"): item for item in sem_items if item.get("id") is not None}
     merged = []
-    for nid, score in sorted(rrf.items(), key=lambda kv: kv[1], reverse=True):
+    for nid, score, fts_hit_flag, sem_hit_flag in ranked:
         item = by_id.get(nid)
         if item is None:
             item = _fts_only_item(nid, scope, domain, block)
@@ -586,8 +649,8 @@ def _hybrid_rrf(query: str, scope: str, domain: str, domain_bias: str,
                 continue
         item = dict(item)
         meta = dict(item.get("meta", {}) or {})
-        meta["fts_hit"] = nid in fts_hit
-        meta["sem_hit"] = nid in sem_hit
+        meta["fts_hit"] = fts_hit_flag
+        meta["sem_hit"] = sem_hit_flag
         item["meta"] = meta
         item["score"] = round(score, 4)
         merged.append(item)

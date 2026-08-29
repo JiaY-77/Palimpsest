@@ -189,6 +189,53 @@ class TriviumStore:
             node_id = db.insert(embedding, payload)
             return node_id
 
+    def insert_node_tx(self, tx, node_data: dict[str, Any],
+                       embedding: list[float], next_id: int | None = None) -> int:
+        """事务内插入节点（供 mem_ingest 事务化链路使用），返回节点 ID。
+
+        逻辑与 insert_node 一致（payload 组装、secret_scan 强拒弱标），但写入
+        走传入的事务句柄 tx（tx.insert_with_id），不再独立 _acquire——保证与
+        后续 created_at 补写、冲突标脏（resolve_conflict 的 tx.link）落在同一
+        事务内原子提交/回滚，堵死「新节点已写、旧记忆未标 outdated」的半状态。
+
+        next_id：显式指定新节点 ID。triviumdb 的 tx.insert 返回 None 且事务内
+        未提交节点对 db.get 不可见，故用 tx.insert_with_id 精确指定 ID，才能
+        在事务内立即拿到 node_id 供后续 tx.link / tx.update_payload 使用。
+        由调用方按「已提交最大即 id + 1」计算（同 consolidate._apply_merge）；
+        next_id 缺省时回退为 1。
+        """
+        # 基础 payload（与 insert_node 一致；created_at 由 node_data 透传：
+        # 事务模式下新节点不可读回，需在插入时一次性带上，避免再用
+        # tx.update_payload 补写时整包覆盖其他字段）
+        payload = {
+            "type": node_data.get("type", "unknown"),
+            "label": node_data.get("label", ""),
+            "content": node_data.get("content", ""),
+            "importance": node_data.get("importance", 0.5),
+            "status": "active",
+        }
+        extra_fields = {
+            k: v
+            for k, v in node_data.items()
+            if k not in payload and k not in ("label", "content")
+        }
+        payload.update(extra_fields)
+        payload.setdefault("created_at", None)
+
+        # 敏感信息强/弱分级扫描（与 insert_node 一致）：强拒入、弱打标
+        scan_text = " ".join(
+            str(v) for v in payload.values() if isinstance(v, str)
+        )
+        classified = scan_secret_classified(scan_text)
+        if classified["strong"]:
+            raise SecretScanError(classified["strong"])
+        if classified["weak"]:
+            payload["secret_hint"] = classified["weak"]
+
+        nid = next_id if next_id is not None else 1
+        tx.insert_with_id(nid, embedding, payload)
+        return nid
+
     def create_edge(
         self,
         source_id: int,
