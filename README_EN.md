@@ -116,7 +116,14 @@ cp .env.example .env
 ```bash
 # Optional pre-flight check
 python scripts/palimpsest_cli.py startup-check
+```
 
+> **First-run self-check**：`startup-check` runs 5 checks (key files / storage / FTS / dependencies /
+> Embedding service). If the Embedding check fails: for the default local Ollama, make sure Ollama is
+> running and `ollama pull qwen3-embedding:0.6b`; if you use cloud `EMBEDDING_PROVIDER=openai`, set
+> `EMBEDDING_API_KEY` in `.env`.
+
+```bash
 # REST API (:8090)
 python -m uvicorn main:app --host 127.0.0.1 --port 8090
 

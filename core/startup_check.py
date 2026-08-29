@@ -11,6 +11,7 @@
   ② TriviumStore 能初始化（无需 embedding 在线，初始化失败才报告）
   ③ FTS5 全文索引能连接
   ④ 核心依赖可导入（fastapi / triviumdb / dotenv / requests 等）
+  ⑤ Embedding 服务可用（HTTP 探测 Ollama + 实际 embed_text 验证向量非全零）
 
 设计原则：任何单项失败只记录，不抛异常，不阻断服务启动（可用性优先）。
 """
@@ -88,6 +89,54 @@ def _check_dependencies() -> str:
     return "依赖可导入: " + ", ".join(required)
 
 
+def _all_zero(vec) -> bool:
+    """向量是否全零（Ollama/云端 embedding 失败时返回 [0.0]*dim）。"""
+    try:
+        return sum(abs(float(v)) for v in vec) == 0
+    except (TypeError, ValueError):
+        return True
+
+
+def _check_embedding() -> str:
+    """检查⑤：Embedding 服务可用（向量非全零）。
+
+    策略：先用 HTTP 探测 Ollama 端点（快、准），可达后再实际调 embed_text
+    验证返回向量非全零——避免「自检通过但检索时向量全零」的静默失败。
+    """
+    from config import Config  # 延迟导入，避免重 import 副作用
+    from core.trivium_store import TriviumStore
+
+    provider = getattr(Config, "EMBEDDING_PROVIDER", "ollama") or "ollama"
+    store = TriviumStore()
+    fail_detail = (
+        "Ollama embedding 服务不可用，请确认已启动 Ollama 并 "
+        "ollama pull qwen3-embedding:0.6b；"
+        "若使用云端 EMBEDDING_PROVIDER=openai 请确认 EMBEDDING_API_KEY"
+    )
+
+    if provider == "openai":
+        # 云端：无法本地探测，直接实际调 embed_text 验证非全零
+        emb = store.embed_text("ping")
+        if _all_zero(emb):
+            raise RuntimeError(fail_detail)
+        return f"Embedding 服务可用 (provider=openai, dim={len(emb)})"
+
+    # 本地 ollama：先 HTTP 探测（2s 短超时，快、准）
+    try:
+        import requests
+
+        resp = requests.get("http://localhost:11434/api/tags", timeout=2)
+        resp.raise_for_status()
+    except Exception as e:
+        raise RuntimeError(f"{fail_detail}（探测失败: {e}）")
+
+    # HTTP 可达再实际 embed_text 验证非全零（模型未拉取时仍会返回全零）
+    emb = store.embed_text("ping")
+    if _all_zero(emb):
+        raise RuntimeError(fail_detail)
+    return f"Embedding 服务可用 (provider=ollama, dim={len(emb)})"
+
+
 def run_startup_check() -> dict:
     """执行全部自检，返回结构化结果（永不抛异常）。"""
     checks = [
@@ -95,5 +144,6 @@ def run_startup_check() -> dict:
         _probe("TriviumStore 初始化", _check_store_init),
         _probe("FTS5 索引连接", _check_fts),
         _probe("依赖可导入", _check_dependencies),
+        _probe("Embedding 服务可用", _check_embedding),
     ]
     return {"ok": all(c["ok"] for c in checks), "checks": checks}

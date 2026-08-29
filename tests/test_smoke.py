@@ -187,3 +187,22 @@ def test_task_archive(db_path):
     joined = "\n".join(texts)
     assert "冒烟任务甲：完成状态直写节点" in joined, "归档内容应含任务①原文"
     assert "冒烟任务乙：优化流程已完成" in joined, "归档内容应含任务②原文"
+
+
+def test_startup_check_embedding():
+    """startup-check 应包含「Embedding 服务可用」检查项。
+
+    本机可能没在跑 Ollama（ok 可为 False），测试只验证：有这一项、字段存在、类型正确、
+    且不抛异常。Ollama 在跑则应为 True，不在跑为 False。
+    """
+    from core.startup_check import run_startup_check
+
+    result = run_startup_check()
+    assert isinstance(result, dict) and "checks" in result, result
+    names = [c["name"] for c in result["checks"]]
+    assert any("Embedding" in n for n in names), f"缺少 Embedding 检查项: {names}"
+
+    item = next(c for c in result["checks"] if "Embedding" in c["name"])
+    assert isinstance(item, dict)
+    assert "ok" in item and isinstance(item["ok"], bool), item
+    assert "detail" in item and isinstance(item["detail"], str), item

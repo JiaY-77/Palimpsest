@@ -97,7 +97,13 @@ cp .env.example .env
 ```bash
 # 可选：启动前自检
 python scripts/palimpsest_cli.py startup-check
+```
 
+> **首次运行自检**：`startup-check` 会检查 5 项（关键文件 / 存储 / FTS / 依赖 / Embedding 服务）。
+> 若 Embedding 项失败：本地默认 Ollama 请先启动并 `ollama pull qwen3-embedding:0.6b`；
+> 若使用云端 `EMBEDDING_PROVIDER=openai`，请确认 `.env` 已配置 `EMBEDDING_API_KEY`。
+
+```bash
 # REST 服务 (:8090)
 python -m uvicorn main:app --host 127.0.0.1 --port 8090
 

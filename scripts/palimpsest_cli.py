@@ -32,21 +32,42 @@ import os
 import subprocess
 import sys
 
+# 依赖守卫：以下 import 依赖第三方包（fastapi/dotenv/triviumdb/requests 等），
+# 未激活 venv 或依赖没装全时会抛 ModuleNotFoundError——给新手友好引导而非裸 traceback。
 try:
-    # 包形式（import scripts.palimpsest_cli，palimpsest-cli 控制台入口）
-    from ._common import SCRIPT_DIR as _SCRIPT_DIR, PROJECT_ROOT as _PROJECT_ROOT
-except ImportError:  # 直接运行 scripts/palimpsest_cli.py 时退化为同目录导入
-    from _common import SCRIPT_DIR as _SCRIPT_DIR, PROJECT_ROOT as _PROJECT_ROOT
+    try:
+        # 包形式（import scripts.palimpsest_cli，palimpsest-cli 控制台入口）
+        from ._common import SCRIPT_DIR as _SCRIPT_DIR, PROJECT_ROOT as _PROJECT_ROOT
+    except ImportError:  # 直接运行 scripts/palimpsest_cli.py 时退化为同目录导入
+        from _common import SCRIPT_DIR as _SCRIPT_DIR, PROJECT_ROOT as _PROJECT_ROOT
 
-# 复用 mcp_tools 的工具函数（内部会 chdir 到项目根）
-from mcp_tools import (  # noqa: E402
-    graph_neighbors, kb_index, kb_search, mem_hybrid_search, mem_ingest,
-    mem_link, mem_recent, mem_review, mem_search,
-)
-from core.consolidator import consolidate  # noqa: E402
-from core.fts_index import index_node, rebuild as fts_rebuild, remove_node, search_fts  # noqa: E402
-from core.startup_check import run_startup_check  # noqa: E402
-from core.trivium_store import TriviumStore  # noqa: E402
+    # 复用 mcp_tools 的工具函数（内部会 chdir 到项目根）
+    from mcp_tools import (  # noqa: E402
+        graph_neighbors, kb_index, kb_search, mem_hybrid_search, mem_ingest,
+        mem_link, mem_recent, mem_review, mem_search,
+    )
+    from core.consolidator import consolidate  # noqa: E402
+    from core.fts_index import index_node, rebuild as fts_rebuild, remove_node, search_fts  # noqa: E402
+    from core.startup_check import run_startup_check  # noqa: E402
+    from core.trivium_store import TriviumStore  # noqa: E402
+except ImportError as _import_err:
+    _hint = (
+        "\n"
+        "未检测到依赖 / Missing dependencies\n"
+        "\n"
+        "请先安装项目依赖再运行，参考 README（Install dependencies, see README）:\n"
+        "    python -m venv venv\n"
+        "    venv\\Scripts\\activate              # Windows\n"
+        "    source venv/bin/activate            # macOS / Linux\n"
+        "    pip install -r requirements.txt\n"
+        "\n"
+        "未检测到依赖。请先安装：python -m venv venv && venv\\Scripts\\activate && pip install -r requirements.txt\n"
+        "Dependencies not found. Please install: python -m venv venv && venv\\Scripts\\activate && pip install -r requirements.txt\n"
+        "\n"
+        f"详情（details）: {_import_err}\n"
+    )
+    print(_hint, file=sys.stderr)
+    sys.exit(1)
 
 
 def cmd_search(args):
