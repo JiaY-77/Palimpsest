@@ -1,3 +1,5 @@
+<div align="center">
+
 # Palimpsest
 
 **本地优先的长期记忆系统 · AI 助手的跨会话记忆底座**
@@ -15,6 +17,8 @@
 [![LLM](https://img.shields.io/badge/Backends-DeepSeek%E2%80%A2Ollama-6f42c1.svg)](/)
 
 **中文** | [English](./README_EN.md)
+
+</div>
 
 ---
 
