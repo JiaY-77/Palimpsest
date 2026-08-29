@@ -3,6 +3,23 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# 项目根 = config.py 所在目录（直接运行时为仓库根，pip 安装后为 site-packages 下包目录）。
+# DB_PATH 等相对路径一律以它为基准解析为绝对路径，不再依赖/修改进程当前工作目录
+# （此前依赖 mcp_tools 里 os.chdir 切换到项目根来解析相对路径，作为包安装后会污染
+# 调用方工作目录——现已改为纯绝对路径解析，彻底消除该副作用）。
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+
+def _resolve_db_path() -> str:
+    """解析 DB_PATH：环境变量给绝对路径直接用；给相对路径（非盘符/非 / 开头）
+    则基于项目根解析为绝对路径；未给时默认 <项目根>/data/mh_memory.db。"""
+    env = os.getenv("DB_PATH", "")
+    if env and os.path.isabs(env):
+        return env
+    if env:
+        return os.path.join(PROJECT_ROOT, env)
+    return os.path.join(PROJECT_ROOT, "data", "mh_memory.db")
+
 
 class Config:
     # ---- 服务端口（2026-08-26：8000 让给酒馆 SillyTavern，小帕 REST 用 8090；dashboard 独立 8010）----
@@ -10,7 +27,8 @@ class Config:
     DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "8010"))
 
     # ---- 通用 ----
-    DB_PATH = os.getenv("DB_PATH", "data/mh_memory.db")
+    # DB_PATH 为绝对路径（相对路径/默认值均已基于项目根解析），任何 cwd 下取用都正确
+    DB_PATH = _resolve_db_path()
 
     # ---- 记忆时间衰减（记忆生命周期）----
     # 检索排序时旧记忆自然降权（不改存储）：

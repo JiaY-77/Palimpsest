@@ -16,12 +16,12 @@ from config import Config  # noqa: E402
 from core.secret_scan import SecretScanError  # noqa: E402
 from core.trivium_store import TriviumStore, domain_in_block, node_domain  # noqa: E402
 
-# 确保能 import 项目 core 模块（以项目根为基准；mcp_tools 位于项目根/包目录）
+# 确保能 import 项目 core 模块（以项目根为基准；mcp_tools 位于项目根/包目录）。
+# 作为 pip 包安装后 core/config 本身即可按包名找到，此处注入只在直接跑仓库内脚本时
+# 才起作用；不再 os.chdir（config 已改为绝对路径解析，无需也不应改动进程工作目录）。
 _SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
-# 切换到项目根目录，保证 config 里的相对路径（data/mh_memory.db）解析正确
-os.chdir(_SCRIPT_DIR)
 
 # 知识库根目录（环境变量 KNOWLEDGE_DIR 优先）。
 # 默认约定为项目根下的 ./knowledge（相对 _SCRIPT_DIR，即项目根）——这是「约定默认知识库位置」，

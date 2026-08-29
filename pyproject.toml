@@ -26,9 +26,8 @@ palimpsest-cli = "scripts.palimpsest_cli:main"
 packages = ["core", "mcp_tools", "scripts"]
 
 # ---------------------------------------------------------------------------
-# 已知限制（本次工程化先不动，属于更大重构）：
-#   mcp_tools/_common.py 在 import 时会向 sys.path 注入项目根并 os.chdir 到项目根。
-#   作为 pip 包安装后，项目根 = site-packages 下的包目录，os.chdir 到该目录并
-#   非当前工作目录，属危险/意外行为；但这不影响「可安装、palimpsest-cli 可用」，
-#   故本次仅记录，不改动核心逻辑。
+# 路径解析说明：
+#   config.py 已将 DB_PATH 等相对路径在类定义时基于项目根（config.py 所在目录）
+#   解析为绝对路径，import 不依赖也不修改进程当前工作目录；mcp_tools/_common.py
+#   仅保留 sys.path 注入（直接跑仓库内脚本时用到），已移除 os.chdir 全局副作用。
 # ---------------------------------------------------------------------------
