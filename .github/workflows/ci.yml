@@ -26,6 +26,16 @@ jobs:
       - name: Install Ollama
         run: curl -fsSL https://ollama.com/install.sh | sh
 
+      # GitHub Actions 容器无 systemd，install.sh 不会自动拉起服务，需手动启动
+      - name: Start Ollama server
+        run: |
+          nohup ollama serve > /tmp/ollama.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:11434/api/tags > /dev/null && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:11434/api/tags > /dev/null
+
       - name: Pull embedding model
         run: ollama pull qwen3-embedding:0.6b
 
