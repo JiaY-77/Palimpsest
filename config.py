@@ -73,6 +73,9 @@ class Config:
     EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "ollama")
     # 本地 Ollama Embedding
     OLLAMA_EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:0.6b")
+    # Ollama 原生 embedding API 根地址（/api/embeddings），与 LLM 用的
+    # OLLAMA_BASE_URL（OpenAI 兼容 /v1 路径）解耦。
+    OLLAMA_EMBEDDING_BASE_URL = os.getenv("OLLAMA_EMBEDDING_BASE_URL", "http://localhost:11434")
     OLLAMA_EMBEDDING_DIM = int(os.getenv("OLLAMA_EMBEDDING_DIM", "1024"))
     # 云端 OpenAI 兼容 Embedding API（默认 Voyage，可换任意 OpenAI 兼容端点）
     EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY", "")

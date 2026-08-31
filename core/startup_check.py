@@ -104,7 +104,7 @@ def _check_embedding() -> str:
     验证返回向量非全零——避免「自检通过但检索时向量全零」的静默失败。
     """
     from config import Config  # 延迟导入，避免重 import 副作用
-    from core.trivium_store import TriviumStore
+    from core.trivium_store import EmbeddingUnavailableError, TriviumStore
 
     provider = getattr(Config, "EMBEDDING_PROVIDER", "ollama") or "ollama"
     store = TriviumStore()
@@ -116,7 +116,10 @@ def _check_embedding() -> str:
 
     if provider == "openai":
         # 云端：无法本地探测，直接实际调 embed_text 验证非全零
-        emb = store.embed_text("ping")
+        try:
+            emb = store.embed_text("ping")
+        except EmbeddingUnavailableError as e:
+            raise RuntimeError(fail_detail) from e
         if _all_zero(emb):
             raise RuntimeError(fail_detail)
         return f"Embedding 服务可用 (provider=openai, dim={len(emb)})"
@@ -125,13 +128,18 @@ def _check_embedding() -> str:
     try:
         import requests
 
-        resp = requests.get("http://localhost:11434/api/tags", timeout=2)
+        resp = requests.get(
+            Config.OLLAMA_EMBEDDING_BASE_URL.rstrip("/") + "/api/tags", timeout=2
+        )
         resp.raise_for_status()
     except Exception as e:
         raise RuntimeError(f"{fail_detail}（探测失败: {e}）")
 
     # HTTP 可达再实际 embed_text 验证非全零（模型未拉取时仍会返回全零）
-    emb = store.embed_text("ping")
+    try:
+        emb = store.embed_text("ping")
+    except EmbeddingUnavailableError as e:
+        raise RuntimeError(fail_detail) from e
     if _all_zero(emb):
         raise RuntimeError(fail_detail)
     return f"Embedding 服务可用 (provider=ollama, dim={len(emb)})"

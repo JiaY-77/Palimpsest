@@ -307,7 +307,8 @@ python scripts/palimpsest_cli.py consolidate --apply      # 合并
 | `GET` | `/summary` | 人类可读的记忆摘要（事件 / 角色状态 / 计划） |
 | `POST` | `/report` | 基于当前存储生成 LLM 分析报告 |
 | `DELETE` | `/memory/{id}` | 删除记忆节点（FTS 索引同步） |
-| `PUT` | `/memory/{id}` | 更新节点的 payload / 元数据 |
+| `PUT` | `/memory/{id}` | 更新节点 payload（合并语义：只改传入字段，其余保留；自动同步 FTS） |
+| `PATCH` | `/memory/{id}` | 部分更新节点 payload（与 PUT 同语义，REST 规范更精确） |
 | `PATCH` | `/memory/{id}/vector` | 更新节点的向量（维度需一致） |
 | `POST` | `/mem/search` | 统一检索 |
 | `POST` | `/mem/hybrid-search` | FTS5 + 向量混合检索 |
@@ -333,7 +334,7 @@ curl -X POST http://127.0.0.1:8090/mem/search \
 python -m pytest tests/ -v
 ```
 
-测试套件共 **6 条冒烟测试**，覆盖核心闭环：
+测试套件共 **55 条测试**（冒烟 + 核心算法单测 + 事务 + 失败路径），覆盖核心闭环：
 
 - 写入 → `mem_search` 命中 → `mem_get_full` 全文往返
 - 创建图边 → `graph_neighbors`
@@ -394,7 +395,7 @@ Palimpsest/
 │       └── tdb_stress2.py
 ├── tests/
 │   ├── conftest.py               # 临时数据库隔离
-│   └── test_smoke.py             # 6 条冒烟测试
+│   └── test_smoke.py             # 冒烟测试（套件共 55 条）
 └── data/                         # 运行时数据库（gitignore）
     ├── mh_memory.db              #   主 TriviumDB 存储
     └── fts.db                    #   FTS5 全文索引

@@ -11,6 +11,17 @@ from core.utils import _to_float
 
 logger = logging.getLogger(__name__)
 
+
+class EmbeddingUnavailableError(Exception):
+    """Embedding 服务不可用。
+
+    当 Ollama / OpenAI 兼容 embedding 后端在生成向量时失败（网络不可达、
+    HTTP 错误、无 API key、返回空向量等）抛出。调用方应将其视为 fail-fast：
+    异常自然向上传播，而不是静默降级为全零向量（全零向量会污染检索排序，
+    危及 RAG 正确性）。异常消息含修复指引，便于运维快速定位。
+    """
+
+
 # 图谱扩散参数来自 Config（性能优化）：每节点最多扩散最强 N 条边；弱边阈值。
 
 # 出厂通用区块（domain 分组概念：图谱分区块防跨域污染）。
@@ -109,21 +120,29 @@ class TriviumStore:
         try:
             import requests
 
+            url = Config.OLLAMA_EMBEDDING_BASE_URL.rstrip("/") + "/api/embeddings"
             response = requests.post(
-                "http://localhost:11434/api/embeddings",
+                url,
                 json={"model": Config.OLLAMA_EMBEDDING_MODEL, "prompt": text},
                 timeout=30,
             )
             response.raise_for_status()
             embedding = response.json().get("embedding")
-            if embedding:
-                return embedding
-            else:
-                print("警告: Ollama 返回的 embedding 为空")
-                return [0.0] * self.dim
+            if not embedding:
+                raise EmbeddingUnavailableError(
+                    f"Ollama embedding 返回为空: model={Config.OLLAMA_EMBEDDING_MODEL}。"
+                    "请确认模型已拉取（ollama pull qwen3-embedding:0.6b）并检查 "
+                    "OLLAMA_EMBEDDING_BASE_URL 配置。"
+                )
+            return embedding
+        except EmbeddingUnavailableError:
+            raise
         except Exception as e:
-            print(f"Ollama Embedding 生成失败: {e}")
-            return [0.0] * self.dim
+            raise EmbeddingUnavailableError(
+                f"Ollama embedding 生成失败: {e}。请确认已启动 Ollama "
+                "(ollama serve)，model 已拉取（ollama pull qwen3-embedding:0.6b），"
+                "且 OLLAMA_EMBEDDING_BASE_URL（默认 http://localhost:11434）正确。"
+            ) from e
 
     def _embed_openai(self, text: str) -> list[float]:
         """
@@ -131,8 +150,10 @@ class TriviumStore:
         需配置 EMBEDDING_API_KEY / EMBEDDING_BASE_URL / EMBEDDING_MODEL。
         """
         if not Config.EMBEDDING_API_KEY:
-            print("警告: EMBEDDING_PROVIDER=openai 但未配置 EMBEDDING_API_KEY")
-            return [0.0] * self.dim
+            raise EmbeddingUnavailableError(
+                "EMBEDDING_PROVIDER=openai 但未配置 EMBEDDING_API_KEY。"
+                "请检查 EMBEDDING_API_KEY / EMBEDDING_BASE_URL / EMBEDDING_MODEL 配置。"
+            )
         try:
             import requests
 
@@ -147,12 +168,19 @@ class TriviumStore:
             data = response.json()
             # OpenAI 兼容返回: {"data": [{"embedding": [...]}]}
             embedding = data["data"][0]["embedding"]
-            if embedding:
-                return embedding
-            return [0.0] * self.dim
+            if not embedding:
+                raise EmbeddingUnavailableError(
+                    f"云端 embedding 返回为空: model={Config.EMBEDDING_MODEL}。"
+                    "请检查 EMBEDDING_MODEL / EMBEDDING_BASE_URL 配置。"
+                )
+            return embedding
+        except EmbeddingUnavailableError:
+            raise
         except Exception as e:
-            print(f"云端 Embedding 生成失败: {e}")
-            return [0.0] * self.dim
+            raise EmbeddingUnavailableError(
+                f"云端 Embedding 生成失败: {e}。"
+                "请检查 EMBEDDING_API_KEY / EMBEDDING_BASE_URL / EMBEDDING_MODEL 配置。"
+            ) from e
 
     def insert_node(self, node_data: dict[str, Any], embedding: list[float]) -> int:
         """插入记忆节点，返回节点 ID"""
@@ -416,9 +444,18 @@ class TriviumStore:
         logger.info(f"已删除节点 ID={node_id}")
 
     def update_payload(self, node_id: int, new_payload: dict[str, Any]) -> None:
-        """更新节点的 payload 元数据"""
+        """更新节点的 payload 元数据（合并语义，不覆盖未涉及的字段）。
+
+        读现有节点后与 new_payload 做浅合并：只更新 new_payload 里出现的键，
+        其余字段（content/type/importance/domain 等）原样保留——防止「部分更新
+        把整包清空」的 T061 生产事故。节点不存在时抛 ValueError。
+        """
         with self._acquire() as db:
-            db.update_payload(id=node_id, payload=new_payload)  # 改为关键字参数
+            node = db.get(node_id)
+            if node is None:
+                raise ValueError(f"节点 ID={node_id} 不存在，无法更新 payload")
+            merged = {**(node.payload or {}), **(new_payload or {})}
+            db.update_payload(id=node_id, payload=merged)
         logger.info(f"已更新节点 ID={node_id} 的 payload")
 
     def update_vector(self, node_id: int, new_vector: list[float]) -> None:

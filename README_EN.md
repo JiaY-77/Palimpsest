@@ -327,7 +327,8 @@ Node membership is expressed by the `payload.domain` field (since v1.0.0; the le
 | `GET` | `/summary` | Human-readable memory summary (events / character state / plans) |
 | `POST` | `/report` | Generate a LLM-based analysis report from the current store |
 | `DELETE` | `/memory/{id}` | Delete a memory node (FTS index kept in sync) |
-| `PUT` | `/memory/{id}` | Update a node's payload/metadata |
+| `PUT` | `/memory/{id}` | Update a node's payload (merge semantics: only provided fields change, others preserved; FTS synced) |
+| `PATCH` | `/memory/{id}` | Partially update a node's payload (same merge semantics as PUT) |
 | `PATCH` | `/memory/{id}/vector` | Update a node's vector (dimension must match) |
 | `POST` | `/mem/search` | Unified retrieval |
 | `POST` | `/mem/hybrid-search` | Hybrid FTS5 + vector retrieval |
@@ -353,7 +354,7 @@ curl -X POST http://127.0.0.1:8090/mem/search \
 python -m pytest tests/ -v
 ```
 
-The suite is 6 smoke tests covering the core loop:
+The suite is 55 tests (smoke + core algorithm unit tests + transactions + failure paths) covering the core loop:
 
 - ingest → `mem_search` hit → `mem_get_full` full-text roundtrip
 - graph edge creation → `graph_neighbors`
@@ -413,7 +414,7 @@ Palimpsest/
 │       └── tdb_stress2.py
 ├── tests/
 │   ├── conftest.py               # temporary-DB isolation
-│   └── test_smoke.py             # 6 smoke tests
+│   └── test_smoke.py             # smoke tests (55 total in suite)
 └── data/                         # runtime databases (gitignored)
     ├── mh_memory.db              #   main TriviumDB store
     └── fts.db                    #   FTS5 full-text index

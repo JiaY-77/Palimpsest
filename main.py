@@ -6,17 +6,31 @@ Palimpsest — FastAPI 主入口
 import logging
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from core.fts_index import remove_node
+from core.fts_index import index_node, remove_node
 from core.startup_check import run_startup_check
-from core.trivium_store import TriviumStore
+from core.trivium_store import EmbeddingUnavailableError, TriviumStore
 from core.reporting import generate_report
 from core.version import get_version
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Palimpsest")
+
+
+@app.exception_handler(EmbeddingUnavailableError)
+async def _embedding_unavailable_handler(request, exc: EmbeddingUnavailableError):
+    """Embedding 服务不可用 → 503 fail-fast，不静默降级为全零向量。"""
+    logger.warning("Embedding 服务不可用: %s", exc)
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": str(exc),
+            "hint": "embedding 服务不可用，检查 Ollama 是否启动或 EMBEDDING_* 配置",
+        },
+    )
 
 
 @app.on_event("startup")
@@ -135,11 +149,36 @@ async def delete_memory(node_id: int):
         raise HTTPException(status_code=404, detail=f"删除失败: {str(e)}")
 
 
+def _sync_fts_after_update(node_id: int) -> None:
+    """更新节点后同步 FTS 全文索引（失败不阻塞主更新，可手动 fts-rebuild 兜底）。"""
+    try:
+        node = store.get_node(node_id)
+        content = ((node or {}).get("payload") or {}).get("content", "")
+        if content:
+            index_node(node_id, content)
+        else:
+            remove_node(node_id)
+    except Exception as e:
+        logger.warning("FTS 索引同步失败 node=%s: %s", node_id, e)
+
+
 @app.put("/memory/{node_id}")
 async def update_memory_payload(node_id: int, payload: dict):
-    """更新指定 ID 的记忆 payload（元数据）"""
+    """更新指定 ID 的记忆 payload（部分更新合并语义：只改传入字段，其余保留）"""
     try:
         store.update_payload(node_id, payload)
+        _sync_fts_after_update(node_id)
+        return {"status": "ok", "message": f"节点 {node_id} payload 已更新"}
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"更新失败: {str(e)}")
+
+
+@app.patch("/memory/{node_id}")
+async def patch_memory_payload(node_id: int, payload: dict):
+    """PATCH：部分更新指定 ID 的记忆 payload（与 PUT 同逻辑，但语义上更精确）"""
+    try:
+        store.update_payload(node_id, payload)
+        _sync_fts_after_update(node_id)
         return {"status": "ok", "message": f"节点 {node_id} payload 已更新"}
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"更新失败: {str(e)}")
