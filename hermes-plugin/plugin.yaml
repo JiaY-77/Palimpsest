@@ -1,0 +1,8 @@
+name: palimpsest
+kind: standalone
+version: 1.0.0
+description: "Palimpsest 记忆后端——把 Hermes 记忆层换成 Palimpsest：中文语义召回 + 图谱 + 规则路由 + 自动沉淀。本地私有（REST :8090），无 API key、无第三方依赖。"
+pip_dependencies: []
+hooks:
+  - on_session_end
+  - on_pre_compress

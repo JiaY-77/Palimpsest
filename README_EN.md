@@ -33,6 +33,7 @@ Pa·limp·sest: *a writing surface that is overwritten again and again while old
 - **Startup self-check.** `startup-check` verifies critical files, storage initialization, and the FTS index, emitting a structured report and a non-zero exit code on failure.
 - **Token-efficient by design.** Retrieval returns a **150-character summary plus metadata** instead of full text; full content is fetched on demand.
 - **Three interfaces, one core.** MCP (stdio) for agent tooling, a FastAPI REST service, and a full CLI — all reuse the same underlying tools, so behavior never drifts.
+- **Swap Hermes memory with two plugins.** Replace Hermes' memory layer with Palimpsest entirely: a Memory Provider (semantic recall + auto-sedimentation) plus a Context Engine (graph distillation before compression) — enabled with one command each, memory survives across sessions.
 
 ---
 
@@ -101,11 +102,16 @@ Your store won't get messier over time: a pre-write secret scan blocks keys, con
 
 ## For Hermes users: turn it into your memory plugin
 
-Hermes exposes a memory provider / context engine slot, and Palimpsest ships **both plugins**: a **Memory Provider** (read/write) and a **Context Engine** (pre-compression distillation). The plugin actually lives at `$HERMES_HOME/plugins/palimpsest/` (`plugin.yaml`, `kind=standalone`) and hooks `on_session_end` (session-end highlight distillation) and `on_pre_compress` (graph distillation before compression).
+Hermes exposes a memory provider / context engine slot, and Palimpsest ships **both plugins**: a **Memory Provider** (read/write) and a **Context Engine** (pre-compression distillation). The plugin source lives in the repo at [`hermes-plugin/`](./hermes-plugin/README.md) — including `plugin.yaml` (`kind=standalone`) and two hooks: `on_session_end` (session-end highlight distillation) and `on_pre_compress` (graph distillation before compression).
 
-Activate (one line per item):
+Deploy (copy the plugin into Hermes' plugin directory, then activate one line per item):
 
 ```bash
+# 1. Copy the plugin into Hermes' plugin directory (default ~/.hermes/plugins/)
+mkdir -p ~/.hermes/plugins/palimpsest
+cp hermes-plugin/* ~/.hermes/plugins/palimpsest/
+
+# 2. Activate (one line per item)
 hermes plugins enable palimpsest
 hermes config set memory.provider palimpsest
 hermes config set context.engine palimpsest-graph

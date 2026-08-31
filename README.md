@@ -39,6 +39,7 @@ Palimpsest 是一个 **本地优先的嵌入式长期记忆系统**，将 **向�
 - ✅ **启动自检** —— `startup-check` 校验关键文件、存储初始化与 FTS 索引，输出结构化报告，失败时以非零退出码结束
 - ✂️ **省 token 设计** —— 检索默认只返回 **150 字摘要 + 元数据**，而非全文；完整内容按需二次拉取
 - 🎯 **三接口、一核心** —— MCP（stdio）、FastAPI REST、完整 CLI 三套接入共用同一套底层工具，行为永不割裂
+- 🧠 **Hermes 双插件换脑** —— 把 Hermes 的记忆层整体换成 Palimpsest：Memory Provider（语义召回 + 自动沉淀）+ Context Engine（压缩前图谱提炼），一行命令激活，记忆跨会话不丢
 
 ---
 
@@ -82,11 +83,16 @@ Palimpsest 用 **一个本地内核** 同时解决「检索、关联、演进」
 
 ### 给 Hermes 用户：把它变成你的记忆插件
 
-Hermes 预留了 memory provider / context engine 插槽，Palimpsest 为此提供**双插件**：**Memory Provider**（记忆读写）+ **Context Engine**（上下文压缩前提炼）。插件实际位于 `$HERMES_HOME/plugins/palimpsest/`（`plugin.yaml`，`kind=standalone`），挂载两个 hooks：`on_session_end`（会话结束提炼要点）与 `on_pre_compress`（压缩前图谱提炼）。
+Hermes 预留了 memory provider / context engine 插槽，Palimpsest 为此提供**双插件**：**Memory Provider**（记忆读写）+ **Context Engine**（上下文压缩前提炼）。插件源码在仓库 [`hermes-plugin/`](./hermes-plugin/README.md)，含 `plugin.yaml`（`kind=standalone`）与两个 hooks：`on_session_end`（会话结束提炼要点）与 `on_pre_compress`（压缩前图谱提炼）。
 
-激活（一行一件）：
+部署（把插件复制到 Hermes 插件目录，然后一行一件激活）：
 
 ```bash
+# 1. 复制插件到 Hermes 插件目录（默认 ~/.hermes/plugins/）
+mkdir -p ~/.hermes/plugins/palimpsest
+cp hermes-plugin/* ~/.hermes/plugins/palimpsest/
+
+# 2. 激活（一行一件）
 hermes plugins enable palimpsest
 hermes config set memory.provider palimpsest
 hermes config set context.engine palimpsest-graph
