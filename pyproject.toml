@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "palimpsest"
-version = "2.2.0"
+version = "1.0.0"
 description = "A local-first long-term memory system: TriviumDB vector storage + Ollama/OpenAI embeddings, providing memory write/retrieve, knowledge graph, and knowledge-base tools via MCP/REST/CLI."
 requires-python = ">=3.10"
 dependencies = [

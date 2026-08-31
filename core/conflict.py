@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """共享冲突检测：mem_ingest 写入时的相似旧记忆分级处理（三层防误标）
 
-三层防误标（v1.2，2026-08-29 domain 统一）：
+三层防误标（2026-08-29 domain 统一）：
   0. 类型白名单：仅 memory/task/plan 参与冲突检测（record/event/correction/
      git_commit/review 等历史留痕类型完全跳过）；
   1. 分档：score > 0.75 判定同一事实被取代；0.4 < score <= 0.75 仅话题相关；

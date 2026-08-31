@@ -51,7 +51,7 @@
 
 ## 更早版本
 
-v2.2.0 及更早版本为内部迭代版本，未对外发布，不在此记录。
+更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
 [Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v1.0.0

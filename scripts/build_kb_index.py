@@ -13,7 +13,7 @@ v1.1 增量更新（默认模式）：
     或「mtime 变化」的文件（先删旧块再重新切片插入），mtime 未变的文件跳过。
     老数据（无 source_mtime 字段）视为「未知」，一律重建（保险起见）。
 
-v2.0 统一语义层（规则类标记）：
+v1.0 统一语义层（规则类标记）：
     规则类文档（文件名/路径含 副官加班协议/宪法/模型军团管理办法/模型路由决策树）
     的切片 domain 打 "rule"（type 仍为 kb_chunk，是知识的子集），其余保持 "kb"。
     增量模式下若文件已有索引的 domain 与当前判定不一致（如 kb→rule），也会触发重建。
@@ -27,7 +27,7 @@ v2.1 退役文档排除：
     模型退役表格、模型路由决策树的「宪法已退役」说明、知识库首页的导航列表）。
     幂等：退役文档第二次运行时库中已无其旧节点，重复执行无副作用。
 
-v2.2 Upsert 重建策略：
+v1.0 Upsert 重建策略：
     重建不再删除旧块再重新插入（导致节点 id 全部变化、图谱边丢失），改为
     upsert 策略保持节点 id 不变：
     - 对每个待重建文件，读取旧块 payload.chunk_index 建立 {chunk_index: node_id} 映射；
@@ -70,7 +70,7 @@ CHUNK_TYPE = "kb_chunk"
 # mtime 比较容差（秒）：浮点序列化/反序列化可能有微小误差，差值小于该值视为未变化
 MTIME_TOLERANCE = 1e-3
 
-# ---- v2.0 统一语义层：规则类文档标记 ----
+# ---- v1.0 统一语义层：规则类文档标记 ----
 # 规则类文档（文件名/相对路径包含以下任一关键词）的切片 domain 打 "rule"，
 # 其余笔记保持 "kb"。rule 是知识的子集（type 仍为 kb_chunk），mem_search 会对
 # rule 节点内置 ×1.3 加权，router_query 只查 rule 切片做任务路由。
@@ -262,7 +262,7 @@ def _detect_retired(md_files: list, knowledge_dir: str) -> tuple:
 
 def _determine_pending(full: bool, active_files: list, existing: dict,
                        knowledge_dir: str) -> tuple:
-    """确定待重建文件列表（v2.2）。
+    """确定待重建文件列表（v1.0）。
 
     全量模式：所有 active 文件强制重建；
     增量模式：新文件 / 老数据无 mtime / mtime 变化 / domain 变化 → 重建，其余跳过。
@@ -285,7 +285,7 @@ def _determine_pending(full: bool, active_files: list, existing: dict,
                 or abs(entry["mtime"] - cur_mtime) > MTIME_TOLERANCE:
             pending.append(fp)  # 老数据无 mtime（未知）或 mtime 变化
         elif entry["domain"] != _doc_domain(rel):
-            pending.append(fp)  # v2.0 domain 变化（如 kb→rule），需重建
+            pending.append(fp)  # v1.0 domain 变化（如 kb→rule），需重建
         else:
             skipped += 1  # mtime 未变，跳过
     return pending, skipped
@@ -325,7 +325,7 @@ def _cleanup_orphans_and_retired(store, existing: dict, known_paths: set,
 
 
 def _rebuild_file(store, fp: str, knowledge_dir: str, existing: dict) -> tuple:
-    """切片 -> upsert 入库单个文件（v2.2：保持旧节点 id）。
+    """切片 -> upsert 入库单个文件（v1.0：保持旧节点 id）。
 
     读取失败返回 (None, 0)（由调用方计入跳过）；成功返回
     ({"file","chunks","char_lens"}, deleted_old)。
@@ -342,7 +342,7 @@ def _rebuild_file(store, fp: str, knowledge_dir: str, existing: dict) -> tuple:
     cur_mtime = os.path.getmtime(fp)
     chunks = split_markdown(text)
 
-    # v2.2 构建旧块 {chunk_index: node_id} 映射
+    # v1.0 构建旧块 {chunk_index: node_id} 映射
     entry = existing.get(rel)
     old_index_map = {}
     if entry and entry["ids"]:
@@ -387,7 +387,7 @@ def _rebuild_file(store, fp: str, knowledge_dir: str, existing: dict) -> tuple:
 
 def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False) -> dict:
     """
-    构建知识库向量索引（v2.2 upsert 策略）。
+    构建知识库向量索引（v1.0 upsert 策略）。
     full=True：全量模式——所有 active 文件强制 upsert 重建（不删除旧节点，保持 id），
         并统一执行孤儿/退役文档旧块清理。
     full=False（默认）：增量更新——对比 mtime，只重建新增/变化的文件；老数据
@@ -410,7 +410,7 @@ def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False) ->
     total_chunks = 0
     deleted_old = 0
 
-    # ---- v2.2 确定待重建文件列表 ----
+    # ---- v1.0 确定待重建文件列表 ----
     pending, skipped = _determine_pending(full, active_files, existing, knowledge_dir)
 
     # ---- 两个模式共用：known_paths 构造 + 孤儿/退役清理 ----
@@ -422,7 +422,7 @@ def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False) ->
     deleted_old += _cleanup_orphans_and_retired(store, existing, known_paths,
                                                 retired_rels)
 
-    # ---- 切片 -> upsert 入库（v2.2：保持旧节点 id） ----
+    # ---- 切片 -> upsert 入库（v1.0：保持旧节点 id） ----
     rebuilt = 0
     for fp in pending:
         stats_entry, delta = _rebuild_file(store, fp, knowledge_dir, existing)
@@ -438,15 +438,15 @@ def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False) ->
 
     elapsed = round(time.time() - t0, 2)
     mode = "full" if full else "incremental"
-    # v2.0 统一语义层：重建完成后统计 rule / kb 块数
+    # v1.0 统一语义层：重建完成后统计 rule / kb 块数
     domain_counts = _count_domain_chunks(store)
-    print(f"\n=== 知识库索引构建完成（{'全量' if full else '增量'}模式）v2.2 upsert ===")
+    print(f"\n=== 知识库索引构建完成（{'全量' if full else '增量'}模式）v1.0 upsert ===")
     print(f"总块数: {total_chunks} | 新增/重建: {rebuilt} 篇 | 跳过: {skipped} 篇 | 耗时: {elapsed} 秒")
-    print(f"[v2.0 域统计] domain=rule（规则类）: {domain_counts.get(RULE_DOMAIN, 0)} 块 | "
+    print(f"[v1.0 域统计] domain=rule（规则类）: {domain_counts.get(RULE_DOMAIN, 0)} 块 | "
           f"domain=kb（普通知识）: {domain_counts.get(KB_DOMAIN, 0)} 块")
     if deleted_old:
         print(f"（删除旧 kb_chunk 节点 {deleted_old} 个）")
-    # v2.2b FTS 联动（T056 混合检索依赖）：知识库重建后同步全文索引；
+    # v1.0 FTS 联动（T056 混合检索依赖）：知识库重建后同步全文索引；
     # 失败不阻塞主流程（可手动 palimpsest_cli.py fts-rebuild 兜底）
     fts_count = -1
     try:
@@ -462,8 +462,8 @@ def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False) ->
         "rebuilt": rebuilt,
         "skipped": skipped,
         "deleted_old": deleted_old,
-        "domain_counts": domain_counts,  # v2.0: {rule: n, kb: n}
-        "fts_count": fts_count,  # v2.2b: FTS 同步节点数（-1=失败）
+        "domain_counts": domain_counts,  # v1.0: {rule: n, kb: n}
+        "fts_count": fts_count,  # v1.0: FTS 同步节点数（-1=失败）
     }
 
 
