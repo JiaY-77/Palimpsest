@@ -93,7 +93,7 @@ def test_embedding_failure_raises(monkeypatch):
 
     store = _store()
     try:
-        store.embed_text("x")
+        store._embed_ollama("x")
         assert False, "embed_text 失败时应抛 EmbeddingUnavailableError，而不是返回零向量"
     except EmbeddingUnavailableError as e:
         assert str(e), "异常应带修复指引信息"

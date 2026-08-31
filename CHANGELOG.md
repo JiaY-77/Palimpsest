@@ -10,10 +10,21 @@
 
 - **`PUT /memory/{id}` 数据丢失**：原实现为整包替换，部分更新会把 `content` / `type` / `importance` / `domain` 等字段清空（内部生产事故路径）。现改为**合并语义**（只更新传入字段，其余保留）；新增 `PATCH /memory/{id}` 端点（REST 部分更新语义）；更新后自动同步 FTS 全文索引，杜绝幽灵命中
 - **Embedding 静默降级**：embedding 服务不可用时原实现静默返回全零向量（检索排序被污染且无告警）。现改为 **fail-fast**——抛出 `EmbeddingUnavailableError`，REST 层返回 503 并附修复指引；新增 `OLLAMA_EMBEDDING_BASE_URL` 配置项（与 LLM 的 `OLLAMA_BASE_URL` 解耦），`startup-check` 同步使用该配置
+- **FTS 内容漂移巡检**：`check_fts_consistency` 从「只比对节点 id」升级为**内容级对账**（逐节点比对 content），发现并修复了存量漂移；新增 `sync_node` 统一 FTS 同步入口（PUT/PATCH/DELETE 复用）；空内容节点不再误报缺失
+- **并发与边界加固**：`mem_ingest` 节点 id 分配加进程内锁（防并发同 id 覆盖）；`mem_review` 对脏 payload（非数值 importance）安全兜底；FTS 查询含双引号时走 LIKE 兜底（不再被 FTS5 语法吞掉）；知识库根环境变量统一 `KNOWLEDGE_DIR`（兼容回退 `KNOWLEDGE_ROOT`）；KB 索引增量 upsert 先写向量后写 mtime（中途崩溃下次增量可自愈）
+
+### 新增
+
+- `GET /memory/{id}` 端点：读取单节点完整 payload（REST 读能力补齐）
+- 确定性 fake embedder 注入测试基建：测试套件不再依赖在线 Ollama，CI 不再在每台 runner 安装 Ollama / 拉取模型
+
+### 工程化
+
+- 清理 7 处冗余 `os.chdir`（配置已绝对路径化）；删除 `--db-path` 死选项；代码注释/文档中的个人化术语清零
 
 ### 测试
 
-- 新增失败路径测试：PUT/PATCH 部分更新保留字段、缺失节点报错、embedding 失败抛错；套件由 51 条增至 **55 条**
+- 失败路径测试：PUT/PATCH 部分更新保留字段、缺失节点报错、embedding 失败抛错、GET 端点、含引号查询、脏 payload、内容漂移对账；套件由 51 条增至 **61 条**（无 Ollama 环境同样全绿）
 
 ## [1.0.0] - 2026-08-29
 

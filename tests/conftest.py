@@ -31,10 +31,47 @@ os.environ["DB_PATH"] = os.path.join(_TMP_DIR, "mh_test.db")
 os.environ.setdefault("KNOWLEDGE_DIR", os.path.join(_TMP_DIR, "knowledge"))
 os.environ.setdefault("HERMES_MEMORY_FILE", "")
 
+import hashlib
+
 import pytest  # noqa: E402
 
 # 在 DB_PATH 就绪后导入全局 store（mcp_tools 内部据此实例化 TriviumStore）
 from mcp_tools import store  # noqa: E402  # noqa: F401
+
+# ---------------------------------------------------------------------------
+# 确定性 fake embedder —— 测试全部走此实现（不依赖 Ollama）
+# ---------------------------------------------------------------------------
+
+_FAKE_DIM = 1024
+
+
+def _fake_embed(text: str) -> list[float]:
+    """基于字符 2-gram 的确定性向量：相似文本 → 相似向量。"""
+    import math
+
+    vec = [0.0] * _FAKE_DIM
+    if not text:
+        return vec
+    padded = " " + text + " "
+    for i in range(len(padded) - 1):
+        gram = padded[i : i + 2]
+        h = int(hashlib.md5(gram.encode("utf-8")).hexdigest()[:4], 16)
+        vec[h % _FAKE_DIM] += 1.0
+    norm = math.sqrt(sum(v * v for v in vec))
+    if norm == 0:
+        return vec
+    return [v / norm for v in vec]
+
+
+@pytest.fixture(scope="session", autouse=True)
+def fake_embedder():
+    """替换全局 store.embed_text 为确定性 fake embedding（n-gram 向量）。
+
+    测试全部走 fake embedding（确定性 n-gram 向量），真实 embedding 由
+    startup-check / 生产环境验证。session 级别不恢复。
+    """
+    store.embed_text = _fake_embed
+    yield
 
 
 @pytest.fixture(scope="session", autouse=True)
