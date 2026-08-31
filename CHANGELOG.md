@@ -4,6 +4,12 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
+## [Unreleased]
+
+### 依赖
+
+- **triviumdb 0.8.2 → 0.8.3**：上游发布可组合混合查询管线（TQL WITH 编排 + 四类持久化属性索引 Hash/Ordered ART/Composite ART/Roaring Bitmap + 图算法库 PageRank/WCC/Leiden 等 + 路径与集合代数）。本地实测 0.8.2 库零迁移直接打开（存储格式 v7 兼容），506 节点全量回归通过：mem_search / mem_hybrid_search / mem_router / graph_neighbors / mem_ingest（写读删）
+
 ## [1.0.1] - 2026-08-31
 
 ### 修复
