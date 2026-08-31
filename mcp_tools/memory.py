@@ -10,6 +10,7 @@ L1 嗅探。
 import logging  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
+import threading  # noqa: E402
 import time  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -18,11 +19,16 @@ from core.conflict import resolve_conflict  # noqa: E402
 from core.fts_index import index_node, search_fts  # noqa: E402
 from core.secret_scan import SecretScanError  # noqa: E402
 from core.trivium_store import domain_in_block, node_domain  # noqa: E402
+from core.utils import _to_float  # noqa: E402
 
 from config import Config  # noqa: E402
 
 from mcp_tools._common import _shorten, _to_json, mcp, store  # noqa: E402
 from mcp_tools.graph import _collect_neighbors  # noqa: E402
+
+# mem_ingest 并发 id 分配锁：多请求同时算 next_id 可能得到相同 id，
+# 加锁保护「id 分配 + 插入」的临界区（只锁分配段，不锁整个 ingest 流程）
+_INGEST_ID_LOCK = threading.Lock()
 
 
 @mcp.tool()
@@ -122,15 +128,18 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
     db = None
     try:
         db = store._acquire()
-        existing = db.all_node_ids()
-        next_id = (max(existing) + 1) if existing else 1
-        with db.transaction() as tx:
-            # insert_node_tx 已把 created_at 透传进 payload（事务模式下新节点不可
-            # 读回，避免 tx.update_payload 整包覆盖）；此处仅做冲突检测标脏。
-            node_id = store.insert_node_tx(tx, node_data, emb, next_id=next_id)
-            # 冲突检测：查找/标脏旧记忆（事务内标脏 + 建 REVISED_BY 边）
-            conflict = resolve_conflict(store, emb, node_id, tx=tx, db=db,
-                                        new_payload=node_data)
+        # 并发加固：多请求同时算 next_id 可能得到相同 id，用模块级锁保护
+        # 「读 existing + id 分配 + 插入」临界区（只锁分配段，不锁整个 ingest 流程）
+        with _INGEST_ID_LOCK:
+            existing = db.all_node_ids()
+            next_id = (max(existing) + 1) if existing else 1
+            with db.transaction() as tx:
+                # insert_node_tx 已把 created_at 透传进 payload（事务模式下新节点不可
+                # 读回，避免 tx.update_payload 整包覆盖）；此处仅做冲突检测标脏。
+                node_id = store.insert_node_tx(tx, node_data, emb, next_id=next_id)
+                # 冲突检测：查找/标脏旧记忆（事务内标脏 + 建 REVISED_BY 边）
+                conflict = resolve_conflict(store, emb, node_id, tx=tx, db=db,
+                                            new_payload=node_data)
         # ---- 事务已提交 ----
         # 立即释放本连接的库锁，后续 FTS / 读回节点都经由 store._acquire() 重开，
         # 若此处不关闭，重开会触发 "Database locked"（同库双连接）。
@@ -225,7 +234,7 @@ def mem_review(days: int = 7, domain: str = "") -> str:
       - high_value_candidates：importance>=0.6 且 active（升级知识库候选）
       - stale_outdated：outdated 节点（版本链历史，可清理候选）
       - low_value_candidates：importance<=0.4 且 active 的非知识节点（清理候选）
-    供每日复盘使用：指挥官裁决后升级/清理，再存 type=review 节点。
+    供每日复盘使用：维护者裁决后升级/清理，再存 type=review 节点。
     """
     import time
     now = time.time()
@@ -259,14 +268,14 @@ def mem_review(days: int = 7, domain: str = "") -> str:
 
     # 高价值候选（importance>=0.6 且 active → 升级知识库候选）
     high_value = [x for x in items
-                  if x["status"] != "outdated" and float(x["importance"] or 0) >= 0.6]
-    high_value.sort(key=lambda x: x["importance"], reverse=True)
+                  if x["status"] != "outdated" and _to_float(x.get("importance"), 0) >= 0.6]
+    high_value.sort(key=lambda x: _to_float(x.get("importance"), 0), reverse=True)
 
     # 待治理：outdated 节点 + 低价值旧记忆（清理候选）
     stale = [x for x in items if x["status"] == "outdated"]
     low_value = [x for x in items
                  if x["status"] != "outdated" and x["type"] != "kb_chunk"
-                 and float(x["importance"] or 0) <= 0.4]
+                 and _to_float(x.get("importance"), 0) <= 0.4]
 
     return _to_json({
         "review_window_days": days,

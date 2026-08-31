@@ -2,7 +2,7 @@
 """
 Palimpsest 本地 MCP Server
 =========================
-把小七（Hermes）的记忆层能力暴露为标准 MCP 工具，供 Hermes 通过 MCP 协议调用。
+将 Hermes Agent 的记忆层能力暴露为标准 MCP 工具，供 Hermes 通过 MCP 协议调用。
 底层使用 Palimpsest 的 TriviumStore（向量 + 图 + 文档存储），embedding 由本地
 Ollama 的 qwen3-embedding:0.6b 生成（1024 维，已验证可用）。
 

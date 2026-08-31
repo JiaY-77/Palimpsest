@@ -33,7 +33,7 @@ def open_db():
 
 def long_payload(i):
     """模拟知识 chunk 的大文本 payload"""
-    return {"type": "kb_chunk", "text": f"知识块 {i}：小七的压测文本。" + "这是一段模拟知识内容的文字，用于测试大 payload 的写入与检索性能。" * 50,
+    return {"type": "kb_chunk", "text": f"知识块 {i}：压测文本。" + "这是一段模拟知识内容的文字，用于测试大 payload 的写入与检索性能。" * 50,
             "importance": 0.6, "status": "active"}
 
 

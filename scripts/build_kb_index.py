@@ -48,10 +48,8 @@ import re
 import sys
 import time
 
-# 确保能 import 项目 core 模块（以项目根为基准）
-from _common import SCRIPT_DIR as _SCRIPT_DIR, PROJECT_ROOT as _PROJECT_ROOT
-# 切换到项目根目录，保证 config 里的相对路径（data/mh_memory.db）解析正确
-os.chdir(_PROJECT_ROOT)
+# 确保能 import 项目 core 模块（以项目根为基准，_common 导入即把项目根注入 sys.path）
+import _common  # noqa: E402,F401
 
 from config import Config  # noqa: E402
 from core.fts_index import rebuild as fts_rebuild  # noqa: E402
@@ -80,7 +78,7 @@ KB_DOMAIN = "kb"
 
 # ---- v2.1 退役文档排除 ----
 # 退役横幅标记（文档引言区出现任一即视为退役）。样例：
-#   > ⛔ **已退役（2026-08-24 规则收敛，主人批准）**：本文档不再维护...
+#   > ⛔ **已退役（2026-08-24 规则收敛，维护者批准）**：本文档不再维护...
 # 只检测引言区（frontmatter 之后、首个 ## 节标题之前），避免误伤正文提及
 # 「已退役」的文档（模型军团管理办法的模型退役表格、模型路由决策树的
 # 「宪法已退役」说明、知识库首页的退役导航列表等）。
@@ -370,8 +368,8 @@ def _rebuild_file(store, fp: str, knowledge_dir: str, existing: dict) -> tuple:
         }
         old_nid = old_index_map.get(i)
         if old_nid is not None:
-            store.update_payload(old_nid, payload)
             store.update_vector(old_nid, emb)
+            store.update_payload(old_nid, payload)
         else:
             store.insert_node(payload, emb)
         char_lens.append(len(chunk))

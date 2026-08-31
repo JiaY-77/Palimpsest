@@ -57,8 +57,6 @@ os.environ["DB_PATH"] = os.path.join(
     _PROJECT_ROOT, "data", "mh_memory_new.db"
 ).replace("\\", "/")
 
-os.chdir(_PROJECT_ROOT)
-
 from config import Config  # noqa: E402
 from core.trivium_store import TriviumStore  # noqa: E402
 

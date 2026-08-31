@@ -34,10 +34,8 @@ import sys
 import tempfile
 from collections import Counter
 
-# 确保能 import 项目 core 模块（以项目根为基准）
-from _common import SCRIPT_DIR as _SCRIPT_DIR, PROJECT_ROOT as _PROJECT_ROOT
-# 切换到项目根目录，保证 config 里的相对路径（data/mh_memory.db）解析正确
-os.chdir(_PROJECT_ROOT)
+# 确保能 import 项目 core 模块（以项目根为基准，_common 导入即把项目根注入 sys.path）
+import _common  # noqa: E402,F401
 
 from core.trivium_store import TriviumStore  # noqa: E402
 

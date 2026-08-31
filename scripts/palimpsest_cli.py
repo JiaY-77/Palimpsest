@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-Palimpsest CLI —— 本地小兵调用小帕（Palimpsest）的薄封装（2026-08-25 小帕操作员岗试点）。
+Palimpsest CLI —— 本地 CLI 薄封装（2026-08-25）。
 
 设计：
   - 直接复用 mcp_server.py 的工具函数（mem_search / mem_ingest / mem_link 等），
     不复制冲突检测/规则加权逻辑，避免漂移。
   - 输出 = MCP 工具原生返回（JSON 字符串），已按省 token 设计（摘要 150 字等）。
-  - 供本地小兵（qwen 工具桥 run_command）调用：小七只下「派活一句话 + 读结果」，
+  - 供本地调用：用户只下「派活一句话 + 读结果」，
     机械调用全在本地免费侧。
 
 用法：
@@ -19,12 +19,12 @@ Palimpsest CLI —— 本地小兵调用小帕（Palimpsest）的薄封装（202
   python palimpsest_cli.py recent [--limit 10] [--domain X]
   python palimpsest_cli.py kb "关键词" [--top-k 5]
   python palimpsest_cli.py consolidate [--apply] [--threshold 0.85] [--max-importance 0.8]
-  python palimpsest_cli.py ingest-git [--repo PATH] [--since N] [--db-path PATH]
+  python palimpsest_cli.py ingest-git [--repo PATH] [--since N]
   python palimpsest_cli.py startup-check
 
-边界（指挥官铁律，CLI 不越权）：
-  - importance 分级 / 记忆内容撰写 / 建边决策 = 指挥官（小七）负责；
-    小兵只做机械执行与结果回传。
+边界（CLI 不越权）：
+  - importance 分级 / 记忆内容撰写 / 建边决策 = 用户负责；
+    CLI 只做机械执行与结果回传。
 """
 import argparse
 import json
@@ -179,9 +179,6 @@ def cmd_ingest_git(args):
     repo = args.repo or _PROJECT_ROOT
     since = args.since
 
-    if args.db_path:
-        os.environ["DB_PATH"] = args.db_path
-
     # 运行 git log 获取最近 N 天的 commit
     fmt = "%H|%ad|%s"
     cmd = [
@@ -277,7 +274,7 @@ def cmd_task_archive(args):
 def main():
     p = argparse.ArgumentParser(
         prog="palimpsest_cli",
-        description="Palimpsest 本地 CLI（供本地小兵调用，指挥官只消费结果）",
+        description="Palimpsest 本地 CLI",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -299,14 +296,14 @@ def main():
     sp.add_argument("--fts-limit", type=int, default=50, help="FTS 侧候选量（粗筛/桶大小）")
     sp.set_defaults(fn=cmd_hybrid_search)
 
-    sp = sub.add_parser("ingest", help="写入记忆（内容/分级由指挥官定）")
+    sp = sub.add_parser("ingest", help="写入记忆（内容/分级由用户定）")
     sp.add_argument("content")
     sp.add_argument("--domain", default="")
     sp.add_argument("--importance", type=float, default=0.5)
     sp.add_argument("--type", default="memory")
     sp.set_defaults(fn=cmd_ingest)
 
-    sp = sub.add_parser("link", help="手动建边（边决策由指挥官定）")
+    sp = sub.add_parser("link", help="手动建边（边决策由用户定）")
     sp.add_argument("--source", type=int, required=True)
     sp.add_argument("--target", type=int, required=True)
     sp.add_argument("--relation", default="RELATED_TO")
@@ -349,7 +346,6 @@ def main():
     sp = sub.add_parser("ingest-git", help="将 git commit 入库为 git_commit 节点（幂等）")
     sp.add_argument("--repo", default="", help="git 仓库路径（默认项目根）")
     sp.add_argument("--since", type=int, default=7, help="入库最近 N 天的 commit（默认 7）")
-    sp.add_argument("--db-path", default="", help="指定 DB_PATH（用于临时库测试）")
     sp.set_defaults(fn=cmd_ingest_git)
 
     sp = sub.add_parser("fts-rebuild", help="全量重建 FTS5 全文索引")

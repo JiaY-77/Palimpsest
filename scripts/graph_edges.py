@@ -23,10 +23,8 @@ import json
 import os
 import sys
 
-# 确保能 import 项目 core 模块（以项目根为基准），与 build_kb_index.py 一致
-from _common import SCRIPT_DIR as _SCRIPT_DIR, PROJECT_ROOT as _PROJECT_ROOT
-# 切换到项目根目录，保证 config 里的相对路径（data/mh_memory.db）解析正确
-os.chdir(_PROJECT_ROOT)
+# 确保能 import 项目 core 模块（以项目根为基准，_common 导入即把项目根注入 sys.path）
+from _common import SCRIPT_DIR as _SCRIPT_DIR  # noqa: F401
 
 from config import Config  # noqa: E402
 from core.trivium_store import TriviumStore  # noqa: E402

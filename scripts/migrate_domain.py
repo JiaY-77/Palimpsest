@@ -2,7 +2,7 @@
 """
 Palimpsest 一次性迁移：character_name → domain（消除记忆领域二义性）
 ====================================================================
-背景（2026-08-29 主人原则：记忆领域无二义性）：
+背景（2026-08-29 设计原则：记忆领域无二义性）：
   新写入统一用 payload.domain（character_name 为兼容镜像，读侧一律走 node_domain）；
   老数据只有 character_name 没有 domain。本脚本把「无 domain 但有 character_name」的
   节点复制 character_name → domain，使两字段一致，后续读侧统一走 node_domain。
@@ -22,12 +22,9 @@ Palimpsest 一次性迁移：character_name → domain（消除记忆领域二�
   venv/Scripts/python.exe scripts/migrate_domain.py --apply    # 真正执行
 """
 import argparse
-import os
 import sys
 
-from _common import PROJECT_ROOT  # noqa: E402
-
-os.chdir(PROJECT_ROOT)
+import _common  # noqa: E402,F401  导入即把项目根注入 sys.path
 
 from core.trivium_store import TriviumStore  # noqa: E402
 

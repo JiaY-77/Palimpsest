@@ -21,12 +21,10 @@
 import os
 import sys
 
-# 确保能 import 项目 core 模块与 build_kb_index（以项目根为基准）
-from _common import SCRIPT_DIR as _SCRIPT_DIR, PROJECT_ROOT as _PROJECT_ROOT
+# 确保能 import 项目 core 模块与 build_kb_index（以项目根为基准，_common 导入即注入 sys.path）
+from _common import SCRIPT_DIR as _SCRIPT_DIR  # noqa: F401
 if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
-# 切换到项目根目录，保证 config 里的相对路径（data/mh_memory.db）解析正确
-os.chdir(_PROJECT_ROOT)
 
 try:
     # 以包形式导入（python -m scripts.check_kb_consistency 时可用）

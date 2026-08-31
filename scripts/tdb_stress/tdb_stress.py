@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-TriviumDB 0.8.0 高压压测脚本（隔离临时库，不碰小帕真实 data/）
+TriviumDB 0.8.0 高压压测脚本（隔离临时库，不碰 Palimpsest 真实 data/）
 维度：顺序批量写 / 单条写 / 多进程并发写 / 同 id 冲突写 / 图谱扩展检索 / 混合读写 / 硬杀恢复 / compact
 输出：JSON 报告 + 控制台摘要
 """

@@ -22,7 +22,7 @@ def _resolve_db_path() -> str:
 
 
 class Config:
-    # ---- 服务端口（2026-08-26：8000 让给酒馆 SillyTavern，小帕 REST 用 8090；dashboard 独立 8010）----
+    # ---- 服务端口（2026-08-26：8000 让给酒馆 SillyTavern，Palimpsest REST 用 8090；dashboard 独立 8010）----
     REST_PORT = int(os.getenv("REST_PORT", "8090"))
     DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "8010"))
 

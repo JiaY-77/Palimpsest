@@ -48,7 +48,7 @@ def test_domain_unified(db_path):
 
 def test_ingest_search_roundtrip(db_path):
     """写入一条记忆 → mem_search 能检索到 → mem_get_full 能取全文。"""
-    content = "护栏冒烟：小帕在临时库写下的一条独一无二的记忆片段"
+    content = "护栏冒烟：Palimpsest 在临时库写下的一条独一无二的记忆片段"
     r = _get(mem_ingest(content=content, type="memory"))
     assert r["stored"] is True, r
     nid = r["node_id"]

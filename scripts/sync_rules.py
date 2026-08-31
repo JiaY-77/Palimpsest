@@ -44,8 +44,9 @@ from datetime import datetime
 # 路径常量（环境变量优先；可按需用 --kb-root / --json-path 覆盖）
 # ----------------------------------------------------------------------------
 from _common import SCRIPT_DIR as _SCRIPT_DIR, PROJECT_ROOT as _PROJECT_ROOT
-# 知识库根目录：环境变量 KNOWLEDGE_ROOT 优先；默认约定为项目根下 ./knowledge，不硬编码个人路径
-KNOWLEDGE_ROOT = os.getenv("KNOWLEDGE_ROOT", "") or os.path.normpath(
+# 知识库根目录：优先 KNOWLEDGE_DIR（与 .env.example 一致），回退 KNOWLEDGE_ROOT；
+# 默认约定为项目根下 ./knowledge，不硬编码个人路径
+KNOWLEDGE_ROOT = os.getenv("KNOWLEDGE_DIR", "") or os.getenv("KNOWLEDGE_ROOT", "") or os.path.normpath(
     os.path.join(_PROJECT_ROOT, "knowledge")
 )
 DECISION_TREE_JSON = os.getenv("DECISION_TREE_JSON", "") or os.path.join(

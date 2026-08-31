@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from core.fts_index import index_node, remove_node
+from core.fts_index import sync_node
 from core.startup_check import run_startup_check
 from core.trivium_store import EmbeddingUnavailableError, TriviumStore
 from core.reporting import generate_report
@@ -134,16 +134,22 @@ async def report_endpoint():
 
 
 
+@app.get("/memory/{node_id}")
+async def get_memory(node_id: int):
+    """获取指定 ID 的记忆节点完整 payload"""
+    node = store.get_node(node_id)
+    if not node:
+        raise HTTPException(status_code=404, detail=f"节点 {node_id} 不存在")
+    return {"id": node_id, "payload": node.get("payload", {})}
+
+
 @app.delete("/memory/{node_id}")
 async def delete_memory(node_id: int):
     """删除指定 ID 的记忆节点"""
     try:
         store.delete_node(node_id)
         # FTS 全文索引同步（失败不阻塞主删除，可手动 fts-rebuild 兜底）
-        try:
-            remove_node(node_id)
-        except Exception as e:
-            logger.warning("FTS 索引同步失败 node=%s: %s", node_id, e)
+        sync_node(node_id, "")
         return {"status": "ok", "message": f"节点 {node_id} 已删除"}
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"删除失败: {str(e)}")
@@ -154,10 +160,7 @@ def _sync_fts_after_update(node_id: int) -> None:
     try:
         node = store.get_node(node_id)
         content = ((node or {}).get("payload") or {}).get("content", "")
-        if content:
-            index_node(node_id, content)
-        else:
-            remove_node(node_id)
+        sync_node(node_id, content)
     except Exception as e:
         logger.warning("FTS 索引同步失败 node=%s: %s", node_id, e)
 
