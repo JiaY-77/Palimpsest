@@ -1,0 +1,16 @@
+{
+ "edges": [
+  {
+   "source": "docs/guide.md",
+   "target": "docs/api.md",
+   "relation": "RELATED_TO",
+   "weight": 0.9
+  },
+  {
+   "source": "docs/api.md",
+   "target": "docs/faq.md",
+   "relation": "RELATED_TO",
+   "weight": 0.8
+  }
+ ]
+}

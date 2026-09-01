@@ -30,7 +30,25 @@ from config import Config  # noqa: E402
 from core.trivium_store import TriviumStore  # noqa: E402
 
 EDGES_FILE = os.path.join(_SCRIPT_DIR, "graph_edges.json")
+EXAMPLE_FILE = os.path.join(_SCRIPT_DIR, "graph_edges.example.json")
 CHUNK_TYPE = "kb_chunk"
+
+
+def _load_edges():
+    """加载边定义：优先读本机 graph_edges.json，不存在时回退到示例文件"""
+    if os.path.exists(EDGES_FILE):
+        with open(EDGES_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)["edges"]
+    if os.path.exists(EXAMPLE_FILE):
+        print(f"未找到 {os.path.basename(EDGES_FILE)}，使用示例数据；"
+              f"请复制 {os.path.basename(EXAMPLE_FILE)} 为 {os.path.basename(EDGES_FILE)} 并填入你的知识库路径")
+        with open(EXAMPLE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)["edges"]
+    print(f"错误：{os.path.basename(EDGES_FILE)} 与 {os.path.basename(EXAMPLE_FILE)} 均不存在。",
+          file=sys.stderr)
+    print(f"请复制 {os.path.basename(EXAMPLE_FILE)} 为 {os.path.basename(EDGES_FILE)} 并填入你的知识库路径。",
+          file=sys.stderr)
+    sys.exit(1)
 
 # 无向语义关系：与 mcp_server.mem_link 双向建边协议保持一致
 BIDIRECTIONAL_RELATIONS = {"RELATED_TO", "CAUSES", "REFERS_TO"}
@@ -78,8 +96,7 @@ def main():
                         help="只报告会建哪些边，不实际建边")
     args = parser.parse_args()
 
-    with open(EDGES_FILE, "r", encoding="utf-8") as f:
-        edges = json.load(f)["edges"]
+    edges = _load_edges()
 
     store = TriviumStore()
     index = _build_chunk_index(store)

@@ -33,4 +33,9 @@ TASK_palimpsest_*.md
 
 # 脚本备份（git 历史已有完整旧版，不重复入库）
 *.bak_v*
+
+# 本机知识库图谱数据（不入库，开源只保留示例）
+scripts/graph_edges.json
+
+# 本地服务日志
 scripts/start_rest.log
