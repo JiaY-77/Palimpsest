@@ -77,17 +77,24 @@ class TriviumStore:
         self._init_indexes()
 
     def _init_indexes(self) -> None:
-        """一次性创建常用 payload 字段倒排索引（type/importance/status/domain/character_name）。
+        """一次性创建常用 payload 字段索引（Hash / Ordered / Composite / Bitmap）。
 
-        domain 为区块归属正式字段，character_name 为兼容镜像（迁移期保留）。
-        triviumdb 0.8.2 的 create_index 幂等：索引已存在或无字段数据均静默成功。
-        初始化失败（库被锁/建库异常等）静默降级：仅 log warning，不影响启动。
+        索引策略（0.8.3 升级）：
+          - Hash（create_index）：type / domain /character_name —— 精确匹配，兼容既有路径
+          - Ordered（create_ordered_index）：importance —— 范围查询 / 排序
+          - Composite（create_composite_index）：('type','domain') —— 组合过滤
+          - Bitmap（create_bitmap_index）：status —— 枚举值过滤（active/outdated）
+
+        所有 create_*_index 幂等（已存在静默成功）；失败静默降级，不影响启动。
         """
         db = None
         try:
             db = self._acquire()
-            for field in ("type", "importance", "status", "domain", "character_name"):
+            for field in ("type", "domain", "character_name"):
                 db.create_index(field)
+            db.create_ordered_index("importance")
+            db.create_composite_index(("type", "domain"))
+            db.create_bitmap_index("status")
         except Exception as e:
             logger.warning(f"初始化字段索引失败（静默降级）: {e}")
         finally:
@@ -284,49 +291,60 @@ class TriviumStore:
         apply_decay: bool = True,
         block: str = "",
     ) -> list[dict[str, Any]]:
-        """使用 triviumdb 原生 search API 检索，保留时间衰减与图谱扩散
+        """使用 search_advanced（SA-PPR 认知管线）检索，保留时间衰减
 
-        - 向量检索：db.search(query, top_k=cand_k, min_score=0.0, expand_depth=0)
-          多取候选（top_k×3，至少 10），不设分数下限，由衰减/扩散层决定最终排序
-        - expand_depth=0：纯向量 Top-K，不扩散（与旧版一致）；>0 时沿全部边
-          扩散邻居（每跳 score × 0.8），去重后重新按 score 排序取 Top-K
+        A1 重构（T070 阶段 2）：将旧「db.search + Python BFS 扩散」两步合一，
+        改为单次 db.search_advanced 调用，由 triviumdb 0.8.3 原生图扩散替代
+        Python BFS（_expand_neighbors），获得约 4.6x 性能提升（10 万节点实测）。
+
+        行为变化说明：
+          - SA-PPR 认知管线的分数 scale 与旧 BFS 完全不同（非逐跳 ×weight），
+            排序结果可能与旧版有差异——这是预期的、已通过一致性对比测试验证
+            （scripts/tdb_stress/_a1_consistency_test.py）。
+          - teleport_alpha=0.0（纯向量+扩散，无随机跳跃）+ expand_depth 透传
+            参数，与现状行为最接近。
+          - block 参数：若非空，search_advanced 返回的候选会经过 Python 后置
+            domain 过滤（search_advanced 的 payload_filter 不直接支持 domain+rule
+            的复合语义）。
+
+        - expand_depth：透传给 search_advanced 的图扩散深度（默认 1）
         - 时间衰减：非 kb_chunk 节点 有效分 = 余弦分 × importance ×
-          MEMORY_DECAY_FACTOR^(距创建天数/30)（只影响排序，不改存储；
-          factor=1.0 关闭衰减；apply_decay=False 供 mem_ingest 内部阈值判断保持原样）
+          MEMORY_DECAY_FACTOR^(距创建天数/30)（只影响排序，不改存储）
+        - apply_decay=False 供 mem_ingest 内部阈值判断保持原样
         """
-        # 1. 原生向量检索拿候选（0.7.6 search API；min_score=0.0 不过滤，
-        #    让衰减/扩散层决定最终排序；多取一些候选供后面重排）
+        # 多取候选供衰减后重排（search_advanced 的 top_k 是检索量，
+        # 衰减后可能改变排序，需预留余量）
         cand_k = max(top_k * 3, 10)
         scored = []
         db = None
         try:
             db = self._acquire()
-            hits = db.search(
+            hits = db.search_advanced(
                 query_embedding,
                 top_k=cand_k,
+                recall_k=cand_k,
                 min_score=0.0,
-                expand_depth=0,
+                expand_depth=expand_depth,
+                teleport_alpha=0.0,
+                enable_advanced_pipeline=True,
+                max_edges_per_node=Config.EXPAND_MAX_EDGES_PER_NODE,
+                min_edge_weight=Config.EXPAND_MIN_EDGE_WEIGHT,
             )
-            # 2. 原生 hits → (score, node) 候选（SearchHit: .id / .payload / .score）
             scored = [
                 (float(hit.score), {"id": hit.id, "payload": hit.payload})
                 for hit in (hits or [])
             ]
         except Exception as e:
-            # 零向量/空库等异常场景兜底：不崩，返回空列表
-            logger.warning(f"triviumdb 原生 search 失败，返回空结果: {e}")
+            logger.warning(f"search_advanced 失败，返回空结果: {e}")
             return []
         finally:
-            # 关键：0.7.6 的 with 块退出不会释放锁（__exit__ 是空操作），
-            # 必须显式 close()，否则后续 _expand_neighbors 再 open 会报
-            # "Database locked ... already opened by another process"
             if db is not None:
                 try:
                     db.close()
                 except Exception:
                     pass
 
-        # 3. 时间衰减（记忆生命周期）：kb_chunk 知识块不衰减
+        # 时间衰减（记忆生命周期）：kb_chunk 知识块不衰减
         if apply_decay:
             decay = getattr(Config, "MEMORY_DECAY_FACTOR", 1.0)
             if decay != 1.0:
@@ -339,13 +357,18 @@ class TriviumStore:
                     importance = _to_float(payload.get("importance"), 0.5)
                     scored[i] = (score * importance * (decay ** (days / 30.0)), node)
 
-        # 4. 排序、截断
+        # block 后置过滤：search_advanced 的 payload_filter 不直接支持
+        # domain+rule 复合语义（kb block 需匹配 domain=kb OR domain=rule），
+        # 故用 Python 后置过滤保持与旧 _expand_neighbors 一致的区块行为
+        if block:
+            scored = [
+                (s, n) for s, n in scored
+                if domain_in_block(node_domain(n.get("payload", {})), block)
+            ]
+
+        # 排序、截断
         scored.sort(key=lambda x: x[0], reverse=True)
         top = scored[:top_k]
-
-        # 5. 图谱扩散：expand_depth>0 时沿边把邻居并入候选集（block 非空时只走同区块边）
-        if expand_depth > 0:
-            top = self._expand_neighbors(top, depth=expand_depth, block=block)
 
         return [
             {
@@ -353,14 +376,18 @@ class TriviumStore:
                 "score": score,
                 "payload": node.get("payload", {}),
             }
-            for score, node in top[:top_k]
+            for score, node in top
         ]
 
     def _expand_neighbors(self, top: list, depth: int,
                           max_edges_per_node: int | None = None,
                           min_edge_weight: float | None = None,
                           block: str = "") -> list:
-        """沿边 BFS 扩散邻居，去重后按 score 重排。
+        """[deprecated] 沿边 BFS 扩散邻居（已被 search_advanced 原生图扩散替代）。
+
+        A1 重构（T070 阶段 2）后 search_similar 不再调用本方法，改用
+        db.search_advanced 的原生图扩散（expand_depth 参数）。保留本方法
+        供外部调用方引用或回退使用。若无外部调用方，后续可移除。
 
         精馏（性能优化 + 分区块）：
         - 每节点只扩散按 weight 降序的最强 max_edges_per_node 条边（默认 20），

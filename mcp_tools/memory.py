@@ -206,20 +206,53 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
 
 @mcp.tool()
 def mem_recent(domain: str = "", limit: int = 10) -> str:
-    """最近记忆列表：按 created_at 倒序（时间戳缺失时退化为按 id 倒序，即插入顺序）"""
-    items = []
-    for nid, payload in store.iter_payloads():
-        if domain and node_domain(payload) != (domain or "").strip().lower():
-            continue
-        items.append({
+    """最近记忆列表：按 created_at 倒序（时间戳缺失时退化为按 id 倒序，即插入顺序）
+
+    A3 升级：带 domain 时 TQL FIND 替代 iter_payloads 全遍历（O(logN) vs O(N)）。
+    TQL 结果回 Python 排序兜底 created_at 缺失场景，保证行为与旧版一致。
+    空 domain 是全量枚举：triviumdb 0.8.3 的 TQL 无合法「全量空过滤」（FIND {} 非法，
+    MATCH (n) 硬截断 5000 条），故走 iter_payloads 全遍历，保证与旧实现逐字段一致。
+    """
+    domain_val = (domain or "").strip().lower()
+    raw = []  # list[(nid, payload)]
+    if domain_val:
+        tql_q = f'FIND {{domain: "{domain_val}"}} RETURN *'
+        db = None
+        try:
+            db = store._acquire()
+            rows = db.tql(tql_q)
+            for r in rows:
+                nd = r.row.get("_", {})
+                pl = nd.get("payload", {}) or {}
+                nid = nd.get("id")
+                if nid is not None:
+                    raw.append((nid, pl))
+        except Exception as e:
+            logger.warning(f"mem_recent TQL 失败，退化为 iter_payloads: {e}")
+            raw = [(nid, pl) for nid, pl in store.iter_payloads()
+                   if node_domain(pl) == domain_val]
+        finally:
+            # 0.7.6 的 with 退出不释放锁，必须显式 close；0.8.2+ 兼容（close 幂等）
+            if db is not None:
+                try:
+                    db.close()
+                except Exception:
+                    pass
+    else:
+        for nid, pl in store.iter_payloads():
+            raw.append((nid, pl))
+    items = [
+        {
             "id": nid,
-            "type": payload.get("type", ""),
-            "content": _shorten(payload.get("content", ""), 100),
-            "importance": payload.get("importance", 0.5),
-            "status": payload.get("status", ""),
-            "domain": node_domain(payload),
-            "created_at": payload.get("created_at"),
-        })
+            "type": pl.get("type", ""),
+            "content": _shorten(pl.get("content", ""), 100),
+            "importance": pl.get("importance", 0.5),
+            "status": pl.get("status", ""),
+            "domain": node_domain(pl),
+            "created_at": pl.get("created_at"),
+        }
+        for nid, pl in raw
+    ]
     # (created_at, id) 双键倒序：时间戳缺失（None→0）时按 id 倒序兜底
     items.sort(key=lambda x: (x["created_at"] or 0, x["id"]), reverse=True)
     return _to_json({"results": items[:limit], "total": len(items)})
@@ -235,20 +268,26 @@ def mem_review(days: int = 7, domain: str = "") -> str:
       - stale_outdated：outdated 节点（版本链历史，可清理候选）
       - low_value_candidates：importance<=0.4 且 active 的非知识节点（清理候选）
     供每日复盘使用：维护者裁决后升级/清理，再存 type=review 节点。
+
+    A3 候选集回退全遍历：triviumdb 0.8.3 的 TQL FIND/MATCH 硬截断 5000 条，且
+    TQL 返回顺序为 id 升序、不同于 iter_payloads 的 all_node_ids 顺序——对
+    stale/low_value 这类旧实现「不排序、保持遍历序」的候选集，走 TQL 无法与旧实现
+    逐字段一致。故四类候选与 stats 统一来自单次全遍历（与旧实现同一数据源）。
     """
-    import time
     now = time.time()
     window = max(1, int(days)) * 86400.0
+    domain_val = (domain or "").strip().lower()
 
+    # 单次全遍历：stats 与四类候选共用同一数据源（与旧实现逐字段一致）
     items = []
     for nid, payload in store.iter_payloads():
-        if domain and node_domain(payload) != (domain or "").strip().lower():
+        if domain_val and node_domain(payload) != domain_val:
             continue
         items.append({
             "id": nid,
             "type": payload.get("type", ""),
             "content": _shorten(payload.get("content", ""), 100),
-            "importance": payload.get("importance", 0.5),
+            "importance": _to_float(payload.get("importance"), 0.5),
             "status": payload.get("status", ""),
             "domain": node_domain(payload),
             "created_at": payload.get("created_at"),
@@ -260,22 +299,46 @@ def mem_review(days: int = 7, domain: str = "") -> str:
     kb_chunks = sum(1 for x in items if x["type"] == "kb_chunk")
     memory_nodes = sum(1 for x in items if x["type"] == "memory")
 
-    # 窗口内新增记忆（只算 type=memory，kb_chunk 是文档切片不算 ingest）
-    recent = [x for x in items
-              if x["type"] == "memory" and isinstance(x["created_at"], (int, float))
-              and x["created_at"] and (now - x["created_at"]) <= window]
-    recent.sort(key=lambda x: (x["created_at"] or 0, x["id"]), reverse=True)
+    def _imp(x) -> float:
+        return _to_float(x.get("importance"), 0)
 
-    # 高价值候选（importance>=0.6 且 active → 升级知识库候选）
-    high_value = [x for x in items
-                  if x["status"] != "outdated" and _to_float(x.get("importance"), 0) >= 0.6]
-    high_value.sort(key=lambda x: _to_float(x.get("importance"), 0), reverse=True)
+    # 四类候选（与旧实现同一构造规则 + 同一排序）
+    # recent_ingests：窗口内 type=memory，created_at 倒序
+    recent = [
+        {k: x[k] for k in ("id", "type", "content", "importance", "status",
+                           "domain", "created_at")}
+        for x in items
+        if x["type"] == "memory"
+        and isinstance(x["created_at"], (int, float))
+        and x["created_at"]
+        and (now - x["created_at"]) <= window
+    ]
+    recent.sort(key=lambda y: (y["created_at"] or 0, y["id"]), reverse=True)
 
-    # 待治理：outdated 节点 + 低价值旧记忆（清理候选）
-    stale = [x for x in items if x["status"] == "outdated"]
-    low_value = [x for x in items
-                 if x["status"] != "outdated" and x["type"] != "kb_chunk"
-                 and _to_float(x.get("importance"), 0) <= 0.4]
+    # high_value_candidates：importance>=0.6 + active
+    high_value = [
+        {k: x[k] for k in ("id", "type", "content", "importance", "status",
+                           "domain", "created_at")}
+        for x in items
+        if x["status"] != "outdated" and _imp(x) >= 0.6
+    ]
+    high_value.sort(key=_imp, reverse=True)
+
+    # stale_outdated：status=outdated（保持遍历序，与旧实现一致）
+    stale = [
+        {k: x[k] for k in ("id", "type", "content", "importance", "status",
+                           "domain", "created_at")}
+        for x in items
+        if x["status"] == "outdated"
+    ]
+
+    # low_value_candidates：importance<=0.4 + active + 非 kb_chunk（保持遍历序）
+    low_value = [
+        {k: x[k] for k in ("id", "type", "content", "importance", "status",
+                           "domain", "created_at")}
+        for x in items
+        if x["status"] != "outdated" and x["type"] != "kb_chunk" and _imp(x) <= 0.4
+    ]
 
     return _to_json({
         "review_window_days": days,
