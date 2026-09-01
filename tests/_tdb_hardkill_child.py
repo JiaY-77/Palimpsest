@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-T069 · TriviumDB 0.8.3 特性测试 —— 撕裂恢复子进程（仅供 test_storage.py 调用）。
+TriviumDB 0.8.3 特性测试 —— 撕裂恢复子进程（仅供 test_storage.py 调用）。
 
 用法：
   python _tdb_hardkill_child.py --child-hardkill <path> <count>

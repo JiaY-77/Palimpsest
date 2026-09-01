@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-T069 · TriviumDB 0.8.3 特性测试 —— TQL 管线、集合代数与 EXPLAIN（P0）
+TriviumDB 0.8.3 特性测试 —— TQL 管线、集合代数与 EXPLAIN（P0）
 ====================================================================
 覆盖：
   1. SEARCH→WITH→EXPAND→PAGERANK→WHERE→RETURN 编排
@@ -105,7 +105,7 @@ def test_except(tdb):
 # ITERATE —— 定点迭代
 # ---------------------------------------------------------------------------
 @pytest.mark.xfail(
-    reason="#T069 ITERATE 定点迭代语法在当前 build 未公开（解析为 Expected Expand/identifier），"
+    reason="#ITERATE 定点迭代语法在当前 build 未公开（解析为 Expected Expand/identifier），"
            "属未落地语法；待作者补充文档后恢复断言",
     strict=False,
 )

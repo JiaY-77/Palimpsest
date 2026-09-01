@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-T069 · TriviumDB 0.8.3 特性测试 —— TQL 语法冒烟（P0）
+TriviumDB 0.8.3 特性测试 —— TQL 语法冒烟（P0）
 =====================================================
 覆盖：FIND / MATCH / SEARCH / WHERE / RETURN / ORDER BY / LIMIT / OFFSET /
 聚合（COUNT/SUM/AVG/MIN/MAX/COLLECT）/ DML（CREATE/SET/DELETE）。

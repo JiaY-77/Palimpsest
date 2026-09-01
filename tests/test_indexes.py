@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-T069 · TriviumDB 0.8.3 特性测试 —— 持久化属性索引（P1）
+TriviumDB 0.8.3 特性测试 —— 持久化属性索引（P1）
 ======================================================
 覆盖：create_index(Hash) / create_ordered_index(Ordered) /
 create_composite_index(Composite) / create_bitmap_index(Bitmap) 四类：

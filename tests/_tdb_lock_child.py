@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-T069 · TriviumDB 0.8.3 特性测试 —— 跨进程写锁子进程（仅供 test_concurrency.py 调用）。
+TriviumDB 0.8.3 特性测试 —— 跨进程写锁子进程（仅供 test_concurrency.py 调用）。
 
 用法：
   python _tdb_lock_child.py --writer <path>

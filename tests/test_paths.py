@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-T069 · TriviumDB 0.8.3 特性测试 —— TQL 路径查询（P2）
+TriviumDB 0.8.3 特性测试 —— TQL 路径查询（P2）
 ======================================================
 覆盖：
   · SHORTEST_PATHS：有界（LABEL）、路径聚合（path / path_length）

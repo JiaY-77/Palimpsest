@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-T069 · TriviumDB 0.8.3 特性测试 —— 内嵌图算法（P1）
+TriviumDB 0.8.3 特性测试 —— 内嵌图算法（P1）
 ====================================================
 覆盖：
   · leiden_cluster 方法：min_community_size / max_iterations / compute_centroids

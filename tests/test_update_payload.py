@@ -3,7 +3,7 @@
 回归测试：PUT/PATCH 部分更新合并语义 + Embedding fail-fast
 ===========================================================
 覆盖两个 P0 修复：
-  1. update_payload 改为合并语义：部分更新不覆盖未涉及的字段（T061 防清空）。
+  1. update_payload 改为合并语义：部分更新不覆盖未涉及的字段。
   2. embedding 失败不再静默返回零向量，而是抛 EmbeddingUnavailableError（fail-fast）。
 
 使用 conftest 的临时库隔离（DB_PATH 指向临时目录），不碰正式库；

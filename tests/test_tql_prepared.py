@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-T069 · TriviumDB 0.8.3 特性测试 —— Prepared TQL（P0）
+TriviumDB 0.8.3 特性测试 —— Prepared TQL（P0）
 ======================================================
 覆盖：prepare_tql / execute_prepared_tql / PreparedTql.parameter_names；
 缺参 / 多参 / 非法值 fail-closed。
