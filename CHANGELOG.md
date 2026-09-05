@@ -4,11 +4,36 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
-## [Unreleased]
+## [1.1.0] - 2026-09-05
 
 ### 依赖
 
-- **triviumdb 0.8.2 → 0.8.3**：上游发布可组合混合查询管线（TQL WITH 编排 + 四类持久化属性索引 Hash/Ordered ART/Composite ART/Roaring Bitmap + 图算法库 PageRank/WCC/Leiden 等 + 路径与集合代数）。本地实测 0.8.2 库零迁移直接打开（存储格式 v7 兼容），506 节点全量回归通过：mem_search / mem_hybrid_search / mem_router / graph_neighbors / mem_ingest（写读删）
+- **triviumdb 0.8.3 → 0.8.5**：上游修复 pagerank panic（#31）与 5000 行硬截断（#32），MATCH 现可全量返回（含 LIMIT pushdown）；TQL 聚合/标量 RETURN 扁平化（COUNT/SUM/AVG/COLLECT 别名直映射值，不再嵌套 payload）。本地零迁移升级（存储格式 v7 兼容）。`mem_recent` 空 domain 路径随之统一走 TQL（不再绕道 iter_payloads），排序仍留 Python 保持 `(created_at, id)` 双键倒序语义
+
+### 新增
+
+- **`mem_communities` 社区发现工具**（leiden 聚类）：按 `min_community_size` 过滤、按规模降序截断 `top_k`；提供 MCP 工具 + `POST /graph/communities` REST 端点；配套测试
+
+### 修复
+
+- **字符串布尔反转**：Hermes 插件 `include_neighbors` / `bidirectional` 参数曾被 `bool("false") == True` 反转成相反语义，现改为字符串比较判定
+- **`mem_ingest` 输入护栏**：空内容与超长内容（默认上限 50,000 字符，可配置）在嵌入/扫描前拒绝写入，REST 返回 422 + 友好提示（防超大 payload 拖垮库）
+- **TQL domain 注入面**：`mem_recent` domain 白名单校验（仅 `[a-z0-9_-]`），非法输入安全降级为全遍历过滤，不崩溃、不注入
+- **CLI 全文泄漏**：`fts-search` 不再打印全文 content，只输出 node_id + 截断摘要；带 secret 标记的节点隐藏内容
+- **`float()` 裸转统一为防御性 `_to_float`**：memory / graph / kb 多处 score/weight 读取，脏 payload 不再 TypeError
+- **图遍历与建边**：BFS 改 `deque`（消除 `list.pop(0)` O(n)）；`mem_link` 主边与返回统一大写 relation（防同关系两种 label）
+- **合并去重**：consolidator 同批次重复合并（如 (A,B)+(A,C) 把 A 标脏两次）用 `seen_ids` 拦截
+- **FTS 同步可感知**：`sync_node` 返回 bool（成功/失败），失败仍 warning 不抛、不破坏调用契约
+- **CLI 健壮性**：顶层 try/except 友好报错 + 失败退出码非 0；`cmd_ingest` 删除重复的 FTS 索引写入（`mem_ingest` 内部已同步）
+- **压缩链路护栏**：Hermes 插件图谱增强加总耗时预算（默认 8s，可配置），后端不可达时整体 fail-open，不再白等
+
+### 工程化
+
+- 启动自检、防御惯例、输入校验等按审计建议收敛；`MEM_INGEST_MAX_LENGTH` / `PALIMPSEST_GRAPH_TIMEOUT` 新增环境变量配置（魔法数字配置化）
+
+### 测试
+
+- 套件含 0.8.5 适配断言（聚合扁平化、MATCH 全量）、`mem_communities` 测试、`mem_recent` 行为锁定回归；全量 **143 passed + 2 xfailed + 2 xpassed**（无 Ollama 环境同样全绿）
 
 ## [1.0.1] - 2026-08-31
 
