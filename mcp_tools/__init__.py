@@ -15,7 +15,7 @@ mcp_tools —— MCP 工具包
 
 from mcp_tools._common import mcp, store  # noqa: E402
 from mcp_tools.consolidate_tool import mem_consolidate  # noqa: E402
-from mcp_tools.graph import graph_neighbors, mem_link  # noqa: E402
+from mcp_tools.graph import graph_neighbors, mem_communities, mem_link  # noqa: E402
 from mcp_tools.kb import kb_index, kb_search  # noqa: E402
 from mcp_tools.memory import (  # noqa: E402
     mem_get_full, mem_hybrid_search, mem_ingest, mem_recent, mem_retrieve,
@@ -28,6 +28,6 @@ __all__ = [
     "mem_retrieve", "mem_get_full", "mem_ingest", "mem_recent", "mem_review",
     "mem_version_history", "mem_search", "mem_hybrid_search", "mem_consolidate",
     "kb_index", "kb_search",
-    "graph_neighbors", "mem_link",
+    "graph_neighbors", "mem_communities", "mem_link",
     "router_query",
 ]

@@ -7,6 +7,7 @@ graph_neighbors（通用邻居遍历）/ mem_link（手动建边）+ 图关联�
 """
 
 from core.trivium_store import domain_in_block, node_domain  # noqa: E402
+from core.utils import _to_float  # noqa: E402
 
 from mcp_tools._common import _shorten, _to_json, mcp, store  # noqa: E402
 
@@ -231,3 +232,164 @@ def mem_link(source_id: int, target_id: int, relation: str = "RELATED_TO",
         "weight": weight,
         "reverse_added": reverse_added,
     })
+
+
+@mcp.tool()
+def mem_communities(min_community_size: int = 2, top_k: int = 20,
+                    with_summary: bool = True) -> str:
+    """
+    leiden 社区发现：自动发现记忆库里的主题簇（互相紧密关联的记忆群）。
+
+    真实库效果：能聚出「代码审查整改」「小帕×Hermes 融合」「成长复盘」「SOUL 版本日志」等主题簇。
+    返回 size>=min_community_size 的社区，按 size 降序截断 top_k 个。
+
+    参数：
+      min_community_size — 社区最小成员数（默认 2，孤立节点单簇被剔除）
+      top_k — 返回最大社区数（按 size 降序）
+      with_summary — 是否带成员摘要（默认 True）
+
+    返回 JSON：{mode:"communities", min_community_size, num_clusters, total_nodes,
+    communities:[{community_id, size, node_ids, members:[{id, type, title, domain, importance}]}], hint}
+    members 里 title = content 前 60 字，importance 转 float。
+    """
+    try:
+        db = store._acquire()
+        node_count = db.node_count()
+        stats = db.graph_stats()
+        edge_count = stats.get("edge_count", 0) if isinstance(stats, dict) else 0
+        if node_count == 0:
+            return _to_json({"mode": "communities", "error": "图谱为空，无节点",
+                             "hint": "先用 mem_ingest 写入记忆再分析"})
+        if edge_count == 0:
+            return _to_json({"mode": "communities", "num_clusters": 0, "total_nodes": node_count,
+                             "communities": [],
+                             "hint": "图谱无边，建议先 mem_link 建边"})
+
+        min_community_size = max(1, int(min_community_size))
+        top_k = max(1, int(top_k))
+
+        result = _do_communities(db, min_community_size, top_k, with_summary)
+        return _to_json(result)
+    except Exception as e:
+        return _to_json({"mode": "communities", "error": str(e),
+                         "hint": "图分析异常，请检查 TriviumDB 版本/图数据"})
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
+def _get_node_payload(db, nid: int) -> dict:
+    """从 TriviumDB 获取节点 payload（兼容 .payload 属性和 dict 两种返回格式）"""
+    try:
+        node = db.get(nid)
+        if hasattr(node, "payload"):
+            return node.payload or {}
+        if isinstance(node, dict):
+            return (node.get("payload") or {})
+    except Exception:
+        pass
+    return {}
+
+
+def _do_communities(db, min_community_size: int, top_k: int, with_summary: bool) -> dict:
+    """社区发现模式：leiden 聚类 → 过滤 → 截断 → 可选摘要"""
+    try:
+        result = db.leiden_cluster(min_community_size=min_community_size)
+    except Exception as e:
+        return {"mode": "communities", "error": str(e),
+                "hint": "leiden_cluster 调用失败"}
+    communities_raw = result.get("communities", [])
+    num_clusters = result.get("num_clusters", len(communities_raw))
+    total_nodes = db.node_count()
+
+    # 过滤 size >= min_community_size 并按 size 降序
+    filtered = [c for c in communities_raw if len(c) >= min_community_size]
+    filtered.sort(key=len, reverse=True)
+    filtered = filtered[:top_k]
+
+    communities = []
+    for cid, members_ids in enumerate(filtered):
+        members = []
+        if with_summary:
+            for nid in members_ids:
+                payload = _get_node_payload(db, nid)
+                members.append({
+                    "id": nid,
+                    "type": payload.get("type", ""),
+                    "title": _shorten(payload.get("content", ""), 60),
+                    "domain": payload.get("domain", ""),
+                    "importance": _to_float(payload.get("importance"), 0),
+                })
+        communities.append({
+            "community_id": cid,
+            "size": len(members_ids),
+            "node_ids": members_ids,
+            "members": members,
+        })
+
+    return {
+        "mode": "communities",
+        "min_community_size": min_community_size,
+        "num_clusters": num_clusters,
+        "total_nodes": total_nodes,
+        "communities": communities,
+        "hint": f"返回 {len(communities)}/{len(filtered)} 个社区（top_k={top_k}）",
+    }
+
+
+# pagerank 保留说明：代码不删，等图密度（边/节点≈1）达标再启用为公开工具。
+# 当前仅作为内部函数保留，不注册为 @mcp.tool()，不暴露 REST 端点。
+def _do_pagerank(db, top_k: int, node_count: int) -> dict:
+    """枢纽排序（内部保留，未注册为公开工具）：TQL pagerank。
+    稀疏图上效果差，等图密度（边/节点≈1）达标再启用。"""
+    limit = min(node_count, 200)
+    dim = store.dim
+    vec = [0.0] * dim
+    vec[0] = 1.0
+    try:
+        tql = (f"SEARCH VECTOR {vec} TOP {limit} AS seed "
+               f"WITH seed PAGERANK seed AS pr RETURN pr")
+        rows = db.tql(tql)
+    except Exception as e:
+        return {"mode": "pagerank", "error": str(e),
+                "hint": "TQL pagerank 执行失败，检查 TriviumDB 版本"}
+
+    nodes = []
+    for rank, row in enumerate(rows, start=1):
+        # TQL 返回 QueryRow，实际节点在 row.row["pr"] 里
+        row_dict = getattr(row, "row", row)
+        if not isinstance(row_dict, dict):
+            row_dict = {}
+        pr_node = row_dict.get("pr") or row_dict.get("_") or row_dict
+        nid = None
+        if isinstance(pr_node, dict):
+            nid = pr_node.get("id") or pr_node.get("node_id")
+        if nid is None:
+            continue
+        payload = _get_node_payload(db, nid)
+        # 计算该节点的边数
+        try:
+            edges = db.get_edges(nid)
+            num_edges = len(edges) if edges else 0
+        except Exception:
+            num_edges = 0
+        nodes.append({
+            "id": nid,
+            "rank": rank,
+            "num_edges": num_edges,
+            "type": payload.get("type", ""),
+            "title": _shorten(payload.get("content", ""), 60),
+            "domain": payload.get("domain", ""),
+            "importance": _to_float(payload.get("importance"), 0),
+        })
+
+    nodes = nodes[:top_k]
+    return {
+        "mode": "pagerank",
+        "top_k": top_k,
+        "total_nodes": node_count,
+        "top_nodes": nodes,
+        "hint": "pagerank 返回顺序即枢纽度（TQL PAGERANK 输出已排序）；注意稀疏图上效果有限（孤立节点多时枢纽语义弱，建议图密度上来后再用）",
+    }

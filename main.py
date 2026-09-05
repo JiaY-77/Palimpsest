@@ -215,6 +215,7 @@ from mcp_tools import (
     mem_ingest as _mcp_mem_ingest,
     mem_link as _mcp_mem_link,
     graph_neighbors as _mcp_graph_neighbors,
+    mem_communities as _mcp_mem_communities,
     router_query as _mcp_router_query,
     mem_hybrid_search as _mcp_mem_hybrid_search,
 )
@@ -266,6 +267,12 @@ class GraphNeighborsRequest(BaseModel):
     limit: int = 20
     min_weight: float = 0.0
     block: str = ""
+
+
+class GraphCommunitiesRequest(BaseModel):
+    min_community_size: int = 2
+    top_k: int = 20
+    with_summary: bool = True
 
 
 class RouterQueryRequest(BaseModel):
@@ -320,6 +327,14 @@ async def graph_neighbors(req: GraphNeighborsRequest):
     return _as_json(_mcp_graph_neighbors(
         req.node_id, relation=req.relation, depth=req.depth,
         limit=req.limit, min_weight=req.min_weight, block=req.block,
+    ))
+
+
+@app.post("/graph/communities")
+async def graph_communities(req: GraphCommunitiesRequest):
+    return _as_json(_mcp_mem_communities(
+        min_community_size=req.min_community_size,
+        top_k=req.top_k, with_summary=req.with_summary,
     ))
 
 
