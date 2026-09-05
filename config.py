@@ -50,6 +50,10 @@ class Config:
     # 超过该大小（字节）的 MEMORY.md 不读入内存缓存
     L1_MAX_SIZE = int(os.getenv("L1_MAX_SIZE", str(5 * 1024)))
 
+    # ---- mem_ingest 内容上限（魔法数字配置化）----
+    # 单条记忆 content 最大字符数，超长拒绝写入（防超大 payload 拖垮库）
+    MEM_INGEST_MAX_LENGTH = int(os.getenv("MEM_INGEST_MAX_LENGTH", str(50_000)))
+
     # ---- 混合检索 RRF（魔法数字配置化）----
     # Reciprocal Rank Fusion 标准 k 值：单侧命中也算贡献
     RRF_K = float(os.getenv("RRF_K", "60.0"))

@@ -51,7 +51,7 @@ def mem_retrieve(query: str, domain: str = "", top_k: int = 5) -> str:
             continue
         items.append({
             "id": r.get("id"),
-            "score": round(float(r.get("score", 0.0)), 4),
+            "score": round(_to_float(r.get("score"), 0.0), 4),
             "summary": _shorten(payload.get("content", ""), 150),
             "meta": {
                 "type": payload.get("type", ""),
@@ -91,6 +91,15 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
     返回 linked_kb_ids 便于追溯关联的知识库块。
     """
     now = time.time()
+    # ---- 入口校验：空内容 / 超长内容 拒绝写入（在嵌入与扫描前拦截）----
+    content_stripped = (content or "").strip()
+    if not content_stripped:
+        return _to_json({"stored": False, "node_id": None,
+                         "error": "内容不能为空"})
+    if len(content_stripped) > Config.MEM_INGEST_MAX_LENGTH:
+        return _to_json({"stored": False, "node_id": None,
+                         "error": f"内容超长：{len(content_stripped)} 字符，"
+                                  f"上限 {Config.MEM_INGEST_MAX_LENGTH} 字符"})
     emb = store.embed_text(content)
 
     # ---- v1.1 知识关联检测：找出 score > 0.35 的 kb_chunk 节点，写入 payload.linked_from ----
@@ -98,7 +107,7 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
     kb_similar = store.search_similar(emb, top_k=3, expand_depth=0, apply_decay=False)
     for r in kb_similar:
         r_payload = r.get("payload", {}) or {}
-        if r_payload.get("type") == "kb_chunk" and float(r.get("score", 0.0)) > 0.35:
+        if r_payload.get("type") == "kb_chunk" and _to_float(r.get("score"), 0.0) > 0.35:
             rid = r.get("id")
             if rid is not None:
                 linked_kb_ids.append(rid)
@@ -217,36 +226,53 @@ def mem_recent(domain: str = "", limit: int = 10) -> str:
     """
     domain_val = (domain or "").strip().lower()
     raw = []  # list[(nid, payload)]
-    db = None
-    try:
-        db = store._acquire()
-        if domain_val:
-            # FIND 过滤走 Hash 索引；row key 为 "_"
-            tql_q = f'FIND {{domain: "{domain_val}"}} RETURN *'
-            node_key = "_"
-        else:
-            # 全量枚举：MATCH 0.8.5 不再截断；row key 为绑定名 "n"
-            tql_q = "MATCH (n) RETURN n"
-            node_key = "n"
-        rows = db.tql(tql_q)
-        for r in rows:
-            nd = r.row.get(node_key, {})
-            pl = nd.get("payload", {}) or {}
-            nid = nd.get("id")
-            if nid is not None:
-                raw.append((nid, pl))
-    except Exception as e:
-        # TQL 失败（语法/引擎异常）退化为 iter_payloads 全遍历，保证不丢结果
-        logger.warning(f"mem_recent TQL 失败，退化为 iter_payloads: {e}")
+    # 防注入白名单：domain 仅允许 [a-z0-9_-]。含其他字符（引号/花括号等）
+    # 不走 TQL FIND（否则可能注入/破坏查询），退化为 iter_payloads 全遍历过滤——
+    # 非法 domain 安全降级、不崩溃（不抛异常）。此校验必须在 _acquire() 之前，
+    # 避免 open 的 db 与 iter_payloads 内部 _acquire 双开同一库文件报 Database locked。
+    domain_ok = bool(re.fullmatch(r"[a-z0-9_-]+", domain_val or ""))
+    if domain_val and not domain_ok:
+        logger.warning("mem_recent domain 非法，退化为 iter_payloads: %r", domain_val)
         raw = [(nid, pl) for nid, pl in store.iter_payloads()
-               if not domain_val or node_domain(pl) == domain_val]
-    finally:
-        # 0.7.6 的 with 退出不释放锁，必须显式 close；0.8.2+ 兼容（close 幂等）
-        if db is not None:
-            try:
-                db.close()
-            except Exception:
-                pass
+               if node_domain(pl) == domain_val]
+    else:
+        db = None
+        try:
+            db = store._acquire()
+            if domain_val:
+                # FIND 过滤走 Hash 索引；row key 为 "_"
+                tql_q = f'FIND {{domain: "{domain_val}"}} RETURN *'
+                node_key = "_"
+            else:
+                # 全量枚举：MATCH 0.8.5 不再截断；row key 为绑定名 "n"
+                tql_q = "MATCH (n) RETURN n"
+                node_key = "n"
+            rows = db.tql(tql_q)
+            for r in rows:
+                nd = r.row.get(node_key, {})
+                pl = nd.get("payload", {}) or {}
+                nid = nd.get("id")
+                if nid is not None:
+                    raw.append((nid, pl))
+        except Exception as e:
+            # TQL 失败（语法/引擎异常）退化为 iter_payloads 全遍历，保证不丢结果。
+            # 须先 close db 释放锁，否则 iter_payloads 内部 _acquire 双开报 Database locked。
+            if db is not None:
+                try:
+                    db.close()
+                except Exception:
+                    pass
+                db = None
+            logger.warning(f"mem_recent TQL 失败，退化为 iter_payloads: {e}")
+            raw = [(nid, pl) for nid, pl in store.iter_payloads()
+                   if not domain_val or node_domain(pl) == domain_val]
+        finally:
+            # 0.7.6 的 with 退出不释放锁，必须显式 close；0.8.2+ 兼容（close 幂等）
+            if db is not None:
+                try:
+                    db.close()
+                except Exception:
+                    pass
     items = [
         {
             "id": nid,
@@ -550,7 +576,7 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
         if block and not domain_in_block(node_domain(payload), block):
             continue
         # v2.0 统一语义层加权：过滤之后、排序之前应用（只乘系数，不改变过滤逻辑）
-        score = float(r.get("score", 0.0))
+        score = _to_float(r.get("score"), 0.0)
         is_rule = is_kb and payload.get("domain") == "rule"
         if is_rule:
             score *= Config.RULE_RETRIEVAL_WEIGHT  # 内置 rule 加权：规则类知识恒优先
@@ -760,7 +786,7 @@ def _hybrid_cascade(query: str, scope: str, domain: str, domain_bias: str,
         meta["fts_hit"] = it.get("id") in fts_ids
         meta["sem_hit"] = True
         it["meta"] = meta
-        it["score"] = round(float(it.get("score", 0.0)), 4)
+        it["score"] = round(_to_float(it.get("score"), 0.0), 4)
         items.append(it)
     return items
 

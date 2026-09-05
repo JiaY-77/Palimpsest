@@ -64,7 +64,7 @@ def router_query(task: str, top_k: int = 3) -> str:
     sources = []
     for item in results:
         sources.append({
-            "path": item["meta"].get("source_path", ""),
+            "path": item.get("meta", {}).get("source_path", ""),
             "score": item["score"],
             "snippet": _shorten(item.get("summary", ""), 100),
         })

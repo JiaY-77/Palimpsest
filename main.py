@@ -308,10 +308,23 @@ async def mem_hybrid_search(req: MemHybridSearchRequest):
 
 @app.post("/mem/ingest")
 async def mem_ingest(req: MemIngestRequest):
-    return _as_json(_mcp_mem_ingest(
+    import json as _json_mod
+
+    result = _mcp_mem_ingest(
         req.content, type=req.type, importance=req.importance,
         domain=req.domain, source=req.source,
-    ))
+    )
+    # 校验类拒绝（空内容 / 超长）：REST 侧映射为 422，返回友好 message；
+    # 其余 stored:false（如事务失败/secret 强拒，不携带 node_id 键）仍按 JSON 原样返回，不改语义。
+    try:
+        payload = _json_mod.loads(result)
+    except Exception:
+        payload = {}
+    if (not payload.get("stored") and "node_id" in payload
+            and payload.get("node_id") is None):
+        return JSONResponse(status_code=422,
+                            content={"detail": payload.get("error", "内容校验失败")})
+    return _as_json(result)
 
 
 @app.post("/mem/link")

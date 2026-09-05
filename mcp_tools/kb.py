@@ -7,6 +7,8 @@ kb_index（扫描知识库根目录 .md）/ kb_search（只查 type=kb_chunk 的
 
 import os  # noqa: E402
 
+from core.utils import _to_float  # noqa: E402
+
 from mcp_tools._common import (  # noqa: E402
     KNOWLEDGE_DIR, _kb_md_files, _shorten, _to_json, mcp, store,
 )
@@ -47,7 +49,7 @@ def kb_search(query: str, top_k: int = 5) -> str:
         items.append({
             "path": payload.get("source_path", ""),
             "title": payload.get("title", ""),
-            "score": round(float(r.get("score", 0.0)), 4),
+            "score": round(_to_float(r.get("score"), 0.0), 4),
             "snippet": _shorten(payload.get("content", ""), 150),
         })
     if not items:
