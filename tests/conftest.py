@@ -65,11 +65,20 @@ def _fake_embed(text: str) -> list[float]:
 
 @pytest.fixture(scope="session", autouse=True)
 def fake_embedder():
-    """替换全局 store.embed_text 为确定性 fake embedding（n-gram 向量）。
+    """替换所有 TriviumStore 的 embed_text 为确定性 fake embedding（n-gram 向量）。
 
-    测试全部走 fake embedding（确定性 n-gram 向量），真实 embedding 由
-    startup-check / 生产环境验证。session 级别不恢复。
+    - class 级替换（TriviumStore.embed_text）：测试里自建独立 store 实例
+      （如 test_mem_stats / test_promote 的隔离临时库）同样走 fake，绝不连
+      Ollama——CI 无 Ollama 环境必须全绿（此前只 patch mcp_tools 全局 store
+      单例，自建实例仍真连 localhost:11434，CI 上 ConnectionRefused）。
+    - 全局 store 单例也替换（保留原行为）。
+    真实 embedding 由 startup-check / 生产环境验证。session 级别不恢复。
     """
+    from core.trivium_store import TriviumStore  # noqa: E402
+
+    # staticmethod：class 属性赋值会触发描述符绑定（实例调用自动传 self），
+    # 直接赋模块函数会让 _fake_embed 收到 (self, text) 两个参数而 TypeError
+    TriviumStore.embed_text = staticmethod(_fake_embed)
     store.embed_text = _fake_embed
     yield
 
