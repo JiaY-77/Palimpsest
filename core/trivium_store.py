@@ -26,7 +26,8 @@ class EmbeddingUnavailableError(Exception):
 
 # 出厂通用区块（domain 分组概念：图谱分区块防跨域污染）。
 # rule 归入 kb 区块的兼容已有逻辑（domain_in_block），单独列出便于校验。
-DEFAULT_BLOCKS = ("task", "kb", "rule", "hermes", "general")
+# novel = 小说创作设定库（本地小说 vault 设定语料）。
+DEFAULT_BLOCKS = ("task", "kb", "rule", "hermes", "novel", "general")
 
 
 def is_valid_block(block: str) -> bool:

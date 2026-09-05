@@ -42,3 +42,9 @@ scripts/start_rest.log
 
 # 压测日志（含绝对路径，不入库）
 scripts/tdb_stress/err.log
+
+# 小说语料本地数据（本地创作数据不入公网；入库/建边脚本本身入仓库）
+_novel_input/
+_novel_relations.json
+_task_novel_index.md
+_task_novel_links.md
