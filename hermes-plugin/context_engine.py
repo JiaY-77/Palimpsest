@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 import urllib.request
 from typing import Any, Dict, List, Optional
 
@@ -43,6 +44,9 @@ class PalimpsestContextEngine(ContextCompressor):
         ).rstrip("/")
         self._domain = os.environ.get("PALIMPSEST_DOMAIN", "hermes")
         self._max_topics = max(1, min(int(os.environ.get("PALIMPSEST_GRAPH_TOPICS", "3")), 5))
+        # 图谱增强总耗时预算（秒）：后端不可达时整体 fail-open，不让压缩链路白等
+        self._graph_timeout_budget = float(
+            os.environ.get("PALIMPSEST_GRAPH_TIMEOUT", "8.0"))
         self._graph_enhance_errors = 0
 
     @property
@@ -96,17 +100,25 @@ class PalimpsestContextEngine(ContextCompressor):
         return topics[: self._max_topics]
 
     def _graph_enhancement(self, messages: List[Dict[str, Any]], focus_topic: Optional[str]) -> str:
-        """压缩前调 Palimpsest 图谱提炼关键链，返回注入文本；失败/无主题返回空串。"""
+        """压缩前调 Palimpsest 图谱提炼关键链，返回注入文本；失败/无主题返回空串。
+
+        总耗时预算：整体链路的多次串行 POST 受 _graph_timeout_budget 约束，
+        超预算即停止后续 POST（fail-open，绝不让 Palimpsest 拖垮 Hermes 压缩）。
+        """
         topics = self._extract_topics(messages, focus_topic)
         if not topics:
             return ""
         lines = ["[Palimpsest 图谱要点（压缩前提炼）]"]
         added = 0
+        deadline = time.monotonic() + max(0.1, self._graph_timeout_budget)
         for topic in topics:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             resp = self._http_post(f"{self._base_url}/mem/search", {
                 "query": topic, "scope": "all", "domain": self._domain,
                 "top_k": 2, "include_neighbors": True,
-            })
+            }, timeout=min(4.0, remaining))
             if "error" in resp or not resp.get("results"):
                 continue
             top = resp["results"][0]

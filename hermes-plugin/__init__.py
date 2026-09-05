@@ -189,6 +189,7 @@ class PalimpsestMemoryProvider(MemoryProvider):
         if agent_context in {"cron", "flush"} or platform == "cron":
             logger.debug("Palimpsest skipped: cron/flush context")
             self._cron_skipped = True
+            self._enabled = False
             return
         self._session_id = session_id
         self._enabled = True
@@ -317,7 +318,9 @@ class PalimpsestMemoryProvider(MemoryProvider):
             "query": args.get("query", ""), "scope": args.get("scope", "all"),
             "domain": args.get("domain", self._domain),
             "top_k": int(args.get("top_k", 5)),
-            "include_neighbors": bool(args.get("include_neighbors", False)),
+            "include_neighbors": (
+                str(args.get("include_neighbors", False)).lower() == "true"
+            ),
         })
 
     def _tool_ingest(self, args: Dict[str, Any]) -> dict:
@@ -333,7 +336,9 @@ class PalimpsestMemoryProvider(MemoryProvider):
             "target_id": int(args.get("target_id", 0)),
             "relation": args.get("relation", "RELATED_TO"),
             "weight": float(args.get("weight", 0.9)),
-            "bidirectional": bool(args.get("bidirectional", True)),
+            "bidirectional": (
+                str(args.get("bidirectional", True)).lower() == "true"
+            ),
         })
 
     def _tool_graph(self, args: Dict[str, Any]) -> dict:
