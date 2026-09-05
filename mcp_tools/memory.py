@@ -210,37 +210,43 @@ def mem_recent(domain: str = "", limit: int = 10) -> str:
 
     A3 升级：带 domain 时 TQL FIND 替代 iter_payloads 全遍历（O(logN) vs O(N)）。
     TQL 结果回 Python 排序兜底 created_at 缺失场景，保证行为与旧版一致。
-    空 domain 是全量枚举：triviumdb 0.8.3 的 TQL 无合法「全量空过滤」（FIND {} 非法，
-    MATCH (n) 硬截断 5000 条），故走 iter_payloads 全遍历，保证与旧实现逐字段一致。
+    空 domain 是全量枚举：0.8.3 时 MATCH (n) 硬截断 5000 条故绕道 iter_payloads；
+    0.8.5 修复 #32 后 MATCH 可全量返回（含 LIMIT pushdown），故统一走 TQL 获取，
+    排序仍留 Python——TQL ORDER BY 会把缺失 created_at 排最前，与
+    (created_at or 0, id) 双键倒序语义不一致，不可下推。
     """
     domain_val = (domain or "").strip().lower()
     raw = []  # list[(nid, payload)]
-    if domain_val:
-        tql_q = f'FIND {{domain: "{domain_val}"}} RETURN *'
-        db = None
-        try:
-            db = store._acquire()
-            rows = db.tql(tql_q)
-            for r in rows:
-                nd = r.row.get("_", {})
-                pl = nd.get("payload", {}) or {}
-                nid = nd.get("id")
-                if nid is not None:
-                    raw.append((nid, pl))
-        except Exception as e:
-            logger.warning(f"mem_recent TQL 失败，退化为 iter_payloads: {e}")
-            raw = [(nid, pl) for nid, pl in store.iter_payloads()
-                   if node_domain(pl) == domain_val]
-        finally:
-            # 0.7.6 的 with 退出不释放锁，必须显式 close；0.8.2+ 兼容（close 幂等）
-            if db is not None:
-                try:
-                    db.close()
-                except Exception:
-                    pass
-    else:
-        for nid, pl in store.iter_payloads():
-            raw.append((nid, pl))
+    db = None
+    try:
+        db = store._acquire()
+        if domain_val:
+            # FIND 过滤走 Hash 索引；row key 为 "_"
+            tql_q = f'FIND {{domain: "{domain_val}"}} RETURN *'
+            node_key = "_"
+        else:
+            # 全量枚举：MATCH 0.8.5 不再截断；row key 为绑定名 "n"
+            tql_q = "MATCH (n) RETURN n"
+            node_key = "n"
+        rows = db.tql(tql_q)
+        for r in rows:
+            nd = r.row.get(node_key, {})
+            pl = nd.get("payload", {}) or {}
+            nid = nd.get("id")
+            if nid is not None:
+                raw.append((nid, pl))
+    except Exception as e:
+        # TQL 失败（语法/引擎异常）退化为 iter_payloads 全遍历，保证不丢结果
+        logger.warning(f"mem_recent TQL 失败，退化为 iter_payloads: {e}")
+        raw = [(nid, pl) for nid, pl in store.iter_payloads()
+               if not domain_val or node_domain(pl) == domain_val]
+    finally:
+        # 0.7.6 的 with 退出不释放锁，必须显式 close；0.8.2+ 兼容（close 幂等）
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
     items = [
         {
             "id": nid,

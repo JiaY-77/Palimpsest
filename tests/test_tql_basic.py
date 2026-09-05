@@ -120,9 +120,9 @@ def test_match_variable_length(tdb):
 
 
 def test_match_count(tdb):
-    rows = _rows(tdb, 'MATCH (a)-[:REL]->(b) RETURN COUNT(b)')
-    # 聚合值封装在 payload['count'] 中
-    assert rows[0].row["count"]["payload"]["count"] == 4
+    rows = _rows(tdb, 'MATCH (a)-[:REL]->(b) RETURN COUNT(b) AS c')
+    # 0.8.5+：聚合返回扁平化，别名直接映射值（0.8.3 曾嵌套在 payload 里）
+    assert rows[0].row["c"] == 4
 
 
 # ---------------------------------------------------------------------------
@@ -146,19 +146,21 @@ def test_search_expand(tdb):
 def test_aggregates(tdb):
     rows = _rows(
         tdb,
-        "MATCH (n) RETURN COUNT(n), SUM(n.num), AVG(n.num), MIN(n.num), MAX(n.num)",
+        "MATCH (n) RETURN COUNT(n) AS c, SUM(n.num) AS s, AVG(n.num) AS a, MIN(n.num) AS mn, MAX(n.num) AS mx",
     )
     row = rows[0].row
-    assert row["count"]["payload"]["count"] == 6
-    assert row["sum"]["payload"]["sum"] == 15.0
-    assert row["avg"]["payload"]["avg"] == 2.5
-    assert row["min"]["payload"]["min"] == 0.0
-    assert row["max"]["payload"]["max"] == 5.0
+    # 0.8.5+：聚合返回扁平化（0.8.3 曾嵌套 payload['count'] 等）
+    assert row["c"] == 6
+    assert row["s"] == 15.0
+    assert row["a"] == 2.5
+    assert row["mn"] == 0.0
+    assert row["mx"] == 5.0
 
 
 def test_collect(tdb):
-    rows = _rows(tdb, "MATCH (n) RETURN COLLECT(n.domain)")
-    coll = rows[0].row["collect"]["payload"]["collect"]
+    rows = _rows(tdb, "MATCH (n) RETURN COLLECT(n.domain) AS d")
+    coll = rows[0].row["d"]
+    # 0.8.5+：COLLECT 返回扁平列表（0.8.3 曾嵌套 payload['collect']）
     assert set(coll) == {"d0", "d1", "d2"}
     assert len(coll) == 6
 

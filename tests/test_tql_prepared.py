@@ -53,9 +53,9 @@ def test_execute_prepared_ok(tdb):
     prepared = tdb.prepare_tql('FIND {type: "note"} RETURN $bonus AS score')
     rows = tdb.execute_prepared_tql(prepared, {"bonus": 4})
     assert len(rows) == 4
-    # 每个结果行都带节点 _ 绑定
+    # 0.8.5+：标量别名列直接映射值，不再自动附加节点 _ 绑定（节点绑定只在 RETURN * / RETURN n 时出现）
     for r in rows:
-        assert r.row["_"]["payload"]["type"] == "note"
+        assert r.row["score"] == 4
 
 
 def test_prepared_repeatable(tdb):
