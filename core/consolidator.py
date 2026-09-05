@@ -39,6 +39,10 @@ def _filter_candidates(
     skipped_ids: list[dict] = []
     will_merge: list[dict] = []
 
+    # 防重复合并：同一节点只允许参与一次合并（否则 (A,B)+(A,C) 会把 A 重复标
+    # outdated、REVISED_BY 链分叉）。已有被合并端的候选记入 skipped，防止二义。
+    seen_ids: set[int] = set()
+
     for c in candidates:
         a_imp = c["a_imp"]
         b_imp = c["b_imp"]
@@ -52,6 +56,12 @@ def _filter_candidates(
             skipped_both_important += 1
             skipped_ids.append({**c, "reason": "both_important"})
             continue
+        # 防重复：a/b 任一端已被之前的候选纳入 will_merge → 跳过该候选
+        if c["a"] in seen_ids or c["b"] in seen_ids:
+            skipped_ids.append({**c, "reason": "already_merged"})
+            continue
+        seen_ids.add(c["a"])
+        seen_ids.add(c["b"])
         will_merge.append(c)
 
     return will_merge, skipped_high_value, skipped_both_important, skipped_ids

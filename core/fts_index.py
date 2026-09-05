@@ -57,15 +57,21 @@ def remove_node(node_id: int) -> None:
         conn.close()
 
 
-def sync_node(node_id: int, content: str, source_path: str = "") -> None:
-    """统一 FTS 同步入口：非空 content 写入索引，空内容移除索引。"""
+def sync_node(node_id: int, content: str, source_path: str = "") -> bool:
+    """统一 FTS 同步入口：非空 content 写入索引，空内容移除索引。
+
+    返回 bool：True=同步成功；False=同步失败（失败仅 warning 不抛出，
+    不破坏调用契约，调用方可据此感知 FTS 失败——如返回 False 打印告警）。
+    """
     try:
         if content:
             index_node(node_id, content, source_path)
         else:
             remove_node(node_id)
+        return True
     except Exception as e:
         logger.warning("FTS 索引同步失败 node=%s: %s", node_id, e)
+        return False
 
 
 def search_fts(query: str, limit: int = 10) -> list[dict]:

@@ -6,6 +6,8 @@ graph_neighbors（通用邻居遍历）/ mem_link（手动建边）+ 图关联�
 与辅助函数 _edge_exists。无向语义关系双向建边协议定义见 _BIDIRECTIONAL_RELATIONS。
 """
 
+from collections import deque  # noqa: E402
+
 from core.trivium_store import domain_in_block, node_domain  # noqa: E402
 from core.utils import _to_float  # noqa: E402
 
@@ -41,7 +43,7 @@ def _collect_neighbors(items: list, neighbor_limit: int = 5) -> list:
         nid = item.get("id")
         if nid is None:
             continue
-        via_score = float(item.get("score", 0.0))
+        via_score = _to_float(item.get("score"), 0.0)
         for edge in store.get_edges(nid):
             nb = edge.target_id
             if nb is None or nb == nid or nb in sem_ids:
@@ -51,7 +53,7 @@ def _collect_neighbors(items: list, neighbor_limit: int = 5) -> list:
                 continue
             payload = node.get("payload", {}) or {}
             label = (getattr(edge, "label", "") or "").upper() or "LINKED"
-            weight = round(float(getattr(edge, "weight", 1.0) or 1.0), 6)
+            weight = round(_to_float(getattr(edge, "weight", 1.0) or 1.0, 1.0), 6)
             strength = round(via_score * weight, 4)
             prev = best.get(nb)
             if prev is None or strength > prev["score"]:
@@ -90,16 +92,16 @@ def _bfs_neighbors(node_id: int, depth: int, min_w: float, rel: str,
     """
     relations = []
     seen = {node_id}
-    frontier = [(node_id, 0)]
+    frontier = deque([(node_id, 0)])
     while frontier:
-        cur, hop = frontier.pop(0)
+        cur, hop = frontier.popleft()
         if hop >= depth:
             continue
         for edge in store.get_edges(cur):
             label = getattr(edge, "label", "") or ""
             if rel and label.lower() != rel:
                 continue
-            w = float(getattr(edge, "weight", 1.0) or 1.0)
+            w = _to_float(getattr(edge, "weight", 1.0) or 1.0, 1.0)
             if w < min_w:
                 continue
             tid = edge.target_id
@@ -223,12 +225,12 @@ def mem_link(source_id: int, target_id: int, relation: str = "RELATED_TO",
             store.create_edge(target_id, source_id, rel_upper, weight=weight)
             reverse_added = True
     if main_edge_needed:
-        store.create_edge(source_id, target_id, relation, weight=weight)
+        store.create_edge(source_id, target_id, rel_upper, weight=weight)
     return _to_json({
         "linked": True,
         "source_id": source_id,
         "target_id": target_id,
-        "relation": relation,
+        "relation": rel_upper,
         "weight": weight,
         "reverse_added": reverse_added,
     })

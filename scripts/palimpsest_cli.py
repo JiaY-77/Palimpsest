@@ -47,7 +47,7 @@ try:
         mem_link, mem_recent, mem_review, mem_search,
     )
     from core.consolidator import consolidate  # noqa: E402
-    from core.fts_index import index_node, rebuild as fts_rebuild, remove_node, search_fts  # noqa: E402
+    from core.fts_index import rebuild as fts_rebuild, search_fts  # noqa: E402
     from core.startup_check import run_startup_check  # noqa: E402
     from core.trivium_store import TriviumStore, is_valid_block  # noqa: E402
 except ImportError as _import_err:
@@ -107,13 +107,6 @@ def cmd_ingest(args):
     data = json.loads(result)
     if not data.get("stored"):
         sys.exit(1)
-    # 尽力同步 FTS 索引（失败不影响 ingest 结果）
-    try:
-        nid = data.get("node_id")
-        if nid is not None:
-            index_node(nid, args.content)
-    except Exception:
-        pass
 
 
 def cmd_link(args):
@@ -248,8 +241,20 @@ def cmd_fts_search(args):
     if not results:
         print(f"FTS 搜索「{args.query}」：无命中")
         return
+    from core.trivium_store import TriviumStore
+    from mcp_tools._common import _shorten
+
+    store = TriviumStore()
     for r in results:
-        print(f"  node_id={r['node_id']}  {r['content']}")
+        nid = r["node_id"]
+        # 摘要设计：只输出 node_id + 截断摘要（不复读全文 content）；
+        # 带 secret_hint 标记的条目打 [secret 已隐藏]，不展示内容明文。
+        node = store.get_node(nid)
+        payload = (node or {}).get("payload", {}) or {}
+        if payload.get("secret_hint"):
+            print(f"  node_id={nid}  [secret 已隐藏]")
+        else:
+            print(f"  node_id={nid}  {_shorten(r.get('content', ''), 120)}")
     print(f"共 {len(results)} 条命中")
 
 
@@ -364,8 +369,12 @@ def main():
     sp.add_argument("--knowledge-dir", default="", help="知识库根目录（默认 KNOWLEDGE_DIR 环境变量对应的知识库根）")
     sp.set_defaults(fn=cmd_task_archive)
 
-    args = p.parse_args()
-    args.fn(args)
+    try:
+        args = p.parse_args()
+        args.fn(args)
+    except Exception as e:  # noqa: BLE001 — CLI 顶层统一兜底，友好报错而非裸 traceback
+        print(f"错误: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
