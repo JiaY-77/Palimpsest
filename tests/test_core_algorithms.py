@@ -326,6 +326,21 @@ def test_neighbors_filter_self_loop_and_semantic_zone():
     assert 2 not in [o["id"] for o in out]
 
 
+def test_neighbors_filter_outdated():
+    # outdated 旧版不作为「当前事实」展示；同链 active 邻居正常展示
+    items = [{"id": 1, "score": 0.8}]
+    edges = {
+        1: [_Edge(21, "related", 0.9), _Edge(22, "related", 0.9)],
+    }
+    nodes = {
+        21: {"payload": {"type": "memory", "content": "被取代的旧版", "status": "outdated"}},
+        22: {"payload": {"type": "memory", "content": "当前有效新版"}},
+    }
+    out = _collect(items, 5, edges, nodes)
+    assert [o["id"] for o in out] == [22]
+    assert 21 not in [o["id"] for o in out]
+
+
 def test_neighbors_relation_uppercase():
     items = [{"id": 1, "score": 0.8}]
     edges = {1: [_Edge(80, "related_to", 0.9)]}

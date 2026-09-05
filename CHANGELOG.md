@@ -4,6 +4,24 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
+## [1.1.1] - 2026-09-05
+
+### 安全
+
+- **可选 API Key 鉴权**：默认不启用（localhost 本机直连，保持原行为）；设置 `PALIMPSEST_API_KEY` 后，除 `/` 健康检查外所有请求须带 `Authorization: Bearer ***` 或 `X-API-Key: ***`，否则 401（`secrets.compare_digest` 防时序攻击）。适用于局域网/受信网络部署；公网部署应配 HTTPS 反向代理
+- **`/export` 分页**：不再一次返回全部记忆；默认每页 100 条（上限 500），返回 `page` / `page_size` / `total_pages`
+- **`GET /memory/{id}` 剥离内部字段**：`secret_hint` / `linked_from` / `linked_kb_ids` / `superseded` 不再随 payload 返回
+- **报错不再泄漏内部异常**：DELETE/PUT/PATCH/向量端点与 embedding 错误统一固定提示语，`str(exc)` 细节只进日志
+
+### 修复
+
+- **outdated 检索语义**：被新版本取代的旧记忆（`status=outdated`）不再参与普通检索——`mem_search` / `mem_retrieve` / `mem_hybrid_search`（RRF 与级联）默认只回当前有效节点，图谱邻居区同样过滤；旧版保留库中可追溯，显式 `include_outdated=True` 或 `mem_version_history` / REVISED_BY 边可查历史
+- **`/export` 排序容错**：脏 `importance`（非数值）不再触发排序类型错误（`_to_float` 兜底）
+
+### 测试
+
+- 新增安全加固回归（鉴权双态 / 分页 / 内部字段剥离 / 固定报错）与 outdated 语义测试（同内容两次写入触发 REVISED_BY → 默认只见新版、显式通道两版可见）；全量 **161 passed + 2 xfailed + 2 xpassed**（无 Ollama 环境同样全绿）
+
 ## [1.1.0] - 2026-09-05
 
 ### 依赖

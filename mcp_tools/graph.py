@@ -30,10 +30,13 @@ def _collect_neighbors(items: list, neighbor_limit: int = 5) -> list:
     """
     从语义命中节点出发，沿出边取一跳邻居，生成图关联区（方案 B 分区返回）。
 
-    - 过滤：已在语义区 / 自环 / 节点缺失无 payload
+    - 过滤：已在语义区 / 自环 / 节点缺失无 payload / 被取代的 outdated 旧版本
     - 去重：同一邻居被多个命中节点到达时，保留 score 最高一条（via 取最高分来源）
     - score = via_score × weight（关联强度分，仅图关联区内部排序用，不参与语义区排序）
     - relation 统一大写展示；weight round 6 位；title = content 前 80 字
+
+    注：outdated 旧版本作为「当前事实」不展示（语义同检索侧默认过滤）；
+    版本链仍可由 mem_version_history / graph_neighbors(REVISED_BY) 追溯。
     """
     if not items:
         return []
@@ -52,6 +55,9 @@ def _collect_neighbors(items: list, neighbor_limit: int = 5) -> list:
             if not node:
                 continue
             payload = node.get("payload", {}) or {}
+            # outdated 是取代旧版，不作为「当前事实」在图关联区展示
+            if payload.get("status") == "outdated":
+                continue
             label = (getattr(edge, "label", "") or "").upper() or "LINKED"
             weight = round(_to_float(getattr(edge, "weight", 1.0) or 1.0, 1.0), 6)
             strength = round(via_score * weight, 4)

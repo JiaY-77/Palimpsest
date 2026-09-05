@@ -62,6 +62,13 @@ class Config:
     # 可选: "ollama" 或 "deepseek"
     LLM_BACKEND = os.getenv("LLM_BACKEND", "deepseek")
 
+    # ---- 可选 API Key 鉴权 ----
+    # 默认空 = 不启用鉴权（localhost 本机直连，保持现状）。
+    # 设置后，除 / 健康检查外所有请求须带 Authorization: Bearer <key> 或
+    # X-API-Key: <key>，否则 401。适用于局域网/受信网络部署；
+    # 公网部署必须配 HTTPS 反向代理（API Key 仅做校验，不做加密传输）。
+    API_KEY = os.getenv("PALIMPSEST_API_KEY", "")
+
     # ---- DeepSeek 配置 ----
     DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
     DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")

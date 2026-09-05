@@ -5,10 +5,13 @@ Palimpsest — FastAPI 主入口
 
 import logging
 
-from fastapi import FastAPI, HTTPException
+import secrets
+
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from config import Config
 from core.fts_index import sync_node
 from core.startup_check import run_startup_check
 from core.trivium_store import EmbeddingUnavailableError, TriviumStore
@@ -19,6 +22,11 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Palimpsest")
 
+# API Key 鉴权开关：PALIMPSEST_API_KEY 默认空 = 不启用（localhost 本机直连）。
+# 设置后除 / 健康检查外所有请求须带 Bearer 或 X-API-Key，否则 401。
+# API Key 仅做校验，不做加密传输；公网部署必须配 HTTPS 反向代理。
+API_KEY = Config.API_KEY
+
 
 @app.exception_handler(EmbeddingUnavailableError)
 async def _embedding_unavailable_handler(request, exc: EmbeddingUnavailableError):
@@ -27,10 +35,38 @@ async def _embedding_unavailable_handler(request, exc: EmbeddingUnavailableError
     return JSONResponse(
         status_code=503,
         content={
-            "detail": str(exc),
+            "detail": "embedding 服务不可用",
             "hint": "embedding 服务不可用，检查 Ollama 是否启动或 EMBEDDING_* 配置",
         },
     )
+
+
+@app.middleware("http")
+async def _api_key_middleware(request: Request, call_next):
+    """可选 API Key 鉴权中间件。
+
+    未配置 PALIMPSEST_API_KEY 时放行所有请求（不启用鉴权）。
+    已配置时，除 / 健康检查外的所有请求必须带
+    Authorization: Bearer <key> 或 X-API-Key: <key>，否则 401。
+    /docs 等调试路径同样受保护（与业务端点一致的安全边界）。
+    """
+    if not API_KEY:
+        return await call_next(request)
+
+    path = request.url.path
+    if path == "/":
+        return await call_next(request)
+
+    auth = request.headers.get("authorization", "")
+    if auth.startswith("Bearer "):
+        provided = auth[len("Bearer "):].strip()
+    else:
+        provided = request.headers.get("x-api-key", "").strip()
+
+    if not provided or not secrets.compare_digest(provided, API_KEY):
+        return JSONResponse(status_code=401, content={"detail": "未授权：缺少或无效的 API Key"})
+
+    return await call_next(request)
 
 
 @app.on_event("startup")
@@ -70,8 +106,15 @@ async def root():
 
 
 @app.get("/export")
-async def export_memories():
-    """导出所有记忆为精简摘要"""
+async def export_memories(page: int = 1, page_size: int = 100):
+    """导出记忆为精简摘要（分页：默认第一页 100 条，page_size 上限 500）。"""
+    if page_size > 500:
+        page_size = 500
+    if page_size < 1:
+        page_size = 100
+    if page < 1:
+        page = 1
+
     nodes = []
     for nid, payload in store.iter_payloads():
         nodes.append(
@@ -84,13 +127,23 @@ async def export_memories():
             }
         )
 
-    # 按重要性降序排列
-    nodes.sort(key=lambda n: n.get("importance", 0), reverse=True)
+    # 按重要性降序排列（importance 可能为脏字符串，用 _to_float 兜底防排序类型错误）
+    from core.utils import _to_float
+    nodes.sort(key=lambda n: _to_float(n.get("importance", 0), 0.0), reverse=True)
+
+    total_nodes = len(nodes)
+    total_pages = (total_nodes + page_size - 1) // page_size
+    start = (page - 1) * page_size
+    end = start + page_size
+    page_nodes = nodes[start:end]
 
     return {
         "status": "ok",
-        "total_nodes": len(nodes),
-        "memories": nodes,
+        "total_nodes": total_nodes,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+        "memories": page_nodes,
     }
 
 
@@ -136,11 +189,16 @@ async def report_endpoint():
 
 @app.get("/memory/{node_id}")
 async def get_memory(node_id: int):
-    """获取指定 ID 的记忆节点完整 payload"""
+    """获取指定 ID 的记忆节点 payload（剥掉内部字段 secret_hint / linked_from / linked_kb_ids / superseded）"""
     node = store.get_node(node_id)
     if not node:
         raise HTTPException(status_code=404, detail=f"节点 {node_id} 不存在")
-    return {"id": node_id, "payload": node.get("payload", {})}
+    payload = node.get("payload", {})
+    stripped = {
+        k: v for k, v in payload.items()
+        if k not in ("secret_hint", "linked_from", "linked_kb_ids", "superseded")
+    }
+    return {"id": node_id, "payload": stripped}
 
 
 @app.delete("/memory/{node_id}")
@@ -152,7 +210,8 @@ async def delete_memory(node_id: int):
         sync_node(node_id, "")
         return {"status": "ok", "message": f"节点 {node_id} 已删除"}
     except Exception as e:
-        raise HTTPException(status_code=404, detail=f"删除失败: {str(e)}")
+        logger.info("删除节点失败 node=%s: %s", node_id, e)
+        raise HTTPException(status_code=404, detail="删除失败：节点不存在或已被删除")
 
 
 def _sync_fts_after_update(node_id: int) -> None:
@@ -173,7 +232,8 @@ async def update_memory_payload(node_id: int, payload: dict):
         _sync_fts_after_update(node_id)
         return {"status": "ok", "message": f"节点 {node_id} payload 已更新"}
     except Exception as e:
-        raise HTTPException(status_code=404, detail=f"更新失败: {str(e)}")
+        logger.info("更新节点 payload 失败 node=%s: %s", node_id, e)
+        raise HTTPException(status_code=404, detail="更新失败：节点不存在或数据格式错误")
 
 
 @app.patch("/memory/{node_id}")
@@ -184,7 +244,8 @@ async def patch_memory_payload(node_id: int, payload: dict):
         _sync_fts_after_update(node_id)
         return {"status": "ok", "message": f"节点 {node_id} payload 已更新"}
     except Exception as e:
-        raise HTTPException(status_code=404, detail=f"更新失败: {str(e)}")
+        logger.info("更新节点 payload 失败 node=%s: %s", node_id, e)
+        raise HTTPException(status_code=404, detail="更新失败：节点不存在或数据格式错误")
 
 
 @app.patch("/memory/{node_id}/vector")
@@ -201,7 +262,8 @@ async def update_memory_vector(node_id: int, vector: list[float]):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=404, detail=f"更新失败: {str(e)}")
+        logger.info("更新节点向量失败 node=%s: %s", node_id, e)
+        raise HTTPException(status_code=404, detail="向量更新失败：节点不存在或维度不匹配")
 
 
 # ---- 统一语义层端点（2026-08-27 换脑插件通道）----
@@ -228,6 +290,7 @@ class MemSearchRequest(BaseModel):
     domain_bias: str = ""     # rule 等
     top_k: int = 5
     include_neighbors: bool = False
+    include_outdated: bool = False
     block: str = ""
 
 
@@ -249,6 +312,7 @@ class MemHybridSearchRequest(BaseModel):
     fts_limit: int = 50
     include_neighbors: bool = False
     neighbor_limit: int = 5
+    include_outdated: bool = False
     block: str = ""
 
 
@@ -293,6 +357,7 @@ async def mem_search(req: MemSearchRequest):
         req.query, scope=req.scope, domain=req.domain,
         domain_bias=req.domain_bias, top_k=req.top_k,
         include_neighbors=req.include_neighbors, block=req.block,
+        include_outdated=req.include_outdated,
     ))
 
 
@@ -303,6 +368,7 @@ async def mem_hybrid_search(req: MemHybridSearchRequest):
         domain_bias=req.domain_bias, top_k=req.top_k, mode=req.mode,
         fts_limit=req.fts_limit, include_neighbors=req.include_neighbors,
         neighbor_limit=req.neighbor_limit, block=req.block,
+        include_outdated=req.include_outdated,
     ))
 
 

@@ -32,10 +32,13 @@ _INGEST_ID_LOCK = threading.Lock()
 
 
 @mcp.tool()
-def mem_retrieve(query: str, domain: str = "", top_k: int = 5) -> str:
+def mem_retrieve(query: str, domain: str = "", top_k: int = 5,
+                 include_outdated: bool = False) -> str:
     """
     语义检索记忆：返回 150 字摘要 + meta（绝不返回全文，省 token 的关键设计）。
     全文请用 mem_get_full 按 id 单独取。
+    v4.0 outdated 语义：默认只回当前有效节点（status != "outdated"）；
+    include_outdated=True 时返回全部（历史可追溯通道）。
     """
     emb = store.embed_text(query)
     # v1.1 拉宽召回：与 mem_search 一致，top_k*3 召回再过滤，避免 kb_chunk 挤占名额导致记忆条数凑不满
@@ -43,6 +46,9 @@ def mem_retrieve(query: str, domain: str = "", top_k: int = 5) -> str:
     items = []
     for r in results:
         payload = r.get("payload", {}) or {}
+        # v4.0 outdated 语义：默认跳过被取代的旧版本，展位 include_outdated=True 保留
+        if not include_outdated and payload.get("status") == "outdated":
+            continue
         # domain 过滤：只保留指定角色/域的记忆（domain 正式字段，character_name 兼容镜像已退役）
         if domain and node_domain(payload) != (domain or "").strip().lower():
             continue
@@ -528,7 +534,8 @@ def _l1_sniff(query: str) -> dict:
 def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
                      domain_bias: str = "", top_k: int = 5,
                      include_neighbors: bool = False,
-                     neighbor_limit: int = 5, block: str = "") -> dict:
+                     neighbor_limit: int = 5, block: str = "",
+                     include_outdated: bool = False) -> dict:
     """
     mem_search 的核心实现（返回 dict，供 mem_search 工具与 router_query 复用）。
     v2.0 统一语义层：
@@ -542,7 +549,11 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
         在过滤之后、排序之前应用。
       - v3.8 L1 独立附加区：scope!=kb 时嗅探 MEMORY.md（HERMES_MEMORY_FILE），
         命中进 memory_file_hits（独立字段），不伪造节点置顶——results 全是真实节点。
+      - v4.0 outdated 语义：默认过滤 status=="outdated" 的旧版本（只回当前有效节点），
+        include_outdated=True 时不过滤，返回全部（显式历史可追溯通道）。
     """
+    if include_outdated is None:
+        include_outdated = False
     if scope not in ("memory", "kb", "all"):
         scope = "all"
     if domain_bias not in ("memory", "kb", "rule"):
@@ -564,6 +575,10 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
         payload = r.get("payload", {}) or {}
         ptype = payload.get("type", "")
         is_kb = ptype == "kb_chunk"
+        # v4.0 outdated 语义：默认跳过被取代的旧版本（不区分类型；kb_chunk 若被标
+        # outdated 同样过滤），显式 include_outdated=True 时保留（历史可追溯）。
+        if not include_outdated and payload.get("status") == "outdated":
+            continue
         if scope == "memory" and is_kb:
             continue
         if scope == "kb" and not is_kb:
@@ -623,7 +638,8 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
 def mem_search(query: str, scope: str = "all", domain: str = "",
                domain_bias: str = "", top_k: int = 5,
                include_neighbors: bool = False,
-               neighbor_limit: int = 5, block: str = "") -> str:
+               neighbor_limit: int = 5, block: str = "",
+               include_outdated: bool = False) -> str:
     """
     统一检索入口：记忆 + 知识库混合检索。
     scope 取值：memory（只查记忆节点，排除 kb_chunk）/ kb（只查知识库块）/ all（都查）。
@@ -640,9 +656,13 @@ def mem_search(query: str, scope: str = "all", domain: str = "",
         额外附 neighbors 图关联区（语义命中节点的一跳邻居，score = via_score × weight，
         去重、relation 大写、按 score 降序）。include_neighbors=False 时输出与旧版完全一致。
         neighbor_limit 钳制 1-20（默认 5）。
+    v4.0 outdated 语义：默认只回当前有效节点（status != "outdated"）——被新版本取代的
+        旧版保留在库中可追溯但不参与普通检索；include_outdated=True 时返回全部
+        （历史可追溯通道）。
     """
     return _to_json(_mem_search_impl(query, scope, domain, domain_bias, top_k,
-                                     include_neighbors, neighbor_limit, block))
+                                     include_neighbors, neighbor_limit, block,
+                                     include_outdated))
 
 
 # ---- 混合检索（FTS5 精确 + 语义向量 的 RRF 融合 / 级联策略）----
@@ -651,16 +671,18 @@ def mem_search(query: str, scope: str = "all", domain: str = "",
 
 
 def _sem_candidate_items(query: str, scope: str, domain: str,
-                         domain_bias: str, top_k: int, block: str) -> list:
+                         domain_bias: str, top_k: int, block: str,
+                         include_outdated: bool = False) -> list:
     """语义候选：复用 _mem_search_impl 宽松召回（top_k*3），按 score 降序排名。"""
     sem = _mem_search_impl(query, scope, domain, domain_bias,
                            top_k=max(top_k * 3, 30), include_neighbors=False,
-                           block=block)
+                           block=block, include_outdated=include_outdated)
     items = sem.get("results", [])
     return sorted(items, key=lambda it: it.get("score", 0.0), reverse=True)
 
 
-def _fts_only_item(node_id: int, scope: str, domain: str, block: str):
+def _fts_only_item(node_id: int, scope: str, domain: str, block: str,
+                   include_outdated: bool = False):
     """FTS 命中但语义未命中的节点：按 payload 补全 mem_search 同构条目。
 
     复用 _mem_search_impl 的 scope/domain/block 过滤语义，
@@ -672,6 +694,9 @@ def _fts_only_item(node_id: int, scope: str, domain: str, block: str):
     payload = node.get("payload", {}) or {}
     ptype = payload.get("type", "")
     is_kb = ptype == "kb_chunk"
+    # v4.0 outdated 语义：FTS-only 侧与语义侧保持一致，默认过滤旧版本
+    if not include_outdated and payload.get("status") == "outdated":
+        return None
     if scope == "memory" and is_kb:
         return None
     if scope == "kb" and not is_kb:
@@ -727,12 +752,14 @@ def _rrf_fuse(sem_ids: list, fts_ids: list, top_k: int,
 
 
 def _hybrid_rrf(query: str, scope: str, domain: str, domain_bias: str,
-                top_k: int, fts_limit: int, block: str) -> list:
+                top_k: int, fts_limit: int, block: str,
+                include_outdated: bool = False) -> list:
     """RRF 融合：语义排名 + FTS 排名的 reciprocal rank 求和（k=60）。
 
     两个排名都是 0-based；单侧命中也计入 rrf；按 rrf 降序取 top_k。
     """
-    sem_items = _sem_candidate_items(query, scope, domain, domain_bias, top_k, block)
+    sem_items = _sem_candidate_items(query, scope, domain, domain_bias, top_k, block,
+                                     include_outdated=include_outdated)
     fts = search_fts(query, limit=fts_limit)
 
     ranked = _rrf_fuse(
@@ -748,7 +775,8 @@ def _hybrid_rrf(query: str, scope: str, domain: str, domain_bias: str,
     for nid, score, fts_hit_flag, sem_hit_flag in ranked:
         item = by_id.get(nid)
         if item is None:
-            item = _fts_only_item(nid, scope, domain, block)
+            item = _fts_only_item(nid, scope, domain, block,
+                                  include_outdated=include_outdated)
             if item is None:
                 continue
         item = dict(item)
@@ -764,14 +792,16 @@ def _hybrid_rrf(query: str, scope: str, domain: str, domain_bias: str,
 
 
 def _hybrid_cascade(query: str, scope: str, domain: str, domain_bias: str,
-                    top_k: int, fts_limit: int, block: str) -> list:
+                    top_k: int, fts_limit: int, block: str,
+                    include_outdated: bool = False) -> list:
     """级联：FTS 粗筛候选集 → 向量精排（只留交集）→ 不足 top_k 从剩余语义补足。
 
     候选集为空时退化为纯语义结果；兜底条目 fts_hit=False 如实标记未过 FTS 粗筛。
     """
     fts = search_fts(query, limit=fts_limit)
     fts_ids = {r.get("node_id") for r in fts if r.get("node_id") is not None}
-    sem_items = _sem_candidate_items(query, scope, domain, domain_bias, top_k, block)
+    sem_items = _sem_candidate_items(query, scope, domain, domain_bias, top_k, block,
+                                     include_outdated=include_outdated)
 
     in_candidate = [it for it in sem_items if it.get("id") in fts_ids]
     rest = [it for it in sem_items if it.get("id") not in fts_ids]
@@ -794,7 +824,8 @@ def _hybrid_cascade(query: str, scope: str, domain: str, domain_bias: str,
 def _hybrid_search_impl(query: str, scope: str = "all", domain: str = "",
                         domain_bias: str = "", top_k: int = 5, mode: str = "rrf",
                         fts_limit: int = 50, include_neighbors: bool = False,
-                        neighbor_limit: int = 5, block: str = "") -> dict:
+                        neighbor_limit: int = 5, block: str = "",
+                        include_outdated: bool = False) -> dict:
     """
     mem_hybrid_search 的核心实现（返回 dict，供 mem_hybrid_search 工具复用）。
     混合检索增强：
@@ -805,7 +836,10 @@ def _hybrid_search_impl(query: str, scope: str = "all", domain: str = "",
     返回结构与 mem_search 一致：{"results", "scope", "bias"(可选), "mode",
     "neighbors"/"neighbor_count"(include_neighbors=True 时)}。
     空 query 返回 hint；任何异常吞掉返回 hint，不抛出。
+    v4.0 outdated 语义：默认过滤 status=="outdated" 旧版本；include_outdated=True 时返回全部。
     """
+    if include_outdated is None:
+        include_outdated = False
     if scope not in ("memory", "kb", "all"):
         scope = "all"
     if domain_bias not in ("memory", "kb", "rule"):
@@ -820,10 +854,12 @@ def _hybrid_search_impl(query: str, scope: str = "all", domain: str = "",
     try:
         if mode == "cascade":
             items = _hybrid_cascade(query, scope, domain, domain_bias,
-                                    top_k, fts_limit, block)
+                                    top_k, fts_limit, block,
+                                    include_outdated=include_outdated)
         else:
             items = _hybrid_rrf(query, scope, domain, domain_bias,
-                                top_k, fts_limit, block)
+                                top_k, fts_limit, block,
+                                include_outdated=include_outdated)
         result = {"results": items, "scope": scope, "mode": mode}
         if domain_bias:
             result["bias"] = domain_bias
@@ -840,7 +876,8 @@ def _hybrid_search_impl(query: str, scope: str = "all", domain: str = "",
 def mem_hybrid_search(query: str, scope: str = "all", domain: str = "",
                       domain_bias: str = "", top_k: int = 5, mode: str = "rrf",
                       fts_limit: int = 50, include_neighbors: bool = False,
-                      neighbor_limit: int = 5, block: str = "") -> str:
+                      neighbor_limit: int = 5, block: str = "",
+                      include_outdated: bool = False) -> str:
     """
     混合检索：FTS5 精确检索 + 语义向量检索的融合排序。
     mode 取值："rrf"（默认，Reciprocal Rank Fusion，k=60，单侧命中也算）/
@@ -849,8 +886,10 @@ def mem_hybrid_search(query: str, scope: str = "all", domain: str = "",
     每项返回 {id, type, score, summary, meta}，meta 含 fts_hit/sem_hit 命中来源标记；
     include_neighbors=True 时附 neighbors 图关联区（复用 _collect_neighbors）。
     其余参数（domain/domain_bias/neighbor_limit/block）语义同 mem_search。
+    v4.0 outdated 语义：默认过滤 status=="outdated" 旧版本；include_outdated=True 时返回全部
+        （历史可追溯通道）。
     """
     return _to_json(_hybrid_search_impl(
         query, scope, domain, domain_bias, top_k, mode, fts_limit,
-        include_neighbors, neighbor_limit, block,
+        include_neighbors, neighbor_limit, block, include_outdated,
     ))
