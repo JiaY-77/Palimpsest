@@ -167,6 +167,42 @@ def cmd_consolidate(args):
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
+def cmd_stats(args):
+    """库级盘点统计（只读）：--section 可独立开关分节，缺省全给。"""
+    from core.stats import compute_stats
+    from core.trivium_store import TriviumStore
+
+    store = TriviumStore()
+    result = compute_stats(store)
+    if args.section:
+        wanted = set(args.section)
+        picked = {}
+        # "domains" 别名 = totals 里的按 domain 分布（单独列出该分节）
+        if "domains" in wanted:
+            picked["by_domain"] = result["totals"].get("by_domain", {})
+        for key in result:
+            if key == "elapsed_ms" or key not in wanted:
+                continue
+            picked[key] = result[key]
+        result = picked
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+def cmd_promote(args):
+    """高频记忆自动升级：默认 dry-run 只打印候选，--apply 才升权打标。"""
+    from core.promoter import promote
+    from core.trivium_store import TriviumStore
+
+    store = TriviumStore()
+    result = promote(
+        store,
+        dry_run=not args.apply,
+        days=args.days,
+        min_hits=args.min_hits,
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
 def cmd_ingest_git(args):
     """将 git commit 作为 git_commit 类型节点入库（幂等：已有则跳过）。"""
     repo = args.repo or _PROJECT_ROOT
@@ -347,6 +383,18 @@ def main():
     sp.add_argument("--threshold", type=float, default=0.85, help="相似度阈值（默认 0.85）")
     sp.add_argument("--max-importance", type=float, default=0.8, help="高价值保护阈值（>= 此值不合并，默认 0.8）")
     sp.set_defaults(fn=cmd_consolidate)
+
+    sp = sub.add_parser("stats", help="库级盘点统计（totals/kinds/importance/time/graph/domains，只读）")
+    sp.add_argument("--section", nargs="+",
+                    choices=["totals", "kinds", "importance", "time", "graph", "domains"],
+                    help="只输出指定分节（可多个）；缺省全给（domains=totals 的按 domain 分布）")
+    sp.set_defaults(fn=cmd_stats)
+
+    sp = sub.add_parser("promote", help="高频记忆自动升级（默认 dry-run 预览，--apply 才升权打标）")
+    sp.add_argument("--apply", action="store_true", help="执行升权打标（默认 dry-run 只预览候选）")
+    sp.add_argument("--days", type=int, default=30, help="命中活跃窗口（天，默认 30）")
+    sp.add_argument("--min-hits", type=int, default=5, help="候选 hit_count 门槛（默认 5）")
+    sp.set_defaults(fn=cmd_promote)
 
     sp = sub.add_parser("ingest-git", help="将 git commit 入库为 git_commit 节点（幂等）")
     sp.add_argument("--repo", default="", help="git 仓库路径（默认项目根）")

@@ -315,7 +315,11 @@ def test_startup_check_embedding():
 
 
 def test_block_validation():
-    """出厂默认不含 personal block（novel/work），只含通用 block。"""
+    """出厂内置 block 为通用区块（task/kb/hermes/general/novel，rule 归入 kb，work 不在列）。
+
+    注：novel 已于「register novel domain block for fiction corpus import」提交
+    注册为小说创作设定区块（领域入库），因此为合法 block；work 仍非出厂区块。
+    """
     from core.trivium_store import is_valid_block
 
     assert is_valid_block("task") is True
@@ -323,7 +327,7 @@ def test_block_validation():
     assert is_valid_block("hermes") is True
     assert is_valid_block("general") is True
     assert is_valid_block("") is True
-    assert is_valid_block("novel") is False
+    assert is_valid_block("novel") is True
     assert is_valid_block("work") is False
     assert is_valid_block("随便") is False
 

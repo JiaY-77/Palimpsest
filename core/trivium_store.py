@@ -371,7 +371,7 @@ class TriviumStore:
         scored.sort(key=lambda x: x[0], reverse=True)
         top = scored[:top_k]
 
-        return [
+        top_results = [
             {
                 "id": node.get("id"),
                 "score": score,
@@ -379,6 +379,50 @@ class TriviumStore:
             }
             for score, node in top
         ]
+        # 记忆生命周期：命中计数（best-effort，不影响检索结果/排序）
+        self._bump_hit_counts(top_results)
+        return top_results
+
+    def _bump_hit_counts(self, top_results: list) -> None:
+        """命中计数回写（best-effort，记忆生命周期 promote 的数据源）。
+
+        对 search_similar 最终返回的命中节点做 hit_count+1，供 promote 高频
+        记忆升级识别。设计约束：
+          - 只对【最终返回】的命中节点计数（top_results），不含中途召回后丢弃的；
+          - 不改变检索返回内容/排序/行为（payload 以库内最新读回为准增量写，不回写返回值）；
+          - 写库失败（锁冲突/节点被删等）吞掉并 warning，绝不抛出影响检索结果；
+          - 单连接一次写完所有命中，避免 N+1 次开/关连接。
+        """
+        if not top_results:
+            return
+        ids = [r.get("id") for r in top_results if r.get("id") is not None]
+        if not ids:
+            return
+        now = time.time()
+        db = None
+        try:
+            db = self._acquire()
+            for nid in ids:
+                node = db.get(nid)
+                if not node:
+                    continue
+                payload = dict(node.payload or {})
+                cur = payload.get("hit_count")
+                try:
+                    cur = int(cur) if cur is not None else 0
+                except (TypeError, ValueError):
+                    cur = 0
+                payload["hit_count"] = cur + 1
+                payload["last_hit_at"] = now
+                db.update_payload(id=nid, payload=payload)
+        except Exception as e:  # noqa: BLE001 — 写失败不影响检索，吞掉仅记录
+            logger.warning("命中计数回写失败（不影响检索）: %s", e)
+        finally:
+            if db is not None:
+                try:
+                    db.close()
+                except Exception:
+                    pass
 
     def _expand_neighbors(self, top: list, depth: int,
                           max_edges_per_node: int | None = None,

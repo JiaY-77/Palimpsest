@@ -422,3 +422,16 @@ async def router_query(req: RouterQueryRequest):
     return _as_json(_mcp_router_query(req.task, top_k=req.top_k))
 
 
+@app.post("/mem/stats")
+async def mem_stats():
+    """库级盘点统计（只读）：返回 totals / kinds / importance / time / graph 分节。
+
+    核心逻辑见 core/stats.py compute_stats（单次全遍历，不修改任何节点）。
+    """
+    from core.stats import compute_stats
+
+    stats = compute_stats(store)
+    stats.pop("elapsed_ms", None)
+    return stats
+
+

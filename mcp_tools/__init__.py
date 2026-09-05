@@ -22,6 +22,7 @@ from mcp_tools.memory import (  # noqa: E402
     mem_review, mem_search, mem_version_history,
 )
 from mcp_tools.routing import router_query  # noqa: E402
+from mcp_tools.stats_tool import mem_stats  # noqa: E402
 
 __all__ = [
     "store", "mcp",
@@ -29,5 +30,5 @@ __all__ = [
     "mem_version_history", "mem_search", "mem_hybrid_search", "mem_consolidate",
     "kb_index", "kb_search",
     "graph_neighbors", "mem_communities", "mem_link",
-    "router_query",
+    "router_query", "mem_stats",
 ]
