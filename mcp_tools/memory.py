@@ -41,7 +41,8 @@ def mem_retrieve(query: str, domain: str = "", top_k: int = 5,
     """
     emb = store.embed_text(query)
     # v1.1 拉宽召回：与 mem_search 一致，top_k*3 召回再过滤，避免 kb_chunk 挤占名额导致记忆条数凑不满
-    results = store.search_similar(emb, top_k=max(top_k * 3, 30), expand_depth=1)
+    results = store.search_similar(emb, top_k=max(top_k * 3, 30), expand_depth=1,
+                                    include_outdated=include_outdated)
     items = []
     for r in results:
         payload = r.get("payload", {}) or {}
@@ -511,7 +512,8 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
     emb = store.embed_text(query)
     # 一次向量检索，拉宽召回再按 scope 过滤截断，保证过滤后仍有足够结果
     results = store.search_similar(emb, top_k=max(top_k * 3, 30), expand_depth=1,
-                                   block=block)
+                                    block=block,
+                                    include_outdated=include_outdated)
     items = []
     for r in results:
         payload = r.get("payload", {}) or {}

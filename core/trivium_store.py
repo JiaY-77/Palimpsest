@@ -291,6 +291,7 @@ class TriviumStore:
         expand_depth: int = 1,
         apply_decay: bool = True,
         block: str = "",
+        include_outdated: bool = False,
     ) -> list[dict[str, Any]]:
         """使用 search_advanced（SA-PPR 认知管线）检索，保留时间衰减
 
@@ -309,13 +310,26 @@ class TriviumStore:
             的复合语义）。
 
         - expand_depth：透传给 search_advanced 的图扩散深度（默认 1）
-        - 时间衰减：非 kb_chunk 节点 有效分 = 余弦分 × importance ×
-          MEMORY_DECAY_FACTOR^(距创建天数/30)（只影响排序，不改存储）
         - apply_decay=False 供 mem_ingest 内部阈值判断保持原样
+
+        重排模式（MEMORY_RERANK_MODE）：
+          hard（旧版，可回退）：
+            非 kb_chunk: final = score × importance × MEMORY_DECAY_FACTOR^(days/30)
+            kb_chunk:    不做任何加权（原样保留）
+          soft（默认）：
+            非 kb_chunk:
+              importance_norm = clamp((importance - 0.5) / 0.5, -1, 1)
+              recency_norm    = MEMORY_DECAY_FACTOR^(days/30)
+              final = score + ε × (importance_norm + recency_norm)
+            kb_chunk（知识不老化）:
+              final = score + ε × KB_SOFT_RERANK_MULT
+
+        候选阶段已排除 status="outdated" 的节点（新版取代旧版的过期记忆）。
         """
         # 多取候选供衰减后重排（search_advanced 的 top_k 是检索量，
-        # 衰减后可能改变排序，需预留余量）
-        cand_k = max(top_k * 3, 10)
+        # 衰减后可能改变排序，需预留余量；6x 因约 24% 候选是 outdated，
+        # 过滤后仍需保留足够有效候选）
+        cand_k = max(top_k * 6, 10)
         scored = []
         db = None
         try:
@@ -345,18 +359,45 @@ class TriviumStore:
                 except Exception:
                     pass
 
+        # 过滤 status="outdated" 节点（候选层修复）：新版取代旧版的过期记忆
+        # 不应占用候选名额，浪费有效候选配额
+        if not include_outdated:
+            scored = [
+                (s, n) for s, n in scored
+                if (n.get("payload", {}) or {}).get("status") != "outdated"
+            ]
+
         # 时间衰减（记忆生命周期）：kb_chunk 知识块不衰减
         if apply_decay:
-            decay = getattr(Config, "MEMORY_DECAY_FACTOR", 1.0)
-            if decay != 1.0:
+            mode = getattr(Config, "MEMORY_RERANK_MODE", "soft")
+            if mode == "hard":
+                # ---- hard 模式：旧版乘性硬加权（可一键回退）----
+                decay = getattr(Config, "MEMORY_DECAY_FACTOR", 1.0)
+                if decay != 1.0:
+                    now = time.time()
+                    for i, (score, node) in enumerate(scored):
+                        payload = node.get("payload", {}) or {}
+                        if payload.get("type") == "kb_chunk":
+                            continue
+                        days = _days_since_created(payload.get("created_at"), now)
+                        importance = _to_float(payload.get("importance"), 0.5)
+                        scored[i] = (score * importance * (decay ** (days / 30.0)), node)
+            else:
+                # ---- soft 模式：语义分为主线 + ε 级元数据微调 ----
+                eps = getattr(Config, "SOFT_RERANK_EPS", 0.02)
+                kb_mult = getattr(Config, "KB_SOFT_RERANK_MULT", 1.5)
+                decay = getattr(Config, "MEMORY_DECAY_FACTOR", 1.0)
                 now = time.time()
                 for i, (score, node) in enumerate(scored):
                     payload = node.get("payload", {}) or {}
                     if payload.get("type") == "kb_chunk":
-                        continue
-                    days = _days_since_created(payload.get("created_at"), now)
-                    importance = _to_float(payload.get("importance"), 0.5)
-                    scored[i] = (score * importance * (decay ** (days / 30.0)), node)
+                        scored[i] = (score + eps * kb_mult, node)
+                    else:
+                        days = _days_since_created(payload.get("created_at"), now)
+                        importance = _to_float(payload.get("importance"), 0.5)
+                        importance_norm = max(-1.0, min(1.0, (importance - 0.5) / 0.5))
+                        recency_norm = decay ** (days / 30.0)
+                        scored[i] = (score + eps * (importance_norm + recency_norm), node)
 
         # block 后置过滤：search_advanced 的 payload_filter 不直接支持
         # domain+rule 复合语义（kb block 需匹配 domain=kb OR domain=rule），

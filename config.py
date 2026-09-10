@@ -59,6 +59,12 @@ class Config:
     #   有效分 = 余弦分 × importance × MEMORY_DECAY_FACTOR^(距创建天数/30)
     # 0.95 ≈ 每月衰减 5%（保守）；设为 1.0 完全关闭衰减；kb_chunk 知识块不衰减
     MEMORY_DECAY_FACTOR = float(os.getenv("MEMORY_DECAY_FACTOR", "0.95"))
+    # 重排模式：soft = 语义分为主线 + ε 级元数据微调（默认）；hard = 旧版乘性硬加权（可回退）
+    MEMORY_RERANK_MODE = os.getenv("MEMORY_RERANK_MODE", "soft").strip().lower()
+    # soft 模式的 ε：落在余弦分差区间的 15%-40%，只做 tie-break
+    SOFT_RERANK_EPS = float(os.getenv("SOFT_RERANK_EPS", "0.02"))
+    # kb_chunk（知识块不老化）在 soft 模式下的 ε 加成倍率
+    KB_SOFT_RERANK_MULT = float(os.getenv("KB_SOFT_RERANK_MULT", "1.5"))
 
     # ---- 检索权重（魔法数字配置化）----
     RULE_RETRIEVAL_WEIGHT = float(os.getenv("RULE_RETRIEVAL_WEIGHT", "1.3"))
