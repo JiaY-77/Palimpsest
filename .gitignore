@@ -18,6 +18,12 @@ dist/
 .vscode/
 .idea/
 
+# 评测数据（query set / 结果 / 临时副本，含本机私有记忆内容）
+eval/.tmp/
+eval/*.json
+eval/report_*.md
+
+
 # TriviumDB 数据库文件（本地测试用）
 *.db
 *.vec
