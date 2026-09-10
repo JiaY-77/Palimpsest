@@ -7,7 +7,7 @@
     {"ok": bool, "checks": [{"name": str, "ok": bool, "detail": str}, ...]}
 
 检查项：
-  ① 关键文件存在（config.py / requirements.txt / data 目录）
+  ① 关键文件存在（config.py / requirements.txt 必须存在；data 目录缺失时自动创建）
   ② TriviumStore 能初始化（无需 embedding 在线，初始化失败才报告）
   ③ FTS5 全文索引能连接
   ④ 核心依赖可导入（fastapi / triviumdb / dotenv / requests 等）
@@ -35,16 +35,34 @@ def _probe(name: str, fn) -> dict:
         return {"name": name, "ok": False, "detail": str(e)}
 
 
-def _check_key_files() -> str:
-    """检查①：config.py、requirements.txt、data 目录是否存在。"""
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+def _check_key_files(root: str | None = None) -> str:
+    """检查①：config.py、requirements.txt 必须存在；data 目录缺失时自动创建。
+
+    root 缺省时使用包所在的项目根（生产路径），仅供测试注入隔离目录使用。
+    """
+    if root is None:
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    else:
+        root = str(root)
     missing = []
+    auto_created = []
     for rel in ("config.py", "requirements.txt", "data"):
-        if not os.path.exists(os.path.join(root, rel)):
+        path = os.path.join(root, rel)
+        if os.path.exists(path):
+            continue
+        if rel == "data":
+            os.makedirs(path, exist_ok=True)
+            auto_created.append(rel)
+        else:
             missing.append(rel)
     if missing:
         raise FileNotFoundError(f"缺失关键文件/目录: {', '.join(missing)}")
-    return "config.py / requirements.txt / data 均存在"
+    parts = ["config.py / requirements.txt 均存在"]
+    if auto_created:
+        parts.append(f"data 目录已自动创建")
+    else:
+        parts.append("data 目录已存在")
+    return "; ".join(parts)
 
 
 def _check_store_init() -> str:

@@ -11,12 +11,14 @@ doctor 命令测试 —— 覆盖 embedding 正常/不可用、维度不一致�
     为始终返回失败的实现，避免真连网络。
 """
 
+import os
 import subprocess
 import sys
 
 import pytest
 
 from core.doctor import render_text, run_doctor
+from core.startup_check import _check_key_files
 from mcp_tools import store
 
 
@@ -189,3 +191,45 @@ def test_doctor_cli_human_text(iso_db):
     output = result.stdout
     assert "Palimpsest doctor" in output
     assert "体检通过" in output or "体检未通过" in output
+
+
+# ================================================================
+# _check_key_files: data 目录自动创建
+# ================================================================
+
+@pytest.fixture()
+def _fake_project_root(tmp_path):
+    """在 tmp_path 下放 config.py 和 requirements.txt（不放 data/），供测试断言。"""
+    (tmp_path / "config.py").write_text("# fake config", encoding="utf-8")
+    (tmp_path / "requirements.txt").write_text("fastapi", encoding="utf-8")
+    return tmp_path
+
+
+def test_key_files_data_auto_created(_fake_project_root):
+    """data 目录缺失时：检查通过，目录被自动创建。"""
+    root = _fake_project_root
+    assert not (root / "data").exists()
+
+    result = _check_key_files(root=str(root))
+    assert "已自动创建" in result
+    assert (root / "data").is_dir()
+
+
+def test_key_files_config_missing(_fake_project_root):
+    """config.py 缺失时：仍应抛出 FileNotFoundError。"""
+    root = _fake_project_root
+    os.remove(root / "config.py")
+
+    with pytest.raises(FileNotFoundError, match="config.py"):
+        _check_key_files(root=str(root))
+
+
+def test_key_files_data_already_exists(_fake_project_root):
+    """data 目录已存在时：检查通过，detail 不误报「已自动创建」。"""
+    root = _fake_project_root
+    (root / "data").mkdir(exist_ok=True)
+    assert (root / "data").is_dir()
+
+    result = _check_key_files(root=str(root))
+    assert "已存在" in result
+    assert "已自动创建" not in result
