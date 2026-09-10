@@ -48,6 +48,7 @@ try:
     )
     from core.consolidator import consolidate  # noqa: E402
     from core.fts_index import rebuild as fts_rebuild, search_fts  # noqa: E402
+    from core.doctor import render_text as doctor_render, run_doctor  # noqa: E402
     from core.startup_check import run_startup_check  # noqa: E402
     from core.trivium_store import TriviumStore, is_valid_block  # noqa: E402
 except ImportError as _import_err:
@@ -301,6 +302,16 @@ def cmd_startup_check(args):
     sys.exit(0 if result.get("ok") else 1)
 
 
+def cmd_doctor(args):
+    """部署体检：6 项全面检查，每项失败给具体修复命令，任一失败退出码 1。"""
+    result = run_doctor()
+    if getattr(args, "json_output", False):
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print(doctor_render(result), end="")
+    sys.exit(0 if result.get("ok") else 1)
+
+
 def cmd_task_archive(args):
     """已完成任务节点自动归档到知识库（05_任务归档/），默认 dry-run 预览"""
     from core.task_archive import archive_tasks
@@ -428,6 +439,11 @@ def main():
 
     sp = sub.add_parser("startup-check", help="启动自检（文件/存储/FTS/依赖），失败退出码 1")
     sp.set_defaults(fn=cmd_startup_check)
+
+    sp = sub.add_parser("doctor", help="部署体检（6 项全面检查，每项失败给具体修复命令）")
+    sp.add_argument("--json", dest="json_output", action="store_true",
+                    help="输出机器可读 JSON（默认人类可读）")
+    sp.set_defaults(fn=cmd_doctor)
 
     sp = sub.add_parser("task-archive", help="已完成任务节点自动归档到知识库（05_任务归档/），默认 dry-run 预览")
     sp.add_argument("--apply", action="store_true", help="真正执行：写归档 md + 删节点（默认只预览不落盘）")
