@@ -6,6 +6,14 @@
 
 ## [Unreleased] - 2026-09-10
 
+### 修复
+
+- **FTS 长查询改写**（整句 trigram → 3-gram OR）：长自然语言查询（>8 字符）改写为 3-gram 均匀采样 OR 查询，实测 recall@10 从 0.0000 提升至 0.5116；端到端 rrf recall@5 从 0.3333 提升至 0.4884，融合通道从「负资产」变回「正贡献」。短查询（≤8 字符）行为不变
+
+### 移除
+
+- **L1 嗅探通道**（`memory_file_hits`）——零消费方，MEMORY.md 每轮已注入上下文，属重复开销
+
 ### 新增
 
 - **`reindex` 全库向量重嵌入**（`scripts/reindex.py` + CLI `reindex` 子命令）：换 embedding 模型后一键重建所有节点向量。支持 `--check` 体检（provider / 模型 / 实测维度 / 库实际维度 / 节点分布只读报告）、`--dry-run` 预览、`--only` / `--skip` 按 payload.type 过滤、`--resume` 断点续跑 / `--restart` 从头重嵌；状态文件跟随所操作的库（`<库目录>/reindex_state_<库文件名>.json`），不污染项目 `data/`。
