@@ -32,7 +32,7 @@ Pa·limp·sest: *a writing surface that is overwritten again and again while old
 - **Auto-promotion of hot memories.** Retrieval hits are counted (`hit_count`); `promote` surfaces frequently-used memories — raises importance and tags them (dry-run first, idempotent, reversible) as candidates for human-reviewed knowledge-base promotion.
 - **Memory lifecycle.** Time decay weighting (`MEMORY_DECAY_FACTOR`, default 0.95 /month) fades stale memories in ranking without touching storage; `kb_chunk` knowledge slices are exempt; `outdated` versions no longer pollute ordinary retrieval (traceable on demand).
 - **Task auto-archiving.** Completed task nodes are moved out of the hot store into markdown archives under the knowledge base, then deleted — dry-run first, `apply` to commit.
-- **Startup self-check.** `startup-check` verifies critical files, storage initialization, and the FTS index, emitting a structured report and a non-zero exit code on failure.
+- **Deployment doctor.** `doctor` checks critical files / storage / FTS / dependencies / Embedding reachability and **vector-dimension consistency** (measured vs stored), printing an actionable fix for every failing check (`--json` for machines); `startup-check` is its lightweight subset.
 - **Token-efficient by design.** Retrieval returns a **150-character summary plus metadata** instead of full text; full content is fetched on demand.
 - **Optional API-key auth.** Off by default (localhost direct access); setting `PALIMPSEST_API_KEY` requires a Bearer / X-API-Key header on all REST routes except `/` — for LAN / trusted-network deployments.
 - **Three interfaces, one core.** MCP (stdio) for agent tooling, a FastAPI REST service, and a full CLI — all reuse the same underlying tools, so behavior never drifts.
@@ -164,7 +164,7 @@ A working implementation of this approach is `scripts/build_kb_index.py` (full `
 
 ## Quick Start
 
-### Install
+### Install (common)
 
 ```bash
 # 1. Python 3.10+ required
@@ -173,33 +173,59 @@ source venv/bin/activate          # Windows: venv\Scripts\activate
 
 # 2. Dependencies
 pip install -r requirements.txt
-
-# 3. Local embeddings (default provider) — needs Ollama running
-ollama pull qwen3-embedding:0.6b
 ```
 
-### Configure
+Pick the path that fits you — both work end-to-end:
+
+### Path A: Cloud API key — three lines to start (no Ollama needed)
 
 ```bash
+# 1. Copy the config template
 cp .env.example .env
-# edit .env:
-#   - LLM_BACKEND=deepseek   → set DEEPSEEK_API_KEY
-#   - LLM_BACKEND=ollama      → keep OLLAMA_* defaults
-#   - EMBEDDING_PROVIDER=ollama  (local, default) or openai (cloud, needs EMBEDDING_API_KEY)
+
+# 2. Edit .env: fill in your cloud embedding key + LLM key
+#    EMBEDDING_API_KEY=your_key          # leave empty or delete → auto-falls back to local Ollama
+#    EMBEDDING_BASE_URL=https://api.voyageai.com/v1  (per your provider)
+#    EMBEDDING_MODEL=voyage-3                      (per your provider)
+#    EMBEDDING_DIM=1024                            (per your provider)
+#    DEEPSEEK_API_KEY=your_key         (required when LLM_BACKEND=deepseek)
 ```
 
-> **Note:** Changing the embedding provider changes the vector space. You must fully rebuild the knowledge-base index afterwards (`python scripts/build_kb_index.py`).
+> **No need to set `EMBEDDING_PROVIDER`** — the system auto-detects: a valid `EMBEDDING_API_KEY` → cloud.
+> To force a specific provider, explicitly set `EMBEDDING_PROVIDER=openai` or `EMBEDDING_PROVIDER=ollama`.
+
+### Path B: Local Ollama (privacy-first, data never leaves your machine)
+
+```bash
+# 1. Install and start Ollama (https://ollama.com)
+# 2. Pull the embedding model
+ollama pull qwen3-embedding:0.6b
+
+# 3. Copy the config template
+cp .env.example .env
+
+# 4. Edit .env: fill in your LLM key (embedding needs no extra config, defaults to local Ollama)
+#    DEEPSEEK_API_KEY=your_key         (required when LLM_BACKEND=deepseek)
+#    or LLM_BACKEND=ollama             (fully local, no API keys needed)
+```
+
+> **Both paths — important notes:**
+> - Changing the provider changes the vector space — **you must rebuild the knowledge-base index** — see [Swapping models / re-embedding](#swapping-models--re-embedding-the-full-store).
+> - `EMBEDDING_PROVIDER` left empty = auto-detect (recommended); set `ollama` or `openai` explicitly to force.
 
 ### Run
 
 ```bash
-# Optional pre-flight check
+# Recommended: deployment doctor (prints the fix for every failing check)
+python scripts/palimpsest_cli.py doctor
+
+# Lightweight self-check (subset of doctor)
 python scripts/palimpsest_cli.py startup-check
 ```
 
-> **First-run self-check**: `startup-check` runs checks on key files / storage / FTS / dependencies /
+> **First-run check**: `doctor` checks critical files / storage / FTS / dependencies /
 > Embedding service. If the Embedding check fails: for the default local Ollama, make sure Ollama is
-> running and `ollama pull qwen3-embedding:0.6b`; if you use cloud `EMBEDDING_PROVIDER=openai`, set
+> running and `ollama pull qwen3-embedding:0.6b`; if you use cloud, set
 > `EMBEDDING_API_KEY` in `.env`.
 
 ```bash
@@ -253,7 +279,7 @@ All configuration is read from environment variables (a `.env` file is loaded au
 | `DEEPSEEK_MODEL` | `deepseek-v4-flash` | DeepSeek model identifier |
 | `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Ollama OpenAI-compatible base URL |
 | `OLLAMA_MODEL` | `deepseek-r1:7b` | Ollama chat model used as the LLM |
-| `EMBEDDING_PROVIDER` | `ollama` | Embedding backend: `ollama` (local, private) or `openai` (OpenAI-compatible cloud, e.g. Voyage / SiliconFlow) |
+| `EMBEDDING_PROVIDER` | *(empty = auto-detect)* | Embedding backend: leave empty for auto-detection (valid `EMBEDDING_API_KEY` → `openai`, otherwise → `ollama`); set `ollama` (local, private) or `openai` (OpenAI-compatible cloud, e.g. Voyage / SiliconFlow) explicitly to force |
 | `OLLAMA_EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | Local Ollama embedding model |
 | `OLLAMA_EMBEDDING_BASE_URL` | `http://localhost:11434` | Ollama native embedding API root (decoupled from the LLM's `/v1` URL) |
 | `OLLAMA_EMBEDDING_DIM` | `1024` | Embedding dimension (local backend) |
@@ -271,6 +297,60 @@ All configuration is read from environment variables (a `.env` file is loaded au
 | `MEM_INGEST_MAX_LENGTH` | `50000` | Max characters of a single memory `content`; longer writes are rejected |
 | `KNOWLEDGE_DIR` | *(optional)* | Root of the knowledge base (Obsidian `.md` files) to index |
 | `HERMES_MEMORY_FILE` | *(empty)* | Optional path to an external plain-text memory file used as an additional memory source; leave empty to disable |
+
+---
+
+## Swapping models / re-embedding the full store
+
+### Why re-embed?
+
+Different embedding models produce different vector spaces — **vectors from different models are incompatible**. If you change `EMBEDDING_PROVIDER`, `OLLAMA_EMBEDDING_MODEL`, or `EMBEDDING_MODEL`, you must regenerate vectors for every node in the store; otherwise retrieval quality collapses.
+
+### Recommended sequence
+
+```bash
+# 1. Health check — verify provider / model / dimension, embedding service reachable
+python scripts/palimpsest_cli.py reindex --check
+
+# 2. Dry-run — preview which nodes will be re-embedded
+python scripts/palimpsest_cli.py reindex --dry-run
+
+# 3. Execute (resumable by default; Ctrl+C then re-run continues from checkpoint)
+python scripts/palimpsest_cli.py reindex --yes
+
+# 4. Smoke test
+python scripts/palimpsest_cli.py search "test" --top-k 3
+```
+
+Common options:
+
+| Option | Description |
+|---|---|
+| `--only memory,record` | Re-embed only the specified types |
+| `--skip kb_chunk,novel_chunk` | Skip the specified types |
+| `--batch 128` | Print progress every 128 nodes |
+| `--restart` | Ignore checkpoint, re-embed from scratch |
+
+### Changing dimension (new model outputs a different dimension)
+
+If the new model's output dimension differs from the current store (e.g. 1024 → 768), you **cannot re-embed in place** — you must create a new database:
+
+```bash
+# 1. Export
+python scripts/export_all_data.py
+
+# 2. Rebuild (new database)
+python scripts/rebuild_db.py
+
+# 3. Update dimension in .env
+# OLLAMA_EMBEDDING_DIM=768   or   EMBEDDING_DIM=768
+
+# 4. Rebuild knowledge-base index
+python scripts/build_kb_index.py --full
+
+# 5. If you have a fiction vault
+python scripts/build_novel_index.py --source <vault-path> --full
+```
 
 ---
 
@@ -316,7 +396,8 @@ All configuration is read from environment variables (a `.env` file is loaded au
 | `ingest-git` | Index recent git commits as `git_commit` nodes (idempotent) |
 | `fts-rebuild` | Rebuild the full FTS5 index |
 | `fts-search "QUERY"` | Raw FTS5 search (trigram substring) |
-| `startup-check` | Run the startup self-check (exit code 1 on failure) |
+| `doctor` | Deployment health check: critical files / storage / FTS / dependencies / Embedding / vector-dimension consistency, with an actionable fix per failure (`--json`) |
+| `startup-check` | Run the startup self-check (lightweight subset of `doctor`; exit code 1 on failure) |
 | `task-archive` | Archive completed task nodes; `--apply` writes markdown and deletes the node |
 
 Examples:

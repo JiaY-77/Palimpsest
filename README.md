@@ -38,7 +38,7 @@ Palimpsest 是一个 **本地优先的嵌入式长期记忆系统**，将 **语�
 - ⏫ **高频记忆自动升级** —— 检索命中自动计数（`hit_count`），`promote` 把反复被用到的记忆浮出水面：升权 + 打标（dry-run 预览、幂等可逆），为人工升级知识库提供依据
 - ⏳ **记忆生命周期** —— 时间衰减加权（`MEMORY_DECAY_FACTOR`，默认 0.95/月）在排序中淡化陈旧记忆而不动存储；`kb_chunk` 知识切片豁免衰减；`outdated` 旧版默认不再参与普通检索（可显式追溯）
 - 📁 **任务自动归档** —— 完成任务自动移出热库，写成 markdown 归档至知识库归档目录后删除——先 `dry-run` 预览，`apply` 提交
-- ✅ **启动自检** —— `startup-check` 校验关键文件、存储初始化与 FTS 索引，输出结构化报告，失败时以非零退出码结束
+- ✅ **部署体检** —— `doctor` 一键体检关键文件 / 存储 / FTS / 依赖 / Embedding 可达性与**向量维度一致性**（实测 vs 库），每个失败项直接给出修复命令（`--json` 机器可读）；`startup-check` 为其轻量子集
 - ✂️ **省 token 设计** —— 检索默认只返回 **150 字摘要 + 元数据**，而非全文；完整内容按需二次拉取
 - 🔐 **可选 API Key 鉴权** —— 默认关闭（localhost 本机直连）；设置 `PALIMPSEST_API_KEY` 后 REST 层要求 Bearer / X-API-Key 头，适合局域网受信部署
 - 🎯 **三接口、一核心** —— MCP（stdio）、FastAPI REST、完整 CLI 三套接入共用同一套底层工具，行为永不割裂
@@ -144,7 +144,7 @@ hermes config set context.engine palimpsest-graph
 
 ## 快速上手
 
-### 安装
+### 安装（通用）
 
 ```bash
 # 1. 需要 Python 3.10+
@@ -153,33 +153,59 @@ source venv/bin/activate          # Windows: venv\Scripts\activate
 
 # 2. 安装依赖
 pip install -r requirements.txt
-
-# 3. 本地向量模型（默认向量后端）—— 需先启动 Ollama
-ollama pull qwen3-embedding:0.6b
 ```
 
-### 配置
+接下来按你的情况选一条路径——
+
+### 路径 A：云端 key，三行起跑（适合没装 Ollama、想最快跑起来）
 
 ```bash
+# 1. 复制配置模板
 cp .env.example .env
-# 编辑 .env:
-#   - LLM_BACKEND=deepseek   → 填入 DEEPSEEK_API_KEY
-#   - LLM_BACKEND=ollama      → 保持 OLLAMA_* 默认即可
-#   - EMBEDDING_PROVIDER=ollama  (本地, 默认) 或 openai (云端, 需 EMBEDDING_API_KEY)
+
+# 2. 编辑 .env：填入云端向量 API Key + LLM Key
+#    EMBEDDING_API_KEY=你的云端key      # 留空或删除该行 → 自动走本地 Ollama
+#    EMBEDDING_BASE_URL=https://api.voyageai.com/v1  (按服务商填写)
+#    EMBEDDING_MODEL=voyage-3                      (按服务商填写)
+#    EMBEDDING_DIM=1024                            (按服务商填写)
+#    DEEPSEEK_API_KEY=你的LLMkey       (LLM_BACKEND=deepseek 时必填)
 ```
 
-> **注意：** 更换向量后端会改变向量空间，事后必须重建知识库索引：`python scripts/build_kb_index.py`。
+> **不设置 `EMBEDDING_PROVIDER` 即可**——系统自动探测：检测到有效 `EMBEDDING_API_KEY` → 走云端。
+> 如需强制指定，可显式写 `EMBEDDING_PROVIDER=openai` 或 `EMBEDDING_PROVIDER=ollama`。
+
+### 路径 B：本地 Ollama（隐私优先，数据不出本机）
+
+```bash
+# 1. 安装并启动 Ollama（https://ollama.com）
+# 2. 拉取向量模型
+ollama pull qwen3-embedding:0.6b
+
+# 3. 复制配置模板
+cp .env.example .env
+
+# 4. 编辑 .env：填入 LLM Key（向量后端无需额外配置，默认本地 Ollama）
+#    DEEPSEEK_API_KEY=你的LLMkey       (LLM_BACKEND=deepseek 时必填)
+#    或 LLM_BACKEND=ollama              (全部走本地，无需任何 API Key)
+```
+
+> **两条路径通用说明：**
+> - 换 provider = 换向量空间，**必须重建知识库索引**——详见 [更换向量模型 / 重嵌全库](#更换向量模型--重嵌全库)。
+> - `EMBEDDING_PROVIDER` 留空 = 自动探测（推荐）；显式写 `ollama` 或 `openai` 可强制指定。
 
 ### 启动
 
 ```bash
-# 可选：启动前自检
+# 推荐：部署体检（每个失败项都会打印对应的修复命令）
+python scripts/palimpsest_cli.py doctor
+
+# 轻量自检（doctor 的子集）
 python scripts/palimpsest_cli.py startup-check
 ```
 
-> **首次运行自检**：`startup-check` 会检查关键文件 / 存储 / FTS / 依赖 / Embedding 服务。
-> 若 Embedding 项失败：本地默认 Ollama 请先启动并 `ollama pull qwen3-embedding:0.6b`；
-> 若使用云端 `EMBEDDING_PROVIDER=openai`，请确认 `.env` 已配置 `EMBEDDING_API_KEY`。
+> **首次运行体检**：`doctor` 会检查关键文件 / 存储 / FTS / 依赖 / Embedding 服务可达性 / 向量维度一致性（实测 vs 库），任一失败项都会给出可执行的修复命令。
+> 若 Embedding 项失败：本地 Ollama 请先启动并 `ollama pull qwen3-embedding:0.6b`；
+> 若使用云端，请确认 `.env` 已配置 `EMBEDDING_API_KEY`。
 
 ```bash
 # REST 服务 (:8090)
@@ -232,7 +258,7 @@ Windows 下 `scripts/start_rest.vbs` 可以隐藏窗口启动 REST 服务（如�
 | `DEEPSEEK_MODEL` | `deepseek-v4-flash` | DeepSeek 模型标识 |
 | `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Ollama OpenAI 兼容基础地址 |
 | `OLLAMA_MODEL` | `deepseek-r1:7b` | 作为 LLM 的 Ollama 对话模型 |
-| `EMBEDDING_PROVIDER` | `ollama` | 向量后端：`ollama`（本地、私有）或 `openai`（OpenAI 兼容云端，如 Voyage/硅基流动） |
+| `EMBEDDING_PROVIDER` | *（空 = 自动探测）* | 向量后端：留空自动探测（有云端 key → `openai`，否则 → `ollama`）；显式写 `ollama`（本地、私有）或 `openai`（OpenAI 兼容云端，如 Voyage/硅基流动） |
 | `OLLAMA_EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | 本地 Ollama 向量模型 |
 | `OLLAMA_EMBEDDING_BASE_URL` | `http://localhost:11434` | Ollama 原生 embedding API 根地址（与 LLM 的 /v1 解耦） |
 | `OLLAMA_EMBEDDING_DIM` | `1024` | 向量维度（本地后端） |
@@ -349,7 +375,8 @@ python scripts/build_novel_index.py --source <vault路径> --full
 | `ingest-git` | 将近期 git 提交索引为 `git_commit` 节点（幂等） |
 | `fts-rebuild` | 重建完整 FTS5 索引 |
 | `fts-search "QUERY"` | 原始 FTS5 搜索（trigram 子串） |
-| `startup-check` | 运行启动自检（失败时退出码 1） |
+| `doctor` | 部署体检：关键文件 / 存储 / FTS / 依赖 / Embedding / 向量维度一致性，失败项给出修复命令（`--json` 机器可读） |
+| `startup-check` | 运行启动自检（`doctor` 的轻量子集，失败时退出码 1） |
 | `task-archive` | 归档已完成任务；`--apply` 写入 markdown 并删除节点 |
 | `reindex` | 全库向量重嵌入（换 embedding 模型后使用；`--check` 体检、`--dry-run` 预览） |
 

@@ -3,6 +3,30 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# ---- Embedding provider auto-detect ----
+# When EMBEDDING_PROVIDER env var is not explicitly set, auto-detect:
+#   - Valid cloud EMBEDDING_API_KEY present → "openai"
+#   - Otherwise → "ollama" (local, private, zero-config)
+# "Valid key" excludes empty / whitespace-only / common placeholders
+# (e.g. YOUR_API_KEY from .env.example).
+_PLACEHOLDER_KEYS = frozenset({"", "your_api_key", "xxx", "changeme", "sk-xxx"})
+
+
+def _detect_embedding_provider() -> str:
+    """Return the resolved embedding provider string.
+
+    Explicit ``EMBEDDING_PROVIDER`` env var always wins (fully backward-compatible).
+    When unset, a non-placeholder ``EMBEDDING_API_KEY`` implies ``"openai"``;
+    otherwise fall back to ``"ollama"``.
+    """
+    raw = os.getenv("EMBEDDING_PROVIDER")
+    if raw:
+        return raw.strip().lower()
+    key = os.getenv("EMBEDDING_API_KEY", "").strip()
+    if key.lower() not in _PLACEHOLDER_KEYS:
+        return "openai"
+    return "ollama"
+
 # 项目根 = config.py 所在目录（直接运行时为仓库根，pip 安装后为 site-packages 下包目录）。
 # DB_PATH 等相对路径一律以它为基准解析为绝对路径，不再依赖/修改进程当前工作目录
 # （此前依赖 mcp_tools 里 os.chdir 切换到项目根来解析相对路径，作为包安装后会污染
@@ -79,9 +103,11 @@ class Config:
     OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-r1:7b")
 
     # ---- Embedding 配置（2026-08-25 开源多选择：本地隐私优先，云端精度可选）----
-    # EMBEDDING_PROVIDER: "ollama"（默认本地）| "openai"（OpenAI 兼容云端：Voyage/OpenAI/硅基流动等）
+    # EMBEDDING_PROVIDER：显式设置时以环境变量为准（完全向后兼容）；
+    # 未设置时自动探测：有可用云端 EMBEDDING_API_KEY → "openai"，否则 → "ollama"。
+    # 「可用」排除空值 / 纯空白 / 常见占位符（YOUR_API_KEY 等，见 _detect_embedding_provider）。
     # 注意：换 provider = 换向量空间，必须全量重建知识库索引（scripts/build_kb_index.py）
-    EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "ollama")
+    EMBEDDING_PROVIDER = _detect_embedding_provider()
     # 本地 Ollama Embedding
     OLLAMA_EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:0.6b")
     # Ollama 原生 embedding API 根地址（/api/embeddings），与 LLM 用的
