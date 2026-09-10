@@ -302,7 +302,7 @@ def cmd_startup_check(args):
 
 
 def cmd_task_archive(args):
-    """已完成任务节点自动归档：默认 dry-run 预览（JSON），--apply 真正执行归档+删节点。"""
+    """已完成任务节点自动归档到知识库（05_任务归档/），默认 dry-run 预览"""
     from core.task_archive import archive_tasks
     from mcp_tools._common import KNOWLEDGE_DIR
 
@@ -310,6 +310,23 @@ def cmd_task_archive(args):
     kb_dir = args.knowledge_dir or KNOWLEDGE_DIR
     result = archive_tasks(store, dry_run=not args.apply, knowledge_dir=kb_dir)
     print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+def cmd_reindex(args):
+    """全库向量重嵌入（换 embedding 模型后使用）。"""
+    from scripts.reindex import cmd_check, cmd_reindex as _cmd_reindex
+
+    store = TriviumStore()
+    if args.check:
+        code = cmd_check(store)
+        sys.exit(code)
+    only = [s.strip() for s in args.only.split(",") if s.strip()] or None
+    skip = [s.strip() for s in args.skip.split(",") if s.strip()] or None
+    code = _cmd_reindex(
+        store, only=only, skip=skip, batch=args.batch,
+        restart=args.restart, dry_run=args.dry_run, yes=args.yes,
+    )
+    sys.exit(code)
 
 
 def main():
@@ -416,6 +433,17 @@ def main():
     sp.add_argument("--apply", action="store_true", help="真正执行：写归档 md + 删节点（默认只预览不落盘）")
     sp.add_argument("--knowledge-dir", default="", help="知识库根目录（默认 KNOWLEDGE_DIR 环境变量对应的知识库根）")
     sp.set_defaults(fn=cmd_task_archive)
+
+    sp = sub.add_parser("reindex", help="全库向量重嵌入（换 embedding 模型后使用）")
+    sp.add_argument("--check", action="store_true", help="体检模式：只读检查 provider / 模型 / 维度 / 节点分布，不写数据")
+    sp.add_argument("--dry-run", action="store_true", help="试运行：只报告将要重嵌哪些节点，不实际写入")
+    sp.add_argument("--restart", action="store_true", help="忽略断点进度，从头重嵌所有节点")
+    sp.add_argument("--resume", action="store_true", default=False, help="断点续跑（跳过已完成节点，默认行为）")
+    sp.add_argument("--only", default="", help="只重嵌指定 payload.type（逗号分隔，如 memory,record）")
+    sp.add_argument("--skip", default="", help="跳过指定 payload.type（逗号分隔，如 kb_chunk,novel_chunk）")
+    sp.add_argument("--batch", type=int, default=64, help="每处理多少个节点打印一次进度并保存状态（默认 64）")
+    sp.add_argument("--yes", "-y", action="store_true", help="跳过二次确认提示（脚本 / CI 自动化时使用）")
+    sp.set_defaults(fn=cmd_reindex)
 
     try:
         args = p.parse_args()

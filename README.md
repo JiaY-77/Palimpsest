@@ -253,6 +253,60 @@ Windows 下 `scripts/start_rest.vbs` 可以隐藏窗口启动 REST 服务（如�
 
 ---
 
+## 更换向量模型 / 重嵌全库
+
+### 为什么要重嵌？
+
+不同的 embedding 模型产生不同的向量空间——**跨模型的向量不可混用**。如果切换了 `EMBEDDING_PROVIDER`、`OLLAMA_EMBEDDING_MODEL` 或 `EMBEDDING_MODEL`，必须对库中所有节点重新生成向量（重嵌），否则新旧向量空间互相排斥，检索质量会急剧下降。
+
+### 推荐操作顺序
+
+```bash
+# 1. 体检：确认 provider / 模型 / 维度正确，embedding 服务可用
+python scripts/palimpsest_cli.py reindex --check
+
+# 2. 预览：查看将要重嵌哪些节点
+python scripts/palimpsest_cli.py reindex --dry-run
+
+# 3. 正式执行（默认断点续跑，Ctrl+C 中断后可自动续跑）
+python scripts/palimpsest_cli.py reindex --yes
+
+# 4. 验证：跑一次检索冒烟
+python scripts/palimpsest_cli.py search "测试" --top-k 3
+```
+
+常用选项：
+
+| 选项 | 说明 |
+|---|---|
+| `--only memory,record` | 只重嵌指定类型 |
+| `--skip kb_chunk,novel_chunk` | 跳过指定类型 |
+| `--batch 128` | 每 128 个节点打印进度 |
+| `--restart` | 忽略断点，从头重嵌 |
+
+### 换维度（新模型输出维度不同）
+
+如果新模型的输出维度与当前库不一致（如从 1024 维换到 768 维），**不能直接重嵌**——必须新建库。流程如下：
+
+```bash
+# 1. 导出
+python scripts/export_all_data.py
+
+# 2. 重建（新库）
+python scripts/rebuild_db.py
+
+# 3. 修改 .env 中对应维度配置
+# OLLAMA_EMBEDDING_DIM=768   或   EMBEDDING_DIM=768
+
+# 4. 重建知识库索引
+python scripts/build_kb_index.py --full
+
+# 5. 如有小说设定库
+python scripts/build_novel_index.py --source <vault路径> --full
+```
+
+---
+
 ## 使用
 
 ### MCP 工具（16 个）— `mcp_tools/*`
@@ -297,6 +351,7 @@ Windows 下 `scripts/start_rest.vbs` 可以隐藏窗口启动 REST 服务（如�
 | `fts-search "QUERY"` | 原始 FTS5 搜索（trigram 子串） |
 | `startup-check` | 运行启动自检（失败时退出码 1） |
 | `task-archive` | 归档已完成任务；`--apply` 写入 markdown 并删除节点 |
+| `reindex` | 全库向量重嵌入（换 embedding 模型后使用；`--check` 体检、`--dry-run` 预览） |
 
 示例：
 
@@ -411,6 +466,7 @@ Palimpsest/
 │   ├── graph_edges.py            #   持久化知识图谱边
 │   ├── migrate_domain.py         #   历史字段迁移（character_name → domain）
 │   ├── rebuild_db.py             #   从导出快照重建数据库
+│   ├── reindex.py                #   全库向量重嵌入（换模型后一键重建）
 │   ├── start_rest.vbs            #   Windows 隐藏窗口 REST 启动器
 │   └── tdb_stress/               #   TriviumDB 压力测试
 ├── hermes-plugin/                # Hermes 双插件（Memory Provider + Context Engine）
