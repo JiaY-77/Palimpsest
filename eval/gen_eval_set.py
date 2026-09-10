@@ -82,8 +82,10 @@ def _copy_db_to_tmp() -> Path:
 _copy_db_to_tmp()
 
 # Now safe to import project modules
+sys.path.insert(0, str(_EVAL_DIR))
 from config import Config  # noqa: E402
 from core.trivium_store import TriviumStore  # noqa: E402
+from pool_filter import filter_pool, should_write_output  # noqa: E402
 
 
 # ── Constants ───────────────────────────────────────────────────────────────
@@ -100,6 +102,9 @@ _LAYER_OTHER = "other"
 _HERMES_TYPES = {"memory", "record", "correction", "plan", "decision"}
 _NOVEL_TYPES = {"novel_chunk", "character_state", "plot_plan"}
 _TASK_RULE_TYPES = {"task", "rule"}
+
+# 会话末自动提炼的转录片段，不适合作为评测基准答案
+_DEFAULT_EXCLUDED_SOURCES = {"hermes-session_end"}
 
 _NEGATIVE_QUERIES = [
     "特斯拉2025年最新的全自动驾驶版本号是什么",
@@ -296,6 +301,12 @@ def main() -> int:
                         help="Skip existing qids and continue")
     parser.add_argument("--dry-run", action="store_true",
                         help="Only sample, print distribution, no API calls")
+    parser.add_argument("--exclude-sources", type=str,
+                        default="hermes-session_end",
+                        help="逗号分隔的 source 值，命中的节点不入池；"
+                             "显式传空字符串表示不过滤")
+    parser.add_argument("--keep-duplicates", action="store_true",
+                        help="开启后不做内容去重（默认做去重）")
     args = parser.parse_args()
 
     rng = random.Random(args.seed)
@@ -312,6 +323,22 @@ def main() -> int:
             continue
         nodes.append({"node_id": node_id, "payload": payload})
     print(f"[gen_eval_set] Active nodes: {len(nodes)}")
+
+    # ── Pool filter ──────────────────────────────────────────────────────
+    exclude_src_arg = args.exclude_sources
+    if exclude_src_arg == "":
+        exclude_sources: tuple[str, ...] = ()
+    else:
+        exclude_sources = tuple(s.strip() for s in exclude_src_arg.split(",") if s.strip())
+    nodes, pool_stats = filter_pool(
+        nodes,
+        exclude_sources=exclude_sources,
+        drop_duplicates=not args.keep_duplicates,
+    )
+    print(f"[gen_eval_set] Pool filter: input={pool_stats['input']} "
+          f"excluded_source={pool_stats['excluded_source']} "
+          f"excluded_duplicate={pool_stats['excluded_duplicate']} "
+          f"kept={pool_stats['kept']}")
 
     # ── Stratified sampling ──────────────────────────────────────────────
     layers: dict[str, list[dict]] = {
@@ -457,15 +484,25 @@ def main() -> int:
         existing_neg_queries.add(neg_query)
         neg_count += 1
 
-    # ── Write output ─────────────────────────────────────────────────────
+    # ── Guard: refuse to overwrite when nothing was generated ───────────
+    allow, reason = should_write_output(success_count, existing_items, all_items)
+    if not allow:
+        print(f"\n  ⚠  BLOCKED: {reason}")
+        print(f"     target file: {output_path}")
+        print("     已有题集未被修改。")
+        return 2
+
+    # ── Write output (atomic) ───────────────────────────────────────────
     output = {
         "version": 1,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "seed": args.seed,
         "items": all_items,
     }
-    with open(output_path, "w", encoding="utf-8") as f:
+    tmp_path = output_path.with_suffix(".json.tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, output_path)
 
     total = _USAGE["prompt"] + _USAGE["completion"]
     print(f"[gen_eval_set] Token 消耗: calls={_USAGE['calls']} "
