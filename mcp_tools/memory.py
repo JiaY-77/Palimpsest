@@ -41,7 +41,8 @@ def mem_retrieve(query: str, domain: str = "", top_k: int = 5,
     """
     emb = store.embed_text(query)
     # v1.1 拉宽召回：与 mem_search 一致，top_k*3 召回再过滤，避免 kb_chunk 挤占名额导致记忆条数凑不满
-    results = store.search_similar(emb, top_k=max(top_k * 3, 30), expand_depth=1,
+    results = store.search_similar(emb, top_k=max(top_k * 3, 30),
+                                    expand_depth=getattr(Config, "RETRIEVAL_EXPAND_DEPTH", 0),
                                     include_outdated=include_outdated)
     items = []
     for r in results:
@@ -511,7 +512,8 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
         return {"results": [], "scope": scope, "hint": "查询内容不能为空"}
     emb = store.embed_text(query)
     # 一次向量检索，拉宽召回再按 scope 过滤截断，保证过滤后仍有足够结果
-    results = store.search_similar(emb, top_k=max(top_k * 3, 30), expand_depth=1,
+    results = store.search_similar(emb, top_k=max(top_k * 3, 30),
+                                    expand_depth=getattr(Config, "RETRIEVAL_EXPAND_DEPTH", 0),
                                     block=block,
                                     include_outdated=include_outdated)
     items = []
@@ -665,12 +667,15 @@ def _fts_only_item(node_id: int, scope: str, domain: str, block: str,
 
 
 def _rrf_fuse(sem_ids: list, fts_ids: list, top_k: int,
-              k: float = 60.0) -> list:
+              k: float = 60.0, w_sem: float = 1.0,
+              w_fts: float = 1.0) -> list:
     """纯 RRF 融合打分（不碰库，供单测与 _hybrid_rrf 复用）。
 
     sem_ids：语义侧排名（按 rank 顺序的 node_id 列表）；fts_ids：FTS 侧排名
     （按 rank 顺序的 node_id 列表）。0-based rank；单侧命中同样计入；
     k 为标准 reciprocal rank 常数（默认 60）。
+    w_sem / w_fts：两侧权重，语义侧累加 w_sem/(k+rank)，FTS 侧累加
+    w_fts/(k+rank)；默认 1.0 / 1.0 与原等权行为逐位一致。
 
     返回按 RRF 分降序的 [(node_id, rrf_score, fts_hit, sem_hit), ...] 直至 top_k。
     """
@@ -680,12 +685,12 @@ def _rrf_fuse(sem_ids: list, fts_ids: list, top_k: int,
     for rank, nid in enumerate(sem_ids):
         if nid is None:
             continue
-        rrf[nid] = rrf.get(nid, 0.0) + 1.0 / (k + rank)
+        rrf[nid] = rrf.get(nid, 0.0) + w_sem / (k + rank)
         sem_hit.add(nid)
     for rank, nid in enumerate(fts_ids):
         if nid is None:
             continue
-        rrf[nid] = rrf.get(nid, 0.0) + 1.0 / (k + rank)
+        rrf[nid] = rrf.get(nid, 0.0) + w_fts / (k + rank)
         fts_hit.add(nid)
     return [(nid, score, nid in fts_hit, nid in sem_hit)
             for nid, score in sorted(rrf.items(), key=lambda kv: kv[1],
@@ -708,6 +713,8 @@ def _hybrid_rrf(query: str, scope: str, domain: str, domain_bias: str,
         [r.get("node_id") for r in fts if r.get("node_id") is not None],
         top_k,
         Config.RRF_K,
+        w_sem=Config.RRF_SEM_WEIGHT,
+        w_fts=Config.RRF_FTS_WEIGHT,
     )
 
     # 语义条目按 id 建表，便于合并命中来源标记；FTS-only 节点按 payload 补全

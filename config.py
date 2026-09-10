@@ -84,6 +84,15 @@ class Config:
     # Reciprocal Rank Fusion 标准 k 值：单侧命中也算贡献
     RRF_K = float(os.getenv("RRF_K", "60.0"))
 
+    # 语义主序的图扩散深度：0 = 纯语义排序（默认；实测 R@5 0.7542）
+    # 1 = 原行为（图邻居参与语义主序，实测 R@5 0.5000；可一键回退）
+    RETRIEVAL_EXPAND_DEPTH = int(os.getenv("RETRIEVAL_EXPAND_DEPTH", "0"))
+
+    # 混合检索 RRF 两侧权重（语义侧 / 精确侧）
+    # 语义主序干净后 FTS 小幅加成：实测 R@1 +4.2pp、R@5 +1.7pp
+    RRF_SEM_WEIGHT = float(os.getenv("RRF_SEM_WEIGHT", "1.0"))
+    RRF_FTS_WEIGHT = float(os.getenv("RRF_FTS_WEIGHT", "0.1"))
+
     # ---- LLM 后端选择 ----
     # 可选: "ollama" 或 "deepseek"
     LLM_BACKEND = os.getenv("LLM_BACKEND", "deepseek")
