@@ -293,10 +293,8 @@ All configuration is read from environment variables (a `.env` file is loaded au
 | `EXPAND_MAX_EDGES_PER_NODE` | `20` | Max strongest edges diffused per node during graph expansion |
 | `EXPAND_MIN_EDGE_WEIGHT` | `0.0` | Weak-edge pruning threshold during expansion (0 disables) |
 | `RRF_K` | `60.0` | RRF constant k for hybrid retrieval (single-side hits still count) |
-| `L1_MAX_SIZE` | `5120` | Max bytes of the external L1 memory file (MEMORY.md) read into cache; larger files are skipped |
 | `MEM_INGEST_MAX_LENGTH` | `50000` | Max characters of a single memory `content`; longer writes are rejected |
 | `KNOWLEDGE_DIR` | *(optional)* | Root of the knowledge base (Obsidian `.md` files) to index |
-| `HERMES_MEMORY_FILE` | *(empty)* | Optional path to an external plain-text memory file used as an additional memory source; leave empty to disable |
 
 ---
 

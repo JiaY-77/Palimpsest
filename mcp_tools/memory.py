@@ -3,8 +3,7 @@
 mcp_tools.memory —— 记忆读写与查询工具
 =====================================
 mem_retrieve / mem_get_full / mem_ingest / mem_recent / mem_review /
-mem_version_history / mem_search（及核心 _mem_search_impl）/ mem_hybrid_search、
-L1 嗅探。
+mem_version_history / mem_search（及核心 _mem_search_impl）/ mem_hybrid_search。
 """
 
 import logging  # noqa: E402
@@ -481,56 +480,6 @@ def mem_version_history(domain: str = "hermes", full_content: bool = False,
     })
 
 
-# ---- L1 嗅探（检索优化：mem_search 一体化检索 L1 MEMORY.md）----
-# MEMORY.md（大小上限见 Config.L1_MAX_SIZE）读入内存缓存；命中查询词则进入独立
-# 附加区 memory_file_hits，不伪造节点置顶（记忆领域无魔法 ID）。底层仍物理隔离于 TriviumDB。
-_L1_CACHE: dict = {"path": "", "mtime": 0.0, "content": ""}
-
-
-def _l1_sniff(query: str) -> dict:
-    """前置 L1 嗅探：MEMORY.md 命中查询词则返回独立附加区数据（不伪造节点）。
-
-    路径来自环境变量 HERMES_MEMORY_FILE（开源不硬编码个人路径）；
-    命中规则：查询词整体，或按空白/标点分词后 ≥2 字符的词，出现在 MEMORY.md 内容中。
-    返回 dict：{"hits": [{content_snippet, source, matched_terms}], "path"}；
-    无命中或文件不可用时返回 {"hits": []}。hits 元素是外部文件命中的纯数据，
-    不含 id/type/score——L1 不是节点，永不混入 results（消除魔法 ID -1）。
-    """
-    path = os.getenv("HERMES_MEMORY_FILE", "")
-    if not path or not os.path.isfile(path):
-        return {"hits": []}
-    try:
-        mtime = os.path.getmtime(path)
-        if _L1_CACHE["path"] != path or _L1_CACHE["mtime"] != mtime:
-            if os.path.getsize(path) > Config.L1_MAX_SIZE:
-                _L1_CACHE.update(path=path, mtime=mtime, content="")  # 过大不缓存
-            else:
-                with open(path, "r", encoding="utf-8", errors="replace") as f:
-                    _L1_CACHE.update(path=path, mtime=mtime, content=f.read())
-        content = _L1_CACHE["content"]
-        if not content:
-            return {"hits": []}
-        q = (query or "").strip()
-        matched_terms = [q] if q and q in content else [
-            t for t in re.split(r"[\s,，。；;、/（）()]+", q)
-            if len(t) >= 2 and t in content
-        ]
-        if not matched_terms:
-            return {"hits": []}
-        idx = content.find(matched_terms[0])
-        snippet = content[max(0, idx - 40):idx + 60].replace("\n", " ")
-        return {
-            "hits": [{
-                "content_snippet": f"…{snippet}…",
-                "source": "MEMORY.md",
-                "matched_terms": matched_terms[:3],
-            }],
-            "path": path,
-        }
-    except Exception:
-        return {"hits": []}
-
-
 def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
                      domain_bias: str = "", top_k: int = 5,
                      include_neighbors: bool = False,
@@ -547,8 +496,6 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
       - 最终权重 = base_score × (rule?RULE_RETRIEVAL_WEIGHT:1) × (bias 系数)，
         权重来自 config（RULE_RETRIEVAL_WEIGHT / DOMAIN_BIAS_WEIGHT，可配），
         在过滤之后、排序之前应用。
-      - v3.8 L1 独立附加区：scope!=kb 时嗅探 MEMORY.md（HERMES_MEMORY_FILE），
-        命中进 memory_file_hits（独立字段），不伪造节点置顶——results 全是真实节点。
       - v4.0 outdated 语义：默认过滤 status=="outdated" 的旧版本（只回当前有效节点），
         include_outdated=True 时不过滤，返回全部（显式历史可追溯通道）。
     """
@@ -561,11 +508,6 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
     query = (query or "").strip()
     if not query:
         return {"results": [], "scope": scope, "hint": "查询内容不能为空"}
-    # 前置 L1 嗅探（检索优化）：MEMORY.md 一体化检索（scope=kb 跳过；
-    # block 非空且不是 hermes 时跳过——L1 属于 hermes 区块，分区查询不跨区块）。
-    # 命中只进 memory_file_hits，不再伪造 -1 节点混入 results（消除魔法 ID）。
-    l1_hits = ({"hits": []} if scope == "kb" or (block and block.strip().lower() != "hermes")
-               else _l1_sniff(query))
     emb = store.embed_text(query)
     # 一次向量检索，拉宽召回再按 scope 过滤截断，保证过滤后仍有足够结果
     results = store.search_similar(emb, top_k=max(top_k * 3, 30), expand_depth=1,
@@ -621,9 +563,6 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
     items.sort(key=lambda x: x["score"], reverse=True)
     top_items = items[:top_k]
     result = {"results": top_items, "scope": scope}
-    # L1 独立附加区：MEMORY.md 命中只进 memory_file_hits，不混入 results
-    if l1_hits.get("hits"):
-        result["memory_file_hits"] = l1_hits["hits"]
     if domain_bias:
         result["bias"] = domain_bias
     # 阶段三：分区返回——图关联区（语义区原样，邻居独立展示，不参与语义排序）

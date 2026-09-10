@@ -29,7 +29,6 @@ _TMP_DIR = tempfile.mkdtemp(prefix="palimpsest_test_")
 os.environ["DB_PATH"] = os.path.join(_TMP_DIR, "mh_test.db")
 # 屏蔽知识库根，避免冒烟测试意外触碰真实知识目录
 os.environ.setdefault("KNOWLEDGE_DIR", os.path.join(_TMP_DIR, "knowledge"))
-os.environ.setdefault("HERMES_MEMORY_FILE", "")
 
 import hashlib
 

@@ -272,10 +272,8 @@ Windows 下 `scripts/start_rest.vbs` 可以隐藏窗口启动 REST 服务（如�
 | `EXPAND_MAX_EDGES_PER_NODE` | `20` | 图谱扩散时每节点最多扩散的最强边数 |
 | `EXPAND_MIN_EDGE_WEIGHT` | `0.0` | 图谱扩散弱边过滤阈值（0 关闭） |
 | `RRF_K` | `60.0` | 混合检索 RRF 常数 k（单侧命中也计贡献） |
-| `L1_MAX_SIZE` | `5120` | L1 外部记忆文件（MEMORY.md）最大读取字节数，超过跳过 |
 | `MEM_INGEST_MAX_LENGTH` | `50000` | 单条记忆 content 最大字符数，超长拒绝写入 |
 | `KNOWLEDGE_DIR` | *（可选）* | 知识库根目录（待索引的 Obsidian `.md` 文件） |
-| `HERMES_MEMORY_FILE` | *（空）* | 可选的外部纯文本记忆文件路径，作为额外记忆来源；留空则禁用 |
 
 ---
 

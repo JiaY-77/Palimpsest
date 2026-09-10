@@ -70,10 +70,6 @@ class Config:
     # 扩散时弱边过滤阈值（默认 0.0 不启用）
     EXPAND_MIN_EDGE_WEIGHT = float(os.getenv("EXPAND_MIN_EDGE_WEIGHT", "0.0"))
 
-    # ---- L1 MEMORY.md 嗅探（魔法数字配置化）----
-    # 超过该大小（字节）的 MEMORY.md 不读入内存缓存
-    L1_MAX_SIZE = int(os.getenv("L1_MAX_SIZE", str(5 * 1024)))
-
     # ---- mem_ingest 内容上限（魔法数字配置化）----
     # 单条记忆 content 最大字符数，超长拒绝写入（防超大 payload 拖垮库）
     MEM_INGEST_MAX_LENGTH = int(os.getenv("MEM_INGEST_MAX_LENGTH", str(50_000)))
