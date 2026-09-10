@@ -58,6 +58,45 @@ def _msg_text(msg: Dict[str, Any]) -> str:
     return str(msg.get("content") or "")
 
 
+def _extract_points(messages: List[Dict[str, Any]], limit: int, per_message_chars: int) -> List[str]:
+    """从消息列表中提炼要点行。只接受 user/assistant 角色，去重，命中 _IMPORTANT_RE。"""
+    _ALLOWED_ROLES = ("user", "assistant")
+    points: List[str] = []
+    seen: set = set()
+    for msg in messages:
+        if msg.get("role") not in _ALLOWED_ROLES:
+            continue
+        text = _msg_text(msg)
+        if not text or not text.strip():
+            continue
+        if text in seen:
+            continue
+        if not _IMPORTANT_RE.search(text):
+            continue
+        seen.add(text)
+        points.append(f"[{msg.get('role', '?')}] {text[:per_message_chars]}")
+        if len(points) >= limit:
+            break
+    return points
+
+
+def _is_near_duplicate(content: str, base_url: str, domain: str, threshold: float = 0.95) -> bool:
+    """查询 Palimpsest 是否已存在近似内容。任何异常均返回 False（fail-open）。"""
+    try:
+        resp = _http_post(f"{base_url}/mem/search", {
+            "query": content, "scope": "memory", "domain": domain, "top_k": 1,
+        })
+        if "error" in resp:
+            return False
+        results = resp.get("results", [])
+        if not results:
+            return False
+        score = results[0].get("score", 0)
+        return score >= threshold
+    except Exception:  # noqa: BLE001
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Tool schemas（面向模型：模型决定何时主动用）
 # ---------------------------------------------------------------------------
@@ -261,18 +300,13 @@ class PalimpsestMemoryProvider(MemoryProvider):
         """会话结束：把含强信号的消息提炼成一条要点。"""
         if not self._enabled or not self._auto_ingest:
             return
-        points: List[str] = []
-        seen: set = set()
-        for msg in messages:
-            text = _msg_text(msg)
-            if not text or text in seen:
-                continue
-            if _IMPORTANT_RE.search(text):
-                seen.add(text)
-                points.append(f"[{msg.get('role', '?')}] {text[:150]}")
+        points = _extract_points(messages, limit=8, per_message_chars=150)
         if not points:
             return
-        content = "会话要点（Palimpsest 插件提炼）：\n" + "\n".join(points[:8])
+        content = "会话要点（Palimpsest 插件提炼）：\n" + "\n".join(points)
+        if _is_near_duplicate(content, self._base_url, self._domain):
+            logger.info("Palimpsest: 跳过近似重复的会话要点")
+            return
         _http_post(f"{self._base_url}/mem/ingest", {
             "content": content, "type": "record", "importance": 0.55,
             "domain": self._domain, "source": "hermes-session_end",
@@ -280,14 +314,8 @@ class PalimpsestMemoryProvider(MemoryProvider):
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         """压缩前抽取要点，贡献给压缩 prompt（不写入 Palimpsest，只保上下文）。"""
-        points: List[str] = []
-        for msg in messages:
-            text = _msg_text(msg)
-            if not text:
-                continue
-            if _IMPORTANT_RE.search(text):
-                points.append(f"[{msg.get('role', '?')}] {text[:200]}")
-        return "\n".join(points[:10])
+        points = _extract_points(messages, limit=10, per_message_chars=200)
+        return "\n".join(points)
 
     def shutdown(self) -> None:
         self._enabled = False
