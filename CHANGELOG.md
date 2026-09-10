@@ -4,6 +4,24 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
+## [Unreleased] - 2026-09-10
+
+### 依赖
+
+- **triviumdb 0.8.6 → 0.8.7**：上游修复我们上报的 #49（v9 存储 bulk payload 读路径比 0.8.5 慢 80-437x）。存储格式不变（WAL v3 / payload v9），**零迁移**，无需导出重建。同机同库 A/B（50k 节点 / 1024 维，0.8.6 建的库逐字节复制后两版各读）：
+
+  | 场景 | 0.8.6 | 0.8.7 | |
+  |---|---|---|---|
+  | FIND 复合零命中（无索引，全扫确认） | 3.370s | 0.0142s | ~237x |
+  | FIND 复合零命中（composite 索引） | 3.813s | ~0s | 索引快速缺失判定恢复 |
+  | MATCH WHERE + COUNT 全扫 | 4.897s | 0.0641s | ~76x |
+  | MATCH RETURN n（2000 行 payload 读） | 0.445s | 0.0132s | ~34x |
+  | FIND 复合真命中（索引） | 0.0013s | ~0s | 持平 |
+
+  图/算法侧同步恢复：pagerank TQL 3.995s → 0.212s（~19x）、leiden 1.049s → 0.885s、search_advanced 认知管线 31.8/s → 120.0/s（~3.8x）、老 API expand3 8.3/s → 24.5/s（~3x）。0.8.7 附带能力：TQL 单跳边变量一等投影（`MATCH (a)-[r]->(b) RETURN r`）、服务端图探索 API、投影列元数据。
+
+- 已知遗留（0.8.7 新发现，非本项目主路径）：无索引 / 位图路径的 `FIND ... LIMIT` 早停比 0.8.6 慢约 20x（50k 节点等值 LIMIT 10：51k/s → 2.35k/s），系 PR #50「修 composite 零命中 + 去重复 payload 读」移除 planner 的 limit 早返回所致。小帕检索走 `search()`/payload_filter 路径，不受影响；已留同库 A/B 脚本备查（`scripts/tdb_stress/_ab_findlim_087.py`）。
+
 ## [Unreleased] - 2026-09-06
 
 ### 依赖
