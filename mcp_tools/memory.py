@@ -486,7 +486,8 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
                      domain_bias: str = "", top_k: int = 5,
                      include_neighbors: bool = False,
                      neighbor_limit: int = 5, block: str = "",
-                     include_outdated: bool = False) -> dict:
+                     include_outdated: bool = False,
+                     domain_boost: str = "") -> dict:
     """
     mem_search 的核心实现（返回 dict，供 mem_search 工具与 router_query 复用）。
     v2.0 统一语义层：
@@ -498,6 +499,9 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
       - 最终权重 = base_score × (rule?RULE_RETRIEVAL_WEIGHT:1) × (bias 系数)，
         权重来自 config（RULE_RETRIEVAL_WEIGHT / DOMAIN_BIAS_WEIGHT，可配），
         在过滤之后、排序之前应用。
+      - domain_boost："" 不额外加分；非空时对 node_domain(payload) == domain_boost 的
+        候选在语义分上「加」Config.DOMAIN_BOOST_EPS（加性软加权，不同于 domain 的硬过滤、
+        也不同于 domain_bias 的乘性加权）；默认空 = 不改变任何现有行为。
       - v4.0 outdated 语义：默认过滤 status=="outdated" 的旧版本（只回当前有效节点），
         include_outdated=True 时不过滤，返回全部（显式历史可追溯通道）。
     """
@@ -547,6 +551,8 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
             score *= Config.DOMAIN_BIAS_WEIGHT
         elif domain_bias == "rule" and is_rule:
             score *= Config.DOMAIN_BIAS_WEIGHT
+        if domain_boost and node_domain(payload) == domain_boost.strip().lower():
+            score += Config.DOMAIN_BOOST_EPS
         meta = {
             "type": ptype,
             "importance": payload.get("importance", 0.5),
@@ -582,7 +588,8 @@ def mem_search(query: str, scope: str = "all", domain: str = "",
                domain_bias: str = "", top_k: int = 5,
                include_neighbors: bool = False,
                neighbor_limit: int = 5, block: str = "",
-               include_outdated: bool = False) -> str:
+               include_outdated: bool = False,
+               domain_boost: str = "") -> str:
     """
     统一检索入口：记忆 + 知识库混合检索。
     scope 取值：memory（只查记忆节点，排除 kb_chunk）/ kb（只查知识库块）/ all（都查）。
@@ -594,6 +601,9 @@ def mem_search(query: str, scope: str = "all", domain: str = "",
         （排在普通知识前），rule 是知识的子集，kb bias 时同样叠加。
         权重均来自 config（RULE_RETRIEVAL_WEIGHT / DOMAIN_BIAS_WEIGHT，可配）。
         bias 在过滤之后、排序之前应用（先 bias 再按最终 score 排序截断）。
+    domain_boost 非空时对 node_domain(payload) == domain_boost 的候选在语义分上
+        「加」Config.DOMAIN_BOOST_EPS（加性软加权，不同于 domain 的硬过滤、也不同于
+        domain_bias 的乘性加权）；默认为空 = 不改变任何现有行为。
     双层返回原则不变：只返回 150 字摘要 + meta，不返回全文（全文请用 mem_get_full）。
     v3.0 分区返回：include_neighbors=True 时，语义区（results）原样返回，
         额外附 neighbors 图关联区（语义命中节点的一跳邻居，score = via_score × weight，
@@ -603,9 +613,12 @@ def mem_search(query: str, scope: str = "all", domain: str = "",
         旧版保留在库中可追溯但不参与普通检索；include_outdated=True 时返回全部
         （历史可追溯通道）。
     """
-    return _to_json(_mem_search_impl(query, scope, domain, domain_bias, top_k,
-                                     include_neighbors, neighbor_limit, block,
-                                     include_outdated))
+    return _to_json(_mem_search_impl(
+        query, scope=scope, domain=domain, domain_bias=domain_bias, top_k=top_k,
+        include_neighbors=include_neighbors, neighbor_limit=neighbor_limit,
+        block=block, include_outdated=include_outdated,
+        domain_boost=domain_boost,
+    ))
 
 
 # ---- 混合检索（FTS5 精确 + 语义向量 的 RRF 融合 / 级联策略）----

@@ -292,6 +292,7 @@ class MemSearchRequest(BaseModel):
     include_neighbors: bool = False
     include_outdated: bool = False
     block: str = ""
+    domain_boost: str = ""    # 加性软加权：对 node_domain == domain_boost 的候选加分
 
 
 class MemIngestRequest(BaseModel):
@@ -358,6 +359,7 @@ async def mem_search(req: MemSearchRequest):
         domain_bias=req.domain_bias, top_k=req.top_k,
         include_neighbors=req.include_neighbors, block=req.block,
         include_outdated=req.include_outdated,
+        domain_boost=req.domain_boost,
     ))
 
 

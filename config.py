@@ -63,6 +63,8 @@ class Config:
     MEMORY_RERANK_MODE = os.getenv("MEMORY_RERANK_MODE", "soft").strip().lower()
     # soft 模式的 ε：落在余弦分差区间的 15%-40%，只做 tie-break
     SOFT_RERANK_EPS = float(os.getenv("SOFT_RERANK_EPS", "0.02"))
+    # 域软加权加分（加性，作用在语义分上；domain_boost 非空时对同域候选加此值）
+    DOMAIN_BOOST_EPS = float(os.getenv("DOMAIN_BOOST_EPS", "0.10"))
     # kb_chunk（知识块不老化）在 soft 模式下的 ε 加成倍率
     KB_SOFT_RERANK_MULT = float(os.getenv("KB_SOFT_RERANK_MULT", "1.5"))
 
