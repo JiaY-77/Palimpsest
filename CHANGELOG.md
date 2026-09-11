@@ -14,9 +14,13 @@
 - **覆盖率基线**（`pytest-cov`，暂不设 `--cov-fail-under` 门槛）：`core/` + `mcp_tools/` 合计 **76%**（1770 语句 / 416 未覆盖）；最低为 `mcp_tools/routing.py` 22%、`mcp_tools/kb.py` 28%、`core/reporting.py` 5%。CI 输出报告但不阻断，先用数据定位缺口
 - **静默异常留痕**：`mcp_tools/graph.py` 的「读节点 payload 失败按空处理」「读边数失败按 0 计」两处补 `logger.debug`——此前静默吞掉，出问题时没有任何线索。（其余静默点复核后确认无需补：关连接失败集中在 `contextlib.suppress`，业务失败路径本就有 `logger.warning/error`）
 
+### 重构
+
+- **拆分 4 个 >100 行函数**（`core/trivium_store.search_similar` 137 行 · `mcp_tools/memory.mem_ingest` 125 · `core/stats.compute_stats` 119 · `core/consolidator._apply_merge` 100）：按单一职责抽出 helper（候选过期过滤 / 衰减重排 / block 过滤 / 统计累加器 / 事务写入 / 单对合并），主函数退回编排。**行为不变**，且不是靠「测试绿」自证：每处都在**生产库副本**上做了跨版本等价比对（`compute_stats` 输出、`mem_ingest` 两次写入（其中一次触发冲突检测）、`consolidate` 的 dry-run 与真实合并，重构前后零差异）；端到端检索评测 40 题 × 4 模式排序 **160/160 一致**（唯一差异是浮点末位 ≤2e-08，同版本重跑可复现，来自 embedding 服务而非本次改动）
+
 ### 文档
 
-- `docs/refactor_plan.md` 更新状态（原文写 P1/P2「待启动」，实际已完成）：`mcp_server.py` 882 → 49 行、`generate_report` 抽入 `core/reporting.py`、数据访问层补全完成；剩余大函数拆分与 `scripts/` 瘦身归入 P3，并新增「静态质量门禁」章节
+- `docs/refactor_plan.md` 更新状态（原文写 P1/P2「待启动」，实际已完成）：`mcp_server.py` 882 → 49 行、`generate_report` 抽入 `core/reporting.py`、数据访问层补全完成、大函数拆分完成；`scripts/` 瘦身仍归 P3，并新增「静态质量门禁」章节
 
 ## [1.2.0] - 2026-09-11
 

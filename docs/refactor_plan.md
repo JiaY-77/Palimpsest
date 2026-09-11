@@ -36,7 +36,7 @@
 
 ## P3（待启动）
 
-- 大函数拆分（AST 实测行数，2026-09-11）：`core/trivium_store.search_similar` 137 · `mcp_tools/memory.mem_ingest` 125 · `core/stats.compute_stats` 119 · `core/consolidator._apply_merge` 100
+- ~~大函数拆分~~ ✅ 已完成（2026-09-11）：4 个 >100 行函数全部拆到 ≤100（AST 复测「>100 行函数数 = 0」）——`search_similar` 137→100（含 42 行 docstring，主体为编排）、`mem_ingest` 125→约 55、`compute_stats` 119→约 25、`_apply_merge` 100→约 25；抽出的 helper 各自单一职责（候选过滤 / 衰减重排 / block 过滤 / 累加器 / 事务写入 / 单对合并）
 - `scripts/` 瘦身（13,487 行，一次性脚本靠 `.gitignore` 的 `scripts/_t[0-9]*.py` 排除；有复用价值的脚本去编号后入库）
 - ~~类型检查（mypy）~~ ✅ 已建立：非严格起步、当前覆盖 `core/`（`python -m mypy`，CI 的 typecheck job），后续按同样方式纳入 `mcp_tools/`
 - ~~覆盖率基线（pytest-cov）~~ ✅ 已建立：`core/` + `mcp_tools/` 合计 76%，CI 输出报告不设门槛；缺口集中在 `mcp_tools/routing.py`（22%）、`mcp_tools/kb.py`（28%）、`core/reporting.py`（5%）

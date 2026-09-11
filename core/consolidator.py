@@ -68,6 +68,84 @@ def _filter_candidates(
     return will_merge, skipped_high_value, skipped_both_important, skipped_ids
 
 
+def _merge_one_pair(db, tx, c: dict, next_id: int) -> dict | None:
+    """在已开启的事务内合并一个候选对。
+
+    新建合并节点（高 importance 方保留内容与向量）、建两条 REVISED_BY 边、
+    旧节点标 outdated；合并内容先过敏感扫描（strong 命中 → 抛异常触发整批回滚）。
+    任一方节点缺失 → 返回 None（该对跳过）。
+    """
+    a_id, b_id = c["a"], c["b"]
+    a_node = db.get(a_id)
+    b_node = db.get(b_id)
+    if not a_node or not b_node:
+        return None
+
+    a_payload = dict(a_node.payload or {})
+    b_payload = dict(b_node.payload or {})
+
+    # 高 importance 方保留内容
+    a_imp = c["a_imp"]
+    b_imp = c["b_imp"]
+    if a_imp >= b_imp:
+        high_payload, _low_payload = a_payload, b_payload
+        low_id = b_id
+    else:
+        high_payload, _low_payload = b_payload, a_payload
+        low_id = a_id
+
+    high_content = high_payload.get("content") or ""
+    merge_content = (
+        high_content
+        + f"\n\n（由 Palimpsest 自动合并自节点 {low_id}，原内容见 REVISED_BY 链）"
+    )
+    merge_importance = max(c["a_imp"], c["b_imp"])
+    # domain 统一：合并节点以 node_domain 为准，domain 与
+    # character_name 镜像同值（消除二义性）。general 为未分类兜底。
+    merge_domain = node_domain(high_payload)
+
+    new_node_data = {
+        "type": "memory",
+        "content": merge_content,
+        "importance": merge_importance,
+        "domain": merge_domain,
+        "character_name": merge_domain,
+        "label": high_payload.get("label", ""),
+        "source": "consolidate",
+        "status": "active",
+    }
+    # 敏感信息扫描（与 store.insert_node 语义一致）：strong → 拒绝并入
+    scan_text = " ".join(
+        str(v) for v in new_node_data.values() if isinstance(v, str)
+    )
+    classified = scan_secret_classified(scan_text)
+    if classified["strong"]:
+        raise SecretScanError(classified["strong"])
+    if classified["weak"]:
+        new_node_data["secret_hint"] = classified["weak"]
+
+    # 用高 importance 方的向量作为合并节点向量
+    high_vec = (a_node.vector
+                if a_imp >= b_imp else b_node.vector)
+
+    tx.insert_with_id(next_id, high_vec, new_node_data)
+    tx.link(next_id, a_id, "REVISED_BY", weight=c["score"])
+    tx.link(next_id, b_id, "REVISED_BY", weight=c["score"])
+
+    # 旧节点标 outdated
+    a_payload["status"] = "outdated"
+    tx.update_payload(a_id, a_payload)
+    b_payload["status"] = "outdated"
+    tx.update_payload(b_id, b_payload)
+
+    return {
+        "new_id": next_id,
+        "old_a": a_id,
+        "old_b": b_id,
+        "score": c["score"],
+    }
+
+
 def _apply_merge(store: TriviumStore, will_merge: list[dict]) -> tuple[int, list[dict]]:
     """真正执行合并：新建合并节点、旧节点标 outdated、建 REVISED_BY 边。
 
@@ -91,77 +169,12 @@ def _apply_merge(store: TriviumStore, will_merge: list[dict]) -> tuple[int, list
         next_id = (max(existing) + 1) if existing else 1
         with db.transaction() as tx:
             for c in will_merge:
-                a_id, b_id = c["a"], c["b"]
-                a_node = db.get(a_id)
-                b_node = db.get(b_id)
-                if not a_node or not b_node:
+                info = _merge_one_pair(db, tx, c, next_id)
+                if info is None:
                     continue
-                a_payload = dict(a_node.payload or {})
-                b_payload = dict(b_node.payload or {})
-
-                # 高 importance 方保留内容
-                a_imp = c["a_imp"]
-                b_imp = c["b_imp"]
-                if a_imp >= b_imp:
-                    high_payload, _low_payload = a_payload, b_payload
-                    low_id = b_id
-                else:
-                    high_payload, _low_payload = b_payload, a_payload
-                    low_id = a_id
-
-                high_content = high_payload.get("content") or ""
-                merge_content = (
-                    high_content
-                    + f"\n\n（由 Palimpsest 自动合并自节点 {low_id}，原内容见 REVISED_BY 链）"
-                )
-                merge_importance = max(c["a_imp"], c["b_imp"])
-                # domain 统一：合并节点以 node_domain 为准，domain 与
-                # character_name 镜像同值（消除二义性）。general 为未分类兜底。
-                merge_domain = node_domain(high_payload)
-
-                new_node_data = {
-                    "type": "memory",
-                    "content": merge_content,
-                    "importance": merge_importance,
-                    "domain": merge_domain,
-                    "character_name": merge_domain,
-                    "label": high_payload.get("label", ""),
-                    "source": "consolidate",
-                    "status": "active",
-                }
-                # 敏感信息扫描（与 store.insert_node 语义一致）：strong → 拒绝并入
-                scan_text = " ".join(
-                    str(v) for v in new_node_data.values() if isinstance(v, str)
-                )
-                classified = scan_secret_classified(scan_text)
-                if classified["strong"]:
-                    raise SecretScanError(classified["strong"])
-                if classified["weak"]:
-                    new_node_data["secret_hint"] = classified["weak"]
-
-                # 用高 importance 方的向量作为合并节点向量
-                high_vec = (a_node.vector
-                            if a_imp >= b_imp else b_node.vector)
-
-                new_id = next_id
                 next_id += 1
-                tx.insert_with_id(new_id, high_vec, new_node_data)
-                tx.link(new_id, a_id, "REVISED_BY", weight=c["score"])
-                tx.link(new_id, b_id, "REVISED_BY", weight=c["score"])
-
-                # 旧节点标 outdated
-                a_payload["status"] = "outdated"
-                tx.update_payload(a_id, a_payload)
-                b_payload["status"] = "outdated"
-                tx.update_payload(b_id, b_payload)
-
                 merged += 1
-                merged_ids.append({
-                    "new_id": new_id,
-                    "old_a": a_id,
-                    "old_b": b_id,
-                    "score": c["score"],
-                })
+                merged_ids.append(info)
     finally:
         if db is not None:
             with contextlib.suppress(Exception):
