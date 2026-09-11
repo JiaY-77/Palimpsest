@@ -1,4 +1,4 @@
-"""检索期分块重打分的六个打分子对比（离线探针）。
+"""检索期分块重打分的打分子对比（离线探针，8 个变体）。
 
 与既有的检索期分块探针同口径（候选获取 / 题集 / 库副本 / embedding 模型完全一致），
 只变「打分子」，严格单变量：
@@ -9,6 +9,9 @@
   max_div_sqrt  块最大余弦 / sqrt(块数)（长度归一化候选 B）
   layered_top2  候选节点 domain=kb 用整条余弦，其余 domain 用 top-2 均值
   layered_max   候选节点 domain=kb 用整条余弦，其余 domain 用块最大余弦（归因）
+  rrf_layered   RRF(k=60) 融合 layered_max 与 layered_top2 两路排序（跨域融合路线）
+  calib_max     kb 用整条余弦；非 kb 按块 max 的组内秩映射到「非 kb 组 base 分分布」
+                （跨域分数校准路线；见 eval/docs/10-chunk-calibration.md）
 
 分组口径：按候选节点的真实 domain 字段（gold 节点 payload.domain）分组，
           不用题目的 layer 字段（历史上 layer 与真实 domain 不对齐，会造成分层表失真）。
@@ -51,7 +54,15 @@ ORIG_DB = (Path(_env_db) if os.path.isabs(_env_db) else ROOT / _env_db) if _env_
     else ROOT / "data" / "mh_memory.db"
 ORIG_FTS = ORIG_DB.parent / "fts.db"
 
-VARIANTS = ("base", "max", "mean_top2", "max_div_sqrt", "layered_top2", "layered_max")
+VARIANTS = ("base", "max", "mean_top2", "max_div_sqrt", "layered_top2", "layered_max",
+            "rrf_layered", "calib_max")
+
+# 方向⑤新增变体说明：
+#   rrf_layered  RRF(k=60) 融合 layered_max 与 layered_top2 两路排序
+#                （kb 侧两路同分，非 kb 侧取两路折中，避免单一打分子的极端偏置）
+#   calib_max    分数校准：kb 用整条余弦；非 kb 的块 max 分按秩分位映射到 base 分
+#                的同一分布后再统一排序（治「跨域分数尺度不可比」）
+K_RRF = 60
 LAYERS = ("hermes", "kb", "novel", "other")
 
 
@@ -231,6 +242,29 @@ def main() -> None:
             else:
                 scores["layered_top2"][i] = scores["mean_top2"][i]
                 scores["layered_max"][i] = scores["max"][i]
+
+        # ---- 方向⑤ 路线① 排序融合：RRF 合并 layered_max 与 layered_top2 ----
+        if len(ids):
+            r_max = np.argsort(np.argsort(-scores["layered_max"])) + 1
+            r_top2 = np.argsort(np.argsort(-scores["layered_top2"])) + 1
+            scores["rrf_layered"] = 1.0 / (K_RRF + r_max) + 1.0 / (K_RRF + r_top2)
+
+        # ---- 方向⑤ 路线② 分数校准：非 kb 的块分数校准到整条余弦的同一分布 ----
+        kb_pos = [i for i, d in enumerate(doms) if d == "kb"]
+        nonkb_pos = [i for i, d in enumerate(doms) if d != "kb"]
+        for i in kb_pos:
+            scores["calib_max"][i] = base_scores[i]
+        if nonkb_pos:
+            # 参考分布 = 非 kb 组自身的整条余弦分（与非 kb 的 base 同尺度，
+            # 消除「块 max ≥ 整条均值」带来的系统性抬升）
+            ref = np.sort(np.asarray([base_scores[i] for i in nonkb_pos], dtype=np.float64))
+            grid = np.linspace(0.0, 1.0, len(ref))
+            # 非 kb 组内按块 max 定顺序，再按秩分位取参考分布上的值（秩 0 = 最优 → 高分位）
+            order = sorted(nonkb_pos, key=lambda i: -scores["max"][i])
+            n_nk = len(order)
+            for r, i in enumerate(order):
+                p = 1.0 - (r + 0.5) / n_nk
+                scores["calib_max"][i] = float(np.interp(p, grid, ref))
 
         row = {"qid": it["qid"], "layer": it.get("layer"),
                "gold": it["gold_ids"], "gold_domain": gold_domain[it["qid"]],
