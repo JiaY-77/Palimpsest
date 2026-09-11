@@ -86,6 +86,99 @@ def mem_get_full(node_id: int) -> str:
     })
 
 
+def _find_linked_kb_ids(emb: list[float]) -> list[int]:
+    """v1.1 知识关联检测：找 score > 0.35 的 kb_chunk 节点 id（写入 payload.linked_from）。
+
+    只读查询，必须在事务外做（事务内不重开连接）。
+    """
+    linked: list[int] = []
+    similar = store.search_similar(emb, top_k=3, expand_depth=0, apply_decay=False)
+    for r in similar:
+        r_payload = r.get("payload", {}) or {}
+        if r_payload.get("type") == "kb_chunk" and _to_float(r.get("score"), 0.0) > 0.35:
+            rid = r.get("id")
+            if rid is not None:
+                linked.append(rid)
+    return linked
+
+
+def _insert_with_conflict(store, node_data: dict, emb: list[float]) -> tuple[int, dict]:
+    """事务化写入 + 冲突检测标脏，返回 (node_id, conflict)。
+
+    「insert（含 created_at）+ resolve_conflict 标脏」整体包进单事务：任一步抛异常
+    自动 rollback，不会出现「新节点已写入、旧记忆未标 outdated」的半状态。
+    id 分配走模块级锁保护临界区（多请求并发时 next_id 可能撞车）。
+
+    返回前显式关闭连接释放库锁：后续 FTS 同步 / 读回节点都经 store._acquire()
+    重开，若不关闭会触发 "Database locked"（同库双连接）。
+    """
+    db = None
+    try:
+        db = store._acquire()
+        with _INGEST_ID_LOCK:
+            existing = db.all_node_ids()
+            next_id = (max(existing) + 1) if existing else 1
+            with db.transaction() as tx:
+                # insert_node_tx 已把 created_at 透传进 payload（事务模式下新节点不可
+                # 读回，避免 tx.update_payload 整包覆盖）；此处仅做冲突检测标脏。
+                node_id = store.insert_node_tx(tx, node_data, emb, next_id=next_id)
+                conflict = resolve_conflict(store, emb, node_id, tx=tx, db=db,
+                                            new_payload=node_data)
+        with contextlib.suppress(Exception):
+            db.close()
+        db = None
+        return node_id, conflict
+    finally:
+        if db is not None:
+            with contextlib.suppress(Exception):
+                db.close()
+
+
+def _post_ingest_side_effects(store, node_id: int, content: str,
+                              now: float) -> tuple[list, str]:
+    """事务提交后的收尾，返回 (secret_hint, domain)。
+
+    - FTS 全文索引同步（混合检索依赖；失败仅 warning，主写入已提交，可 fts-rebuild 兜底）
+    - 读回已提交节点取 secret_hint（弱规则命中标记），并补写缺失的 created_at
+    """
+    try:
+        index_node(node_id, content)
+    except Exception as e:  # noqa: BLE001 —— 写入后 FTS 索引失败仅告警主链已提交
+        logger.warning("FTS 索引同步失败 node=%s: %s", node_id, e)
+
+    node = store.get_node(node_id)
+    payload = node.get("payload", {}) if node else {}
+    secret_hint = payload.get("secret_hint", [])
+    if payload.get("created_at") is None:
+        payload["created_at"] = now
+        store.update_payload(node_id, payload)
+    return secret_hint, node_domain(payload)
+
+
+def _build_ingest_result(node_id, domain_out: str, conflict: dict,
+                         linked_kb_ids: list[int], secret_hint: list) -> str:
+    """组装 mem_ingest 的返回 JSON（含 outdated 修订链提示）。"""
+    outdated_ids = conflict["outdated_ids"]
+    related_ids = conflict["related_ids"]
+
+    suggestion = ""
+    if outdated_ids:
+        ids = ", ".join(str(i) for i in outdated_ids)
+        suggestion = (f"旧记忆 id={ids} 已标记 outdated（REVISED_BY 链），"
+                      "若涉及固定记忆（MEMORY.md）请同步更新")
+    return _to_json({
+        "stored": True,
+        "node_id": node_id,
+        "domain": domain_out,
+        "conflict_found": bool(outdated_ids),
+        "outdated_ids": outdated_ids,
+        "related_ids": related_ids,
+        "linked_kb_ids": linked_kb_ids,
+        "secret_hint": secret_hint,
+        "suggestion": suggestion,
+    })
+
+
 @mcp.tool()
 def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
                domain: str = "", source: str = "") -> str:
@@ -107,15 +200,8 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
                                   f"上限 {Config.MEM_INGEST_MAX_LENGTH} 字符"})
     emb = store.embed_text(content)
 
-    # ---- v1.1 知识关联检测：找出 score > 0.35 的 kb_chunk 节点，写入 payload.linked_from ----
-    linked_kb_ids = []
-    kb_similar = store.search_similar(emb, top_k=3, expand_depth=0, apply_decay=False)
-    for r in kb_similar:
-        r_payload = r.get("payload", {}) or {}
-        if r_payload.get("type") == "kb_chunk" and _to_float(r.get("score"), 0.0) > 0.35:
-            rid = r.get("id")
-            if rid is not None:
-                linked_kb_ids.append(rid)
+    # ---- v1.1 知识关联检测：只读查询，留在事务外做 ----
+    linked_kb_ids = _find_linked_kb_ids(emb)
 
     node_data = {
         "type": type,
@@ -128,55 +214,17 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
         "linked_from": linked_kb_ids,
     }
 
-    # ---- 事务化写入链路（2026-08-29 止血加事务） ----
-    # 此前 insert_node 成功后若 resolve_conflict 中途失败（如事务期间重开库撞锁），
-    # 会出现「新节点已写入、旧记忆未标 outdated」的半状态。现将
-    # 「insert（含 created_at）+ resolve_conflict 标脏」整体包进单事务：
-    #   - 知识关联检测的 kb_similar 搜索为只读，留在事务外做；
-    #   - 冲突检测的相似旧记忆搜索经同一连接 db 在事务内做（db.search 只返回已
-    #     提交节点，不影响正确性），写操作（insert/标脏/建边）全走 tx，
-    #     任一步抛异常 → 自动 rollback → 无半状态。
+    # ---- 事务化写入链路（2026-08-29 止血加事务）----
+    # 「insert（含 created_at）+ resolve_conflict 标脏」整体包进单事务，任一步
+    # 抛异常 → 自动 rollback → 不留半状态；连接管理细节见 _insert_with_conflict。
     node_id = None
     conflict = {"outdated_ids": [], "related_ids": []}
-    secret_hint = []
-    db = None
+    secret_hint: list = []
+    domain_out = ""
     try:
-        db = store._acquire()
-        # 并发加固：多请求同时算 next_id 可能得到相同 id，用模块级锁保护
-        # 「读 existing + id 分配 + 插入」临界区（只锁分配段，不锁整个 ingest 流程）
-        with _INGEST_ID_LOCK:
-            existing = db.all_node_ids()
-            next_id = (max(existing) + 1) if existing else 1
-            with db.transaction() as tx:
-                # insert_node_tx 已把 created_at 透传进 payload（事务模式下新节点不可
-                # 读回，避免 tx.update_payload 整包覆盖）；此处仅做冲突检测标脏。
-                node_id = store.insert_node_tx(tx, node_data, emb, next_id=next_id)
-                # 冲突检测：查找/标脏旧记忆（事务内标脏 + 建 REVISED_BY 边）
-                conflict = resolve_conflict(store, emb, node_id, tx=tx, db=db,
-                                            new_payload=node_data)
-        # ---- 事务已提交 ----
-        # 立即释放本连接的库锁，后续 FTS / 读回节点都经由 store._acquire() 重开，
-        # 若此处不关闭，重开会触发 "Database locked"（同库双连接）。
-        with contextlib.suppress(Exception):
-            db.close()
-        db = None
-
-        # FTS 全文索引同步（混合检索依赖；失败仅 warning，不阻塞主写入，
-        # 可手动 fts-rebuild 兜底）。因事务已提交，node_id 在此对 store 可见。
-        try:
-            index_node(node_id, content)
-        except Exception as e:  # noqa: BLE001 —— 写入后 FTS 索引失败仅告警主链已提交
-            logger.warning("FTS 索引同步失败 node=%s: %s", node_id, e)
-
-        # 弱规则命中标记（身份证/手机号）：弱规则放行但打 secret_hint 供审计。
-        # 读回已提交节点取 secret_hint（事务内新节点不可见，此处已提交可读）。
-        node = store.get_node(node_id)
-        payload = node.get("payload", {}) if node else {}
-        secret_hint = payload.get("secret_hint", [])
-        if payload.get("created_at") is None:
-            payload["created_at"] = now
-            store.update_payload(node_id, payload)
-        domain_out = node_domain(payload)
+        node_id, conflict = _insert_with_conflict(store, node_data, emb)
+        # 事务已提交，连接已在 helper 内释放（避免后续重开撞 Database locked）
+        secret_hint, domain_out = _post_ingest_side_effects(store, node_id, content, now)
     except SecretScanError as e:
         # 强规则拒绝：事务回滚（未写任何节点），返回 stored:False
         return _to_json({"stored": False, "error": str(e), "rules": e.rules})
@@ -188,30 +236,8 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
             "error": "写入事务失败，已回滚，无残留节点",
             "hint": str(e),
         })
-    finally:
-        if db is not None:
-            with contextlib.suppress(Exception):
-                db.close()
 
-    outdated_ids = conflict["outdated_ids"]
-    related_ids = conflict["related_ids"]
-
-    suggestion = ""
-    if outdated_ids:
-        ids = ", ".join(str(i) for i in outdated_ids)
-        suggestion = (f"旧记忆 id={ids} 已标记 outdated（REVISED_BY 链），"
-                      "若涉及固定记忆（MEMORY.md）请同步更新")
-    return _to_json({
-        "stored": True,
-        "node_id": node_id,
-        "domain": domain_out,
-        "conflict_found": bool(outdated_ids),
-        "outdated_ids": outdated_ids,
-        "related_ids": related_ids,
-        "linked_kb_ids": linked_kb_ids,
-        "secret_hint": secret_hint,
-        "suggestion": suggestion,
-    })
+    return _build_ingest_result(node_id, domain_out, conflict, linked_kb_ids, secret_hint)
 
 
 @mcp.tool()
