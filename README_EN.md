@@ -462,6 +462,22 @@ The suite covers the core loop: write → `mem_search` hit → `mem_get_full` ro
 
 ---
 
+## Stress testing
+
+`scripts/rest_stress.py` runs an end-to-end load test against the REST service across six realistic scenarios: high-frequency search / bulk writes / graph linking and diffusion / boundary inputs (empty content, oversized payload, malformed JSON, negative `top_k`, …) / mixed read-write load / post-write recall correctness.
+
+```bash
+# 1. Start a test instance (separate DB and port — the script writes data, never point it at a production store)
+DB_PATH=/tmp/stress.db python -m uvicorn main:app --port 8091
+
+# 2. Run the stress test (--quick for a fast pass)
+python scripts/rest_stress.py --base http://127.0.0.1:8091 --seeds 200 --out report.json
+```
+
+The JSON report carries per-scenario qps, p50/p95/p99 latency and error rate, plus the HTTP status of every boundary case and correctness checks (can a unique marker be recalled; does a duplicate write trigger conflict detection). The random seed is fixed (42), so the same inputs reproduce.
+
+---
+
 ## Project structure
 
 ```
@@ -512,7 +528,8 @@ Palimpsest/
 │   ├── migrate_domain.py         #   legacy field migration (character_name → domain)
 │   ├── rebuild_db.py             #   rebuild the database from an export snapshot
 │   ├── start_rest.vbs            #   Windows hidden-window REST launcher
-│   └── tdb_stress/               #   TriviumDB stress tests
+│   ├── rest_stress.py            #   REST application-level stress test (6 scenarios)
+│   └── tdb_stress/               #   TriviumDB stress tests (storage layer)
 ├── hermes-plugin/                # Hermes dual plugins (Memory Provider + Context Engine)
 ├── tests/                        # pytest (isolated conftest + fake embedder, offline-green)
 └── data/                         # runtime database (gitignored)

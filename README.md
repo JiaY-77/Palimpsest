@@ -442,6 +442,22 @@ python -m pytest tests/ -v
 
 ---
 
+## 应用层压测
+
+`scripts/rest_stress.py` 对 REST 服务跑端到端压测，覆盖 6 类真实使用场景：高频检索 / 批量写入 / 图谱建边与扩散 / 边界输入（空内容、超长、坏 JSON、负 top_k 等）/ 读写混合长压 / 写入后召回正确性。
+
+```bash
+# 1. 起一个测试实例（独立库 + 独立端口；脚本会写入数据，不要指向生产库）
+DB_PATH=/tmp/stress.db python -m uvicorn main:app --port 8091
+
+# 2. 压测（--quick 为快速档）
+python scripts/rest_stress.py --base http://127.0.0.1:8091 --seeds 200 --out report.json
+```
+
+输出 JSON 报告：每个场景的 qps、p50 / p95 / p99 延迟与错误率；另含边界用例的 HTTP 状态与正确性抽查结果（唯一标记能否召回、重复写入是否触发冲突检测）。随机种子固定（42），同样入参可复现。
+
+---
+
 ## 项目结构
 
 ```
@@ -493,7 +509,8 @@ Palimpsest/
 │   ├── rebuild_db.py             #   从导出快照重建数据库
 │   ├── reindex.py                #   全库向量重嵌入（换模型后一键重建）
 │   ├── start_rest.vbs            #   Windows 隐藏窗口 REST 启动器
-│   └── tdb_stress/               #   TriviumDB 压力测试
+│   ├── rest_stress.py            #   REST 应用层压测（6 场景端到端）
+│   └── tdb_stress/               #   TriviumDB 压力测试（存储层）
 ├── hermes-plugin/                # Hermes 双插件（Memory Provider + Context Engine）
 ├── tests/                        # pytest（conftest 隔离 + fake embedder，无需联网）
 └── data/                         # 运行时数据库（gitignore）
