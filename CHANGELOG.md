@@ -4,42 +4,11 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
-## [Unreleased] - 2026-09-11
+## [1.2.0] - 2026-09-11
 
 ### 新增
 
 - **域软加权 `domain_boost`**（`mem_search` / `mem_hybrid_search` 新增可选参数）：命中节点的域与检索域一致时按加性权重提升排序，跨域候选仍保留兜底；域判定正确时与硬过滤等效，判定错误时只降权不过滤。118 题 / 同库副本 / 同候选口径 A/B：R@5 **+6.78pp**、R@1 **+9.32pp**、MRR **+8.90pp**，逐题零损失
-
-### 修复
-
-- **语义主序与图扩散解耦**（`core/trivium_store.search_similar`）：图扩散结果不再直接参与主排序，仅在语义分数相同或缺失时兜底，消除图跳数对语义排序的覆盖。真实库 A/B：`mem_search` R@5 **0.4831 → 0.7458**
-- **检索候选过滤 outdated 节点**：被新版取代的旧事实不再进入候选集
-- **Hermes 插件不再灌入原始工具转录与重复会话要点**（`hermes-plugin`）：此前 agent 对话被整段写入记忆库，污染检索池
-- **`startup-check` 自动创建数据目录**：数据目录缺失时不再直接判失败，行为与首次部署一致
-
-### 文档
-
-- **检索质量评测资料**（`eval/docs/`）：6 篇探针结论文档，含 4 条否证结论及口径判据（更换 embedding、索引期 small-to-big 分块、无上下文查询改写、自动域推断）——「否证也留档」省未来弯路
-
-### 依赖
-
-- **triviumdb 0.8.7 → 0.8.8**：上游修复我们上报的 #54 的一半——**有序索引路径**的 `FIND ... LIMIT` 早停恢复并反超 0.8.6（同机同库 / 50k 节点：0.8.8 78.3k/s vs 0.8.6 66.7k/s）。存储格式不变（WAL v3 / payload v9），**零迁移**；升级后真实库（880 节点）`mem_search` 冒烟通过。
-  - **仍存在的回归（本版复测确认）**：**无索引**路径的 `FIND ... LIMIT` 仍比 0.8.6 慢约 25-28x（1.8k/s vs 50k/s）。根因已定位——不是早停丢失，而是「短路能力」丢失：0.8.7 起 planner 把「无可用索引 + LIMIT → 惰性 `FullNodeScan`」的短路判定从 `plan_filter` 开头挪到其之后，兜底路径会先 `all_node_ids()` 物化全库 NodeId（~200KB）再丢弃，每次查询白付约 0.58ms 固定成本；另有 3 处 `EXPLAIN` 输出与实际执行不同源、且无条件宣称优化生效的问题。
-  - 上层记忆服务检索走 `search()` / payload_filter 路径，**不在受影响范围**。
-  - 已同步上游：issue [#58](https://github.com/YoKONCy/TriviumDB/issues/58) + PR [#59](https://github.com/YoKONCy/TriviumDB/pull/59)（短路判定前置 + 物化计数器 + 回归测试）。
-
-## [Unreleased] - 2026-09-10
-
-### 修复
-
-- **FTS 长查询改写**（整句 trigram → 3-gram OR）：长自然语言查询（>8 字符）改写为 3-gram 均匀采样 OR 查询，实测 recall@10 从 0.0000 提升至 0.5116；端到端 rrf recall@5 从 0.3333 提升至 0.4884，融合通道从「负资产」变回「正贡献」。短查询（≤8 字符）行为不变
-
-### 移除
-
-- **L1 嗅探通道**（`memory_file_hits`）——零消费方，MEMORY.md 每轮已注入上下文，属重复开销
-
-### 新增
-
 - **`reindex` 全库向量重嵌入**（`scripts/reindex.py` + CLI `reindex` 子命令）：换 embedding 模型后一键重建所有节点向量。支持 `--check` 体检（provider / 模型 / 实测维度 / 库实际维度 / 节点分布只读报告）、`--dry-run` 预览、`--only` / `--skip` 按 payload.type 过滤、`--resume` 断点续跑 / `--restart` 从头重嵌；状态文件跟随所操作的库（`<库目录>/reindex_state_<库文件名>.json`），不污染项目 `data/`。
   - **维度红线**：预检比对「实测 provider 维度 vs **库的实际维度**」，不一致时一个字节都不写、退出码 `2`、打印换库指引（导出 → 重建 → 切换配置）
   - **退出码**：`2` 维度不匹配 · `3` 库被占用（提示先停 REST :8090 / MCP）· `4` embedding 服务不可用且未写入任何向量 · `1` 中途失败（已写部分）
@@ -49,7 +18,24 @@
 - **`scripts/retrieval_probe.py`**：内置已验证探针的检索基线工具，用于跨版本 / 跨 embedding 模型对比
 - **embedding provider 自动探测**：云 / 本地两条部署路径自动识别，配套 quickstart 文档
 
+### 修复
+
+- **语义主序与图扩散解耦**（`core/trivium_store.search_similar`）：图扩散结果不再直接参与主排序，仅在语义分数相同或缺失时兜底，消除图跳数对语义排序的覆盖。真实库 A/B：`mem_search` R@5 **0.4831 → 0.7458**
+- **检索候选过滤 outdated 节点**：被新版取代的旧事实不再进入候选集
+- **Hermes 插件不再灌入原始工具转录与重复会话要点**（`hermes-plugin`）：此前 agent 对话被整段写入记忆库，污染检索池
+- **`startup-check` 自动创建数据目录**：数据目录缺失时不再直接判失败，行为与首次部署一致
+- **FTS 长查询改写**（整句 trigram → 3-gram OR）：长自然语言查询（>8 字符）改写为 3-gram 均匀采样 OR 查询，实测 recall@10 从 0.0000 提升至 0.5116；端到端 rrf recall@5 从 0.3333 提升至 0.4884，融合通道从「负资产」变回「正贡献」。短查询（≤8 字符）行为不变
+
+### 移除
+
+- **L1 嗅探通道**（`memory_file_hits`）——零消费方，MEMORY.md 每轮已注入上下文，属重复开销
+
 ### 依赖
+
+- **triviumdb 0.8.7 → 0.8.8**：上游修复我们上报的 #54 的一半——**有序索引路径**的 `FIND ... LIMIT` 早停恢复并反超 0.8.6（同机同库 / 50k 节点：0.8.8 78.3k/s vs 0.8.6 66.7k/s）。存储格式不变（WAL v3 / payload v9），**零迁移**；升级后真实库（880 节点）`mem_search` 冒烟通过。
+  - **仍存在的回归（本版复测确认）**：**无索引**路径的 `FIND ... LIMIT` 仍比 0.8.6 慢约 25-28x（1.8k/s vs 50k/s）。根因已定位——不是早停丢失，而是「短路能力」丢失：0.8.7 起 planner 把「无可用索引 + LIMIT → 惰性 `FullNodeScan`」的短路判定从 `plan_filter` 开头挪到其之后，兜底路径会先 `all_node_ids()` 物化全库 NodeId（~200KB）再丢弃，每次查询白付约 0.58ms 固定成本；另有 3 处 `EXPLAIN` 输出与实际执行不同源、且无条件宣称优化生效的问题。
+  - 上层记忆服务检索走 `search()` / payload_filter 路径，**不在受影响范围**。
+  - 已同步上游：issue [#58](https://github.com/YoKONCy/TriviumDB/issues/58) + PR [#59](https://github.com/YoKONCy/TriviumDB/pull/59)（短路判定前置 + 物化计数器 + 回归测试）。
 
 - **triviumdb 0.8.6 → 0.8.7**：上游修复我们上报的 #49（v9 存储 bulk payload 读路径比 0.8.5 慢 80-437x）。存储格式不变（WAL v3 / payload v9），**零迁移**，无需导出重建。同机同库 A/B（50k 节点 / 1024 维，0.8.6 建的库逐字节复制后两版各读）：
 
@@ -63,17 +49,17 @@
 
   图/算法侧同步恢复：pagerank TQL 3.995s → 0.212s（~19x）、leiden 1.049s → 0.885s、search_advanced 认知管线 31.8/s → 120.0/s（~3.8x）、老 API expand3 8.3/s → 24.5/s（~3x）。0.8.7 附带能力：TQL 单跳边变量一等投影（`MATCH (a)-[r]->(b) RETURN r`）、服务端图探索 API、投影列元数据。
 
-- 已知遗留（0.8.7 新发现，非本项目主路径）：无索引 / 位图路径的 `FIND ... LIMIT` 早停比 0.8.6 慢约 20x（50k 节点等值 LIMIT 10：51k/s → 2.35k/s），系 PR #50「修 composite 零命中 + 去重复 payload 读」移除 planner 的 limit 早返回所致。上层记忆服务检索走 `search()`/payload_filter 路径，不受影响；已留同库 A/B 脚本备查（`scripts/tdb_stress/_ab_findlim_087.py`）。→ 0.8.8 只修了有序索引路径，无索引路径仍未修，见 2026-09-11 小节。
-
-## [Unreleased] - 2026-09-06
-
-### 依赖
+- 已知遗留（0.8.7 新发现，非本项目主路径）：无索引 / 位图路径的 `FIND ... LIMIT` 早停比 0.8.6 慢约 20x（50k 节点等值 LIMIT 10：51k/s → 2.35k/s），系 PR #50「修 composite 零命中 + 去重复 payload 读」移除 planner 的 limit 早返回所致。上层记忆服务检索走 `search()`/payload_filter 路径，不受影响；已留同库 A/B 脚本备查（`scripts/tdb_stress/_ab_findlim_087.py`）。→ 0.8.8 只修了有序索引路径，无索引路径仍未修（见上）。
 
 - **triviumdb 0.8.5 → 0.8.6**：上游大版本（tiered payloads + composable analytics + 服务端加固 + 发布治理）。存储格式 v7 → v9（payload 迁至 generation-scoped mmap sidecar `.pld.<gen>`，flush marker v3），打开旧库自动兼容、flush/close 时自动升级（MINIMUM_SUPPORTED_VERSION 仍为 5，早于 0.7.0 的文件需手动迁移）。本地零手工迁移：备份 `data/backup_20260906` → 副本冒烟（v7 打开/flush 升 v9/重开验证）→ 真实库由服务打开自动升级。我们提的 #39（SEARCH VECTOR 科学计数法解析）与 #40（FIND 范围/复合谓词慢）上游已标 solved 并验证：科学计数法 30/30 全过；复合谓词同库 A/B 2.0ms→0.6ms（约 3.3x）。测试断言随格式更新（storage_info database_format_current 7→9）
 
+### 文档
+
+- **检索质量评测资料**（`eval/docs/`）：6 篇探针结论文档，含 4 条否证结论及口径判据（更换 embedding、索引期 small-to-big 分块、无上下文查询改写、自动域推断）——「否证也留档」省未来弯路
+
 ### 测试
 
-- 全量 **167 passed + 2 xfailed + 2 xpassed**（依赖升级后无新增失败，仅版本断言 0.8.5→0.8.6 与 format 7→9 更新）
+- 全量 **316 passed + 2 xfailed + 2 xpassed**（依赖 0.8.5→0.8.8 连续三次升级后无新增失败；版本断言与存储格式断言随依赖更新：`package_version` 0.8.5→0.8.8、`database_format_current` 7→9）
 
 ## [1.1.1] - 2026-09-05
 
@@ -193,5 +179,6 @@
 
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
-[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v1.2.0
 [1.0.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v1.0.0

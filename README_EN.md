@@ -10,10 +10,10 @@ Pa·limp·sest: *a writing surface that is overwritten again and again while old
 
 | | |
 |---|---|
-| Version | v1.1.1 |
+| Version | v1.2.0 |
 | Python | 3.10+ |
 | License | MIT |
-| Storage | TriviumDB 0.8.5 (vector + graph + document, embedded) |
+| Storage | TriviumDB 0.8.8 (vector + graph + document, embedded) |
 | Backends | DeepSeek / Ollama (LLM), Ollama / OpenAI-compatible (embeddings) |
 | CI | [![CI](https://github.com/JiaY-77/Palimpsest/actions/workflows/ci.yml/badge.svg)](https://github.com/JiaY-77/Palimpsest/actions/workflows/ci.yml) |
 
@@ -69,7 +69,7 @@ Pa·limp·sest: *a writing surface that is overwritten again and again while old
                                         │
        ┌────────────────────────────────┼──────────────────────────────┐
        │                    ┌───────────▼───────────┐    ┌─────────────▼──────┐
-       │                    │     TriviumDB 0.8.5   │    │   SQLite FTS5      │
+       │                    │     TriviumDB 0.8.8   │    │   SQLite FTS5      │
        │                    │  vector + graph + doc │    │   fts.db (trigram) │
        │                    └───────────┬───────────┘    └────────────────────┘
        │                                │  embeddings
