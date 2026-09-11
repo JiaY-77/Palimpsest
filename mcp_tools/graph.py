@@ -248,7 +248,7 @@ def mem_communities(min_community_size: int = 2, top_k: int = 20,
     """
     leiden 社区发现：自动发现记忆库里的主题簇（互相紧密关联的记忆群）。
 
-    真实库效果：能聚出「代码审查整改」「小帕×Hermes 融合」「成长复盘」「SOUL 版本日志」等主题簇。
+    真实库效果：能聚出「代码审查整改」「记忆服务融合」「成长复盘」「人格版本日志」等主题簇。
     返回 size>=min_community_size 的社区，按 size 降序截断 top_k 个。
 
     参数：

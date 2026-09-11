@@ -83,7 +83,7 @@ def fts_env(monkeypatch, tmp_path):
         (1, "之前压测用的那些脚本都放在哪了"),
         (2, "Python 的单元测试框架 pytest 入门"),
         (3, "数据库索引优化策略与实践"),
-        (4, "T041 索引碎片清理与重建的完整流程"),
+        (4, "Q-041 索引碎片清理与重建的完整流程"),
     ]
     for nid, content in docs:
         index_node(nid, content, f"doc_{nid}")
@@ -101,8 +101,8 @@ class TestSearchFtsIntegration:
         assert 1 in node_ids, f"应命中 node 1，实际: {node_ids}"
 
     def test_short_query_exact_match(self, fts_env):
-        """短查询 T041 之类仍走整句精确匹配路径"""
-        results = search_fts("T041")
+        """短查询 Q-041 之类仍走整句精确匹配路径"""
+        results = search_fts("Q-041")
         node_ids = [r["node_id"] for r in results]
         assert 4 in node_ids, f"应命中 node 4，实际: {node_ids}"
 

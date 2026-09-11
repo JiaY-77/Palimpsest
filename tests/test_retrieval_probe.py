@@ -138,7 +138,7 @@ class TestEvaluateProbe:
                  "expect_source_contains": "融合",
                  "expect_type": "kb_chunk"}
         top1 = self._make_top1(type_="kb_chunk",
-                               source_path="03_技术学习/小帕Hermes融合-换脑方案.md")
+                               source_path="03_技术学习/记忆服务融合方案.md")
         assert evaluate_probe(probe, top1) is True
 
     def test_combined_source_and_type_type_miss(self):
@@ -146,7 +146,7 @@ class TestEvaluateProbe:
                  "expect_source_contains": "融合",
                  "expect_type": "kb_chunk"}
         top1 = self._make_top1(type_="memory",
-                               source_path="03_技术学习/小帕Hermes融合-换脑方案.md")
+                               source_path="03_技术学习/记忆服务融合方案.md")
         assert evaluate_probe(probe, top1) is False
 
     # ---- 无约束条件 ----

@@ -2,7 +2,7 @@
 """
 mem_recent 行为锁定回归测试
 ==============================
-背景：T072 升级 triviumdb 0.8.5 后，mem_recent 空 domain 分支原注释
+背景：升级 triviumdb 0.8.5 后，mem_recent 空 domain 分支原注释
 「MATCH (n) 硬截断 5000 条故走 iter_payloads」已过时（0.8.5 修复 #32 后
 MATCH 可全量返回）。本文件在【简化前】锁定现行为，作为重构的安全网。
 

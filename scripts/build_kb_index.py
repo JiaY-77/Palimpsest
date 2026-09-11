@@ -444,7 +444,7 @@ def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False) ->
           f"domain=kb（普通知识）: {domain_counts.get(KB_DOMAIN, 0)} 块")
     if deleted_old:
         print(f"（删除旧 kb_chunk 节点 {deleted_old} 个）")
-    # v1.0 FTS 联动（T056 混合检索依赖）：知识库重建后同步全文索引；
+    # v1.0 FTS 联动（混合检索依赖）：知识库重建后同步全文索引；
     # 失败不阻塞主流程（可手动 palimpsest_cli.py fts-rebuild 兜底）
     fts_count = -1
     try:

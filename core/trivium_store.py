@@ -295,7 +295,7 @@ class TriviumStore:
     ) -> list[dict[str, Any]]:
         """使用 search_advanced（SA-PPR 认知管线）检索，保留时间衰减
 
-        A1 重构（T070 阶段 2）：将旧「db.search + Python BFS 扩散」两步合一，
+        A1 重构：将旧「db.search + Python BFS 扩散」两步合一，
         改为单次 db.search_advanced 调用，由 triviumdb 0.8.3 原生图扩散替代
         Python BFS（_expand_neighbors），获得约 4.6x 性能提升（10 万节点实测）。
 
@@ -471,7 +471,7 @@ class TriviumStore:
                           block: str = "") -> list:
         """[deprecated] 沿边 BFS 扩散邻居（已被 search_advanced 原生图扩散替代）。
 
-        A1 重构（T070 阶段 2）后 search_similar 不再调用本方法，改用
+        A1 重构后 search_similar 不再调用本方法，改用
         db.search_advanced 的原生图扩散（expand_depth 参数）。保留本方法
         供外部调用方引用或回退使用。若无外部调用方，后续可移除。
 
@@ -561,7 +561,7 @@ class TriviumStore:
 
         读现有节点后与 new_payload 做浅合并：只更新 new_payload 里出现的键，
         其余字段（content/type/importance/domain 等）原样保留——防止「部分更新
-        把整包清空」的 T061 生产事故。节点不存在时抛 ValueError。
+        把整包清空」的生产事故。节点不存在时抛 ValueError。
         """
         with self._acquire() as db:
             node = db.get(node_id)

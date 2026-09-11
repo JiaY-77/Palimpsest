@@ -35,7 +35,7 @@
 
   图/算法侧同步恢复：pagerank TQL 3.995s → 0.212s（~19x）、leiden 1.049s → 0.885s、search_advanced 认知管线 31.8/s → 120.0/s（~3.8x）、老 API expand3 8.3/s → 24.5/s（~3x）。0.8.7 附带能力：TQL 单跳边变量一等投影（`MATCH (a)-[r]->(b) RETURN r`）、服务端图探索 API、投影列元数据。
 
-- 已知遗留（0.8.7 新发现，非本项目主路径）：无索引 / 位图路径的 `FIND ... LIMIT` 早停比 0.8.6 慢约 20x（50k 节点等值 LIMIT 10：51k/s → 2.35k/s），系 PR #50「修 composite 零命中 + 去重复 payload 读」移除 planner 的 limit 早返回所致。小帕检索走 `search()`/payload_filter 路径，不受影响；已留同库 A/B 脚本备查（`scripts/tdb_stress/_ab_findlim_087.py`）。
+- 已知遗留（0.8.7 新发现，非本项目主路径）：无索引 / 位图路径的 `FIND ... LIMIT` 早停比 0.8.6 慢约 20x（50k 节点等值 LIMIT 10：51k/s → 2.35k/s），系 PR #50「修 composite 零命中 + 去重复 payload 读」移除 planner 的 limit 早返回所致。上层记忆服务检索走 `search()`/payload_filter 路径，不受影响；已留同库 A/B 脚本备查（`scripts/tdb_stress/_ab_findlim_087.py`）。
 
 ## [Unreleased] - 2026-09-06
 

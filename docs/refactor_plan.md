@@ -1,6 +1,6 @@
 # Palimpsest Refactor 方案（P0/P1 已完成 · P2 待启动）
 
-> 2026-08-27 主人批准：先做 P0，P1/P2 记录进任务清单。P0/P1 已完成并 commit（T053）。
+> 2026-08-27 立项：先做 P0，P1/P2 记录进任务清单。P0/P1 已完成并 commit。
 > 2026-08-28 全身优化（TASK-20260828）：阶段 1/2 完成——core/ 遗留酒馆链路（importer/thinking_tracker/merger/extractor/pipeline/retriever）全部退役，冲突检测抽为 core/conflict.py 的 resolve_conflict（mem_ingest 复用），main.py 移除 /extract /import /retrieve 旧端点瘦身至 255 行；scripts 清理 migrate_soul_logs/rebuild_db/bak_v2.1。
 
 ## 背景：体检结果（2026-08-27）
@@ -41,4 +41,4 @@
 ## 沉淀索引
 
 - Palimpsest 记忆：P0 完成记录（node 待查）；方向定案 node 523；灵感卡片删除 node 524
-- 任务清单：T053（P1）、T054（P2）
+- 待办清单：P1、P2 两项

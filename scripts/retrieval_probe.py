@@ -60,13 +60,13 @@ DEFAULT_PROBES: list[dict] = [
     },
     {
         "name": "rest-autostart",
-        "query": "小帕 REST 怎么自启动",
+        "query": "记忆服务的 REST 接口怎么自启动",
         "scope": "all",
         "expect_source_contains": "融合",
     },
     {
         "name": "memory-recall",
-        "query": "小七的电脑 CPU 是什么",
+        "query": "这台电脑的 CPU 型号是什么",
         "scope": "memory",
         "expect_type_any": ["memory", "correction"],
     },

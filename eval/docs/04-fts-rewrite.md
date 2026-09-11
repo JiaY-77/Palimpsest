@@ -41,7 +41,7 @@ def build_fts_query(query: str, n: int = 3, max_grams: int = 12) -> str:
 
 `search_fts(query, limit=10)` 逻辑改为（**短查询行为必须保持不变**）：
 - 空 query → `[]`
-- `len(query) <= 8` 或 query 含双引号 → **走现状路径**（整句 `MATCH '"query"'` / `LIKE` 兜底）——短查询（如 `T041`）正是 trigram 的强项，不许动
+- `len(query) <= 8` 或 query 含双引号 → **走现状路径**（整句 `MATCH '"query"'` / `LIKE` 兜底）——短查询（如 `Q-041`）正是 trigram 的强项，不许动
 - `len(query) > 8` 且 `build_fts_query(query)` 非空 → 用改写后的 OR 串 `MATCH`，仍 `ORDER BY rank LIMIT ?`
 - 任何异常 → `[]`（保持现状契约）
 
@@ -55,7 +55,7 @@ def build_fts_query(query: str, n: int = 3, max_grams: int = 12) -> str:
   - 空/None 输入返回 `""`
 - 集成测试：用临时 fts 库索引 3~5 条中文节点，验证
   - 长自然语言查询**能命中**（现状会 miss）
-  - 短查询（`T041` 之类）仍精确匹配
+  - 短查询（`Q-041` 之类）仍精确匹配
 
 ### 3. `CHANGELOG.md`
 
@@ -73,7 +73,7 @@ def build_fts_query(query: str, n: int = 3, max_grams: int = 12) -> str:
 1. `venv/Scripts/python.exe -m py_compile core/fts_index.py tests/test_fts_query_rewrite.py`
 2. `venv/Scripts/python.exe -m pytest tests/test_fts_query_rewrite.py -q`
 3. 全量 `venv/Scripts/python.exe -m pytest -q`（不得有 failure/error；当前基线 253 passed）
-4. 短查询路径不变：贴出你验证 `search_fts("T041")` / 短查询仍走整句路径的证据
+4. 短查询路径不变：贴出你验证 `search_fts("Q-041")` / 短查询仍走整句路径的证据
 5. `sha256sum data/mh_memory.db` 前后一致
 6. **端到端指标**：跑 `venv/Scripts/python.exe eval/run_eval.py`（149 题，约 1 分钟），
    贴出报告里 `rrf` 与 `cascade` 的 `recall@5` —— **目标 rrf R@5 ≥ 0.45**（当前 0.3333）
