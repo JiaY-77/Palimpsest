@@ -71,3 +71,11 @@ scripts/tdb_stress/results/
 scripts/tdb_stress/patches/
 scripts/tdb_stress/smoke_086/
 scripts/tdb_stress/issue_draft_*.md
+
+# 工具缓存与覆盖率产物（本地生成，不入库）
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/

@@ -104,13 +104,12 @@ class TriviumStore:
                     db.close()
 
     def _acquire(self):
+        """获取数据库连接（仅存在于 with 块内部）。
+
+        triviumdb 自带 `py.typed` 与 `triviumdb.pyi`，mypy 可直接解析其类型，
+        无需 `type: ignore` 抑制。
         """
-        获取数据库连接（仅存在于 with 块内部）
-        注意：triviumdb 库没有提供 Python 类型存根 (.pyi)，
-        因此手动添加 type: ignore 注释来抑制 Pylance 的类型推断警告。
-        """
-        # type: ignore
-        return triviumdb.TriviumDB(self.db_path, dim=self.dim)  # type: ignore
+        return triviumdb.TriviumDB(self.db_path, dim=self.dim)
 
     def embed_text(self, text: str) -> list[float]:
         """生成文本向量，按 EMBEDDING_PROVIDER 分发（默认本地 ollama，隐私优先）。"""
@@ -573,7 +572,6 @@ class TriviumStore:
 
     def _get_all_node_ids(self) -> list[int]:
         """获取数据库中所有节点的 ID 列表（供内部使用）"""
-        # type: ignore
         with self._acquire() as db:
             return db.all_node_ids()
 

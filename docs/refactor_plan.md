@@ -38,7 +38,8 @@
 
 - 大函数拆分（AST 实测行数，2026-09-11）：`core/trivium_store.search_similar` 137 · `mcp_tools/memory.mem_ingest` 125 · `core/stats.compute_stats` 119 · `core/consolidator._apply_merge` 100
 - `scripts/` 瘦身（13,487 行，一次性脚本靠 `.gitignore` 的 `scripts/_t[0-9]*.py` 排除；有复用价值的脚本去编号后入库）
-- 类型检查（mypy，从 `core/` 起步、非严格）与覆盖率基线（pytest-cov，先测出不设门槛）
+- ~~类型检查（mypy）~~ ✅ 已建立：非严格起步、当前覆盖 `core/`（`python -m mypy`，CI 的 typecheck job），后续按同样方式纳入 `mcp_tools/`
+- ~~覆盖率基线（pytest-cov）~~ ✅ 已建立：`core/` + `mcp_tools/` 合计 76%，CI 输出报告不设门槛；缺口集中在 `mcp_tools/routing.py`（22%）、`mcp_tools/kb.py`（28%）、`core/reporting.py`（5%）
 
 ## 静态质量门禁（2026-09-11 建立）
 
@@ -49,11 +50,11 @@
 | 项 | 内容 |
 |---|---|
 | 规则配置 | `pyproject.toml` 的 `[tool.ruff]` / `[tool.ruff.lint]`：**显式写 select**（不依赖 ruff 默认值，防版本漂移）；`RUF001/002/003` 因中文全角标点误报过多而 ignore |
-| 版本钉住 | `requirements-dev.txt` 与 CI 均钉 `ruff==0.16.7` |
-| CI 阻断 | `.github/workflows/ci.yml` 新增独立 `lint` job（`ruff check .`），与三版本 pytest 矩阵并行 |
+| 版本钉住 | `requirements-dev.txt` 与 CI 均钉 `ruff==0.16.7` / `mypy==2.3.1` / `pytest-cov==7.1.0` |
+| CI 阻断 | `.github/workflows/ci.yml` 三个 job：`lint`（`ruff check .`）、`typecheck`（`mypy`，core/ 非严格）、`test`（三版本 pytest + 覆盖率报告） |
 | 存量清理 | 全仓库 ruff 问题清零（自动修复 + 人工判断），`# noqa` 全部有效（无 RUF100） |
 
-维护约定：新增代码必须 `ruff check` 干净；扩大规则集（如开启 `RUF001-003`、`DTZ`、`PLW`）需先批量处理存量，不得直接放开。
+维护约定：新增代码必须 `ruff check` 干净、`core/` 改动必须 `mypy` 干净；扩大规则集（如开启 `RUF001-003`、`DTZ`、`PLW`、`check_untyped_defs`）需先批量处理存量，不得直接放开。
 
 ## 沉淀索引
 

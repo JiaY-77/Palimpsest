@@ -1,3 +1,6 @@
 # 开发/测试依赖：配合 requirements.txt 一起安装（pip install -r requirements.txt -r requirements-dev.txt）
 pytest==9.1.1
+pytest-cov==7.1.0
 ruff==0.16.7
+mypy==2.3.1
+types-requests==2.33.0.20260906

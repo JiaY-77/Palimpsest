@@ -45,8 +45,8 @@ def resolve_conflict(store, embedding, node_id, tx=None, db=None,
         new_type = new_payload.get("type")
         new_domain = node_domain(new_payload)
 
-    outdated_ids = []
-    related_ids = []
+    outdated_ids: list[int] = []
+    related_ids: list[int] = []
     # 第 0 层：类型白名单——record/event/correction/git_commit/review 等
     # 历史留痕类型完全跳过冲突检测
     if new_type not in ("memory", "task", "plan"):

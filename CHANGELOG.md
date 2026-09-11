@@ -10,6 +10,9 @@
 
 - **引入 ruff 静态质量门禁**：`pyproject.toml` 新增 `[tool.ruff]`（显式写 `select` 钉住规则集，避免随 ruff 版本漂移；中文项目下忽略 `RUF001/002/003` 的全角标点误报），CI 新增独立 `lint` job，`requirements-dev.txt` 与 CI 均钉 `ruff==0.16.7`。此前仓库从未有过 lint / 类型 / 覆盖率门禁（`git log --all -S "tool.ruff"` 为空）
 - **存量问题清零**（635 处 → 0）：自动修复 + 人工处理。`BLE001`（宽泛 except）与 `S110`（try-except-pass）逐处写明「为什么这里吞异常是设计」的理由；`try/except/pass` 关闭连接改为 `contextlib.suppress`；`raise` 补 `from e` / `from None` 标明异常链；未使用的导入、循环变量、模糊变量名等一并清理。全部 `# noqa` 重新生效（无失效指令）
+- **引入 mypy 类型检查**（非严格起步，当前覆盖 `core/`）：目标是让已有注解变成真约束而非一步到位 strict。配套补 `core/conflict.py` 两处列表标注、`types-requests` 类型存根（此前 `requests` 报 import-untyped）
+- **覆盖率基线**（`pytest-cov`，暂不设 `--cov-fail-under` 门槛）：`core/` + `mcp_tools/` 合计 **76%**（1770 语句 / 416 未覆盖）；最低为 `mcp_tools/routing.py` 22%、`mcp_tools/kb.py` 28%、`core/reporting.py` 5%。CI 输出报告但不阻断，先用数据定位缺口
+- **静默异常留痕**：`mcp_tools/graph.py` 的「读节点 payload 失败按空处理」「读边数失败按 0 计」两处补 `logger.debug`——此前静默吞掉，出问题时没有任何线索。（其余静默点复核后确认无需补：关连接失败集中在 `contextlib.suppress`，业务失败路径本就有 `logger.warning/error`）
 
 ### 文档
 
