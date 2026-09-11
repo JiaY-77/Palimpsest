@@ -4,6 +4,15 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
+## [Unreleased] - 2026-09-11
+
+### 依赖
+
+- **triviumdb 0.8.7 → 0.8.8**：上游修复我们上报的 #54 的一半——**有序索引路径**的 `FIND ... LIMIT` 早停恢复并反超 0.8.6（同机同库 / 50k 节点：0.8.8 78.3k/s vs 0.8.6 66.7k/s）。存储格式不变（WAL v3 / payload v9），**零迁移**；升级后真实库（880 节点）`mem_search` 冒烟通过。
+  - **仍存在的回归（本版复测确认）**：**无索引**路径的 `FIND ... LIMIT` 仍比 0.8.6 慢约 25-28x（1.8k/s vs 50k/s）。根因已定位——不是早停丢失，而是「短路能力」丢失：0.8.7 起 planner 把「无可用索引 + LIMIT → 惰性 `FullNodeScan`」的短路判定从 `plan_filter` 开头挪到其之后，兜底路径会先 `all_node_ids()` 物化全库 NodeId（~200KB）再丢弃，每次查询白付约 0.58ms 固定成本；另有 3 处 `EXPLAIN` 输出与实际执行不同源、且无条件宣称优化生效的问题。
+  - 上层记忆服务检索走 `search()` / payload_filter 路径，**不在受影响范围**。
+  - 已同步上游：issue [#58](https://github.com/YoKONCy/TriviumDB/issues/58) + PR [#59](https://github.com/YoKONCy/TriviumDB/pull/59)（短路判定前置 + 物化计数器 + 回归测试）。
+
 ## [Unreleased] - 2026-09-10
 
 ### 修复
@@ -35,7 +44,7 @@
 
   图/算法侧同步恢复：pagerank TQL 3.995s → 0.212s（~19x）、leiden 1.049s → 0.885s、search_advanced 认知管线 31.8/s → 120.0/s（~3.8x）、老 API expand3 8.3/s → 24.5/s（~3x）。0.8.7 附带能力：TQL 单跳边变量一等投影（`MATCH (a)-[r]->(b) RETURN r`）、服务端图探索 API、投影列元数据。
 
-- 已知遗留（0.8.7 新发现，非本项目主路径）：无索引 / 位图路径的 `FIND ... LIMIT` 早停比 0.8.6 慢约 20x（50k 节点等值 LIMIT 10：51k/s → 2.35k/s），系 PR #50「修 composite 零命中 + 去重复 payload 读」移除 planner 的 limit 早返回所致。上层记忆服务检索走 `search()`/payload_filter 路径，不受影响；已留同库 A/B 脚本备查（`scripts/tdb_stress/_ab_findlim_087.py`）。
+- 已知遗留（0.8.7 新发现，非本项目主路径）：无索引 / 位图路径的 `FIND ... LIMIT` 早停比 0.8.6 慢约 20x（50k 节点等值 LIMIT 10：51k/s → 2.35k/s），系 PR #50「修 composite 零命中 + 去重复 payload 读」移除 planner 的 limit 早返回所致。上层记忆服务检索走 `search()`/payload_filter 路径，不受影响；已留同库 A/B 脚本备查（`scripts/tdb_stress/_ab_findlim_087.py`）。→ 0.8.8 只修了有序索引路径，无索引路径仍未修，见 2026-09-11 小节。
 
 ## [Unreleased] - 2026-09-06
 
