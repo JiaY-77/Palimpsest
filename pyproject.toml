@@ -67,6 +67,22 @@ ignore = [
 known-first-party = ["core", "mcp_tools", "scripts"]
 
 # ---------------------------------------------------------------------------
+# mypy —— 类型检查（非严格起步，当前只覆盖 core/）
+#
+# 目标不是一步到位 strict，而是先让已有的类型注解变成真约束：core/ 的注解最完整，
+# 从它起步证明「注解与实现一致」；mcp_tools / scripts 待后续按同样方式纳入。
+# 默认不检查未标注函数体（check_untyped_defs = false），要收紧时再打开。
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.10"
+files = ["core"]
+check_untyped_defs = false
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+strict_equality = true
+
+# ---------------------------------------------------------------------------
 # 路径解析说明：
 #   config.py 已将 DB_PATH 等相对路径在类定义时基于项目根（config.py 所在目录）
 #   解析为绝对路径，import 不依赖也不修改进程当前工作目录；mcp_tools/_common.py

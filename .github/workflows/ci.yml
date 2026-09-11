@@ -26,6 +26,27 @@ jobs:
       - name: Ruff check
         run: ruff check .
 
+  typecheck:
+    name: Type check (mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # mypy 要能解析第三方类型：triviumdb 自带 .pyi，requests 靠 types-requests
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Mypy
+        run: mypy
+
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -49,5 +70,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
 
+      # 覆盖率先做基线观测，暂不设 --cov-fail-under 门槛
       - name: Run tests
-        run: python -m pytest tests/ -v
+        run: python -m pytest tests/ -v --cov=core --cov=mcp_tools --cov-report=term-missing

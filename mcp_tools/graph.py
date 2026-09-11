@@ -6,11 +6,14 @@ graph_neighbors（通用邻居遍历）/ mem_link（手动建边）+ 图关联�
 """
 
 import contextlib
+import logging
 from collections import deque
 
 from core.trivium_store import domain_in_block, node_domain
 from core.utils import _to_float
 from mcp_tools._common import _shorten, _to_json, mcp, store
+
+logger = logging.getLogger(__name__)
 
 # 无向语义关系：mem_link 双向建边协议自动补反向边；REVISED_BY 保持单向
 _BIDIRECTIONAL_RELATIONS = {"RELATED_TO", "CAUSES", "REFERS_TO"}
@@ -296,8 +299,8 @@ def _get_node_payload(db, nid: int) -> dict:
             return node.payload or {}
         if isinstance(node, dict):
             return (node.get("payload") or {})
-    except Exception:  # noqa: S110, BLE001 —— 节点读取失败返回空 dict 邻居摘要尽力而为
-        pass
+    except Exception as e:  # noqa: BLE001 —— 节点读取失败返回空 dict 邻居摘要尽力而为
+        logger.debug("读取节点 payload 失败 node=%s: %s（邻居摘要按空处理）", nid, e)
     return {}
 
 
@@ -381,7 +384,8 @@ def _do_pagerank(db, top_k: int, node_count: int) -> dict:
         try:
             edges = db.get_edges(nid)
             num_edges = len(edges) if edges else 0
-        except Exception:  # noqa: BLE001 —— 边数读取失败按 0 计不阻塞枢纽统计
+        except Exception as e:  # noqa: BLE001 —— 边数读取失败按 0 计不阻塞枢纽统计
+            logger.debug("读取节点边数失败 node=%s: %s（按 0 计）", nid, e)
             num_edges = 0
         nodes.append({
             "id": nid,
