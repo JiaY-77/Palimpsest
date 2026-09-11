@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 mcp_tools 共享基础设施
 =====================
@@ -10,11 +9,9 @@ import json
 import os
 import sys
 
-from mcp.server.fastmcp import FastMCP  # noqa: E402
+from mcp.server.fastmcp import FastMCP
 
-from config import Config  # noqa: E402
-from core.secret_scan import SecretScanError  # noqa: E402
-from core.trivium_store import TriviumStore, domain_in_block, node_domain  # noqa: E402
+from core.trivium_store import TriviumStore
 
 # 确保能 import 项目 core 模块（以项目根为基准；mcp_tools 位于项目根/包目录）。
 # 作为 pip 包安装后 core/config 本身即可按包名找到，此处注入只在直接跑仓库内脚本时

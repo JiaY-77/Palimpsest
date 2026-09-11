@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 core.stats —— 库级盘点统计（记忆生命周期：mem_stats）
 ====================================================
@@ -13,6 +12,7 @@ CLI（palimpsest_cli stats）、REST（POST /mem/stats）、MCP（mem_stats）�
   - graph 分节需要边信息，故在同一个 _acquire 连接内逐节点读边。
 """
 
+import contextlib
 import logging
 import time
 
@@ -133,10 +133,8 @@ def compute_stats(store) -> dict:
         logger.warning("mem_stats 遍历失败（返回已收集数据）: %s", e)
     finally:
         if db is not None:
-            try:
+            with contextlib.suppress(Exception):
                 db.close()
-            except Exception:
-                pass
 
     # label 分布 top10（按 count 降序）
     top_labels = sorted(label_dist.items(), key=lambda kv: kv[1], reverse=True)[:10]

@@ -5,9 +5,9 @@ a config panel without pulling in the agent runtime.
 """
 
 from plugins.memory.config_schema import (
+    STORAGE_FLAT_JSON,
     ProviderConfigSchema,
     ProviderField,
-    STORAGE_FLAT_JSON,
 )
 
 CONFIG_SCHEMA = ProviderConfigSchema(

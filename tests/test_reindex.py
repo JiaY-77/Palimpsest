@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 reindex 脚本测试 —— 覆盖维度校验 / 过滤 / dry-run / 断点续跑等路径。
 
@@ -12,10 +11,10 @@ reindex 脚本测试 —— 覆盖维度校验 / 过滤 / dry-run / 断点续跑
 连接直到生成器被消费完毕，必须先完全消费再加 update_* 方法。
 """
 
+import hashlib
 import json
 import math
 import os
-import hashlib
 import re
 
 import pytest
@@ -72,7 +71,7 @@ def _update_payloads(s, updates: dict[int, dict]):
 
 def test_reindex_dim_match_updates_vectors(iso_db):
     """维度一致时：向量被更新，节点数不变，payload 不动。"""
-    s, db = iso_db
+    s, _db = iso_db
     node_map = _insert_nodes(s, ["memory", "record", "task"])
     all_ids = [nid for ids in node_map.values() for nid in ids]
     old_vectors = _read_vectors(s, all_ids)
@@ -116,7 +115,7 @@ def test_reindex_dim_match_updates_vectors(iso_db):
 
 def test_reindex_dim_mismatch_no_writes(iso_db, monkeypatch):
     """实测维度 512 != 库实际维度 1024：退出码 2，库中向量逐条不变。"""
-    s, db = iso_db
+    s, _db = iso_db
     node_map = _insert_nodes(s, ["memory", "record"])
     all_ids = [nid for ids in node_map.values() for nid in ids]
     old_vectors = _read_vectors(s, all_ids)
@@ -227,7 +226,7 @@ def _all_ids(db_path):
 
 def test_reindex_embedding_failure(iso_db, monkeypatch):
     """embedding 异常时：退出码非 0，库仍可正常打开。"""
-    s, db = iso_db
+    s, _db = iso_db
     node_map = _insert_nodes(s, ["memory", "record", "task"])
     all_ids = [nid for ids in node_map.values() for nid in ids]
     old_vectors = _read_vectors(s, all_ids)
@@ -269,7 +268,7 @@ def test_reindex_embedding_failure(iso_db, monkeypatch):
 
 def test_reindex_only_filter(iso_db):
     """--only 只重嵌指定类型，跳过其他。"""
-    s, db = iso_db
+    s, _db = iso_db
     node_map = _insert_nodes(s, ["memory", "record", "task", "kb_chunk"])
     all_ids = [nid for ids in node_map.values() for nid in ids]
     old_vectors = _read_vectors(s, all_ids)
@@ -293,7 +292,7 @@ def test_reindex_only_filter(iso_db):
 
 def test_reindex_skip_filter(iso_db):
     """--skip 跳过指定类型。"""
-    s, db = iso_db
+    s, _db = iso_db
     node_map = _insert_nodes(s, ["memory", "record", "task", "kb_chunk"])
     all_ids = [nid for ids in node_map.values() for nid in ids]
     old_vectors = _read_vectors(s, all_ids)
@@ -322,7 +321,7 @@ def test_reindex_skip_filter(iso_db):
 
 def test_reindex_dry_run(iso_db):
     """--dry-run 不修改库中任何向量。"""
-    s, db = iso_db
+    s, _db = iso_db
     node_map = _insert_nodes(s, ["memory", "record"])
     all_ids = [nid for ids in node_map.values() for nid in ids]
     old_vectors = _read_vectors(s, all_ids)
@@ -348,7 +347,7 @@ def test_reindex_dry_run(iso_db):
 
 def test_reindex_resume(iso_db, tmp_path, monkeypatch):
     """--resume 跳过已完成节点（state 中 max_done_id 以下的跳过）。"""
-    s, db = iso_db
+    s, _db = iso_db
     node_map = _insert_nodes(s, ["memory", "memory", "memory", "memory"])
     all_ids = sorted(nid for ids in node_map.values() for nid in ids)
 
@@ -395,7 +394,7 @@ def test_reindex_resume(iso_db, tmp_path, monkeypatch):
 
 def test_reindex_restart(iso_db):
     """--restart 忽略 state，从头重嵌所有节点。"""
-    s, db = iso_db
+    s, _db = iso_db
     node_map = _insert_nodes(s, ["memory", "memory", "memory"])
     all_ids = sorted(nid for ids in node_map.values() for nid in ids)
 
@@ -436,7 +435,7 @@ def test_reindex_restart(iso_db):
 
 def test_check_readonly(iso_db):
     """--check 不修改库中任何数据。"""
-    s, db = iso_db
+    s, _db = iso_db
     node_map = _insert_nodes(s, ["memory", "record"])
     all_ids = [nid for ids in node_map.values() for nid in ids]
     old_vectors = _read_vectors(s, all_ids)
@@ -456,7 +455,7 @@ def test_check_readonly(iso_db):
 
 def test_reindex_empty_db(iso_db):
     """空库重嵌入应正常退出。"""
-    s, db = iso_db
+    s, _db = iso_db
     from scripts.reindex import cmd_reindex
     code = cmd_reindex(s, yes=True, batch=100)
     assert code == 0
@@ -468,8 +467,8 @@ def test_reindex_empty_db(iso_db):
 
 def test_reindex_skips_nodes_without_content(iso_db, capsys):
     """缺失/空 content 的节点应被跳过并按 type 计入结束报告。"""
-    s, db = iso_db
-    nid1 = s.insert_node(
+    s, _db = iso_db
+    s.insert_node(
         {"type": "memory", "content": "有内容"}, s.embed_text("有内容"))
     nid2 = s.insert_node(
         {"type": "inspiration", "content": ""}, s.embed_text(""))  # 空 content
@@ -499,7 +498,7 @@ def test_reindex_skips_nodes_without_content(iso_db, capsys):
 
 def test_reindex_counts_fixed_empty_vectors(iso_db, capsys):
     """旧向量全零的节点重嵌后非零 → 计入「修复空向量」。"""
-    s, db = iso_db
+    s, _db = iso_db
     # 人为插入全零向量节点
     nid = s.insert_node(
         {"type": "memory", "content": "空向量节点"}, [0.0] * s.dim)

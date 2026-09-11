@@ -12,7 +12,6 @@ import json
 import os
 import shutil
 import sys
-import tempfile
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -72,15 +71,13 @@ def _copy_db_to_tmp() -> Path:
 _copy_db_to_tmp()
 
 # Now safe to import project modules
-from config import Config  # noqa: E402
-from core.trivium_store import TriviumStore  # noqa: E402
 from core.fts_index import search_fts  # noqa: E402
-from mcp_tools.memory import _hybrid_rrf, _hybrid_cascade  # noqa: E402
+from core.trivium_store import TriviumStore  # noqa: E402
+from mcp_tools.memory import _hybrid_cascade, _hybrid_rrf  # noqa: E402
 
 # Metrics (from eval/ directory)
 sys.path.insert(0, str(_EVAL_DIR))
-from metrics import recall_at_k, mrr_at_k, ndcg_at_k  # noqa: E402
-
+from metrics import mrr_at_k, ndcg_at_k, recall_at_k  # noqa: E402
 
 ALL_MODES = ("fts", "vec", "rrf", "cascade")
 
@@ -164,21 +161,21 @@ def _generate_report(
     """Generate markdown report."""
     lines: list[str] = []
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    lines.append(f"# 检索质量评测报告")
-    lines.append(f"")
+    lines.append("# 检索质量评测报告")
+    lines.append("")
     lines.append(f"生成时间: {now}")
     lines.append(f"题目数: {len(eval_set['items'])}")
     lines.append(f"评测模式: {', '.join(modes)}")
-    lines.append(f"")
+    lines.append("")
 
     # SHA256 check
     sha_ok = sha256_before == sha256_after
-    lines.append(f"## 数据库完整性检查")
-    lines.append(f"")
+    lines.append("## 数据库完整性检查")
+    lines.append("")
     lines.append(f"- 跑前 SHA256: `{sha256_before}`")
     lines.append(f"- 跑后 SHA256: `{sha256_after}`")
     lines.append(f"- 一致性: {'✅ 一致' if sha_ok else '❌ 不一致！'}")
-    lines.append(f"")
+    lines.append("")
 
     def _get_layer(item: dict) -> str:
         # 值域归一化：生成器写 "kb_chunk"，报告分组键是 "kb"——同一层，必须对齐
@@ -221,8 +218,8 @@ def _generate_report(
         return sum(vals) / len(vals) if vals else 0.0
 
     # ── Mode comparison table ────────────────────────────────────────────
-    lines.append(f"## 模式对比（正样本）")
-    lines.append(f"")
+    lines.append("## 模式对比（正样本）")
+    lines.append("")
     header = "| 指标 | " + " | ".join(modes) + " |"
     sep = "|---|" + "|".join(["---"] * len(modes)) + "|"
     lines.append(header)
@@ -233,7 +230,7 @@ def _generate_report(
         row += " | ".join(f"{_avg(agg[m][metric]):.4f}" for m in modes)
         row += " |"
         lines.append(row)
-    lines.append(f"")
+    lines.append("")
 
     # ── Per-layer breakdown (Problem 3: use 'layer' field) ──────────────
     layer_agg: dict[str, dict[str, dict[str, list[float]]]] = {}
@@ -257,16 +254,16 @@ def _generate_report(
             layer_agg[layer][mode]["mrr@10"].append(
                 mrr_at_k(ranked, gold_ids, 10))
 
-    lines.append(f"## 分层细分（Recall@5 / MRR@10）")
-    lines.append(f"")
+    lines.append("## 分层细分（Recall@5 / MRR@10）")
+    lines.append("")
     for layer_name in ["hermes", "kb", "novel", "other"]:
         has_data = any(
             layer_agg[layer_name][m]["recall@5"] for m in modes)
         if not has_data:
             continue
         lines.append(f"### {layer_name}")
-        lines.append(f"")
-        header = f"| 指标 | " + " | ".join(modes) + " |"
+        lines.append("")
+        header = "| 指标 | " + " | ".join(modes) + " |"
         sep = "|---|" + "|".join(["---"] * len(modes)) + "|"
         lines.append(header)
         lines.append(sep)
@@ -276,7 +273,7 @@ def _generate_report(
                 f"{_avg(layer_agg[layer_name][m][metric]):.4f}" for m in modes)
             row += " |"
             lines.append(row)
-        lines.append(f"")
+        lines.append("")
 
     # ── KB doc-level recall (Problem 2) ─────────────────────────────────
     kb_doc_agg: dict[str, dict[str, list[float]]] = {}
@@ -292,7 +289,7 @@ def _generate_report(
         gold_ids = set(item.get("gold_ids", []))
         if not gold_ids:
             continue
-        gold_id = list(gold_ids)[0]
+        gold_id = next(iter(gold_ids))
         gold_sp = source_map.get(gold_id, "")
         if not gold_sp:
             continue
@@ -308,9 +305,9 @@ def _generate_report(
     has_kb_doc = any(
         kb_doc_agg[m]["doc_recall@5"] for m in modes)
     if has_kb_doc:
-        lines.append(f"## KB 文档级指标（kb_chunk 题）")
-        lines.append(f"")
-        header = f"| 指标 | " + " | ".join(modes) + " |"
+        lines.append("## KB 文档级指标（kb_chunk 题）")
+        lines.append("")
+        header = "| 指标 | " + " | ".join(modes) + " |"
         sep = "|---|" + "|".join(["---"] * len(modes)) + "|"
         lines.append(header)
         lines.append(sep)
@@ -320,9 +317,9 @@ def _generate_report(
                 f"{_avg(kb_doc_agg[m][metric]):.4f}" for m in modes)
             row += " |"
             lines.append(row)
-        lines.append(f"*doc_recall@5: top-5 中命中同一 source_path 的任一节点（二值 0/1，非比例）*")
-        lines.append(f"*ndcg@5(partial): 同一 source_path 的其他 chunk 作为 partial（相关性 0.5）*")
-        lines.append(f"")
+        lines.append("*doc_recall@5: top-5 中命中同一 source_path 的任一节点（二值 0/1，非比例）*")
+        lines.append("*ndcg@5(partial): 同一 source_path 的其他 chunk 作为 partial（相关性 0.5）*")
+        lines.append("")
 
     # ── Negative sample analysis (Problem 6: FTS shows proportion) ──────
     neg_top1_scores: dict[str, list[float | None]] = {m: [] for m in modes}
@@ -345,8 +342,8 @@ def _generate_report(
                 score = ranked_scores[0] if ranked_scores else None
                 pos_top1_scores[mode].append(score)
 
-    lines.append(f"## 负样本分析")
-    lines.append(f"")
+    lines.append("## 负样本分析")
+    lines.append("")
     header = "| 指标 | " + " | ".join(modes) + " |"
     sep = "|---|" + "|".join(["---"] * len(modes)) + "|"
     lines.append(header)
@@ -380,8 +377,8 @@ def _generate_report(
     row += " | ".join(_neg_result_ratio(neg_has_result[m]) for m in modes)
     row += " |"
     lines.append(row)
-    lines.append(f"*负样本有返回结果比例: 无正确答案的查询中，该模式仍返回了检索结果的比例（越高说明误召回风险越大）*")
-    lines.append(f"")
+    lines.append("*负样本有返回结果比例: 无正确答案的查询中，该模式仍返回了检索结果的比例（越高说明误召回风险越大）*")
+    lines.append("")
 
     # ── Error cases (top 10) ─────────────────────────────────────────────
     errors: list[dict] = []
@@ -413,8 +410,8 @@ def _generate_report(
     errors.sort(key=lambda e: e["worst_avg"], reverse=True)
     top_errors = errors[:10]
 
-    lines.append(f"## 错例 Top 10")
-    lines.append(f"")
+    lines.append("## 错例 Top 10")
+    lines.append("")
     if top_errors:
         header = "| QID | Query | Gold ID | " + " | ".join(modes) + " |"
         sep = "|---|---|---|" + "|".join(["---"] * len(modes)) + "|"
@@ -428,7 +425,7 @@ def _generate_report(
             row = (f"| {err['qid']} | {err['query'][:30]} | "
                    f"{err['gold_ids']} | " + " | ".join(rank_strs) + " |")
             lines.append(row)
-    lines.append(f"")
+    lines.append("")
 
     return "\n".join(lines)
 
@@ -458,15 +455,12 @@ def main() -> int:
     print(f"[run_eval] DB SHA256 (before): {sha256_before}")
 
     # ── Load eval set ────────────────────────────────────────────────────
-    if args.eval_set:
-        eval_set_path = Path(args.eval_set)
-    else:
-        eval_set_path = _EVAL_DIR / "eval_set.json"
+    eval_set_path = Path(args.eval_set) if args.eval_set else _EVAL_DIR / "eval_set.json"
     if not eval_set_path.exists():
         print(f"[run_eval] ERROR: {eval_set_path} not found")
         return 1
 
-    with open(eval_set_path, "r", encoding="utf-8") as f:
+    with open(eval_set_path, encoding="utf-8") as f:
         eval_set = json.load(f)
 
     items = eval_set["items"]
@@ -496,7 +490,7 @@ def main() -> int:
             try:
                 ranked_ids, ranked_scores = _MODE_FNS[mode](query, args.top_k, store)
                 mode_results[mode] = {"ids": ranked_ids, "scores": ranked_scores}
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 —— 单模式跑分失败记空结果继续评测其余模式
                 print(f"  [ERROR] {qid}/{mode}: {e}")
                 fail_count += 1
                 mode_results[mode] = {"ids": [], "scores": []}

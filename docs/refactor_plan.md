@@ -1,7 +1,8 @@
-# Palimpsest Refactor 方案（P0/P1 已完成 · P2 待启动）
+# Palimpsest Refactor 方案（P0/P1/P2 已完成 · 静态门禁已建立 · P3 待启动）
 
 > 2026-08-27 立项：先做 P0，P1/P2 记录进任务清单。P0/P1 已完成并 commit。
-> 2026-08-28 全身优化（TASK-20260828）：阶段 1/2 完成——core/ 遗留酒馆链路（importer/thinking_tracker/merger/extractor/pipeline/retriever）全部退役，冲突检测抽为 core/conflict.py 的 resolve_conflict（mem_ingest 复用），main.py 移除 /extract /import /retrieve 旧端点瘦身至 255 行；scripts 清理 migrate_soul_logs/rebuild_db/bak_v2.1。
+> 2026-08-28 全身优化（TASK-20260828）：阶段 1/2 完成——core/ 遗留酒馆链路（importer/thinking_tracker/merger/extractor/pipeline/retriever）全部退役，冲突检测抽为 core/conflict.py 的 resolve_conflict（mem_ingest 复用），main.py 移除 /extract /import /retrieve 旧端点瘦身；scripts 清理 migrate_soul_logs/rebuild_db/bak_v2.1。
+> 2026-09-11 状态核对（代码审阅 + 落地静态门禁）：P1 三项全部完成；P2 数据访问层补全完成、共享 service 层待评估；同日本文件新增「静态质量门禁」章节，剩余重构项归入 P3。
 
 ## 背景：体检结果（2026-08-27）
 
@@ -22,23 +23,39 @@
 
 回归：py_compile 全绿 + REST /export /summary /retrieve + CLI recent/search + mcp_server import 全通过。
 
-## P1（待启动，中风险：文件级拆分，行为不变 + 全量回归）
+## P1（已完成）
 
-- 目标：消除 mcp_server.py 单体（882 行）
-- ① mcp_server.py → `mcp_tools/` 包：memory.py（mem_* 系列）/ kb.py（kb_*）/ graph.py（graph_neighbors/mem_link）/ routing.py（router_query），入口只留工具注册
-- ② main.py 的 generate_report()（62 行）→ `core/reporting.py`
-- ③ 大函数按步骤拆分：consolidator.consolidate()、build_kb_index.build()、graph_neighbors()
-- 验证：每步 py_compile + 功能实测（mem_search/mem_ingest/mem_review/graph_neighbors）+ 分步 commit
-- 成本预估：80-150K token
+- ① mcp_server.py 单体拆分 ✅ —— 工具实现落到 `mcp_tools/`（memory / kb / graph / routing / stats_tool / consolidate_tool），入口只留工具注册，**882 → 49 行**
+- ② `main.py` 的 `generate_report()` → `core/reporting.py` ✅
+- ③ 大函数按步骤拆分 —— ⚠️ 部分完成：`consolidator.consolidate()`、`graph_neighbors()` 已拆；仍有 4 个 >100 行函数（见 P3）
 
-## P2（待启动，高风险：架构级，需单独讨论）
+## P2（已完成）
 
-- ① REST/MCP 双入口共享 service 层（现 main.py 与 mcp_server.py 各调各的 core，有重复）
-- ② 数据访问层补全：消灭所有外部调私有方法（`_get_all_node_ids` 等），补 `count_by_type()` / `recent_ids()` 等公共接口
-- 验证：全量回归 + 性能对比（遍历次数下降）
-- 成本预估：另议
+- ① REST/MCP 双入口共享 service 层 —— **未做，待评估**：现状是两个入口各自调用 `core/` 的公共接口（`core/` 实际充当 service 层），仅在出现真实重复逻辑时才需要再抽一层
+- ② 数据访问层补全 —— ✅ 生产代码不再外部调用 `store._get_all_node_ids` 等私有方法（仅 `tests/test_smoke.py` 用其做前后快照断言）
+
+## P3（待启动）
+
+- 大函数拆分（AST 实测行数，2026-09-11）：`core/trivium_store.search_similar` 137 · `mcp_tools/memory.mem_ingest` 125 · `core/stats.compute_stats` 119 · `core/consolidator._apply_merge` 100
+- `scripts/` 瘦身（13,487 行，一次性脚本靠 `.gitignore` 的 `scripts/_t[0-9]*.py` 排除；有复用价值的脚本去编号后入库）
+- 类型检查（mypy，从 `core/` 起步、非严格）与覆盖率基线（pytest-cov，先测出不设门槛）
+
+## 静态质量门禁（2026-09-11 建立）
+
+2026-09-11 代码审阅的 P0 结论是「数据正确性做得很细，静态质量门禁从缺」：CI 只跑 pytest，`pyproject.toml` 无 `[tool.ruff]`，`git log --all -S "tool.ruff"` 为空（从未配置过 lint）。
+
+落地内容：
+
+| 项 | 内容 |
+|---|---|
+| 规则配置 | `pyproject.toml` 的 `[tool.ruff]` / `[tool.ruff.lint]`：**显式写 select**（不依赖 ruff 默认值，防版本漂移）；`RUF001/002/003` 因中文全角标点误报过多而 ignore |
+| 版本钉住 | `requirements-dev.txt` 与 CI 均钉 `ruff==0.16.7` |
+| CI 阻断 | `.github/workflows/ci.yml` 新增独立 `lint` job（`ruff check .`），与三版本 pytest 矩阵并行 |
+| 存量清理 | 全仓库 ruff 问题清零（自动修复 + 人工判断），`# noqa` 全部有效（无 RUF100） |
+
+维护约定：新增代码必须 `ruff check` 干净；扩大规则集（如开启 `RUF001-003`、`DTZ`、`PLW`）需先批量处理存量，不得直接放开。
 
 ## 沉淀索引
 
 - Palimpsest 记忆：P0 完成记录（node 待查）；方向定案 node 523；灵感卡片删除 node 524
-- 待办清单：P1、P2 两项
+- 待办清单：P3 两项（大函数拆分、scripts 瘦身）、类型检查与覆盖率基线

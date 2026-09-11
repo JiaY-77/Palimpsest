@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """已完成任务节点自动归档：扫描 task 域已完成节点 → 写入知识库归档目录 → 删除节点。
 
 归档目标：KNOWLEDGE_DIR/05_任务归档/{YYYYMMDD}_{title}.md（Obsidian 知识库）。
@@ -12,7 +11,6 @@ import logging
 import os
 import re
 from datetime import datetime
-from typing import Any
 
 from core.fts_index import remove_node
 from core.trivium_store import TriviumStore, node_domain
@@ -215,19 +213,19 @@ def archive_tasks(store: TriviumStore, dry_run: bool = True,
         try:
             with open(p["target_path"], "w", encoding="utf-8") as f:
                 f.write(build_archive_md(p))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 —— 写入失败记 errors 继续归档其余节点
             errors.append({"id": p["id"], "title": p["title"], "error": f"写入归档文件失败: {e}"})
             logger.error(f"归档写入失败 node={p['id']} -> {p['target_path']}: {e}")
             continue
         try:
             store.delete_node(p["id"])
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 —— 节点删除失败记 errors 继续处理其余项
             errors.append({"id": p["id"], "title": p["title"], "error": f"删除节点失败: {e}"})
             logger.error(f"归档节点删除失败 node={p['id']}: {e}")
             continue
         try:
             remove_node(p["id"])
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 —— FTS 清理失败仅告警不阻塞归档主流程
             errors.append({"id": p["id"], "title": p["title"], "error": f"移除 FTS 索引失败: {e}"})
             logger.warning(f"FTS 索引清理失败 node={p['id']}: {e}")
         archived.append({"id": p["id"], "title": p["title"], "target_path": p["target_path"]})

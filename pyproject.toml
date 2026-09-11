@@ -26,6 +26,47 @@ palimpsest-cli = "scripts.palimpsest_cli:main"
 packages = ["core", "mcp_tools", "scripts"]
 
 # ---------------------------------------------------------------------------
+# Ruff —— 静态质量门禁（CI 全量阻断，见 .github/workflows/ci.yml 的 lint job）
+#
+# 为什么显式写 select 而不依赖 ruff 默认值：默认规则集随 ruff 版本演进，
+# 显式钉住才能保证「本地跑 == CI 跑」，避免升级 ruff 后门禁含义漂移。
+#
+# 中文项目注意：RUF001/002/003 把中文全角标点报为「歧义 Unicode 字符」，
+# 对本仓库的注释/文档是纯噪音（实测 5000+ 条），统一 ignore；若将来要开启，
+# 必须先批量处理全角标点，不能直接放开。
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+extend-exclude = ["venv", ".venv", "eval/.tmp"]
+
+[tool.ruff.lint]
+select = [
+    "E4",     # pycodestyle：import 位置、多语句同行（E401/E402/E702）
+    "E7",     # pycodestyle：语句级问题（E711/E712/E713/E714/E721/E722/E731/E741）
+    "E9",     # pycodestyle：运行时错误（E902/E999）
+    "F",      # pyflakes：未用 import/变量、未定义名、f-string 无占位
+    "I",      # isort：import 排序
+    "UP",     # pyupgrade：旧语法现代化
+    "B",      # flake8-bugbear：易错模式
+    "BLE001", # flake8-blind-except：宽泛 except（审阅 P0 点名）
+    "S110",   # flake8-bandit：try-except-pass（审阅 P0 点名）
+    "RUF",    # ruff 专属规则（含 RUF100 失效 noqa）
+    "C4",     # flake8-comprehensions
+    "SIM",    # flake8-simplify
+    "PIE",    # flake8-pie
+    "FURB",   # refurb
+]
+ignore = [
+    "RUF001", # 歧义 Unicode 字符 —— 中文全角标点（见上方说明）
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["core", "mcp_tools", "scripts"]
+
+# ---------------------------------------------------------------------------
 # 路径解析说明：
 #   config.py 已将 DB_PATH 等相对路径在类定义时基于项目根（config.py 所在目录）
 #   解析为绝对路径，import 不依赖也不修改进程当前工作目录；mcp_tools/_common.py

@@ -1,12 +1,11 @@
-# -*- coding: utf-8 -*-
 """
 mcp_tools.consolidate_tool —— 容量自动合并工具
 =============================================
 mem_consolidate：扫描高相似度 memory 节点对，dry_run 预览、apply 才真正合并。
 """
 
-from mcp_tools._common import _to_json, mcp, store  # noqa: E402
-from core.consolidator import consolidate  # noqa: E402
+from core.consolidator import consolidate
+from mcp_tools._common import _to_json, mcp, store
 
 
 @mcp.tool()

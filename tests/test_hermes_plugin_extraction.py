@@ -7,8 +7,6 @@ import sys
 import types
 from unittest.mock import patch
 
-import pytest
-
 # ---------------------------------------------------------------------------
 # Fake `agent.memory_provider` module so the plugin can be imported without
 # the real Hermes package.
@@ -28,7 +26,7 @@ class _FakeRecallStatus:
     pass
 
 
-def _fake_is_trivial_prompt(text: str) -> bool:  # noqa: D401
+def _fake_is_trivial_prompt(text: str) -> bool:
     return False
 
 

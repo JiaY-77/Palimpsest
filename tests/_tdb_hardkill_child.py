@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 TriviumDB 0.8.3 特性测试 —— 撕裂恢复子进程（仅供 test_storage.py 调用）。
 
@@ -17,7 +16,7 @@ import os
 import sys
 import time
 
-import triviumdb  # noqa: E402
+import triviumdb
 
 
 def _child_hardkill(path: str, count: int) -> int:

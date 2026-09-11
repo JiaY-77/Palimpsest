@@ -1,12 +1,11 @@
-# -*- coding: utf-8 -*-
 """
 mcp_tools.routing —— 任务路由查询工具
 ====================================
 router_query（从规则类知识切片提取推荐模型/配置）+ 关键词提取 _extract_recommendation。
 """
 
-from mcp_tools._common import _shorten, _to_json, mcp  # noqa: E402
-from mcp_tools.memory import _mem_search_impl  # noqa: E402
+from mcp_tools._common import _shorten, _to_json, mcp
+from mcp_tools.memory import _mem_search_impl
 
 # ---- v2.0 统一语义层：任务路由查询 ----
 # 模型/配置关键词（用于从规则切片中提取「推荐模型/配置」）
@@ -33,7 +32,7 @@ def _extract_recommendation(text: str) -> tuple:
     hit_configs = [c for c in _CONFIG_KEYWORDS if c in low]
     if hit_models:
         model = hit_models[0]
-        config_hints = [c for c in hit_configs]
+        config_hints = list(hit_configs)
         recommended = {"model": model}
         if config_hints:
             recommended["config"] = ", ".join(config_hints[:4])

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Palimpsest 数据库重建脚本
 ========================
@@ -46,10 +45,9 @@ Palimpsest 数据库重建脚本
 
 import json
 import os
-import sys
 from collections import Counter
 
-from _common import SCRIPT_DIR as _SCRIPT_DIR, PROJECT_ROOT as _PROJECT_ROOT
+from _common import PROJECT_ROOT as _PROJECT_ROOT
 
 # 关键：必须在 import config 之前设置 DB_PATH（Config.DB_PATH 在类定义时读 env；
 # .env 里的 DB_PATH=data/mh_memory.db 不会覆盖已设置的变量）
@@ -57,8 +55,8 @@ os.environ["DB_PATH"] = os.path.join(
     _PROJECT_ROOT, "data", "mh_memory_new.db"
 ).replace("\\", "/")
 
-from config import Config  # noqa: E402
-from core.trivium_store import TriviumStore  # noqa: E402
+from config import Config
+from core.trivium_store import TriviumStore
 
 EXPORT_PATH = os.path.join("data", "export_backup_20260828.json")
 EXPECTED_NODES = 391   # 全量节点数（2026-08-28 导出：391 总，含 kb_chunk 212）
@@ -68,7 +66,7 @@ INDEX_FIELDS = ("type", "importance", "status", "domain", "character_name")
 
 
 def load_export(path: str) -> dict:
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -193,7 +191,7 @@ def verify(db, store: TriviumStore, nodes: list, edges: list, id_map: dict) -> N
     # ---- 检索冒烟（query: 派兵 练兵）----
     print("\n=== 检索冒烟（query: 派兵 练兵）===")
     qemb = store.embed_text("派兵 练兵")
-    import numpy as np  # noqa: E402
+    import numpy as np
     qv = np.array(qemb)
     scored = []
     for nid in ids:
@@ -248,7 +246,7 @@ def main() -> None:
     print(f"恢复节点   : {EXPECTED_NODES}（全量，含 kb_chunk）")
     print(f"建边       : {EXPECTED_EDGES} 条（REVISED_BY 106 / RELATED_TO 27）")
     print(f"跳过边     : {DEFERRED_EDGES} 条（全量恢复无跳过）")
-    print(f"正式库     : 未触碰（data/mh_memory.db 保持原样）")
+    print("正式库     : 未触碰（data/mh_memory.db 保持原样）")
 
 
 if __name__ == "__main__":

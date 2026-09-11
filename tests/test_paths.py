@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 TriviumDB 0.8.3 特性测试 —— TQL 路径查询（P2）
 ======================================================
@@ -13,8 +12,7 @@ import os
 import tempfile
 
 import pytest
-
-import triviumdb  # noqa: E402
+import triviumdb
 
 
 @pytest.fixture
@@ -83,7 +81,7 @@ def test_shortest_paths_label_filter(tdb):
 def test_shortest_paths_causes_isolation(tdb):
     """存在性：全图由 REL 连通 0→1→2；若以 REL 查找，hops 不超过最长公共可达。"""
     dst = _num(tdb, 2)
-    src = _num(tdb, 0)
+    _num(tdb, 0)
     fs = f"SEARCH VECTOR [{V8}] TOP 100 AS seed WITH seed "
     q = (f"{fs}SHORTEST_PATHS seed TO [{dst}] LABEL REL AS route "
          f"WITH route RETURN path(route) AS nodes")

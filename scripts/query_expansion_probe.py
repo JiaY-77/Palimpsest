@@ -77,18 +77,19 @@ for p in sorted(ORIG_DB.parent.iterdir()):
     if p.name.startswith(ORIG_DB.name) and p.is_file():
         try:
             shutil.copy2(p, TMP / p.name)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 —— 库副本复制失败仅告警 SHA 校验兜底
             print(f"  [warn] 复制 {p.name} 失败（忽略）: {e}")
 if ORIG_FTS.exists():
     try:
         shutil.copy2(ORIG_FTS, TMP / ORIG_FTS.name)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— FTS 副本复制失败仅告警后续校验兜底
         print(f"  [warn] 复制 fts.db 失败（忽略）: {e}")
 os.environ["DB_PATH"] = str(TMP / ORIG_DB.name)
 
+from metrics import mrr_at_k, recall_at_k  # noqa: E402
+
 from config import Config  # noqa: E402
 from core.trivium_store import TriviumStore  # noqa: E402
-from metrics import mrr_at_k, recall_at_k  # noqa: E402
 
 EMB_MODEL = Config.OLLAMA_EMBEDDING_MODEL
 
@@ -119,7 +120,7 @@ def embed_batch(texts: list[str], batch: int = 64) -> np.ndarray:
             if not vecs or len(vecs) != len(part):
                 raise RuntimeError("embed 返回数量不符")
             out.extend(vecs)
-        except Exception:
+        except Exception:  # noqa: BLE001 —— 批量嵌入失败逐条回退保证部分结果
             for t in part:
                 rr = requests.post(f"{url}/api/embeddings",
                                    json={"model": EMB_MODEL, "prompt": t[:2500]}, timeout=180)
@@ -193,7 +194,7 @@ def main() -> None:
             try:
                 bucket[it["qid"]] = {"q": it["query"], "rw": rewrite(args.model, it["query"]),
                                      "s": round(time.time() - t1, 3)}
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 —— 改写失败回退原查询并记录错误继续评估
                 bucket[it["qid"]] = {"q": it["query"], "rw": it["query"], "s": 0.0,
                                      "err": str(e)[:120]}
             if n % 20 == 0:
@@ -263,17 +264,17 @@ def main() -> None:
     print("\nΔ 相对 base（pp）与逐题 gain/loss（R@5）：")
     for k in keys[1:]:
         m = res[k]
-        g = l = 0
+        g = loss = 0
         for r in rows:
             gold = set(r["gold"])
             a, b2 = recall_at_k(r["base"], gold, 5), recall_at_k(r[k], gold, 5)
             if b2 > a:
                 g += 1
             elif b2 < a:
-                l += 1
+                loss += 1
         print(f"  {k:<12} ΔR@1 {100 * (m['R@1'] - b['R@1']):+6.2f} | ΔR@5 {100 * (m['R@5'] - b['R@5']):+6.2f} "
               f"| ΔR@10 {100 * (m['R@10'] - b['R@10']):+6.2f} | ΔMRR {100 * (m['MRR'] - b['MRR']):+6.2f} "
-              f"| 逐题 +{g}/−{l}")
+              f"| 逐题 +{g}/−{loss}")
 
     print("\n改写抽样（前 8 题）：")
     for r in rows[:8]:

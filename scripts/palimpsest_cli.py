@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Palimpsest CLI —— 本地 CLI 薄封装（2026-08-25）。
 
@@ -28,7 +27,6 @@ Palimpsest CLI —— 本地 CLI 薄封装（2026-08-25）。
 """
 import argparse
 import json
-import os
 import subprocess
 import sys
 
@@ -37,20 +35,29 @@ import sys
 try:
     try:
         # 包形式（import scripts.palimpsest_cli，palimpsest-cli 控制台入口）
-        from ._common import SCRIPT_DIR as _SCRIPT_DIR, PROJECT_ROOT as _PROJECT_ROOT
+        from ._common import PROJECT_ROOT as _PROJECT_ROOT
     except ImportError:  # 直接运行 scripts/palimpsest_cli.py 时退化为同目录导入
-        from _common import SCRIPT_DIR as _SCRIPT_DIR, PROJECT_ROOT as _PROJECT_ROOT
+        from _common import PROJECT_ROOT as _PROJECT_ROOT
 
     # 复用 mcp_tools 的工具函数（config 已基于项目根解析绝对路径，与 cwd 无关）
-    from mcp_tools import (  # noqa: E402
-        graph_neighbors, kb_index, kb_search, mem_hybrid_search, mem_ingest,
-        mem_link, mem_recent, mem_review, mem_search,
+    from core.consolidator import consolidate
+    from core.doctor import render_text as doctor_render
+    from core.doctor import run_doctor
+    from core.fts_index import rebuild as fts_rebuild
+    from core.fts_index import search_fts
+    from core.startup_check import run_startup_check
+    from core.trivium_store import TriviumStore, is_valid_block
+    from mcp_tools import (
+        graph_neighbors,
+        kb_index,
+        kb_search,
+        mem_hybrid_search,
+        mem_ingest,
+        mem_link,
+        mem_recent,
+        mem_review,
+        mem_search,
     )
-    from core.consolidator import consolidate  # noqa: E402
-    from core.fts_index import rebuild as fts_rebuild, search_fts  # noqa: E402
-    from core.doctor import render_text as doctor_render, run_doctor  # noqa: E402
-    from core.startup_check import run_startup_check  # noqa: E402
-    from core.trivium_store import TriviumStore, is_valid_block  # noqa: E402
 except ImportError as _import_err:
     _hint = (
         "\n"
@@ -141,7 +148,7 @@ def cmd_review(args):
         from core.trivium_store import TriviumStore
         _store = TriviumStore()
         decision_count = 0
-        for nid, payload in _store.iter_payloads():
+        for _nid, payload in _store.iter_payloads():
             if payload.get("type") == "decision":
                     decision_count += 1
         stats = data.get("stats", {})
@@ -240,7 +247,7 @@ def cmd_ingest_git(args):
     # 幂等检查：遍历库中已有节点，收集已有的 commit_hash
     store = TriviumStore()
     existing_hashes = set()
-    for nid, payload in store.iter_payloads():
+    for _nid, payload in store.iter_payloads():
         ch = payload.get("commit_hash")
         if ch:
             existing_hashes.add(ch)
@@ -325,7 +332,8 @@ def cmd_task_archive(args):
 
 def cmd_reindex(args):
     """全库向量重嵌入（换 embedding 模型后使用）。"""
-    from scripts.reindex import cmd_check, cmd_reindex as _cmd_reindex
+    from scripts.reindex import cmd_check
+    from scripts.reindex import cmd_reindex as _cmd_reindex
 
     store = TriviumStore()
     if args.check:

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 知识库索引构建脚本
 ==================
@@ -45,18 +44,18 @@ v1.0 Upsert 重建策略：
 import argparse
 import os
 import re
-import sys
 import time
 
 # 确保能 import 项目 core 模块（以项目根为基准，_common 导入即把项目根注入 sys.path）
-import _common  # noqa: E402,F401
+import _common  # noqa: F401
 
-from config import Config  # noqa: E402
-from core.fts_index import rebuild as fts_rebuild  # noqa: E402
-from core.trivium_store import TriviumStore  # noqa: E402
+from config import Config
+from core.fts_index import rebuild as fts_rebuild
+from core.trivium_store import TriviumStore
+
 # 知识库根目录统一由 mcp_tools._common 提供（环境变量 KNOWLEDGE_DIR 优先；
 # 默认约定为项目根下 ./knowledge），避免脚本各自推导本机路径造成分叉
-from mcp_tools._common import KNOWLEDGE_DIR  # noqa: E402
+from mcp_tools._common import KNOWLEDGE_DIR
 
 # 每块字符数目标区间（简单实现：超长段按行切，尽量落在区间内）
 MIN_CHUNK_LEN = 300
@@ -228,7 +227,7 @@ def _count_domain_chunks(store) -> dict:
     （rule 是 kb_chunk 的子集，此处按 payload.domain 区分）。
     """
     counts = {RULE_DOMAIN: 0, KB_DOMAIN: 0, "other": 0}
-    for nid, payload in store.iter_payloads():
+    for _nid, payload in store.iter_payloads():
         if payload.get("type") != CHUNK_TYPE:
             continue
         dom = payload.get("domain", "")
@@ -246,7 +245,7 @@ def _detect_retired(md_files: list, knowledge_dir: str) -> tuple:
     for fp in md_files:
         rel = os.path.relpath(fp, knowledge_dir).replace("\\", "/")
         try:
-            with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+            with open(fp, encoding="utf-8", errors="ignore") as f:
                 head = f.read(RETIRED_HEAD_CHARS)
         except OSError:
             head = ""  # 读取失败不判退役，留给后续逻辑记录跳过
@@ -268,7 +267,7 @@ def _determine_pending(full: bool, active_files: list, existing: dict,
     """
     if full:
         # 全量模式：所有 active 文件强制重建（upsert），不再删除旧 kb_chunk 节点
-        return [fp for fp in active_files], 0
+        return list(active_files), 0
 
     # ---- 增量模式：筛选需要重建的文件 ----
     pending = []
@@ -329,7 +328,7 @@ def _rebuild_file(store, fp: str, knowledge_dir: str, existing: dict) -> tuple:
     ({"file","chunks","char_lens"}, deleted_old)。
     """
     try:
-        with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+        with open(fp, encoding="utf-8", errors="ignore") as f:
             text = f.read()
     except OSError as e:
         print(f"[跳过] 读取失败: {fp}: {e}")
@@ -450,7 +449,7 @@ def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False) ->
     try:
         fts_count = fts_rebuild(store)
         print(f"[FTS] 全文索引已同步: {fts_count} 个节点")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— FTS 重建失败仅提示可手动 fts-rebuild 兜底
         print(f"[FTS] 全文索引同步失败（可手动 fts-rebuild）: {e}")
     return {
         "files": file_stats,

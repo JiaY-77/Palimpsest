@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 promote —— 高频记忆自动升级测试
 ===============================
@@ -11,17 +10,17 @@ promote —— 高频记忆自动升级测试
 确定性 fake embedder），不触碰 conftest 会话共享临时库，也不污染 FTS 索引。
 """
 
+import contextlib
 import os
 import shutil
 import tempfile
 import time
 
 import pytest
+from conftest import _fake_embed
 
-from conftest import _fake_embed  # noqa: E402
-
-from core.promoter import find_promote_candidates, promote  # noqa: E402
-from core.trivium_store import TriviumStore  # noqa: E402
+from core.promoter import find_promote_candidates, promote
+from core.trivium_store import TriviumStore
 
 
 @pytest.fixture
@@ -38,10 +37,8 @@ def iso_store():
         yield s
     finally:
         Config.DB_PATH = old
-        try:
+        with contextlib.suppress(Exception):
             s._acquire().close()
-        except Exception:
-            pass
         shutil.rmtree(tmp, ignore_errors=True)
 
 

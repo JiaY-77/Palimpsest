@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """scripts 公共工具（P0 重构 2026-08-27）
 
 统一「项目根路径注入」样板：各脚本 import 本项目 core/config 前，

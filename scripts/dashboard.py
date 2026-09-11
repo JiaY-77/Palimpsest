@@ -3,16 +3,14 @@ Palimpsest Dashboard — 独立 FastAPI 服务
 端口 8010，与主 REST 服务 (8000) 分离
 """
 
-import sys
 import os
 
 # 确保项目根目录在 sys.path 中，以便导入 core.*
-from _common import PROJECT_ROOT
-
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
+
+from core import consolidator, fts_index
 from core.trivium_store import TriviumStore
-from core import fts_index, consolidator
 
 app = FastAPI(title="Palimpsest Dashboard")
 
@@ -35,7 +33,7 @@ async def mem_stats():
     total = 0
     by_type: dict[str, int] = {}
     outdated = 0
-    for nid, payload in store.iter_payloads():
+    for _nid, payload in store.iter_payloads():
         total += 1
         t = payload.get("type", "unknown")
         by_type[t] = by_type.get(t, 0) + 1
@@ -86,5 +84,6 @@ async def consolidate_apply():
 
 if __name__ == "__main__":
     import uvicorn
+
     from config import Config
     uvicorn.run(app, host="127.0.0.1", port=Config.DASHBOARD_PORT)

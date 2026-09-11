@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 sync_rules.py — 规则笔记 → 模型路由决策树 JSON 同步器
 =====================================================================
@@ -40,10 +39,12 @@ import shutil
 import sys
 from datetime import datetime
 
+from _common import PROJECT_ROOT as _PROJECT_ROOT
+
 # ----------------------------------------------------------------------------
 # 路径常量（环境变量优先；可按需用 --kb-root / --json-path 覆盖）
 # ----------------------------------------------------------------------------
-from _common import SCRIPT_DIR as _SCRIPT_DIR, PROJECT_ROOT as _PROJECT_ROOT
+
 # 知识库根目录：优先 KNOWLEDGE_DIR（与 .env.example 一致），回退 KNOWLEDGE_ROOT；
 # 默认约定为项目根下 ./knowledge，不硬编码个人路径
 KNOWLEDGE_ROOT = os.getenv("KNOWLEDGE_DIR", "") or os.getenv("KNOWLEDGE_ROOT", "") or os.path.normpath(
@@ -69,32 +70,32 @@ DIRECTION_MAP = [
 
 # 模型别名：正文里的写法 → 统一短名
 MODEL_ALIASES = [
-    (re.compile(r"deepseek[- ]r1[:：]?8b", re.I), "r1"),
-    (re.compile(r"\br1\b", re.I), "r1"),
-    (re.compile(r"qwen3?\.?5?[:：]?9b", re.I), "qwen9b"),
-    (re.compile(r"qwen9b", re.I), "qwen9b"),
-    (re.compile(r"qwen2\.5[:：]3b", re.I), "3b"),
+    (re.compile(r"deepseek[- ]r1[:：]?8b", re.IGNORECASE), "r1"),
+    (re.compile(r"\br1\b", re.IGNORECASE), "r1"),
+    (re.compile(r"qwen3?\.?5?[:：]?9b", re.IGNORECASE), "qwen9b"),
+    (re.compile(r"qwen9b", re.IGNORECASE), "qwen9b"),
+    (re.compile(r"qwen2\.5[:：]3b", re.IGNORECASE), "3b"),
     (re.compile(r"\b3b\b"), "3b"),
-    (re.compile(r"glm[- ]?4\.7|glm[- ]?4\.5|\bglm\b", re.I), "glm"),
-    (re.compile(r"\bphi\b", re.I), "phi"),
-    (re.compile(r"opencode", re.I), "opencode"),
-    (re.compile(r"deepseek", re.I), "deepseek"),
-    (re.compile(r"qwen2\.5[- ]coder[:：]?7b", re.I), "qwen7b"),
+    (re.compile(r"glm[- ]?4\.7|glm[- ]?4\.5|\bglm\b", re.IGNORECASE), "glm"),
+    (re.compile(r"\bphi\b", re.IGNORECASE), "phi"),
+    (re.compile(r"opencode", re.IGNORECASE), "opencode"),
+    (re.compile(r"deepseek", re.IGNORECASE), "deepseek"),
+    (re.compile(r"qwen2\.5[- ]coder[:：]?7b", re.IGNORECASE), "qwen7b"),
 ]
 
 # 配置词（推荐模型行的佐证）
 CONFIG_PATTERNS = [
-    re.compile(r"preset", re.I),
-    re.compile(r"think\s*[:＝=]\s*false", re.I),
-    re.compile(r"\d{3,4}\s*tokens?\b", re.I),
-    re.compile(r"max_tokens\s*[:＝=]\s*\d+", re.I),
-    re.compile(r"endpoint\s*[:＝=]", re.I),
-    re.compile(r"retry_on_empty", re.I),
-    re.compile(r"\b\d{3,4}\b\s*token", re.I),
+    re.compile(r"preset", re.IGNORECASE),
+    re.compile(r"think\s*[:＝=]\s*false", re.IGNORECASE),
+    re.compile(r"\d{3,4}\s*tokens?\b", re.IGNORECASE),
+    re.compile(r"max_tokens\s*[:＝=]\s*\d+", re.IGNORECASE),
+    re.compile(r"endpoint\s*[:＝=]", re.IGNORECASE),
+    re.compile(r"retry_on_empty", re.IGNORECASE),
+    re.compile(r"\b\d{3,4}\b\s*token", re.IGNORECASE),
 ]
 
-TRIGGER_RE = re.compile(r"触发|When|仅当|条件是|判据|判「", re.I)
-WEIGHT_RE = re.compile(r"权重|×1\.\d+|score|importance|priority|fail_count|降权|打分|降分|评分", re.I)
+TRIGGER_RE = re.compile(r"触发|When|仅当|条件是|判据|判「", re.IGNORECASE)
+WEIGHT_RE = re.compile(r"权重|×1\.\d+|score|importance|priority|fail_count|降权|打分|降分|评分", re.IGNORECASE)
 FRONTMATTER_RE = re.compile(r"^---\s*$")
 
 

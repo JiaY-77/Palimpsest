@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 TriviumDB 0.8.3 特性测试 —— 存储层（P2）
 =================================================
@@ -13,15 +12,13 @@ TriviumDB 0.8.3 特性测试 —— 存储层（P2）
 隔离保证：%TEMP%/tdb_ftest/ 独立临时库；
 子进程脚本带 __main__ 守卫 + 进程计数守卫（压测工具管理铁律）。
 """
-import math
 import os
 import subprocess
 import sys
 import tempfile
 
 import pytest
-
-import triviumdb  # noqa: E402
+import triviumdb
 
 _HARDKILL_CHILD = os.path.join(os.path.dirname(__file__), "_tdb_hardkill_child.py")
 

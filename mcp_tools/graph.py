@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 mcp_tools.graph —— 图谱相关工具
 =============================
@@ -6,12 +5,12 @@ graph_neighbors（通用邻居遍历）/ mem_link（手动建边）+ 图关联�
 与辅助函数 _edge_exists。无向语义关系双向建边协议定义见 _BIDIRECTIONAL_RELATIONS。
 """
 
-from collections import deque  # noqa: E402
+import contextlib
+from collections import deque
 
-from core.trivium_store import domain_in_block, node_domain  # noqa: E402
-from core.utils import _to_float  # noqa: E402
-
-from mcp_tools._common import _shorten, _to_json, mcp, store  # noqa: E402
+from core.trivium_store import domain_in_block, node_domain
+from core.utils import _to_float
+from mcp_tools._common import _shorten, _to_json, mcp, store
 
 # 无向语义关系：mem_link 双向建边协议自动补反向边；REVISED_BY 保持单向
 _BIDIRECTIONAL_RELATIONS = {"RELATED_TO", "CAUSES", "REFERS_TO"}
@@ -226,10 +225,13 @@ def mem_link(source_id: int, target_id: int, relation: str = "RELATED_TO",
     main_edge_needed = not _edge_exists(source_id, target_id, rel_upper)
     # 双向建边协议：无向语义关系自动补反向边（先查存在则跳过）
     reverse_added = False
-    if bidirectional and rel_upper in _BIDIRECTIONAL_RELATIONS:
-        if not _edge_exists(target_id, source_id, rel_upper):
-            store.create_edge(target_id, source_id, rel_upper, weight=weight)
-            reverse_added = True
+    if (
+        bidirectional
+        and rel_upper in _BIDIRECTIONAL_RELATIONS
+        and not _edge_exists(target_id, source_id, rel_upper)
+    ):
+        store.create_edge(target_id, source_id, rel_upper, weight=weight)
+        reverse_added = True
     if main_edge_needed:
         store.create_edge(source_id, target_id, rel_upper, weight=weight)
     return _to_json({
@@ -278,14 +280,12 @@ def mem_communities(min_community_size: int = 2, top_k: int = 20,
 
         result = _do_communities(db, min_community_size, top_k, with_summary)
         return _to_json(result)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— 图分析异常返回错误结构工具调用不崩溃
         return _to_json({"mode": "communities", "error": str(e),
                          "hint": "图分析异常，请检查 TriviumDB 版本/图数据"})
     finally:
-        try:
+        with contextlib.suppress(Exception):
             db.close()
-        except Exception:
-            pass
 
 
 def _get_node_payload(db, nid: int) -> dict:
@@ -296,7 +296,7 @@ def _get_node_payload(db, nid: int) -> dict:
             return node.payload or {}
         if isinstance(node, dict):
             return (node.get("payload") or {})
-    except Exception:
+    except Exception:  # noqa: S110, BLE001 —— 节点读取失败返回空 dict 邻居摘要尽力而为
         pass
     return {}
 
@@ -305,7 +305,7 @@ def _do_communities(db, min_community_size: int, top_k: int, with_summary: bool)
     """社区发现模式：leiden 聚类 → 过滤 → 截断 → 可选摘要"""
     try:
         result = db.leiden_cluster(min_community_size=min_community_size)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— leiden 失败返回错误提示调用方可感知
         return {"mode": "communities", "error": str(e),
                 "hint": "leiden_cluster 调用失败"}
     communities_raw = result.get("communities", [])
@@ -360,7 +360,7 @@ def _do_pagerank(db, top_k: int, node_count: int) -> dict:
         tql = (f"SEARCH VECTOR {vec} TOP {limit} AS seed "
                f"WITH seed PAGERANK seed AS pr RETURN pr")
         rows = db.tql(tql)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— TQL pagerank 失败返回错误内部保留函数不冒泡
         return {"mode": "pagerank", "error": str(e),
                 "hint": "TQL pagerank 执行失败，检查 TriviumDB 版本"}
 
@@ -381,7 +381,7 @@ def _do_pagerank(db, top_k: int, node_count: int) -> dict:
         try:
             edges = db.get_edges(nid)
             num_edges = len(edges) if edges else 0
-        except Exception:
+        except Exception:  # noqa: BLE001 —— 边数读取失败按 0 计不阻塞枢纽统计
             num_edges = 0
         nodes.append({
             "id": nid,

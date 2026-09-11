@@ -24,7 +24,7 @@ def _get(url: str) -> dict:
     try:
         with urllib.request.urlopen(url, timeout=5) as resp:
             return json.loads(resp.read().decode("utf-8"))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 —— REST 不可达时降级返回错误结构
         return {"error": str(exc)}
 
 
@@ -36,7 +36,7 @@ def _post(base: str, path: str, payload: dict) -> dict:
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             return json.loads(resp.read().decode("utf-8"))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 —— 请求异常降级返回错误，不崩 CLI
         return {"error": str(exc)}
 
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Palimpsest 全量数据导出脚本（只读）
 ====================================
@@ -28,14 +27,15 @@ Palimpsest 全量数据导出脚本（只读）
     data/export_backup_20260824.json  （格式 {"nodes": [...], "edges": [...]}）
 """
 
+import contextlib
 import json
 import os
 from collections import Counter
 
 # 确保能 import 项目 core 模块（以项目根为基准，_common 导入即把项目根注入 sys.path）
-import _common  # noqa: E402,F401
+import _common  # noqa: F401
 
-from core.trivium_store import TriviumStore  # noqa: E402
+from core.trivium_store import TriviumStore
 
 OUTPUT_PATH = "data/export_backup_20260824.json"
 DB_FILE = "data/mh_memory.db"
@@ -85,10 +85,8 @@ def export_via_store(store: TriviumStore) -> dict:
                 )
                 label_counter[label] += 1
     finally:
-        try:
+        with contextlib.suppress(Exception):
             db.close()
-        except Exception:
-            pass
 
     return {
         "nodes": nodes, "edges": edges,
@@ -134,7 +132,7 @@ def main() -> None:
         )
 
     # 回读校验
-    with open(OUTPUT_PATH, "r", encoding="utf-8") as f:
+    with open(OUTPUT_PATH, encoding="utf-8") as f:
         back = json.load(f)
     assert len(back["nodes"]) == len(data["nodes"])
     assert len(back["edges"]) == len(data["edges"])

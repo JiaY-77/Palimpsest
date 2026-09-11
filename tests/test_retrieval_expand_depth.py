@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 语义主序与图扩散解耦的回归测试
 ==============================
@@ -82,7 +81,6 @@ def test_hybrid_rrf_expand_depth_config(monkeypatch):
     monkeypatch.setattr(store, "embed_text", lambda q: [0.0] * 4)
 
     # monkeypatch search_fts 返回空
-    from core.fts_index import search_fts as _real_fts
     monkeypatch.setattr("mcp_tools.memory.search_fts", lambda q, limit=10: [])
 
     # --- 场景 A：默认配置 expand_depth=0 ---

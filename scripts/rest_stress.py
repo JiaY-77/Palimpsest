@@ -19,11 +19,11 @@
 import argparse
 import json
 import random
-import string
 import threading
 import time
-import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import requests
 
 random.seed(42)
 
@@ -50,19 +50,19 @@ IMPACTS = ["性能提升", "稳定性风险", "需人工复核", "无影响"]
 def gen_content(i: int, tag: str = "") -> tuple:
     t, tmpl = random.choice(TEMPLATES)
     ts = f"2026-09-{random.randint(1, 5):02d}"
-    ctx = dict(place=random.choice(PLACES), topic=random.choice(TOPICS),
-               detail=random.choice(DETAILS), follow=random.choice(FOLLOWS),
-               ts=ts, action=random.choice(ACTIONS), result=random.choice(RESULTS),
-               note=random.choice(NOTES), name=random.choice(NAMES), goal=random.choice(GOALS),
-               s1=random.choice(S1S), s2=random.choice(S1S), s3=random.choice(S1S),
-               s0=random.choice(S1S), who=random.choice(WHOS), what=random.choice(ACTIONS),
-               impact=random.choice(IMPACTS), correct=random.choice(DETAILS))
+    ctx = {"place": random.choice(PLACES), "topic": random.choice(TOPICS),
+           "detail": random.choice(DETAILS), "follow": random.choice(FOLLOWS),
+           "ts": ts, "action": random.choice(ACTIONS), "result": random.choice(RESULTS),
+           "note": random.choice(NOTES), "name": random.choice(NAMES), "goal": random.choice(GOALS),
+           "s1": random.choice(S1S), "s2": random.choice(S1S), "s3": random.choice(S1S),
+           "s0": random.choice(S1S), "who": random.choice(WHOS), "what": random.choice(ACTIONS),
+           "impact": random.choice(IMPACTS), "correct": random.choice(DETAILS)}
     content = tmpl.format(**ctx)
     # 每条带唯一标记，便于召回验证
     marker = f"#{tag or 'seed'}{i:05d}#"
     return marker + " " + content, t
 
-def post(base: str, path: str, payload=None, raw: str = None,
+def post(base: str, path: str, payload=None, raw: str | None = None,
          timeout: float = 30) -> tuple:
     """返回 (ok, status, body_str, elapsed)"""
     t0 = time.perf_counter()
@@ -75,7 +75,7 @@ def post(base: str, path: str, payload=None, raw: str = None,
             r = requests.post(base + path, json=payload, timeout=timeout)
         el = time.perf_counter() - t0
         return r.ok, r.status_code, r.text[:300], el
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— 请求异常转为错误结果元组压测照常统计
         el = time.perf_counter() - t0
         return False, -1, f"EXC {type(e).__name__}: {e}", el
 
@@ -84,7 +84,7 @@ def get(base: str, path: str, timeout: float = 30) -> tuple:
     try:
         r = requests.get(base + path, timeout=timeout)
         return r.ok, r.status_code, r.text[:300], time.perf_counter() - t0
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— GET 异常转错误结果元组计入压测统计
         return False, -1, f"EXC {type(e).__name__}: {e}", time.perf_counter() - t0
 
 def run_bench(name: str, fn, jobs: list, workers: int,
@@ -164,7 +164,8 @@ def main():
     ok, status, body, el = get(base, "/")
     print(f"[0] GET / -> {status} {body[:120]}")
     if not ok:
-        print("FATAL: service not ready"); return
+        print("FATAL: service not ready")
+        return
 
     # ---------- 1. 预热：写入种子记忆 ----------
     print(f"[1] seeding {args.seeds} memories ...")
@@ -186,7 +187,7 @@ def main():
                     nid = json.loads(body).get("node_id")
                     if nid is not None:
                         seed_ids.append(nid)
-                except Exception:
+                except Exception:  # noqa: S110, BLE001 —— 种子 id 解析失败仅少记一条
                     pass
     print(f"    seeded {len(seed_ids)}/{args.seeds} in {time.perf_counter()-t0:.1f}s")
 
@@ -200,13 +201,11 @@ def main():
     s1 = run_bench("S1 mem_search 高频检索", 
                    lambda j: post(base, "/mem/search", {"query": queries[j % len(queries)], "scope": "memory", "top_k": 5}),
                    list(range(min(args.seeds, 100))), workers=10)
-    report["scenarios"].append(s1); print(f"[S1] {s1}")
+    report["scenarios"].append(s1)
+    print(f"[S1] {s1}")
 
     # ---------- 3. 场景 S2 写入压测 ----------
-    if args.quick:
-        n_write = 30
-    else:
-        n_write = 120
+    n_write = 30 if args.quick else 120
     write_jobs = []
     for i in range(n_write):
         c, typ = gen_content(i + 10000, tag="wr")
@@ -215,7 +214,8 @@ def main():
     s2 = run_bench("S2 mem_ingest 写入压测",
                    lambda j: post(base, "/mem/ingest", write_jobs[j]),
                    list(range(len(write_jobs))), workers=6)
-    report["scenarios"].append(s2); print(f"[S2] {s2}")
+    report["scenarios"].append(s2)
+    print(f"[S2] {s2}")
 
     # ---------- 4. 场景 S3 图谱扩散 ----------
     # 先建一批边（link 前 40 个种子节点成链）
@@ -226,18 +226,21 @@ def main():
         s3a = run_bench("S3a mem_link 建边",
                         lambda j: post(base, "/mem/link", link_jobs[j]),
                         list(range(len(link_jobs))), workers=4)
-        report["scenarios"].append(s3a); print(f"[S3a] {s3a}")
+        report["scenarios"].append(s3a)
+        print(f"[S3a] {s3a}")
         # 邻居扩散（并发查不同节点）
         nb_jobs = [{"node_id": seed_ids[i % len(seed_ids)], "depth": 1} for i in range(60)]
         s3b = run_bench("S3b graph/neighbors 邻居扩散",
                         lambda j: post(base, "/graph/neighbors", nb_jobs[j]),
                         list(range(len(nb_jobs))), workers=8)
-        report["scenarios"].append(s3b); print(f"[S3b] {s3b}")
+        report["scenarios"].append(s3b)
+        print(f"[S3b] {s3b}")
         # 社区发现
         s3c = run_bench("S3c graph/communities",
                         lambda j: post(base, "/graph/communities", {"min_community_size": 2, "top_k": 5}),
                         list(range(10)), workers=2)
-        report["scenarios"].append(s3c); print(f"[S3c] {s3c}")
+        report["scenarios"].append(s3c)
+        print(f"[S3c] {s3c}")
 
     # ---------- 5. 场景 S4 边界输入 ----------
     boundary = []
@@ -278,7 +281,8 @@ def main():
             q = queries[k % len(queries)]
             return post(base, "/mem/hybrid-search", {"query": q, "top_k": 5, "mode": "rrf"})
     s5 = run_bench("S5 读写混合 20s", mixed, [], workers=n_workers, max_seconds=20)
-    report["scenarios"].append(s5); print(f"[S5] {s5}")
+    report["scenarios"].append(s5)
+    print(f"[S5] {s5}")
 
     # ---------- 7. 场景 S6 正确性抽查 ----------
     correctness = []
@@ -294,7 +298,7 @@ def main():
     correctness.append({"case": "search_recall_marker", "hit": hit, "status": status,
                         "body": body[:150]})
     # 冲突检测：立即重写几乎相同的内容，应被标记 outdated 或提示（不崩即可）
-    okf2, status2, body2, el2 = post(base, "/mem/ingest",
+    _okf2, status2, body2, _el2 = post(base, "/mem/ingest",
                                      {"content": unique_word, "type": "memory", "importance": 0.9})
     correctness.append({"case": "duplicate_ingest", "status": status2, "body": body2[:150]})
     report["correctness"] = correctness

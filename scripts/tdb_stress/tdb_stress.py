@@ -1,14 +1,21 @@
-# -*- coding: utf-8 -*-
 """
 TriviumDB 0.8.0 高压压测脚本（隔离临时库，不碰 Palimpsest 真实 data/）
 维度：顺序批量写 / 单条写 / 多进程并发写 / 同 id 冲突写 / 图谱扩展检索 / 混合读写 / 硬杀恢复 / compact
 输出：JSON 报告 + 控制台摘要
 """
-import os, sys, time, json, random, math, tempfile, traceback, subprocess, signal
-from datetime import datetime
+import json
 import multiprocessing as mp
+import os
+import random
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import contextlib
 
 import triviumdb
 
@@ -20,7 +27,7 @@ REPORT = os.path.join(BASE, "report.json")
 
 
 def rvec(rng=None):
-    r = rng if rng else random
+    r = rng or random
     return [r.random() for _ in range(DIM)]
 
 
@@ -32,10 +39,8 @@ def hit_attr(h):
     """SearchHit 字段兜底提取"""
     out = {}
     for a in ("id", "score", "payload", "distance"):
-        try:
+        with contextlib.suppress(Exception):
             out[a] = getattr(h, a)
-        except Exception:
-            pass
     return out
 
 
@@ -52,10 +57,10 @@ def worker_conc_write(worker_id, n, start_id):
             nid = start_id + i
             try:
                 db.insert_with_id(nid, rvec(rng), {"text": f"cw-{worker_id}-{i}", "worker": worker_id, "n": i})
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 —— 单条写异常记入 errs 压测统计错误率
                 errs.append(f"{type(e).__name__}: {e}")
         db.close()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— worker 顶层异常记 FATAL 不影响主流程统计
         errs.append(f"FATAL {type(e).__name__}: {e}")
     return {"worker": worker_id, "n": n, "secs": round(time.time() - t0, 3), "errs": errs[:20], "err_count": len(errs)}
 
@@ -71,10 +76,10 @@ def worker_conflict_write(worker_id, ids, rounds):
             nid = ids[r % len(ids)]
             try:
                 db.update_payload(nid, {"conflict": worker_id, "round": r, "rand": rng.random()})
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 —— 冲突写异常记入 errs 继续测量并发行为
                 errs.append(f"update {type(e).__name__}: {e}")
         db.close()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— worker 顶层异常记 FATAL 返回
         errs.append(f"FATAL {type(e).__name__}: {e}")
     return {"worker": worker_id, "secs": round(time.time() - t0, 3), "errs": errs[:30], "err_count": len(errs)}
 
@@ -93,7 +98,7 @@ def worker_mixed(worker_id, mode, nodes, duration):
                     db.insert_with_id(10_000_000 + worker_id * 100_000 + count, rvec(rng),
                                       {"text": f"mix-w{worker_id}-{count}", "kind": "mixed"})
                     count += 1
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 —— 混合写异常记入 errs 继续压到限时结束
                     errs.append(f"{type(e).__name__}: {e}")
             else:
                 try:
@@ -103,10 +108,10 @@ def worker_mixed(worker_id, mode, nodes, duration):
                     db.get(nid)
                     db.neighbors(nid, depth=1)
                     count += 1
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 —— 读操作异常记入 errs 不中断压测
                     errs.append(f"{type(e).__name__}: {e}")
         db.close()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— 混合 worker 顶层异常记 FATAL 返回
         errs.append(f"FATAL {type(e).__name__}: {e}")
     return {"worker": worker_id, "mode": mode, "ops": count, "secs": round(time.time() - t0, 3),
             "errs": errs[:30], "err_count": len(errs)}
@@ -123,7 +128,7 @@ def child_hard_kill(target_secs):
             db.insert_with_id(20_000_000 + i, rvec(rng), {"text": f"kill-{i}", "phase": "hardkill"})
             i += 1
         db.close()
-    except Exception:
+    except Exception:  # noqa: S110, BLE001 —— 硬杀子进程异常无需处理本就被杀掉
         pass
 
 
@@ -142,7 +147,7 @@ def main():
         h = probe_db.search(rvec(), top_k=1, min_score=0.0)[0]
         report["searchhit_attrs"] = list(hit_attr(h).keys())
         report["nodeview_attrs"] = list(getattr(probe_db.get(rid), "__dict__", {}).keys()) if hasattr(probe_db.get(rid), "__dict__") else "no_dict"
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— 探针失败写入报告不影响主压测阶段
         report["probe_err"] = f"{type(e).__name__}: {e}"
     finally:
         probe_db.close()
@@ -155,7 +160,7 @@ def main():
         rng = random.Random(1)
         batch = 500
         total = 0
-        for b in range(20000 // batch):
+        for _ in range(20000 // batch):
             vecs = [rvec(rng) for _ in range(batch)]
             payloads = [{"text": f"seq-{total + j}", "phase": "seq", "n": total + j} for j in range(batch)]
             try:
@@ -163,14 +168,14 @@ def main():
                 if len(ids) != batch:
                     errs1.append(f"batch len mismatch: got {len(ids)}")
                 total += len(ids)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 —— 批量写异常记入 errs 并停止该阶段
                 errs1.append(f"batch {type(e).__name__}: {e}")
                 break
         dt = time.time() - t0
         report["stages"]["seq_batch_20k"] = {"nodes": total, "secs": round(dt, 3),
                                              "rate_per_sec": round(total / dt, 1), "errs": errs1[:20]}
         db.close()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— 阶段整体异常记 fatal 继续下一阶段
         report["stages"]["seq_batch_20k"] = {"fatal": f"{type(e).__name__}: {e}"}
 
     # ---- 阶段2：单条 insert 5000 ----
@@ -185,7 +190,7 @@ def main():
             try:
                 db.insert(rvec(rng), {"text": f"single-{i}", "phase": "single"})
                 lat.append((time.time() - s) * 1000)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 —— 单条写异常记入 errs 继续其余压测
                 errs2.append(f"{type(e).__name__}: {e}")
         dt = time.time() - t0
         lat.sort()
@@ -194,7 +199,7 @@ def main():
                                                     "p99": round(lat[int(len(lat)*0.99)], 2), "max": round(lat[-1], 2)},
                                          "errs": errs2[:20]}
         db.close()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— 阶段整体异常记 fatal 继续下一阶段
         report["stages"]["single_5k"] = {"fatal": f"{type(e).__name__}: {e}"}
 
     # ---- 阶段3：多进程并发写 8×2500 ----
@@ -205,7 +210,7 @@ def main():
             results = pool.starmap(worker_conc_write, [(w, 2500, 100_000 + w * 2500) for w in range(8)])
         report["stages"]["conc_write_8x2500"] = {"secs": round(time.time() - t0, 3), "workers": results,
                                                  "total_errs": sum(r["err_count"] for r in results)}
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— 多进程阶段部分 worker 异常汇总整体异常记 fatal
         report["stages"]["conc_write_8x2500"] = {"fatal": f"{type(e).__name__}: {e}"}
 
     # 此时 count 应为 20000+5000+20000 = 45000
@@ -213,7 +218,7 @@ def main():
         db = open_db()
         report["count_after_conc"] = db.node_count()
         db.close()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— 节点计数失败记入报告不阻断流程
         report["count_after_conc"] = f"ERR {type(e).__name__}: {e}"
 
     # ---- 阶段4：同 id 冲突写 ----
@@ -228,7 +233,7 @@ def main():
             results = pool.starmap(worker_conflict_write, [(w, ids, 800) for w in range(4)])
         report["stages"]["conflict_4x800"] = {"secs": round(time.time() - t0, 3), "workers": results,
                                               "total_errs": sum(r["err_count"] for r in results)}
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— 同 id 冲突压测异常记 fatal
         report["stages"]["conflict_4x800"] = {"fatal": f"{type(e).__name__}: {e}"}
 
     # ---- 阶段5：图谱 6 万边 + expand 检索 ----
@@ -240,7 +245,7 @@ def main():
         # 取前 30000 个 id 建随机边（每节点平均 2 条）
         ids = list(range(1, 30001))
         linked = 0
-        for i in range(60000):
+        for _ in range(60000):
             a = ids[rng.randrange(len(ids))]
             b = ids[rng.randrange(len(ids))]
             if a == b:
@@ -248,11 +253,11 @@ def main():
             try:
                 db.link(a, b, label="RELATED_TO", weight=rng.random())
                 linked += 1
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 —— 建边异常记入 errs 继续载入图数据
                 errs5.append(f"link {type(e).__name__}: {e}")
         db.close()
         report["stages"]["graph_60k_edges"] = {"linked": linked, "secs": round(time.time() - t0, 3), "errs": errs5[:20]}
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— 建边阶段异常记 fatal 继续后续阶段
         report["stages"]["graph_60k_edges"] = {"fatal": f"{type(e).__name__}: {e}"}
 
     # expand 检索性能
@@ -262,18 +267,18 @@ def main():
     try:
         db = open_db()
         rng = random.Random(6)
-        for i in range(200):
+        for _ in range(200):
             try:
                 h = db.search(rvec(rng), top_k=10, min_score=0.0, expand_depth=2)
                 qs.append(len(h))
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 —— 扩展检索异常记入 errs 继续采样
                 errs5b.append(f"search d2 {type(e).__name__}: {e}")
         dt = time.time() - t0
         report["stages"]["expand_search_200"] = {"queries": 200, "secs": round(dt, 3),
-                                                 "avg_results": round(sum(qs)/len(qs), 1) if qs else 0,
-                                                 "rate_per_sec": round(200/dt, 2), "errs": errs5b[:20]}
+                                                  "avg_results": round(sum(qs)/len(qs), 1) if qs else 0,
+                                                  "rate_per_sec": round(200/dt, 2), "errs": errs5b[:20]}
         db.close()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— 扩展检索阶段异常记 fatal
         report["stages"]["expand_search_200"] = {"fatal": f"{type(e).__name__}: {e}"}
 
     # ---- 阶段6：混合压力 60 秒 ----
@@ -282,14 +287,14 @@ def main():
         # 读节点池（前 2000 个节点 id）
         node_pool = list(range(1, 2001))
         ctx = mp.get_context("spawn")
-        tasks = [("w", w, None, 60) for w in range(4)] + [("r", w, node_pool, 60) for w in range(4)]
+        [("w", w, None, 60) for w in range(4)] + [("r", w, node_pool, 60) for w in range(4)]
         with ctx.Pool(8) as pool:
             results = pool.starmap(worker_mixed, [("writer", w, None, 60) for w in range(4)] +
                                                   [("reader", w, node_pool, 60) for w in range(4)])
         report["stages"]["mixed_60s"] = {"secs": round(time.time() - t0, 3), "workers": results,
                                          "total_ops": sum(r["ops"] for r in results),
                                          "total_errs": sum(r["err_count"] for r in results)}
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— 混合压测整体异常记 fatal
         report["stages"]["mixed_60s"] = {"fatal": f"{type(e).__name__}: {e}"}
 
     # ---- 阶段7：硬杀恢复 ----
@@ -303,7 +308,7 @@ def main():
         proc.kill()
         proc.wait(timeout=10)
         report["stages"]["hard_kill"] = {"killed_after_secs": 12, "child_retcode": proc.returncode}
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— 硬杀阶段异常记 fatal 恢复校验仍可进行
         report["stages"]["hard_kill"] = {"fatal": f"{type(e).__name__}: {e}"}
 
     # 硬杀后重开：能否打开？count 是否一致？
@@ -320,17 +325,17 @@ def main():
                 nv = db.get(nid)
                 if nv is None:
                     bad += 1
-            except Exception:
+            except Exception:  # noqa: BLE001 —— 抽查读取异常计坏节点统计恢复质量
                 bad += 1
         report["reopen_after_kill"]["sample_bad"] = bad
         # search sanity
         try:
             h = db.search(rvec(rng), top_k=5, min_score=0.0)
             report["reopen_after_kill"]["search_ok"] = len(h) >= 0
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 —— 恢复后检索异常记入报告其余校验继续
             report["reopen_after_kill"]["search_err"] = f"{type(e).__name__}: {e}"
         db.close()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— 重开库异常记 ok:False 报告
         report["reopen_after_kill"] = {"ok": False, "err": f"{type(e).__name__}: {e}"}
 
     # ---- 阶段8：compact + 最终核对 ----
@@ -344,7 +349,7 @@ def main():
                                        "consistent": before == after,
                                        "est_memory_mb": round(db.estimated_memory() / (1024*1024), 2) if hasattr(db, "estimated_memory") else None}
         db.close()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— compact 异常记 fatal 最终核对仍继续
         report["stages"]["compact"] = {"fatal": f"{type(e).__name__}: {e}"}
 
     # 最终核对：总 count、抽查
@@ -352,14 +357,12 @@ def main():
         db = open_db()
         report["final_count"] = db.node_count()
         db.close()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— 最终计数失败记 ERR 不阻断报告输出
         report["final_count"] = f"ERR {type(e).__name__}: {e}"
 
     # 磁盘占用
-    try:
+    with contextlib.suppress(Exception):
         report["db_size_mb"] = round(os.path.getsize(DB) / (1024*1024), 2)
-    except Exception:
-        pass
 
     with open(REPORT, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2, default=str)

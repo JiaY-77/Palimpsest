@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 TriviumDB 0.8.3 特性测试 —— 并发与安全（P2）
 ===================================================
@@ -18,8 +17,7 @@ import sys
 import tempfile
 
 import pytest
-
-import triviumdb  # noqa: E402
+import triviumdb
 
 _LOCK_CHILD = os.path.join(os.path.dirname(__file__), "_tdb_lock_child.py")
 

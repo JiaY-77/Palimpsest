@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 FTS5 全文搜索索引（trigram 分词器，支持中文任意子串匹配）。
 独立 SQLite 索引文件（fts.db），丢了可 rebuild，不是主库。
@@ -70,7 +69,7 @@ def sync_node(node_id: int, content: str, source_path: str = "") -> bool:
         else:
             remove_node(node_id)
         return True
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— FTS 索引失败仅告警返回 False 不破坏契约
         logger.warning("FTS 索引同步失败 node=%s: %s", node_id, e)
         return False
 
@@ -155,7 +154,7 @@ def search_fts(query: str, limit: int = 10) -> list[dict]:
                 (pattern, int(limit)),
             ).fetchall()
         return [{"node_id": r[0], "content": (r[1] or "")[:120]} for r in rows]
-    except Exception:
+    except Exception:  # noqa: BLE001 —— 全文检索失败返回空列表查询侧天然降级
         return []
     finally:
         conn.close()

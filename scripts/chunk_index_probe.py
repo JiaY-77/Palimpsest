@@ -63,18 +63,19 @@ for p in sorted(ORIG_DB.parent.iterdir()):
     if p.name.startswith(ORIG_DB.name) and p.is_file():
         try:
             shutil.copy2(p, TMP / p.name)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 —— 库副本复制失败仅告警后续校验兜底
             print(f"  [warn] 复制 {p.name} 失败（忽略）: {e}")
 if ORIG_FTS.exists():
     try:
         shutil.copy2(ORIG_FTS, TMP / ORIG_FTS.name)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— FTS 副本复制失败仅告警后续校验兜底
         print(f"  [warn] 复制 fts.db 失败（忽略）: {e}")
 os.environ["DB_PATH"] = str(TMP / ORIG_DB.name)
 
+from metrics import mrr_at_k, recall_at_k  # noqa: E402
+
 from config import Config  # noqa: E402
 from core.trivium_store import TriviumStore  # noqa: E402
-from metrics import mrr_at_k, recall_at_k  # noqa: E402
 
 MODEL = Config.OLLAMA_EMBEDDING_MODEL
 
@@ -107,7 +108,7 @@ def embed_batch(texts: list[str], batch: int = 64) -> np.ndarray:
             if not vecs or len(vecs) != len(part):
                 raise RuntimeError("embed 返回数量不符")
             out.extend(vecs)
-        except Exception:
+        except Exception:  # noqa: BLE001 —— 批量嵌入失败逐条回退保证部分结果
             for t in part:
                 rr = requests.post(f"{url}/api/embeddings",
                                    json={"model": model, "prompt": t[:2500]}, timeout=180)
@@ -253,7 +254,7 @@ def main() -> None:
         top = np.argpartition(-cs, min(kmax, len(cs) - 1))[:kmax]
         top = top[np.argsort(-cs[top])]
         chunk_ranks = {}
-        ceil_hit = {K: False for K in topks}
+        ceil_hit = dict.fromkeys(topks, False)
         gold = set(it["gold_ids"])
         for rank, bi in enumerate(top, 1):
             o = int(owner[bi])

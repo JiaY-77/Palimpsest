@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 FTS 索引一致性巡检脚本
 ======================
@@ -27,18 +26,18 @@ import sqlite3
 import sys
 
 try:
-    from _common import SCRIPT_DIR as _SCRIPT_DIR, PROJECT_ROOT as _PROJECT_ROOT
+    from _common import SCRIPT_DIR as _SCRIPT_DIR
 except ImportError:
     import os as _os
     _scripts_dir = _os.path.dirname(_os.path.abspath(__file__))
     if _scripts_dir not in sys.path:
         sys.path.insert(0, _scripts_dir)
-    from _common import SCRIPT_DIR as _SCRIPT_DIR, PROJECT_ROOT as _PROJECT_ROOT
+    from _common import SCRIPT_DIR as _SCRIPT_DIR
 if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
 
-from core.fts_index import _db_path  # noqa: E402  复用 fts.db 路径
-from core.trivium_store import TriviumStore  # noqa: E402
+from core.fts_index import _db_path
+from core.trivium_store import TriviumStore
 
 
 def _fts_node_ids() -> tuple[dict, int]:

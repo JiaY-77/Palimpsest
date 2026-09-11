@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 小说设定库入库脚本
 ==================
@@ -32,12 +31,11 @@ insert_node / update_payload / update_vector / delete_node 用例一致）。
 """
 import argparse
 import os
-import time
 
 # 确保能 import 项目 core 模块（以项目根为基准，_common 导入即把项目根注入 sys.path）
-import _common  # noqa: E402,F401
+import _common  # noqa: F401
 
-from core.trivium_store import TriviumStore  # noqa: E402
+from core.trivium_store import TriviumStore
 
 # 节点类型与域（与 mcp_server 的 novel 区块检索条件保持一致）
 CHUNK_TYPE = "novel_chunk"
@@ -145,7 +143,7 @@ def _load_existing_map(store) -> dict:
 def _count_by_kind(store) -> dict:
     """扫描库中全部 domain=novel 节点，按 kind 统计块数，返回 {kind: count}。"""
     counts = {}
-    for nid, payload in store.iter_payloads():
+    for _nid, payload in store.iter_payloads():
         if payload.get("type") != CHUNK_TYPE:
             continue
         if payload.get("domain") != DOMAIN:
@@ -158,7 +156,7 @@ def _count_by_kind(store) -> dict:
 def _count_novel_nodes(store) -> int:
     """统计库中全部 domain=novel 节点数。"""
     total = 0
-    for nid, payload in store.iter_payloads():
+    for _nid, payload in store.iter_payloads():
         if payload.get("type") != CHUNK_TYPE:
             continue
         if payload.get("domain") == DOMAIN:
@@ -200,7 +198,7 @@ def _upsert_node(store, payload: dict, content: str, existing: dict) -> str:
     return "inserted"
 
 
-def build(source: str = None, store=None, full: bool = False) -> dict:
+def build(source: str | None = None, store=None, full: bool = False) -> dict:
     """构建小说设定库索引（v1.0）。
 
     full=True（--full）：先删除库里所有 domain=novel 旧节点（delete_node 连带
@@ -232,7 +230,7 @@ def build(source: str = None, store=None, full: bool = False) -> dict:
             try:
                 store.delete_node(entry["node_id"])
                 deleted += 1
-            except Exception as e:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 —— 旧节点删除失败计数后跳过继续清库
                 failed += 1
                 failed_paths.append(rel)
         existing = {}
@@ -240,7 +238,7 @@ def build(source: str = None, store=None, full: bool = False) -> dict:
         for fp in md_files:
             rel = _rel_path(fp, source)
             try:
-                with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+                with open(fp, encoding="utf-8", errors="ignore") as f:
                     text = f.read()
                 mtime = os.path.getmtime(fp)
                 content = _strip_frontmatter(text)
@@ -254,7 +252,7 @@ def build(source: str = None, store=None, full: bool = False) -> dict:
                     inserted += 1
                 else:
                     updated += 1
-            except Exception as e:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 —— 单文件处理失败计数后跳过继续其余文件
                 failed += 1
                 failed_paths.append(rel)
     else:
@@ -264,7 +262,7 @@ def build(source: str = None, store=None, full: bool = False) -> dict:
             rel = _rel_path(fp, source)
             known_paths.add(rel)
             try:
-                with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+                with open(fp, encoding="utf-8", errors="ignore") as f:
                     text = f.read()
                 mtime = os.path.getmtime(fp)
                 content = _strip_frontmatter(text)
@@ -283,7 +281,7 @@ def build(source: str = None, store=None, full: bool = False) -> dict:
                     inserted += 1
                 else:
                     updated += 1
-            except Exception as e:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 —— 增量处理失败计数后跳过继续其余文件
                 failed += 1
                 failed_paths.append(rel)
         # 孤儿清理：existing 中有但磁盘上已不存在的源文件旧节点删除
@@ -293,7 +291,7 @@ def build(source: str = None, store=None, full: bool = False) -> dict:
             try:
                 store.delete_node(entry["node_id"])
                 deleted += 1
-            except Exception as e:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 —— 孤儿节点删除失败计数后跳过继续清理
                 failed += 1
                 failed_paths.append(rel)
 

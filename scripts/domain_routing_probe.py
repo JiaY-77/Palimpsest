@@ -81,18 +81,19 @@ for p in sorted(ORIG_DB.parent.iterdir()):
     if p.name.startswith(ORIG_DB.name) and p.is_file():
         try:
             shutil.copy2(p, TMP / p.name)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 —— 库副本复制失败仅告警 SHA 校验兜底
             print(f"  [warn] 复制 {p.name} 失败（忽略）: {e}")
 if ORIG_FTS.exists():
     try:
         shutil.copy2(ORIG_FTS, TMP / ORIG_FTS.name)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— FTS 副本复制失败仅告警后续校验兜底
         print(f"  [warn] 复制 fts.db 失败（忽略）: {e}")
 os.environ["DB_PATH"] = str(TMP / ORIG_DB.name)
 
+from metrics import mrr_at_k, recall_at_k  # noqa: E402
+
 from config import Config  # noqa: E402
 from core.trivium_store import TriviumStore  # noqa: E402
-from metrics import mrr_at_k, recall_at_k  # noqa: E402
 
 EMB_MODEL = Config.OLLAMA_EMBEDDING_MODEL
 
@@ -124,7 +125,7 @@ def embed_batch(texts, batch=32):
             if not vecs or len(vecs) != len(part):
                 raise RuntimeError("embed 数量不符")
             out.extend(vecs)
-        except Exception:
+        except Exception:  # noqa: BLE001 —— 批量嵌入失败逐条回退保证部分结果
             for t in part:
                 rr = requests.post(f"{url}/api/embeddings",
                                    json={"model": EMB_MODEL, "prompt": t[:2500]}, timeout=180)
@@ -189,7 +190,7 @@ def main() -> None:
             t1 = time.time()
             try:
                 lab = classify(args.model, it["query"])
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 —— 分类失败兜底 general 并记录错误继续评估
                 lab = "general"
                 bucket[it["qid"]] = {"q": it["query"], "label": lab, "err": str(e)[:100]}
                 continue
@@ -217,10 +218,10 @@ def main() -> None:
         lab = llm_lab.get(it["qid"], "general")
         truth = gold_grp[it["qid"]]
 
-        def hard(target):
+        def hard(target, order=order):
             return [nids[i] for i in order if grp[i] == target]
 
-        def soft(target, boost=None):
+        def soft(target, boost=None, sc=sc):
             b = args.boost if boost is None else boost
             s2 = sc + np.asarray([b if g == target else 0.0 for g in grp])
             return [nids[i] for i in np.argsort(-s2)]
@@ -275,17 +276,17 @@ def main() -> None:
     print("\nΔ 相对 base（pp）与逐题 gain/loss（R@5）：")
     for k in keys[1:]:
         m = res[k]
-        g = l = 0
+        g = loss = 0
         for r in rows:
             gold = set(r["gold"])
             a, b2 = recall_at_k(r["base"], gold, 5), recall_at_k(r[k], gold, 5)
             if b2 > a:
                 g += 1
             elif b2 < a:
-                l += 1
+                loss += 1
         print(f"  {k:<14} ΔR@1 {100 * (m['R@1'] - b['R@1']):+6.2f} | ΔR@5 {100 * (m['R@5'] - b['R@5']):+6.2f} "
               f"| ΔR@10 {100 * (m['R@10'] - b['R@10']):+6.2f} | ΔMRR {100 * (m['MRR'] - b['MRR']):+6.2f} "
-              f"| 逐题 +{g}/−{l}")
+              f"| 逐题 +{g}/−{loss}")
 
     post_sha = sha256(ORIG_DB)
     print(f"\n库完整性: 前 {pre_sha[:16]} 后 {post_sha[:16]} → "

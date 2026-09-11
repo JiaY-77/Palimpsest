@@ -46,7 +46,7 @@ def ndcg_at_k(
 
     actual = [rel_map[rid] for rid in top]
     ideal = sorted(
-        [1.0] * len(gold) + [0.5] * len(partial if partial else set()),
+        [1.0] * len(gold) + [0.5] * len(partial or set()),
         reverse=True,
     )[:k]
     dcg_val = _dcg(actual)
