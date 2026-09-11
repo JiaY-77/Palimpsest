@@ -67,7 +67,7 @@
 
   图/算法侧同步恢复：pagerank TQL 3.995s → 0.212s（~19x）、leiden 1.049s → 0.885s、search_advanced 认知管线 31.8/s → 120.0/s（~3.8x）、老 API expand3 8.3/s → 24.5/s（~3x）。0.8.7 附带能力：TQL 单跳边变量一等投影（`MATCH (a)-[r]->(b) RETURN r`）、服务端图探索 API、投影列元数据。
 
-- 已知遗留（0.8.7 新发现，非本项目主路径）：无索引 / 位图路径的 `FIND ... LIMIT` 早停比 0.8.6 慢约 20x（50k 节点等值 LIMIT 10：51k/s → 2.35k/s），系 PR #50「修 composite 零命中 + 去重复 payload 读」移除 planner 的 limit 早返回所致。上层记忆服务检索走 `search()`/payload_filter 路径，不受影响；已留同库 A/B 脚本备查（`scripts/tdb_stress/_ab_findlim_087.py`）。→ 0.8.8 只修了有序索引路径，无索引路径仍未修（见上）。
+- 已知遗留（0.8.7 新发现，非本项目主路径）：无索引 / 位图路径的 `FIND ... LIMIT` 早停比 0.8.6 慢约 20x（50k 节点等值 LIMIT 10：51k/s → 2.35k/s），系 PR #50「修 composite 零命中 + 去重复 payload 读」移除 planner 的 limit 早返回所致。上层记忆服务检索走 `search()`/payload_filter 路径，不受影响；同库 A/B 探针为本地一次性脚本（未入库）。→ 0.8.8 只修了有序索引路径，无索引路径仍未修（见上）。
 
 - **triviumdb 0.8.5 → 0.8.6**：上游大版本（tiered payloads + composable analytics + 服务端加固 + 发布治理）。存储格式 v7 → v9（payload 迁至 generation-scoped mmap sidecar `.pld.<gen>`，flush marker v3），打开旧库自动兼容、flush/close 时自动升级（MINIMUM_SUPPORTED_VERSION 仍为 5，早于 0.7.0 的文件需手动迁移）。本地零手工迁移：备份 `data/backup_20260906` → 副本冒烟（v7 打开/flush 升 v9/重开验证）→ 真实库由服务打开自动升级。我们提的 #39（SEARCH VECTOR 科学计数法解析）与 #40（FIND 范围/复合谓词慢）上游已标 solved 并验证：科学计数法 30/30 全过；复合谓词同库 A/B 2.0ms→0.6ms（约 3.3x）。测试断言随格式更新（storage_info database_format_current 7→9）
 

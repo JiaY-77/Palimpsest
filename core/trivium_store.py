@@ -367,7 +367,7 @@ class TriviumStore:
         行为变化说明：
           - SA-PPR 认知管线的分数 scale 与旧 BFS 完全不同（非逐跳 ×weight），
             排序结果可能与旧版有差异——这是预期的、已通过一致性对比测试验证
-            （scripts/tdb_stress/_a1_consistency_test.py）。
+            （该一致性对比为本地一次性探针，未入库）。
           - teleport_alpha=0.0（纯向量+扩散，无随机跳跃）+ expand_depth 透传
             参数，与现状行为最接近。
           - block 参数：若非空，search_advanced 返回的候选会经过 Python 后置
