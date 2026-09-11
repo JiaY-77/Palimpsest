@@ -1,4 +1,4 @@
-"""检索期分块重打分的打分子对比（离线探针，8 个变体）。
+"""检索期分块重打分的打分子对比（离线探针，15 个变体）。
 
 与既有的检索期分块探针同口径（候选获取 / 题集 / 库副本 / embedding 模型完全一致），
 只变「打分子」，严格单变量：
@@ -12,6 +12,12 @@
   rrf_layered   RRF(k=60) 融合 layered_max 与 layered_top2 两路排序（跨域融合路线）
   calib_max     kb 用整条余弦；非 kb 按块 max 的组内秩映射到「非 kb 组 base 分分布」
                 （跨域分数校准路线；见 eval/docs/10-chunk-calibration.md）
+  calib_s80/s60/s40  软校准：α·base + (1−α)·calib_max 映射分（α 越小越接近 calib_max）
+  calib_cond2/cond3  条件校准：只对块数 ≥2 / ≥3 的非 kb 节点校准，其余保持整条余弦
+  calib_head         保头校准：非 kb 组内 base 分最高者不被组内他人反超
+  calib_dom          分域校准：非 kb 内部按真实 domain 分组，映射到组内 base 分分布
+                （以上四个细化路线的结论：见 eval/docs/11-score-calibration-round3.md
+                 —— 全部增益 ≤1 题、与噪声同阶，本路线判定为已到边际）
 
 分组口径：按候选节点的真实 domain 字段（gold 节点 payload.domain）分组，
           不用题目的 layer 字段（历史上 layer 与真实 domain 不对齐，会造成分层表失真）。
@@ -55,7 +61,9 @@ ORIG_DB = (Path(_env_db) if os.path.isabs(_env_db) else ROOT / _env_db) if _env_
 ORIG_FTS = ORIG_DB.parent / "fts.db"
 
 VARIANTS = ("base", "max", "mean_top2", "max_div_sqrt", "layered_top2", "layered_max",
-            "rrf_layered", "calib_max")
+            "rrf_layered", "calib_max",
+            "calib_s80", "calib_s60", "calib_s40", "calib_cond2", "calib_cond3",
+            "calib_head", "calib_dom")
 
 # 方向⑤新增变体说明：
 #   rrf_layered  RRF(k=60) 融合 layered_max 与 layered_top2 两路排序
@@ -265,6 +273,44 @@ def main() -> None:
             for r, i in enumerate(order):
                 p = 1.0 - (r + 0.5) / n_nk
                 scores["calib_max"][i] = float(np.interp(p, grid, ref))
+
+        # ---- 方向⑤ 第3轮：软校准 / 条件校准 / 保头校准 / 分域校准 ----
+        # 四个新变体都以 calib_max 的「非 kb 映射分」为基础，kb 侧一律保持整条余弦（同 calib_max）。
+        for key in ("calib_s80", "calib_s60", "calib_s40", "calib_cond2", "calib_cond3",
+                    "calib_head", "calib_dom"):
+            scores[key] = np.array(base_scores, dtype=np.float64)
+        if nonkb_pos:
+            mapped = {i: float(scores["calib_max"][i]) for i in nonkb_pos}
+            # (a) 软校准：score = α·base + (1−α)·mapped，把「重排」降级为「微调」
+            #     （α=1 → base，α=0 → calib_max；扫 0.8/0.6/0.4 找 R@1 与 R@5 的平衡点）
+            for a, key in ((0.8, "calib_s80"), (0.6, "calib_s60"), (0.4, "calib_s40")):
+                for i in nonkb_pos:
+                    scores[key][i] = a * float(base_scores[i]) + (1.0 - a) * mapped[i]
+            # (b) 条件校准：只对块数 ≥ 阈值的非 kb 节点校准
+            #     （块数 1 时 max == 整条余弦，本不需要动；映射反而破坏其分数）
+            for t, key in ((2, "calib_cond2"), (3, "calib_cond3")):
+                for i in nonkb_pos:
+                    scores[key][i] = (mapped[i] if len(node_sims[i]) >= t
+                                      else float(base_scores[i]))
+            # (c) 保头校准：非 kb 组内 base 分最高者不被组内他人反超（护住 R@1 头部）
+            for i in nonkb_pos:
+                scores["calib_head"][i] = mapped[i]
+            top_base = max(nonkb_pos, key=lambda i: float(base_scores[i]))
+            scores["calib_head"][top_base] = max(float(base_scores[top_base]),
+                                                 max(mapped.values()))
+            # (d) 分域校准：非 kb 内部按真实 domain 各自分组，映射到组内 base 分分布
+            for d in sorted({doms[i] for i in nonkb_pos}):
+                grp = [i for i in nonkb_pos if doms[i] == d]
+                if len(grp) == 1:
+                    scores["calib_dom"][grp[0]] = float(base_scores[grp[0]])
+                    continue
+                ref_d = np.sort(np.asarray([float(base_scores[i]) for i in grp],
+                                           dtype=np.float64))
+                grid_d = np.linspace(0.0, 1.0, len(ref_d))
+                order_d = sorted(grp, key=lambda i: -scores["max"][i])
+                for r, i in enumerate(order_d):
+                    p = 1.0 - (r + 0.5) / len(order_d)
+                    scores["calib_dom"][i] = float(np.interp(p, grid_d, ref_d))
 
         row = {"qid": it["qid"], "layer": it.get("layer"),
                "gold": it["gold_ids"], "gold_domain": gold_domain[it["qid"]],
