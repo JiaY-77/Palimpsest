@@ -6,6 +6,26 @@ on:
   pull_request:
 
 jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 规则集由 pyproject.toml 的 [tool.ruff] 决定；ruff 版本与 requirements-dev.txt 对齐，
+      # 避免门禁含义随版本漂移
+      - name: Install ruff
+        run: pip install ruff==0.16.7
+
+      - name: Ruff check
+        run: ruff check .
+
   test:
     runs-on: ubuntu-latest
     strategy:

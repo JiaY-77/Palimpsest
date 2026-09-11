@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """已完成任务节点自动归档：扫描 task 域已完成节点 → 写入知识库归档目录 → 删除节点。
 
 归档目标：KNOWLEDGE_DIR/05_任务归档/{YYYYMMDD}_{title}.md（Obsidian 知识库）。
@@ -12,7 +11,6 @@ import logging
 import os
 import re
 from datetime import datetime
-from typing import Any
 
 from core.fts_index import remove_node
 from core.trivium_store import TriviumStore, node_domain

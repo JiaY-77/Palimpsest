@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 检索体检探针 —— 固化已验证探针查询，输出 top-1 命中率 + 延迟。
 
@@ -24,8 +23,8 @@ try:
     except ImportError:
         from scripts._common import PROJECT_ROOT as _PROJECT_ROOT
 
-    from mcp_tools import mem_search  # noqa: E402
-    from config import Config  # noqa: E402
+    from config import Config
+    from mcp_tools import mem_search
 except ImportError as _import_err:
     _hint = (
         "\n"
@@ -166,7 +165,7 @@ def print_human(results: list[dict]) -> None:
     for i, r in enumerate(results):
         print(_fmt_result(r, i))
         print()
-    print(f"─── 汇总 ───")
+    print("─── 汇总 ───")
     print(f"top-1 命中率 {hits}/{total}")
     if latencies:
         print(
@@ -222,7 +221,7 @@ def load_probe_file(path: str) -> list[dict]:
         print(f"错误：探针文件不存在: {path}", file=sys.stderr)
         sys.exit(2)
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except json.JSONDecodeError as e:
         print(f"错误：探针文件 JSON 非法: {e}", file=sys.stderr)

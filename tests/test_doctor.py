@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 doctor 命令测试 —— 覆盖 embedding 正常/不可用、维度不一致、CLI 层。
 
@@ -44,8 +43,8 @@ def test_doctor_all_pass(iso_db, monkeypatch):
     import core.startup_check as sc
 
     def _fake_check_embedding():
-        from core.trivium_store import TriviumStore
         from core.startup_check import _all_zero
+        from core.trivium_store import TriviumStore
         emb = TriviumStore().embed_text("ping")
         if _all_zero(emb):
             raise RuntimeError("Embedding 返回全零向量")
@@ -112,8 +111,9 @@ def test_doctor_embedding_unavailable(iso_db, monkeypatch):
 
 def test_doctor_dimension_mismatch(iso_db, monkeypatch):
     """实测 512 维 vs 库 1024 维：维度检查失败并给出新建库步骤。"""
-    import math
     import hashlib
+    import math
+
     from core.trivium_store import TriviumStore
 
     def _dim512_embed(text):

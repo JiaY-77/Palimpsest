@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 mcp_tools —— MCP 工具包
 ======================
@@ -13,22 +12,40 @@ mcp_tools —— MCP 工具包
 包被 import 时即触发全部 @mcp.tool() 注册（FastMCP 装饰器在 import 时执行）。
 """
 
-from mcp_tools._common import mcp, store  # noqa: E402
-from mcp_tools.consolidate_tool import mem_consolidate  # noqa: E402
-from mcp_tools.graph import graph_neighbors, mem_communities, mem_link  # noqa: E402
-from mcp_tools.kb import kb_index, kb_search  # noqa: E402
-from mcp_tools.memory import (  # noqa: E402
-    mem_get_full, mem_hybrid_search, mem_ingest, mem_recent, mem_retrieve,
-    mem_review, mem_search, mem_version_history,
+from mcp_tools._common import mcp, store
+from mcp_tools.consolidate_tool import mem_consolidate
+from mcp_tools.graph import graph_neighbors, mem_communities, mem_link
+from mcp_tools.kb import kb_index, kb_search
+from mcp_tools.memory import (
+    mem_get_full,
+    mem_hybrid_search,
+    mem_ingest,
+    mem_recent,
+    mem_retrieve,
+    mem_review,
+    mem_search,
+    mem_version_history,
 )
-from mcp_tools.routing import router_query  # noqa: E402
-from mcp_tools.stats_tool import mem_stats  # noqa: E402
+from mcp_tools.routing import router_query
+from mcp_tools.stats_tool import mem_stats
 
 __all__ = [
-    "store", "mcp",
-    "mem_retrieve", "mem_get_full", "mem_ingest", "mem_recent", "mem_review",
-    "mem_version_history", "mem_search", "mem_hybrid_search", "mem_consolidate",
-    "kb_index", "kb_search",
-    "graph_neighbors", "mem_communities", "mem_link",
-    "router_query", "mem_stats",
+    "graph_neighbors",
+    "kb_index",
+    "kb_search",
+    "mcp",
+    "mem_communities",
+    "mem_consolidate",
+    "mem_get_full",
+    "mem_hybrid_search",
+    "mem_ingest",
+    "mem_link",
+    "mem_recent",
+    "mem_retrieve",
+    "mem_review",
+    "mem_search",
+    "mem_stats",
+    "mem_version_history",
+    "router_query",
+    "store",
 ]

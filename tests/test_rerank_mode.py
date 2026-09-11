@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 tests/test_rerank_mode.py —— 检索排序元数据加权测试（soft ε 软加权 vs hard 乘性硬加权）
 
@@ -17,9 +16,8 @@ import time
 
 import pytest
 
-from config import Config  # noqa: E402
-from core.trivium_store import TriviumStore  # noqa: E402
-
+from config import Config
+from core.trivium_store import TriviumStore
 
 # ---------------------------------------------------------------------------
 # 假组件：可控 search_advanced 返回（替代真实向量检索）

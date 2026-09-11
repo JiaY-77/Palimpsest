@@ -1,12 +1,17 @@
-# -*- coding: utf-8 -*-
 """
 TriviumDB 0.8.0 高压压测脚本（隔离临时库，不碰 Palimpsest 真实 data/）
 维度：顺序批量写 / 单条写 / 多进程并发写 / 同 id 冲突写 / 图谱扩展检索 / 混合读写 / 硬杀恢复 / compact
 输出：JSON 报告 + 控制台摘要
 """
-import os, sys, time, json, random, math, tempfile, traceback, subprocess, signal
-from datetime import datetime
+import json
 import multiprocessing as mp
+import os
+import random
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -20,7 +25,7 @@ REPORT = os.path.join(BASE, "report.json")
 
 
 def rvec(rng=None):
-    r = rng if rng else random
+    r = rng or random
     return [r.random() for _ in range(DIM)]
 
 

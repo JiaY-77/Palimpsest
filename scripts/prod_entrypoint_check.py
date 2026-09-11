@@ -50,8 +50,9 @@ if ORIG_FTS.exists():
     shutil.copy2(ORIG_FTS, TMP / ORIG_FTS.name)
 os.environ["DB_PATH"] = str(TMP / ORIG_DB.name)
 
-from config import Config  # noqa: E402
 from metrics import mrr_at_k, recall_at_k  # noqa: E402
+
+from config import Config  # noqa: E402
 from mcp_tools.memory import _mem_search_impl  # noqa: E402
 
 LAYERS = ("hermes", "kb", "novel", "other")

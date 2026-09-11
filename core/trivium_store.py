@@ -5,6 +5,7 @@ import time
 from typing import Any
 
 import triviumdb
+
 from config import Config
 from core.secret_scan import SecretScanError, scan_secret_classified
 from core.utils import _to_float

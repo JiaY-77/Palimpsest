@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 tests/test_search_candidates.py —— 候选层 outdated 过滤测试
 
@@ -12,8 +11,7 @@ tests/test_search_candidates.py —— 候选层 outdated 过滤测试
 
 import pytest
 
-from config import Config  # noqa: E402
-from core.trivium_store import TriviumStore  # noqa: E402
+from core.trivium_store import TriviumStore
 
 
 class _FakeHit:

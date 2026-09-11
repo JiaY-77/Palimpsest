@@ -19,11 +19,11 @@
 import argparse
 import json
 import random
-import string
 import threading
 import time
-import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import requests
 
 random.seed(42)
 

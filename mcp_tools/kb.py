@@ -1,17 +1,20 @@
-# -*- coding: utf-8 -*-
 """
 mcp_tools.kb —— 知识库相关工具
 =============================
 kb_index（扫描知识库根目录 .md）/ kb_search（只查 type=kb_chunk 的语义检索）。
 """
 
-import os  # noqa: E402
+import os
 
-from config import Config  # noqa: E402
-from core.utils import _to_float  # noqa: E402
-
-from mcp_tools._common import (  # noqa: E402
-    KNOWLEDGE_DIR, _kb_md_files, _shorten, _to_json, mcp, store,
+from config import Config
+from core.utils import _to_float
+from mcp_tools._common import (
+    KNOWLEDGE_DIR,
+    _kb_md_files,
+    _shorten,
+    _to_json,
+    mcp,
+    store,
 )
 
 

@@ -72,9 +72,10 @@ if ORIG_FTS.exists():
         print(f"  [warn] 复制 fts.db 失败（忽略）: {e}")
 os.environ["DB_PATH"] = str(TMP / ORIG_DB.name)
 
+from metrics import mrr_at_k, recall_at_k  # noqa: E402
+
 from config import Config  # noqa: E402
 from core.trivium_store import TriviumStore  # noqa: E402
-from metrics import mrr_at_k, recall_at_k  # noqa: E402
 
 MODEL = Config.OLLAMA_EMBEDDING_MODEL
 
@@ -253,7 +254,7 @@ def main() -> None:
         top = np.argpartition(-cs, min(kmax, len(cs) - 1))[:kmax]
         top = top[np.argsort(-cs[top])]
         chunk_ranks = {}
-        ceil_hit = {K: False for K in topks}
+        ceil_hit = dict.fromkeys(topks, False)
         gold = set(it["gold_ids"])
         for rank, bi in enumerate(top, 1):
             o = int(owner[bi])

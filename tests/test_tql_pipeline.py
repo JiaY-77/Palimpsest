@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 TriviumDB 0.8.3 特性测试 —— TQL 管线、集合代数与 EXPLAIN（P0）
 ====================================================================
@@ -16,8 +15,7 @@ import os
 import tempfile
 
 import pytest
-
-import triviumdb  # noqa: E402
+import triviumdb
 
 
 @pytest.fixture

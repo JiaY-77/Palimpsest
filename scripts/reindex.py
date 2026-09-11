@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 全库向量重嵌入脚本 —— 换 embedding 模型后一键重建所有节点的向量。
 
@@ -28,10 +27,9 @@ import time
 try:
     from ._common import PROJECT_ROOT
 except ImportError:
-    from _common import PROJECT_ROOT
+    pass
 
 from core.trivium_store import EmbeddingUnavailableError, TriviumStore
-
 
 # ---- 进度状态文件（跟库绑定，不再硬编码到项目 data/） ----
 PROBE_TEXT = "维度校验探针文本 reindex probe"
@@ -49,7 +47,7 @@ def _load_state(state_path):
     if not os.path.exists(state_path):
         return None
     try:
-        with open(state_path, "r", encoding="utf-8") as f:
+        with open(state_path, encoding="utf-8") as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return None
@@ -450,9 +448,9 @@ def cmd_reindex(store, *, only=None, skip=None, batch=64,
     print(f"\n状态文件: {state_file}")
     if reindexed > 0:
         print("\n建议: 重嵌完成后跑一次检索冒烟验证检索结果")
-        print(f"  python scripts/palimpsest_cli.py search \"测试\" --top-k 3")
+        print("  python scripts/palimpsest_cli.py search \"测试\" --top-k 3")
         if failed == 0:
-            print(f"\n完成。")
+            print("\n完成。")
     else:
         print("\n无需重嵌入的节点。")
 

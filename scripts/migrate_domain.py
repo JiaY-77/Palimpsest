@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Palimpsest 一次性迁移：character_name → domain（消除记忆领域二义性）
 ====================================================================
@@ -24,9 +23,9 @@ Palimpsest 一次性迁移：character_name → domain（消除记忆领域二�
 import argparse
 import sys
 
-import _common  # noqa: E402,F401  导入即把项目根注入 sys.path
+import _common  # noqa: F401  导入即把项目根注入 sys.path
 
-from core.trivium_store import TriviumStore  # noqa: E402
+from core.trivium_store import TriviumStore
 
 
 def run(apply: bool = False) -> dict:

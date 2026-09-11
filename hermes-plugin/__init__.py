@@ -54,14 +54,14 @@ def _http_post(url: str, payload: dict, timeout: float = 5.0) -> dict:
         return {"error": str(exc)}
 
 
-def _msg_text(msg: Dict[str, Any]) -> str:
+def _msg_text(msg: dict[str, Any]) -> str:
     return str(msg.get("content") or "")
 
 
-def _extract_points(messages: List[Dict[str, Any]], limit: int, per_message_chars: int) -> List[str]:
+def _extract_points(messages: list[dict[str, Any]], limit: int, per_message_chars: int) -> list[str]:
     """从消息列表中提炼要点行。只接受 user/assistant 角色，去重，命中 _IMPORTANT_RE。"""
     _ALLOWED_ROLES = ("user", "assistant")
-    points: List[str] = []
+    points: list[str] = []
     seen: set = set()
     for msg in messages:
         if msg.get("role") not in _ALLOWED_ROLES:
@@ -207,7 +207,7 @@ class PalimpsestMemoryProvider(MemoryProvider):
         self._enabled = False
         self._cron_skipped = False
         self._session_id = ""
-        self._last_recall: Optional[RecallStatus] = None
+        self._last_recall: RecallStatus | None = None
 
     # -- 核心生命周期 ------------------------------------------------
 
@@ -267,7 +267,7 @@ class PalimpsestMemoryProvider(MemoryProvider):
         self._last_recall = RecallStatus(provider_label="palimpsest", count=len(hits))
         return "\n".join(lines)
 
-    def recall_status(self) -> Optional[RecallStatus]:
+    def recall_status(self) -> RecallStatus | None:
         return self._last_recall
 
     def sync_turn(
@@ -276,7 +276,7 @@ class PalimpsestMemoryProvider(MemoryProvider):
         assistant_content: str,
         *,
         session_id: str = "",
-        messages: Optional[List[Dict[str, Any]]] = None,
+        messages: list[dict[str, Any]] | None = None,
     ) -> None:
         """每轮沉淀：只在命中强信号时写入，避免库被低价值轮次污染。"""
         if not self._enabled or not self._auto_ingest:
@@ -296,7 +296,7 @@ class PalimpsestMemoryProvider(MemoryProvider):
             "domain": self._domain, "source": "hermes-sync_turn",
         })
 
-    def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+    def on_session_end(self, messages: list[dict[str, Any]]) -> None:
         """会话结束：把含强信号的消息提炼成一条要点。"""
         if not self._enabled or not self._auto_ingest:
             return
@@ -312,7 +312,7 @@ class PalimpsestMemoryProvider(MemoryProvider):
             "domain": self._domain, "source": "hermes-session_end",
         })
 
-    def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
+    def on_pre_compress(self, messages: list[dict[str, Any]]) -> str:
         """压缩前抽取要点，贡献给压缩 prompt（不写入 Palimpsest，只保上下文）。"""
         points = _extract_points(messages, limit=10, per_message_chars=200)
         return "\n".join(points)
@@ -322,10 +322,10 @@ class PalimpsestMemoryProvider(MemoryProvider):
 
     # -- 工具 --------------------------------------------------------
 
-    def get_tool_schemas(self) -> List[Dict[str, Any]]:
+    def get_tool_schemas(self) -> list[dict[str, Any]]:
         return [SEARCH_SCHEMA, INGEST_SCHEMA, LINK_SCHEMA, GRAPH_SCHEMA, ROUTER_SCHEMA]
 
-    def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
+    def handle_tool_call(self, tool_name: str, args: dict[str, Any], **kwargs) -> str:
         handlers = {
             "palimpsest_search": self._tool_search,
             "palimpsest_ingest": self._tool_ingest,
@@ -341,7 +341,7 @@ class PalimpsestMemoryProvider(MemoryProvider):
         except Exception as exc:  # noqa: BLE001
             return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
-    def _tool_search(self, args: Dict[str, Any]) -> dict:
+    def _tool_search(self, args: dict[str, Any]) -> dict:
         return _http_post(f"{self._base_url}/mem/search", {
             "query": args.get("query", ""), "scope": args.get("scope", "all"),
             "domain": args.get("domain", self._domain),
@@ -351,14 +351,14 @@ class PalimpsestMemoryProvider(MemoryProvider):
             ),
         })
 
-    def _tool_ingest(self, args: Dict[str, Any]) -> dict:
+    def _tool_ingest(self, args: dict[str, Any]) -> dict:
         return _http_post(f"{self._base_url}/mem/ingest", {
             "content": args.get("content", ""), "type": args.get("type", "memory"),
             "importance": float(args.get("importance", 0.5)),
             "domain": args.get("domain", self._domain), "source": "hermes-tool",
         })
 
-    def _tool_link(self, args: Dict[str, Any]) -> dict:
+    def _tool_link(self, args: dict[str, Any]) -> dict:
         return _http_post(f"{self._base_url}/mem/link", {
             "source_id": int(args.get("source_id", 0)),
             "target_id": int(args.get("target_id", 0)),
@@ -369,7 +369,7 @@ class PalimpsestMemoryProvider(MemoryProvider):
             ),
         })
 
-    def _tool_graph(self, args: Dict[str, Any]) -> dict:
+    def _tool_graph(self, args: dict[str, Any]) -> dict:
         return _http_post(f"{self._base_url}/graph/neighbors", {
             "node_id": int(args.get("node_id", 0)),
             "relation": args.get("relation", ""),
@@ -377,7 +377,7 @@ class PalimpsestMemoryProvider(MemoryProvider):
             "limit": int(args.get("limit", 20)),
         })
 
-    def _tool_router(self, args: Dict[str, Any]) -> dict:
+    def _tool_router(self, args: dict[str, Any]) -> dict:
         return _http_post(f"{self._base_url}/mem/router", {
             "task": args.get("task", ""), "top_k": int(args.get("top_k", 3)),
         })

@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "eval"))
 
-from pool_filter import should_write_output  # noqa: E402
+from pool_filter import should_write_output
 
 
 def test_zero_success_blocks_write() -> None:

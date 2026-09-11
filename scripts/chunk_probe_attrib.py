@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """分块重打分探针的逐题归因工具（配合 scripts/chunk_norm_probe.py 使用）。
 
 读 `eval/.tmp/chunk_norm_probe.json`（探针结果，含逐题排名），对指定变体做：

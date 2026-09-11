@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 回归测试：PUT/PATCH 部分更新合并语义 + Embedding fail-fast
 ===========================================================
@@ -82,9 +81,9 @@ def test_update_payload_missing_node_raises():
 # ---------------------------------------------------------------------------
 def test_embedding_failure_raises(monkeypatch):
     """requests.post 抛 ConnectionError → embed_text 应抛 EmbeddingUnavailableError。"""
-    from core.trivium_store import EmbeddingUnavailableError
-
     import requests
+
+    from core.trivium_store import EmbeddingUnavailableError
 
     def _boom(*args, **kwargs):
         raise requests.exceptions.ConnectionError("模拟 Ollama 未启动")

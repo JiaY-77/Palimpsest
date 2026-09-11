@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 知识库索引构建脚本
 ==================
@@ -45,18 +44,18 @@ v1.0 Upsert 重建策略：
 import argparse
 import os
 import re
-import sys
 import time
 
 # 确保能 import 项目 core 模块（以项目根为基准，_common 导入即把项目根注入 sys.path）
-import _common  # noqa: E402,F401
+import _common  # noqa: F401
 
-from config import Config  # noqa: E402
-from core.fts_index import rebuild as fts_rebuild  # noqa: E402
-from core.trivium_store import TriviumStore  # noqa: E402
+from config import Config
+from core.fts_index import rebuild as fts_rebuild
+from core.trivium_store import TriviumStore
+
 # 知识库根目录统一由 mcp_tools._common 提供（环境变量 KNOWLEDGE_DIR 优先；
 # 默认约定为项目根下 ./knowledge），避免脚本各自推导本机路径造成分叉
-from mcp_tools._common import KNOWLEDGE_DIR  # noqa: E402
+from mcp_tools._common import KNOWLEDGE_DIR
 
 # 每块字符数目标区间（简单实现：超长段按行切，尽量落在区间内）
 MIN_CHUNK_LEN = 300
@@ -246,7 +245,7 @@ def _detect_retired(md_files: list, knowledge_dir: str) -> tuple:
     for fp in md_files:
         rel = os.path.relpath(fp, knowledge_dir).replace("\\", "/")
         try:
-            with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+            with open(fp, encoding="utf-8", errors="ignore") as f:
                 head = f.read(RETIRED_HEAD_CHARS)
         except OSError:
             head = ""  # 读取失败不判退役，留给后续逻辑记录跳过
@@ -329,7 +328,7 @@ def _rebuild_file(store, fp: str, knowledge_dir: str, existing: dict) -> tuple:
     ({"file","chunks","char_lens"}, deleted_old)。
     """
     try:
-        with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+        with open(fp, encoding="utf-8", errors="ignore") as f:
             text = f.read()
     except OSError as e:
         print(f"[跳过] 读取失败: {fp}: {e}")

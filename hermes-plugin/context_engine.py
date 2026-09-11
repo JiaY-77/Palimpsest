@@ -27,7 +27,7 @@ import logging
 import os
 import time
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from agent.context_compressor import ContextCompressor
 
@@ -67,14 +67,14 @@ class PalimpsestContextEngine(ContextCompressor):
             logger.debug("Palimpsest graph REST %s failed: %s", url, exc)
             return {"error": str(exc)}
 
-    def _extract_topics(self, messages: List[Dict[str, Any]], focus_topic: Optional[str]) -> List[str]:
+    def _extract_topics(self, messages: list[dict[str, Any]], focus_topic: str | None) -> list[str]:
         """从将被压缩的消息中提取图谱查询主题。
 
         优先 focus_topic（手动 /compress <focus>）；否则取中间段 user 消息
         （跳过开头 protect_first_n 与结尾 protect_last_n 保护段，那些不压缩）。
         内容 < 8 字符的寒暄跳过。
         """
-        topics: List[str] = []
+        topics: list[str] = []
         if focus_topic and str(focus_topic).strip():
             topics.append(str(focus_topic).strip())
 
@@ -99,7 +99,7 @@ class PalimpsestContextEngine(ContextCompressor):
             topics.append(content[:120])
         return topics[: self._max_topics]
 
-    def _graph_enhancement(self, messages: List[Dict[str, Any]], focus_topic: Optional[str]) -> str:
+    def _graph_enhancement(self, messages: list[dict[str, Any]], focus_topic: str | None) -> str:
         """压缩前调 Palimpsest 图谱提炼关键链，返回注入文本；失败/无主题返回空串。
 
         总耗时预算：整体链路的多次串行 POST 受 _graph_timeout_budget 约束，
@@ -140,12 +140,12 @@ class PalimpsestContextEngine(ContextCompressor):
 
     def compress(
         self,
-        messages: List[Dict[str, Any]],
-        current_tokens: Optional[int] = None,
-        focus_topic: Optional[str] = None,
+        messages: list[dict[str, Any]],
+        current_tokens: int | None = None,
+        focus_topic: str | None = None,
         force: bool = False,
         memory_context: str = "",
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """内置压缩 + 图谱增强：把 Palimpsest 提炼的关键链合并进 memory_context。"""
         try:
             enhancement = self._graph_enhancement(messages, focus_topic)

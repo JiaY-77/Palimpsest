@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 config 自动探测测试 —— 覆盖 EMBEDDING_PROVIDER 三种情形：
   1. 未设置 + 有效云端 key → "openai"
@@ -6,7 +5,6 @@ config 自动探测测试 —— 覆盖 EMBEDDING_PROVIDER 三种情形：
   3. 显式设置 → 以显式值为准
 """
 
-import pytest
 
 
 class TestDetectEmbeddingProvider:

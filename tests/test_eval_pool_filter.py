@@ -7,7 +7,7 @@ from pathlib import Path
 
 # Import pool_filter directly (no project modules)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "eval"))
-from pool_filter import filter_pool  # noqa: E402
+from pool_filter import filter_pool
 
 
 def _node(nid: int, source: str | None = None, content: str = "hello") -> dict:

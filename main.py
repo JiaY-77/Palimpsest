@@ -4,7 +4,6 @@ Palimpsest — FastAPI 主入口
 """
 
 import logging
-
 import secrets
 
 from fastapi import FastAPI, HTTPException, Request
@@ -13,9 +12,9 @@ from pydantic import BaseModel
 
 from config import Config
 from core.fts_index import sync_node
+from core.reporting import generate_report
 from core.startup_check import run_startup_check
 from core.trivium_store import EmbeddingUnavailableError, TriviumStore
-from core.reporting import generate_report
 from core.version import get_version
 
 logger = logging.getLogger(__name__)
@@ -273,13 +272,25 @@ async def update_memory_vector(node_id: int, vector: list[float]):
 import json as _json
 
 from mcp_tools import (
-    mem_search as _mcp_mem_search,
-    mem_ingest as _mcp_mem_ingest,
-    mem_link as _mcp_mem_link,
     graph_neighbors as _mcp_graph_neighbors,
+)
+from mcp_tools import (
     mem_communities as _mcp_mem_communities,
-    router_query as _mcp_router_query,
+)
+from mcp_tools import (
     mem_hybrid_search as _mcp_mem_hybrid_search,
+)
+from mcp_tools import (
+    mem_ingest as _mcp_mem_ingest,
+)
+from mcp_tools import (
+    mem_link as _mcp_mem_link,
+)
+from mcp_tools import (
+    mem_search as _mcp_mem_search,
+)
+from mcp_tools import (
+    router_query as _mcp_router_query,
 )
 
 

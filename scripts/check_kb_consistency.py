@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 知识库一致性检查脚本（v2.0 统一语义层）
 ========================================
@@ -22,7 +21,8 @@ import os
 import sys
 
 # 确保能 import 项目 core 模块与 build_kb_index（以项目根为基准，_common 导入即注入 sys.path）
-from _common import SCRIPT_DIR as _SCRIPT_DIR  # noqa: F401
+from _common import SCRIPT_DIR as _SCRIPT_DIR
+
 if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
 
@@ -46,7 +46,7 @@ except ImportError:  # 直接运行 scripts/check_kb_consistency.py 时退化为
         split_markdown,
     )
 
-from core.trivium_store import TriviumStore  # noqa: E402
+from core.trivium_store import TriviumStore
 
 
 def check(knowledge_dir: str = KNOWLEDGE_DIR, store=None) -> dict:
@@ -64,7 +64,7 @@ def check(knowledge_dir: str = KNOWLEDGE_DIR, store=None) -> dict:
         if _doc_domain(rel) != RULE_DOMAIN:
             continue
         try:
-            with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+            with open(fp, encoding="utf-8", errors="ignore") as f:
                 text = f.read()
         except OSError as e:
             warnings.append(f"规则文档读取失败: {rel}: {e}")

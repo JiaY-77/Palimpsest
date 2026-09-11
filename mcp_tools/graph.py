@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 mcp_tools.graph —— 图谱相关工具
 =============================
@@ -6,12 +5,11 @@ graph_neighbors（通用邻居遍历）/ mem_link（手动建边）+ 图关联�
 与辅助函数 _edge_exists。无向语义关系双向建边协议定义见 _BIDIRECTIONAL_RELATIONS。
 """
 
-from collections import deque  # noqa: E402
+from collections import deque
 
-from core.trivium_store import domain_in_block, node_domain  # noqa: E402
-from core.utils import _to_float  # noqa: E402
-
-from mcp_tools._common import _shorten, _to_json, mcp, store  # noqa: E402
+from core.trivium_store import domain_in_block, node_domain
+from core.utils import _to_float
+from mcp_tools._common import _shorten, _to_json, mcp, store
 
 # 无向语义关系：mem_link 双向建边协议自动补反向边；REVISED_BY 保持单向
 _BIDIRECTIONAL_RELATIONS = {"RELATED_TO", "CAUSES", "REFERS_TO"}

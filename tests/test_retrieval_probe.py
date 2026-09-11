@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 tests/test_retrieval_probe.py —— 检索体检探针单元测试
 
@@ -26,7 +25,6 @@ from scripts.retrieval_probe import (  # noqa: E402
     load_probe_file,
     run_one_probe,
 )
-
 
 # ---------------------------------------------------------------------------
 # evaluate_probe 纯函数单测

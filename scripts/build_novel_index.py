@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 小说设定库入库脚本
 ==================
@@ -32,12 +31,11 @@ insert_node / update_payload / update_vector / delete_node 用例一致）。
 """
 import argparse
 import os
-import time
 
 # 确保能 import 项目 core 模块（以项目根为基准，_common 导入即把项目根注入 sys.path）
-import _common  # noqa: E402,F401
+import _common  # noqa: F401
 
-from core.trivium_store import TriviumStore  # noqa: E402
+from core.trivium_store import TriviumStore
 
 # 节点类型与域（与 mcp_server 的 novel 区块检索条件保持一致）
 CHUNK_TYPE = "novel_chunk"
@@ -232,7 +230,7 @@ def build(source: str = None, store=None, full: bool = False) -> dict:
             try:
                 store.delete_node(entry["node_id"])
                 deleted += 1
-            except Exception as e:  # noqa: BLE001
+            except Exception:  # noqa: BLE001
                 failed += 1
                 failed_paths.append(rel)
         existing = {}
@@ -240,7 +238,7 @@ def build(source: str = None, store=None, full: bool = False) -> dict:
         for fp in md_files:
             rel = _rel_path(fp, source)
             try:
-                with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+                with open(fp, encoding="utf-8", errors="ignore") as f:
                     text = f.read()
                 mtime = os.path.getmtime(fp)
                 content = _strip_frontmatter(text)
@@ -254,7 +252,7 @@ def build(source: str = None, store=None, full: bool = False) -> dict:
                     inserted += 1
                 else:
                     updated += 1
-            except Exception as e:  # noqa: BLE001
+            except Exception:  # noqa: BLE001
                 failed += 1
                 failed_paths.append(rel)
     else:
@@ -264,7 +262,7 @@ def build(source: str = None, store=None, full: bool = False) -> dict:
             rel = _rel_path(fp, source)
             known_paths.add(rel)
             try:
-                with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+                with open(fp, encoding="utf-8", errors="ignore") as f:
                     text = f.read()
                 mtime = os.path.getmtime(fp)
                 content = _strip_frontmatter(text)
@@ -283,7 +281,7 @@ def build(source: str = None, store=None, full: bool = False) -> dict:
                     inserted += 1
                 else:
                     updated += 1
-            except Exception as e:  # noqa: BLE001
+            except Exception:  # noqa: BLE001
                 failed += 1
                 failed_paths.append(rel)
         # 孤儿清理：existing 中有但磁盘上已不存在的源文件旧节点删除
@@ -293,7 +291,7 @@ def build(source: str = None, store=None, full: bool = False) -> dict:
             try:
                 store.delete_node(entry["node_id"])
                 deleted += 1
-            except Exception as e:  # noqa: BLE001
+            except Exception:  # noqa: BLE001
                 failed += 1
                 failed_paths.append(rel)
 

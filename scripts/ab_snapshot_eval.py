@@ -49,8 +49,9 @@ def sha256(p: Path) -> str:
 
 PRE = sha256(DBP)
 
-from config import Config  # noqa: E402
 from metrics import mrr_at_k, ndcg_at_k, recall_at_k  # noqa: E402
+
+from config import Config  # noqa: E402
 from mcp_tools.memory import _mem_search_impl  # noqa: E402
 
 LAYERS = ("hermes", "kb", "novel", "other")
@@ -84,7 +85,7 @@ row["layer_r5"] = {L: avg(lay[L]["recall@5"]) for L in LAYERS}
 row["model"] = Config.OLLAMA_EMBEDDING_MODEL
 row["db"] = str(DBP)
 row["expand_depth"] = getattr(Config, "RETRIEVAL_EXPAND_DEPTH", None)
-row["db_unchanged"] = PRE == sha256(DBP)
+row["db_unchanged"] = sha256(DBP) == PRE
 row["per_q"] = per_q
 
 print(f"[{row['model']}] depth={row['expand_depth']}  "

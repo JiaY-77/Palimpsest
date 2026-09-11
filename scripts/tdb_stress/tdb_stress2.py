@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 TriviumDB 0.8.0 第二轮压测（修正 + 聚焦真实部署形态）
 A. 单实例 16 线程混合高压 30s（贴近 REST 单进程多请求）
@@ -8,9 +7,15 @@ D. 真实 id 段 8 万边 + expand_depth=3 检索
 E. 硬杀精确对比（杀前 count vs 恢复 count）
 F. compact + 全量核对
 """
-import os, sys, time, json, random, tempfile, subprocess, gc
-from datetime import datetime
+import json
+import os
+import random
+import subprocess
+import sys
+import tempfile
 import threading
+import time
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import triviumdb
@@ -23,7 +28,7 @@ REPORT = os.path.join(BASE, "report2.json")
 
 
 def rvec(rng=None):
-    r = rng if rng else random
+    r = rng or random
     return [r.random() for _ in range(DIM)]
 
 

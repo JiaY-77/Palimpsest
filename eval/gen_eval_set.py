@@ -15,7 +15,6 @@ import os
 import random
 import shutil
 import sys
-import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -83,10 +82,10 @@ _copy_db_to_tmp()
 
 # Now safe to import project modules
 sys.path.insert(0, str(_EVAL_DIR))
-from config import Config  # noqa: E402
-from core.trivium_store import TriviumStore  # noqa: E402
 from pool_filter import filter_pool, should_write_output  # noqa: E402
 
+from config import Config  # noqa: E402
+from core.trivium_store import TriviumStore  # noqa: E402
 
 # ── Constants ───────────────────────────────────────────────────────────────
 
@@ -402,7 +401,7 @@ def main() -> int:
     existing_items: list[dict] = []
     existing_qids: set[str] = set()
     if args.resume and output_path.exists():
-        with open(output_path, "r", encoding="utf-8") as f:
+        with open(output_path, encoding="utf-8") as f:
             data = json.load(f)
         existing_items = data.get("items", [])
         existing_qids = {it["qid"] for it in existing_items}

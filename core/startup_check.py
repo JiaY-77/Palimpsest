@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 启动自检模块 —— 工程护栏
 ========================
@@ -59,7 +58,7 @@ def _check_key_files(root: str | None = None) -> str:
         raise FileNotFoundError(f"缺失关键文件/目录: {', '.join(missing)}")
     parts = ["config.py / requirements.txt 均存在"]
     if auto_created:
-        parts.append(f"data 目录已自动创建")
+        parts.append("data 目录已自动创建")
     else:
         parts.append("data 目录已存在")
     return "; ".join(parts)

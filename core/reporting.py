@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 core.reporting —— 记忆报告生成
 ============================
@@ -53,6 +52,7 @@ async def generate_report(store):
     # 4. 调用 DeepSeek
     try:
         from openai import OpenAI
+
         from config import Config
 
         llm_cfg = Config.get_llm_config()
@@ -67,4 +67,4 @@ async def generate_report(store):
         report = completion.choices[0].message.content
         return {"status": "ok", "report": report}
     except Exception as e:
-        return {"status": "error", "message": f"报告生成失败: {str(e)}"}
+        return {"status": "error", "message": f"报告生成失败: {e!s}"}

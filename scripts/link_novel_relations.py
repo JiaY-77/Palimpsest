@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """小说人物关系批量建边脚本。
 
 读取 _novel_relations.json（人物关系清单，schema：
@@ -40,7 +39,7 @@ except ImportError:
     if PROJECT_ROOT not in sys.path:
         sys.path.insert(0, PROJECT_ROOT)
 
-from core.trivium_store import TriviumStore  # noqa: E402
+from core.trivium_store import TriviumStore
 
 # 默认关系清单路径（项目根）
 DEFAULT_RELATIONS = os.path.join(PROJECT_ROOT, "_novel_relations.json")
@@ -54,7 +53,7 @@ BIDIRECTIONAL_TYPES = {
 
 def load_relations(path: str) -> list:
     """读取关系清单 JSON，返回条目列表。"""
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         data = json.load(f)
     if not isinstance(data, list):
         raise ValueError("关系清单应为 JSON 数组")

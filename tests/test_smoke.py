@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
               —— 核心冒烟测试 ——
 覆盖 Palimpsest 记忆主链路：写入 → 语义检索 → 全文读取 → 图谱建边/邻居
@@ -9,8 +8,12 @@
 
 import json
 
-from mcp_tools import (  # noqa: E402
-    graph_neighbors, mem_get_full, mem_hybrid_search, mem_ingest, mem_link,
+from mcp_tools import (
+    graph_neighbors,
+    mem_get_full,
+    mem_hybrid_search,
+    mem_ingest,
+    mem_link,
     mem_search,
 )
 
@@ -113,8 +116,8 @@ def test_secret_scan_weak_idcard(db_path):
 
 def test_fts_check(db_path):
     """临时库写入后 check_fts_consistency 应判定主库与 FTS 索引一致。"""
-    from scripts.check_fts_consistency import check
     from mcp_tools import store
+    from scripts.check_fts_consistency import check
 
     for i in range(3):
         mem_ingest(content=f"巡检护栏记忆片段编号{i:02d}内容唯一", type="memory")

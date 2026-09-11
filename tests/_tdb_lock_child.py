@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 TriviumDB 0.8.3 特性测试 —— 跨进程写锁子进程（仅供 test_concurrency.py 调用）。
 
@@ -19,7 +18,7 @@ import os
 import sys
 import time
 
-import triviumdb  # noqa: E402
+import triviumdb
 
 
 def _writer(path: str) -> int:

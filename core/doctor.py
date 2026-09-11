@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 部署体检模块 —— doctor 命令
 ===========================
@@ -15,12 +14,11 @@
   - 内部永不抛异常（护栏原则）
 """
 
-import os
 
 from core.startup_check import run_startup_check
 
 # 维度校验复用 reindex 的实现（避免两份漂移）
-from scripts.reindex import _get_db_dim  # noqa: E402
+from scripts.reindex import _get_db_dim
 
 
 def _check_dimension_consistency():

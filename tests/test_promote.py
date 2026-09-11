@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 promote —— 高频记忆自动升级测试
 ===============================
@@ -17,11 +16,10 @@ import tempfile
 import time
 
 import pytest
+from conftest import _fake_embed
 
-from conftest import _fake_embed  # noqa: E402
-
-from core.promoter import find_promote_candidates, promote  # noqa: E402
-from core.trivium_store import TriviumStore  # noqa: E402
+from core.promoter import find_promote_candidates, promote
+from core.trivium_store import TriviumStore
 
 
 @pytest.fixture

@@ -97,9 +97,10 @@ if ORIG_FTS.exists():
         print(f"  [warn] 复制 fts.db 失败（忽略）: {e}")
 os.environ["DB_PATH"] = str(TMP / ORIG_DB.name)
 
+from metrics import mrr_at_k, recall_at_k  # noqa: E402
+
 from config import Config  # noqa: E402
 from core.trivium_store import TriviumStore  # noqa: E402
-from metrics import mrr_at_k, recall_at_k  # noqa: E402
 
 MODEL = Config.OLLAMA_EMBEDDING_MODEL
 
@@ -182,9 +183,9 @@ def main() -> None:
     gold_layer = Counter(it.get("layer") for it in pos)
     gold_dom = Counter(gold_domain.values())
     print(f"\n分组键核对（n={len(pos)} 题）:")
-    print(f"  gold 题目 layer 层分布（旧分组口径，勿再用）: "
+    print("  gold 题目 layer 层分布（旧分组口径，勿再用）: "
           + "  ".join(f"{L}:{gold_layer.get(L, 0)}" for L in LAYERS))
-    print(f"  gold 节点真实 domain 分布（本次分组键）: "
+    print("  gold 节点真实 domain 分布（本次分组键）: "
           + "  ".join(f"{d}:{gold_dom.get(d, 0)}" for d in sorted(gold_dom, key=lambda d: -gold_dom[d])))
     align = Counter((gold_domain[it["qid"]], it.get("layer")) for it in pos)
     print("  gold真实domain × 题目layer 交叉（应能看出旧 key 与真实分组错位）:")
@@ -351,8 +352,7 @@ def main() -> None:
     dom_order = list(base["domain_r5"].keys())
 
     print("\n" + "=" * 78)
-    print("变体对照表（题数 {}/{}, cand={}, chunk={}, overlap={}, model={}）".format(
-        len(rows), len(pos), args.cand, args.chunk, args.overlap, MODEL))
+    print(f"变体对照表（题数 {len(rows)}/{len(pos)}, cand={args.cand}, chunk={args.chunk}, overlap={args.overlap}, model={MODEL}）")
     hdr = f"{'variant':<14} R@1    R@3    R@5    R@10   MRR    "
     for d in dom_order:
         hdr += f"{d[:5]:>7}"
@@ -394,7 +394,7 @@ def main() -> None:
     print("\n判定标准：kb R@5 相对 base 下降 ≤ 1pp 且 非kb（尤其 hermes）R@5 上涨 → 可用候选")
     for v in VARIANTS:
         if v == "base":
-            print(f"  base: 基线，不参与判定。")
+            print("  base: 基线，不参与判定。")
             continue
         d = deltas[v]
         kb_ok = d["kb"] >= -1.0

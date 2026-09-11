@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 reindex 脚本测试 —— 覆盖维度校验 / 过滤 / dry-run / 断点续跑等路径。
 
@@ -12,10 +11,10 @@ reindex 脚本测试 —— 覆盖维度校验 / 过滤 / dry-run / 断点续跑
 连接直到生成器被消费完毕，必须先完全消费再加 update_* 方法。
 """
 
+import hashlib
 import json
 import math
 import os
-import hashlib
 import re
 
 import pytest

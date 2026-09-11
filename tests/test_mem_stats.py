@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 mem_stats —— 库盘点统计测试
 ==========================
@@ -16,8 +15,8 @@ import time
 
 import pytest
 
-from core.trivium_store import TriviumStore  # noqa: E402
-from core.stats import compute_stats  # noqa: E402
+from core.stats import compute_stats
+from core.trivium_store import TriviumStore
 
 
 @pytest.fixture

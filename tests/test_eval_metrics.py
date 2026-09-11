@@ -1,6 +1,6 @@
 """Unit tests for eval/metrics.py — pure functions, no network/DB."""
 
-from eval.metrics import recall_at_k, mrr_at_k, ndcg_at_k
+from eval.metrics import mrr_at_k, ndcg_at_k, recall_at_k
 
 
 class TestRecallAtK:

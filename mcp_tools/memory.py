@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 mcp_tools.memory —— 记忆读写与查询工具
 =====================================
@@ -6,22 +5,19 @@ mem_retrieve / mem_get_full / mem_ingest / mem_recent / mem_review /
 mem_version_history / mem_search（及核心 _mem_search_impl）/ mem_hybrid_search。
 """
 
-import logging  # noqa: E402
-import os  # noqa: E402
-import re  # noqa: E402
-import threading  # noqa: E402
-import time  # noqa: E402
+import logging
+import re
+import threading
+import time
 
 logger = logging.getLogger(__name__)
 
+from config import Config  # noqa: E402
 from core.conflict import resolve_conflict  # noqa: E402
 from core.fts_index import index_node, search_fts  # noqa: E402
 from core.secret_scan import SecretScanError  # noqa: E402
 from core.trivium_store import domain_in_block, node_domain  # noqa: E402
 from core.utils import _to_float  # noqa: E402
-
-from config import Config  # noqa: E402
-
 from mcp_tools._common import _shorten, _to_json, mcp, store  # noqa: E402
 from mcp_tools.graph import _collect_neighbors  # noqa: E402
 
@@ -545,11 +541,7 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
         is_rule = is_kb and payload.get("domain") == "rule"
         if is_rule:
             score *= Config.RULE_RETRIEVAL_WEIGHT  # 内置 rule 加权：规则类知识恒优先
-        if domain_bias == "memory" and not is_kb:
-            score *= Config.DOMAIN_BIAS_WEIGHT
-        elif domain_bias == "kb" and is_kb:
-            score *= Config.DOMAIN_BIAS_WEIGHT
-        elif domain_bias == "rule" and is_rule:
+        if (domain_bias == "memory" and not is_kb) or (domain_bias == "kb" and is_kb) or (domain_bias == "rule" and is_rule):
             score *= Config.DOMAIN_BIAS_WEIGHT
         if domain_boost and node_domain(payload) == domain_boost.strip().lower():
             score += Config.DOMAIN_BOOST_EPS

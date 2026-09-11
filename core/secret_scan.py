@@ -3,7 +3,6 @@
 
 import re
 
-
 # 强规则：命中 = 拒绝入库
 STRONG_RULES: list[tuple[str, str]] = [
     ("openai_key", r"sk-[A-Za-z0-9_-]{20,}"),

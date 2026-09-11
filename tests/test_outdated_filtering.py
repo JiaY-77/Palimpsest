@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 outdated 检索语义测试（v4.0，2026-09-05 产品决策）
 ==================================================
@@ -187,7 +186,7 @@ def test_kb_chunk_outdated_also_filtered():
 
 def test_active_nodes_unaffected_by_default():
     """默认过滤只针对 outdated：普通 active 记忆检索不受影响（回归护栏）。"""
-    from mcp_tools import mem_ingest, mem_search, store
+    from mcp_tools import mem_ingest, mem_search
 
     ns = _ns()
     text = "溪水绕过圆石在暮色中低语"

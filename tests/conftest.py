@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 pytest 公共夹具 —— 冒烟测试隔离
 ==============================
@@ -73,7 +72,7 @@ def fake_embedder():
     - 全局 store 单例也替换（保留原行为）。
     真实 embedding 由 startup-check / 生产环境验证。session 级别不恢复。
     """
-    from core.trivium_store import TriviumStore  # noqa: E402
+    from core.trivium_store import TriviumStore
 
     # staticmethod：class 属性赋值会触发描述符绑定（实例调用自动传 self），
     # 直接赋模块函数会让 _fake_embed 收到 (self, text) 两个参数而 TypeError

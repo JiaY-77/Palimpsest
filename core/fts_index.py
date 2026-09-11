@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 FTS5 全文搜索索引（trigram 分词器，支持中文任意子串匹配）。
 独立 SQLite 索引文件（fts.db），丢了可 rebuild，不是主库。

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 mcp_tools.stats_tool —— 库级盘点统计工具（mem_stats）
 =====================================================
@@ -6,8 +5,8 @@ mem_stats：统一盘点「库里有什么 / 领域密度 / 图谱状态」。
 复用 core.stats.compute_stats 单次全遍历结果，供 MCP / REST / CLI 三入口共用。
 """
 
-from core.stats import compute_stats  # noqa: E402
-from mcp_tools._common import _to_json, mcp, store  # noqa: E402
+from core.stats import compute_stats
+from mcp_tools._common import _to_json, mcp, store
 
 
 @mcp.tool()

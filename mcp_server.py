@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Palimpsest 本地 MCP Server
 =========================
@@ -44,8 +43,7 @@ Ollama 的 qwen3-embedding:0.6b 生成（1024 维，已验证可用）。
     python mcp_server.py
 """
 
-from mcp_tools import mcp  # noqa: E402  触发 mcp_tools 包内全部 @mcp.tool() 注册
-
+from mcp_tools import mcp
 
 if __name__ == "__main__":
     mcp.run()
