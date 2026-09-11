@@ -117,7 +117,7 @@ def node_domain(payload: dict) -> str:
 
 
 def embed_batch(texts: list[str]) -> np.ndarray:
-    """批量嵌入（ollama /api/embed）；失败则逐条回退（与 _t078_chunk_probe 同口径）。"""
+    """批量嵌入（ollama /api/embed）；失败则逐条回退（与本地 chunk 探针同口径）。"""
     if not texts:
         return np.zeros((0, 0), dtype=np.float32)
     url = Config.OLLAMA_EMBEDDING_BASE_URL.rstrip("/")
