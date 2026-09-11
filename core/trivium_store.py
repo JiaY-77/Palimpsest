@@ -63,6 +63,74 @@ def node_domain(payload: dict) -> str:
             or payload.get("character_name", "") or "general").strip().lower()
 
 
+def _drop_outdated_candidates(scored: list[tuple[float, dict]]) -> list[tuple[float, dict]]:
+    """候选层过滤：剔除 status="outdated" 的节点。
+
+    被新版取代的旧记忆不应占用候选名额（6x 候选余量中有约 24% 是 outdated）。
+    """
+    return [
+        (s, n) for s, n in scored
+        if (n.get("payload", {}) or {}).get("status") != "outdated"
+    ]
+
+
+def _rerank_by_decay(scored: list[tuple[float, dict]]) -> list[tuple[float, dict]]:
+    """按 MEMORY_RERANK_MODE 做时间衰减重排，返回新列表。
+
+    hard（旧版，可回退）：非 kb_chunk 乘性硬加权
+        final = score × importance × decay^(days/30)
+    soft（默认）：语义分为主线 + ε 级元数据微调
+        非 kb_chunk: final = score + ε × (importance_norm + recency_norm)
+        kb_chunk:    final = score + ε × KB_SOFT_RERANK_MULT
+    kb_chunk（知识不老化）在两种模式下都不做时间衰减。
+    """
+    mode = getattr(Config, "MEMORY_RERANK_MODE", "soft")
+    decay = getattr(Config, "MEMORY_DECAY_FACTOR", 1.0)
+    now = time.time()
+
+    if mode == "hard":
+        if decay == 1.0:
+            return scored
+        reranked = []
+        for score, node in scored:
+            payload = node.get("payload", {}) or {}
+            if payload.get("type") == "kb_chunk":
+                reranked.append((score, node))
+                continue
+            days = _days_since_created(payload.get("created_at"), now)
+            importance = _to_float(payload.get("importance"), 0.5)
+            reranked.append((score * importance * (decay ** (days / 30.0)), node))
+        return reranked
+
+    eps = getattr(Config, "SOFT_RERANK_EPS", 0.02)
+    kb_mult = getattr(Config, "KB_SOFT_RERANK_MULT", 1.5)
+    reranked = []
+    for score, node in scored:
+        payload = node.get("payload", {}) or {}
+        if payload.get("type") == "kb_chunk":
+            reranked.append((score + eps * kb_mult, node))
+            continue
+        days = _days_since_created(payload.get("created_at"), now)
+        importance = _to_float(payload.get("importance"), 0.5)
+        importance_norm = max(-1.0, min(1.0, (importance - 0.5) / 0.5))
+        recency_norm = decay ** (days / 30.0)
+        reranked.append((score + eps * (importance_norm + recency_norm), node))
+    return reranked
+
+
+def _filter_candidates_by_block(scored: list[tuple[float, dict]], block: str) -> list[tuple[float, dict]]:
+    """block 后置过滤。
+
+    search_advanced 的 payload_filter 不直接支持 domain+rule 复合语义
+    （kb block 需匹配 domain=kb OR domain=rule），故用 Python 后置过滤
+    保持与旧 _expand_neighbors 一致的区块行为。
+    """
+    return [
+        (s, n) for s, n in scored
+        if domain_in_block(node_domain(n.get("payload", {})), block)
+    ]
+
+
 class TriviumStore:
     """封装 TriviumDB 操作，提供记忆存储和检索接口"""
 
@@ -354,54 +422,17 @@ class TriviumStore:
                 with contextlib.suppress(Exception):
                     db.close()
 
-        # 过滤 status="outdated" 节点（候选层修复）：新版取代旧版的过期记忆
-        # 不应占用候选名额，浪费有效候选配额
+        # 过滤已过期（outdated）候选：被新版取代的旧记忆不占候选名额
         if not include_outdated:
-            scored = [
-                (s, n) for s, n in scored
-                if (n.get("payload", {}) or {}).get("status") != "outdated"
-            ]
+            scored = _drop_outdated_candidates(scored)
 
         # 时间衰减（记忆生命周期）：kb_chunk 知识块不衰减
         if apply_decay:
-            mode = getattr(Config, "MEMORY_RERANK_MODE", "soft")
-            if mode == "hard":
-                # ---- hard 模式：旧版乘性硬加权（可一键回退）----
-                decay = getattr(Config, "MEMORY_DECAY_FACTOR", 1.0)
-                if decay != 1.0:
-                    now = time.time()
-                    for i, (score, node) in enumerate(scored):
-                        payload = node.get("payload", {}) or {}
-                        if payload.get("type") == "kb_chunk":
-                            continue
-                        days = _days_since_created(payload.get("created_at"), now)
-                        importance = _to_float(payload.get("importance"), 0.5)
-                        scored[i] = (score * importance * (decay ** (days / 30.0)), node)
-            else:
-                # ---- soft 模式：语义分为主线 + ε 级元数据微调 ----
-                eps = getattr(Config, "SOFT_RERANK_EPS", 0.02)
-                kb_mult = getattr(Config, "KB_SOFT_RERANK_MULT", 1.5)
-                decay = getattr(Config, "MEMORY_DECAY_FACTOR", 1.0)
-                now = time.time()
-                for i, (score, node) in enumerate(scored):
-                    payload = node.get("payload", {}) or {}
-                    if payload.get("type") == "kb_chunk":
-                        scored[i] = (score + eps * kb_mult, node)
-                    else:
-                        days = _days_since_created(payload.get("created_at"), now)
-                        importance = _to_float(payload.get("importance"), 0.5)
-                        importance_norm = max(-1.0, min(1.0, (importance - 0.5) / 0.5))
-                        recency_norm = decay ** (days / 30.0)
-                        scored[i] = (score + eps * (importance_norm + recency_norm), node)
+            scored = _rerank_by_decay(scored)
 
-        # block 后置过滤：search_advanced 的 payload_filter 不直接支持
-        # domain+rule 复合语义（kb block 需匹配 domain=kb OR domain=rule），
-        # 故用 Python 后置过滤保持与旧 _expand_neighbors 一致的区块行为
+        # block 后置过滤（domain+rule 复合语义无法下推给 search_advanced）
         if block:
-            scored = [
-                (s, n) for s, n in scored
-                if domain_in_block(node_domain(n.get("payload", {})), block)
-            ]
+            scored = _filter_candidates_by_block(scored, block)
 
         # 排序、截断
         scored.sort(key=lambda x: x[0], reverse=True)

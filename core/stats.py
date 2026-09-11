@@ -44,6 +44,113 @@ def _month_label(ts):
     return time.strftime("%Y-%m", time.localtime(ts))
 
 
+def _new_accumulator() -> dict:
+    """盘点累加器初值（单次遍历收集的全部计数）。"""
+    return {
+        "total": 0,
+        "active": 0,
+        "outdated": 0,
+        "by_type": {},
+        "by_domain": {},
+        "kind_counter": {},
+        "imp_buckets": {name: 0 for name, _func in _IMP_BUCKETS},
+        "month_counter": {},
+        "nodes_with_edges": 0,
+        "total_edges": 0,
+        "label_dist": {},
+        "hit_count_total": 0,
+        "hit_nodes": [],
+    }
+
+
+def _accumulate_node(acc: dict, nid, node, db) -> None:
+    """把一个节点的计数累加进累加器（status/type/domain/kind/importance/time/graph/hit）。"""
+    from core.trivium_store import node_domain
+
+    payload = node.payload or {}
+    acc["total"] += 1
+    status = payload.get("status", "")
+    if status == "outdated":
+        acc["outdated"] += 1
+    else:
+        acc["active"] += 1
+
+    t = payload.get("type") or "unknown"
+    by_type = acc["by_type"]
+    by_type[t] = by_type.get(t, 0) + 1
+    d = node_domain(payload)
+    by_domain = acc["by_domain"]
+    by_domain[d] = by_domain.get(d, 0) + 1
+
+    # kinds：仅当存在含 kind 字段的 novel_chunk 时统计
+    if t == "novel_chunk" and payload.get("kind"):
+        k = str(payload.get("kind"))
+        kind_counter = acc["kind_counter"]
+        kind_counter[k] = kind_counter.get(k, 0) + 1
+
+    # importance 分布区间
+    imp = _to_float(payload.get("importance"), 0.5)
+    for name, pred in _IMP_BUCKETS:
+        if pred(imp):
+            acc["imp_buckets"][name] += 1
+            break
+
+    # time：按 created_at 月份分布（null/0/非法跳过）
+    m = _month_label(payload.get("created_at"))
+    if m:
+        month_counter = acc["month_counter"]
+        month_counter[m] = month_counter.get(m, 0) + 1
+
+    # graph：边信息 + hit 信息（同一连接内读边）
+    edges = list(db.get_edges(nid) or [])
+    if edges:
+        acc["nodes_with_edges"] += 1
+    acc["total_edges"] += len(edges)
+    label_dist = acc["label_dist"]
+    for e in edges:
+        lab = getattr(e, "label", "") or getattr(e, "relation", "") or "unknown"
+        label_dist[lab] = label_dist.get(lab, 0) + 1
+
+    hc = _to_float(payload.get("hit_count"), 0)
+    if hc:
+        acc["hit_count_total"] += int(hc)
+        acc["hit_nodes"].append({
+            "id": nid,
+            "hit_count": int(hc),
+            "content": (payload.get("content") or "")[:60],
+        })
+
+
+def _build_stats_result(acc: dict, start: float) -> dict:
+    """把累加器汇总成 compute_stats 的返回结构（label top10 / 平均出度 / 耗时）。"""
+    total = acc["total"]
+    top_labels = sorted(acc["label_dist"].items(), key=lambda kv: kv[1], reverse=True)[:10]
+    avg_outdegree = round(acc["total_edges"] / total, 2) if total else 0.0
+    hit_nodes = sorted(acc["hit_nodes"], key=lambda x: x["hit_count"], reverse=True)
+
+    return {
+        "totals": {
+            "total_nodes": total,
+            "active": acc["active"],
+            "outdated": acc["outdated"],
+            "by_type": dict(sorted(acc["by_type"].items(), key=lambda kv: kv[0])),
+            "by_domain": dict(sorted(acc["by_domain"].items(), key=lambda kv: kv[0])),
+        },
+        "kinds": dict(sorted(acc["kind_counter"].items(), key=lambda kv: kv[0])),
+        "importance": acc["imp_buckets"],
+        "time": dict(sorted(acc["month_counter"].items(), key=lambda kv: kv[0])),
+        "graph": {
+            "nodes_with_edges": acc["nodes_with_edges"],
+            "total_edges": acc["total_edges"],
+            "label_dist_top10": dict(top_labels),
+            "avg_outdegree": avg_outdegree,
+            "hit_count_total": acc["hit_count_total"],
+            "top_hit_nodes": hit_nodes[:10],
+        },
+        "elapsed_ms": round((time.time() - start) * 1000, 1),
+    }
+
+
 def compute_stats(store) -> dict:
     """单连接单次全遍历，收集全库盘点统计，返回分节 dict。
 
@@ -59,20 +166,7 @@ def compute_stats(store) -> dict:
       }
     """
     start = time.time()
-
-    total = 0
-    active = 0
-    outdated = 0
-    by_type: dict = {}
-    by_domain: dict = {}
-    kind_counter: dict = {}
-    imp_buckets = {name: 0 for name, _func in _IMP_BUCKETS}
-    month_counter: dict = {}
-    nodes_with_edges = 0
-    total_edges = 0
-    label_dist: dict = {}
-    hit_count_total = 0
-    hit_nodes: list = []
+    acc = _new_accumulator()
 
     db = None
     try:
@@ -81,54 +175,7 @@ def compute_stats(store) -> dict:
             node = db.get(nid)
             if not node:
                 continue
-            payload = node.payload or {}
-            total += 1
-            status = payload.get("status", "")
-            if status == "outdated":
-                outdated += 1
-            else:
-                active += 1
-
-            t = payload.get("type") or "unknown"
-            by_type[t] = by_type.get(t, 0) + 1
-            from core.trivium_store import node_domain
-            d = node_domain(payload)
-            by_domain[d] = by_domain.get(d, 0) + 1
-
-            # kinds：仅当存在含 kind 字段的 novel_chunk 时统计
-            if t == "novel_chunk" and payload.get("kind"):
-                k = str(payload.get("kind"))
-                kind_counter[k] = kind_counter.get(k, 0) + 1
-
-            # importance 分布区间
-            imp = _to_float(payload.get("importance"), 0.5)
-            for name, pred in _IMP_BUCKETS:
-                if pred(imp):
-                    imp_buckets[name] += 1
-                    break
-
-            # time：按 created_at 月份分布（null/0/非法跳过）
-            m = _month_label(payload.get("created_at"))
-            if m:
-                month_counter[m] = month_counter.get(m, 0) + 1
-
-            # graph：边信息 + hit 信息（同一连接内读边）
-            edges = list(db.get_edges(nid) or [])
-            if edges:
-                nodes_with_edges += 1
-            total_edges += len(edges)
-            for e in edges:
-                lab = getattr(e, "label", "") or getattr(e, "relation", "") or "unknown"
-                label_dist[lab] = label_dist.get(lab, 0) + 1
-
-            hc = _to_float(payload.get("hit_count"), 0)
-            if hc:
-                hit_count_total += int(hc)
-                hit_nodes.append({
-                    "id": nid,
-                    "hit_count": int(hc),
-                    "content": (payload.get("content") or "")[:60],
-                })
+            _accumulate_node(acc, nid, node, db)
     except Exception as e:  # noqa: BLE001 — 盘点容错：统计失败不阻断，返回已收集数据
         logger.warning("mem_stats 遍历失败（返回已收集数据）: %s", e)
     finally:
@@ -136,30 +183,4 @@ def compute_stats(store) -> dict:
             with contextlib.suppress(Exception):
                 db.close()
 
-    # label 分布 top10（按 count 降序）
-    top_labels = sorted(label_dist.items(), key=lambda kv: kv[1], reverse=True)[:10]
-    avg_outdegree = round(total_edges / total, 2) if total else 0.0
-    hit_nodes.sort(key=lambda x: x["hit_count"], reverse=True)
-
-    elapsed_ms = round((time.time() - start) * 1000, 1)
-    return {
-        "totals": {
-            "total_nodes": total,
-            "active": active,
-            "outdated": outdated,
-            "by_type": dict(sorted(by_type.items(), key=lambda kv: kv[0])),
-            "by_domain": dict(sorted(by_domain.items(), key=lambda kv: kv[0])),
-        },
-        "kinds": dict(sorted(kind_counter.items(), key=lambda kv: kv[0])),
-        "importance": imp_buckets,
-        "time": dict(sorted(month_counter.items(), key=lambda kv: kv[0])),
-        "graph": {
-            "nodes_with_edges": nodes_with_edges,
-            "total_edges": total_edges,
-            "label_dist_top10": dict(top_labels),
-            "avg_outdegree": avg_outdegree,
-            "hit_count_total": hit_count_total,
-            "top_hit_nodes": hit_nodes[:10],
-        },
-        "elapsed_ms": elapsed_ms,
-    }
+    return _build_stats_result(acc, start)
