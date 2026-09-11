@@ -10,6 +10,7 @@ promote —— 高频记忆自动升级测试
 确定性 fake embedder），不触碰 conftest 会话共享临时库，也不污染 FTS 索引。
 """
 
+import contextlib
 import os
 import shutil
 import tempfile
@@ -36,10 +37,8 @@ def iso_store():
         yield s
     finally:
         Config.DB_PATH = old
-        try:
+        with contextlib.suppress(Exception):
             s._acquire().close()
-        except Exception:
-            pass
         shutil.rmtree(tmp, ignore_errors=True)
 
 

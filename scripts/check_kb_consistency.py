@@ -74,7 +74,7 @@ def check(knowledge_dir: str = KNOWLEDGE_DIR, store=None) -> dict:
 
     # ---- 2. 查库中 domain=rule 切片（source_path -> 数量） ----
     db_map = {}  # rel -> chunk 数
-    for nid, payload in store.iter_payloads():
+    for _nid, payload in store.iter_payloads():
         if payload.get("type") != CHUNK_TYPE:
             continue
         if payload.get("domain") != RULE_DOMAIN:

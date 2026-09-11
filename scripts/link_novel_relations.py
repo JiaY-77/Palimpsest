@@ -86,9 +86,8 @@ def edge_exists(store, src_id: int, dst_id: int, label: str) -> bool:
     """检查 src → dst 且 label 匹配的出边是否已存在（防重复建边）。"""
     label_upper = label.upper()
     for edge in store.get_edges(src_id):
-        if edge.target_id == dst_id:
-            if (getattr(edge, "label", "") or "").upper() == label_upper:
-                return True
+        if edge.target_id == dst_id and (getattr(edge, "label", "") or "").upper() == label_upper:
+            return True
     return False
 
 

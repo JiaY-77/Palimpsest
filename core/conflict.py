@@ -113,6 +113,6 @@ def _similar_hits(db, embedding: list[float]) -> list[dict]:
             {"id": hit.id, "score": float(hit.score), "payload": hit.payload}
             for hit in (hits or [])
         ][:3]
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— 事务内相似检索失败降级空结果不阻断冲突检测
         logger.warning(f"事务内相似检索失败，返回空结果: {e}")
         return []

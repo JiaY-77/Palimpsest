@@ -24,7 +24,7 @@ import logging
 import os
 import re
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from agent.memory_provider import MemoryProvider, RecallStatus, is_trivial_prompt
 
@@ -93,7 +93,7 @@ def _is_near_duplicate(content: str, base_url: str, domain: str, threshold: floa
             return False
         score = results[0].get("score", 0)
         return score >= threshold
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 —— 近似查询失败视为不重复，fail-open
         return False
 
 
@@ -338,7 +338,7 @@ class PalimpsestMemoryProvider(MemoryProvider):
             return json.dumps({"error": f"unknown tool {tool_name}"}, ensure_ascii=False)
         try:
             return json.dumps(fn(args), ensure_ascii=False)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 —— 工具调用异常转 JSON 错误，不崩调用方
             return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
     def _tool_search(self, args: dict[str, Any]) -> dict:

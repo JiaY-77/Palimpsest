@@ -227,7 +227,7 @@ def _count_domain_chunks(store) -> dict:
     （rule 是 kb_chunk 的子集，此处按 payload.domain 区分）。
     """
     counts = {RULE_DOMAIN: 0, KB_DOMAIN: 0, "other": 0}
-    for nid, payload in store.iter_payloads():
+    for _nid, payload in store.iter_payloads():
         if payload.get("type") != CHUNK_TYPE:
             continue
         dom = payload.get("domain", "")
@@ -267,7 +267,7 @@ def _determine_pending(full: bool, active_files: list, existing: dict,
     """
     if full:
         # 全量模式：所有 active 文件强制重建（upsert），不再删除旧 kb_chunk 节点
-        return [fp for fp in active_files], 0
+        return list(active_files), 0
 
     # ---- 增量模式：筛选需要重建的文件 ----
     pending = []
@@ -449,7 +449,7 @@ def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False) ->
     try:
         fts_count = fts_rebuild(store)
         print(f"[FTS] 全文索引已同步: {fts_count} 个节点")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— FTS 重建失败仅提示可手动 fts-rebuild 兜底
         print(f"[FTS] 全文索引同步失败（可手动 fts-rebuild）: {e}")
     return {
         "files": file_stats,

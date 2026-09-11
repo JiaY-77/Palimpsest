@@ -88,12 +88,12 @@ for p in ORIG_DB.parent.iterdir():
     if p.name.startswith(ORIG_DB.name) and p.is_file():
         try:
             shutil.copy2(p, TMP / p.name)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 —— 库副本复制失败仅告警 SHA 校验兜底
             print(f"  [warn] 复制 {p.name} 失败（忽略）: {e}")
 if ORIG_FTS.exists():
     try:
         shutil.copy2(ORIG_FTS, TMP / ORIG_FTS.name)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— FTS 副本复制失败仅告警后续校验兜底
         print(f"  [warn] 复制 fts.db 失败（忽略）: {e}")
 os.environ["DB_PATH"] = str(TMP / ORIG_DB.name)
 
@@ -129,7 +129,7 @@ def embed_batch(texts: list[str]) -> np.ndarray:
         vecs = r.json().get("embeddings")
         if vecs:
             return np.asarray(vecs, dtype=np.float32)
-    except Exception:
+    except Exception:  # noqa: S110, BLE001 —— 批量嵌入失败静默转逐条回退保证结果
         pass
     out = []
     for t in texts:

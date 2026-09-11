@@ -18,16 +18,17 @@
   - 异常中断保留进度，可 --resume 续跑（状态文件跟库绑定）
 """
 import argparse
+import contextlib
 import json
 import os
 import signal
 import sys
 import time
 
-try:
-    from ._common import PROJECT_ROOT
-except ImportError:
+with contextlib.suppress(ImportError):
     pass
+
+import contextlib
 
 from core.trivium_store import EmbeddingUnavailableError, TriviumStore
 
@@ -73,14 +74,12 @@ def _get_db_dim(store):
         db = triviumdb.TriviumDB(store.db_path, dim=store.dim)
         info = db.storage_info()
         return info.get("dim"), None
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— 读维度失败返回错误信息交由体检汇总提示
         return None, f"无法读取数据库维度: {e}"
     finally:
         if db is not None:
-            try:
+            with contextlib.suppress(Exception):
                 db.close()
-            except Exception:
-                pass
 
 
 def _check_dims(store):
@@ -95,7 +94,7 @@ def _check_dims(store):
         actual = len(vec)
     except EmbeddingUnavailableError as e:
         return False, None, f"Embedding 服务不可用: {e}"
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— 嵌入探测异常判为服务不可用返回体检结论
         return False, None, f"Embedding 服务不可用: {e}"
 
     # 2) 库实际维度
@@ -154,12 +153,12 @@ def cmd_check(store):
     if provider == "openai":
         model = getattr(
             __import__("config").Config, "EMBEDDING_MODEL", "unknown")
-        base_url = getattr(
+        getattr(
             __import__("config").Config, "EMBEDDING_BASE_URL", "")
     else:
         model = getattr(
             __import__("config").Config, "OLLAMA_EMBEDDING_MODEL", "unknown")
-        base_url = getattr(
+        getattr(
             __import__("config").Config, "OLLAMA_EMBEDDING_BASE_URL", "")
 
     print(f"\n当前 provider:  {provider}")
@@ -199,7 +198,7 @@ def cmd_check(store):
         t0 = time.perf_counter()
         try:
             store.embed_text(PROBE_TEXT)
-        except Exception:
+        except Exception:  # noqa: BLE001 —— 探针嵌入失败停止采样避免延迟结论失真
             break
         times.append((time.perf_counter() - t0) * 1000)
     if times:
@@ -358,7 +357,7 @@ def cmd_reindex(store, *, only=None, skip=None, batch=64,
 
         try:
             new_vec = store.embed_text(text)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 —— 嵌入不可用快速失败停止避免半成品重嵌
             failed += 1
             print(f"\n[失败] ID={nid}: {e}", file=sys.stderr)
             break  # embedding 不可用，快速失败停止
@@ -383,7 +382,7 @@ def cmd_reindex(store, *, only=None, skip=None, batch=64,
 
         try:
             store.update_vector(nid, new_vec)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 —— 向量写入失败区分锁占用与普通错误快速停
             emsg = str(e).lower()
             if any(kw in emsg for kw in ("lock", "busy", "occupied")):
                 print(
@@ -440,7 +439,7 @@ def cmd_reindex(store, *, only=None, skip=None, batch=64,
         if sample_old_vec and sample_new_vec:
             changed = any(
                 abs(a - b) > 1e-6
-                for a, b in zip(sample_old_vec, sample_new_vec)
+                for a, b in zip(sample_old_vec, sample_new_vec, strict=False)
             )
             status = "✓ 已变化" if changed else "⚠ 未变化（使用了相同模型？）"
             print(f"  结果:   {status}")

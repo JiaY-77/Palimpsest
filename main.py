@@ -154,7 +154,7 @@ async def summary():
     plots = []
     total = 0
 
-    for nid, payload in store.iter_payloads():
+    for _nid, payload in store.iter_payloads():
         total += 1
         t = payload.get("type", "")
         content = payload.get("content", "")
@@ -210,7 +210,7 @@ async def delete_memory(node_id: int):
         return {"status": "ok", "message": f"节点 {node_id} 已删除"}
     except Exception as e:
         logger.info("删除节点失败 node=%s: %s", node_id, e)
-        raise HTTPException(status_code=404, detail="删除失败：节点不存在或已被删除")
+        raise HTTPException(status_code=404, detail="删除失败：节点不存在或已被删除") from e
 
 
 def _sync_fts_after_update(node_id: int) -> None:
@@ -219,7 +219,7 @@ def _sync_fts_after_update(node_id: int) -> None:
         node = store.get_node(node_id)
         content = ((node or {}).get("payload") or {}).get("content", "")
         sync_node(node_id, content)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— FTS 同步失败仅告警不阻塞节点更新
         logger.warning("FTS 索引同步失败 node=%s: %s", node_id, e)
 
 
@@ -232,7 +232,7 @@ async def update_memory_payload(node_id: int, payload: dict):
         return {"status": "ok", "message": f"节点 {node_id} payload 已更新"}
     except Exception as e:
         logger.info("更新节点 payload 失败 node=%s: %s", node_id, e)
-        raise HTTPException(status_code=404, detail="更新失败：节点不存在或数据格式错误")
+        raise HTTPException(status_code=404, detail="更新失败：节点不存在或数据格式错误") from e
 
 
 @app.patch("/memory/{node_id}")
@@ -244,7 +244,7 @@ async def patch_memory_payload(node_id: int, payload: dict):
         return {"status": "ok", "message": f"节点 {node_id} payload 已更新"}
     except Exception as e:
         logger.info("更新节点 payload 失败 node=%s: %s", node_id, e)
-        raise HTTPException(status_code=404, detail="更新失败：节点不存在或数据格式错误")
+        raise HTTPException(status_code=404, detail="更新失败：节点不存在或数据格式错误") from e
 
 
 @app.patch("/memory/{node_id}/vector")
@@ -262,34 +262,34 @@ async def update_memory_vector(node_id: int, vector: list[float]):
         raise
     except Exception as e:
         logger.info("更新节点向量失败 node=%s: %s", node_id, e)
-        raise HTTPException(status_code=404, detail="向量更新失败：节点不存在或维度不匹配")
+        raise HTTPException(status_code=404, detail="向量更新失败：节点不存在或维度不匹配") from e
 
 
 # ---- 统一语义层端点（2026-08-27 换脑插件通道）----
 # 对齐 mcp_server 工具（mem_search / mem_ingest / mem_link / graph_neighbors / router_query），
 # 供 Hermes memory provider 插件（plugins/palimpsest/）通过 REST :8090 调用。
 # 返回解析后的 JSON（FastAPI 自动序列化），客户端无需再 parse 字符串。
-import json as _json
+import json as _json  # noqa: E402
 
-from mcp_tools import (
+from mcp_tools import (  # noqa: E402
     graph_neighbors as _mcp_graph_neighbors,
 )
-from mcp_tools import (
+from mcp_tools import (  # noqa: E402
     mem_communities as _mcp_mem_communities,
 )
-from mcp_tools import (
+from mcp_tools import (  # noqa: E402
     mem_hybrid_search as _mcp_mem_hybrid_search,
 )
-from mcp_tools import (
+from mcp_tools import (  # noqa: E402
     mem_ingest as _mcp_mem_ingest,
 )
-from mcp_tools import (
+from mcp_tools import (  # noqa: E402
     mem_link as _mcp_mem_link,
 )
-from mcp_tools import (
+from mcp_tools import (  # noqa: E402
     mem_search as _mcp_mem_search,
 )
-from mcp_tools import (
+from mcp_tools import (  # noqa: E402
     router_query as _mcp_router_query,
 )
 
@@ -359,7 +359,7 @@ class RouterQueryRequest(BaseModel):
 def _as_json(text: str):
     try:
         return _json.loads(text)
-    except Exception:
+    except Exception:  # noqa: BLE001 —— JSON 解析失败回退原始文本保持 JSON 结构稳定
         return {"raw": text}
 
 
@@ -397,7 +397,7 @@ async def mem_ingest(req: MemIngestRequest):
     # 其余 stored:false（如事务失败/secret 强拒，不携带 node_id 键）仍按 JSON 原样返回，不改语义。
     try:
         payload = _json_mod.loads(result)
-    except Exception:
+    except Exception:  # noqa: BLE001 —— 解析失败以空字典兜底不影响后续校验
         payload = {}
     if (not payload.get("stored") and "node_id" in payload
             and payload.get("node_id") is None):

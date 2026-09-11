@@ -23,6 +23,7 @@ MATCH 可全量返回）。本文件在【简化前】锁定现行为，作为�
 透传进 payload（insert_node 非事务版恒置 None）。helper 复刻该路径并
 同步 FTS 索引（index_node），避免共享库主库/FTS 不一致。
 """
+import contextlib
 import json
 import uuid
 
@@ -47,15 +48,13 @@ def _ingest(store, content, ts=None, domain=None):
             next_id = (max(existing) + 1) if existing else 1
             nid = store.insert_node_tx(tx, pl, emb, next_id=next_id)
     finally:
-        try:
+        with contextlib.suppress(Exception):
             db.close()
-        except Exception:
-            pass
     # 与 mem_ingest 链路一致：事务提交后同步 FTS 索引
     try:
         from mcp_tools.memory import index_node
         index_node(nid, content)
-    except Exception:
+    except Exception:  # noqa: S110, BLE001 —— FTS 同步失败静默断言基于主节点数据
         pass
     return nid, domain
 

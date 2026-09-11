@@ -33,7 +33,7 @@ async def mem_stats():
     total = 0
     by_type: dict[str, int] = {}
     outdated = 0
-    for nid, payload in store.iter_payloads():
+    for _nid, payload in store.iter_payloads():
         total += 1
         t = payload.get("type", "unknown")
         by_type[t] = by_type.get(t, 0) + 1

@@ -90,7 +90,7 @@ for i, (nid, content) in enumerate(targets, 1):
             raise ValueError(f"维度 {len(vec)} != {store.dim}")
         store.update_vector(nid, vec)
         ok += 1
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001 —— 重嵌失败计入 fail 继续处理其余节点
         fail += 1
         fails.append((nid, len(content), str(e)[:60]))
     if i % 200 == 0:

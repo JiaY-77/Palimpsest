@@ -1,5 +1,6 @@
 """容量自动合并：扫描记忆库，找相似度过高的 memory 节点对，dry-run 先预览、apply 才合并。"""
 
+import contextlib
 import logging
 
 from core.secret_scan import SecretScanError, scan_secret_classified
@@ -102,10 +103,10 @@ def _apply_merge(store: TriviumStore, will_merge: list[dict]) -> tuple[int, list
                 a_imp = c["a_imp"]
                 b_imp = c["b_imp"]
                 if a_imp >= b_imp:
-                    high_payload, low_payload = a_payload, b_payload
+                    high_payload, _low_payload = a_payload, b_payload
                     low_id = b_id
                 else:
-                    high_payload, low_payload = b_payload, a_payload
+                    high_payload, _low_payload = b_payload, a_payload
                     low_id = a_id
 
                 high_content = high_payload.get("content") or ""
@@ -163,10 +164,8 @@ def _apply_merge(store: TriviumStore, will_merge: list[dict]) -> tuple[int, list
                 })
     finally:
         if db is not None:
-            try:
+            with contextlib.suppress(Exception):
                 db.close()
-            except Exception:
-                pass
 
     return merged, merged_ids
 

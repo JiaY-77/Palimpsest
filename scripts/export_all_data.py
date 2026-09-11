@@ -27,6 +27,7 @@ Palimpsest 全量数据导出脚本（只读）
     data/export_backup_20260824.json  （格式 {"nodes": [...], "edges": [...]}）
 """
 
+import contextlib
 import json
 import os
 from collections import Counter
@@ -84,10 +85,8 @@ def export_via_store(store: TriviumStore) -> dict:
                 )
                 label_counter[label] += 1
     finally:
-        try:
+        with contextlib.suppress(Exception):
             db.close()
-        except Exception:
-            pass
 
     return {
         "nodes": nodes, "edges": edges,

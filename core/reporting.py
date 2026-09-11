@@ -15,7 +15,7 @@ async def generate_report(store):
     """
     # 1. 先从数据库获取所有记忆
     memories = []
-    for nid, payload in store.iter_payloads():
+    for _nid, payload in store.iter_payloads():
         if payload.get("content"):
             memories.append(f"[{payload.get('type', '')}] {payload['content']}")
 
@@ -66,5 +66,5 @@ async def generate_report(store):
         )
         report = completion.choices[0].message.content
         return {"status": "ok", "report": report}
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— 报告生成失败返回错误状态不拖垮调用方
         return {"status": "error", "message": f"报告生成失败: {e!s}"}

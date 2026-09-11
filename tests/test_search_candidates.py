@@ -106,7 +106,7 @@ def test_filtering_leaves_enough_candidates(_candidate_store):
         status = "outdated" if i % 4 == 0 else "active"  # 每第 4 个 outdated → 25%
         hits.append(_FakeHit(i, 1.0 - i * 0.005, {"type": "memory", "status": status}))
     store = _candidate_store(hits)
-    by_id, order = _run(store, top_k=10)
+    _by_id, order = _run(store, top_k=10)
     # 应返回恰好 10 条，且无 outdated
     assert len(order) == 10, f"应返回 10 条有效候选，实际 {len(order)}"
     assert all(r not in [4, 8, 12, 16, 20, 24, 28, 32, 36, 40] for r in order), \
@@ -121,7 +121,7 @@ def test_cand_k_expansion_is_6x(_candidate_store):
         status = "outdated" if i % 5 == 0 else "active"
         hits.append(_FakeHit(i, 1.0 - i * 0.005, {"type": "memory", "status": status}))
     store = _candidate_store(hits)
-    by_id, order = _run(store, top_k=10)
+    _by_id, order = _run(store, top_k=10)
     assert len(order) == 10, f"扩容 6x 后应有足够有效候选，实际 {len(order)}"
     # 旧的 3x 扩容：30 个候选 → 过滤掉 6 个 outdated → 24 个有效，仍够
     # 但 6x 更保险，确保即使 24% outdated 也填满

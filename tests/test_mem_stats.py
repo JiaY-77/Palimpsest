@@ -8,6 +8,7 @@ mem_stats —— 库盘点统计测试
 conftest 的会话共享临时库，也不与 test_promote 等文件互相污染。
 """
 
+import contextlib
 import os
 import shutil
 import tempfile
@@ -32,10 +33,8 @@ def iso_store():
         yield s
     finally:
         Config.DB_PATH = old
-        try:
+        with contextlib.suppress(Exception):
             s._acquire().close()
-        except Exception:
-            pass
         shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -67,11 +66,11 @@ def test_stats_sections(iso_store):
     id3 = _mk(s, "角色丙盘点", "character", "novel", 0.9)
     s.update_payload(id3, {"status": "outdated"})
     # ④⑤ novel_chunk + kind
-    id4 = _mk(s, "设定丁盘点", "novel_chunk", "novel", 0.5, kind="character")
+    _mk(s, "设定丁盘点", "novel_chunk", "novel", 0.5, kind="character")
     id5 = _mk(s, "设定戊盘点", "novel_chunk", "novel", 0.6, kind="setting",
               hit_count=3)
     # ⑥ todo/task 0.2，无 created_at（time 分节应跳过）
-    id6 = _mk(s, "任务己盘点", "todo", "task", 0.2)
+    _mk(s, "任务己盘点", "todo", "task", 0.2)
 
     # 建一条边（id1 → id2），供 graph 分节
     s.create_edge(id1, id2, "RELATED_TO", weight=0.9)

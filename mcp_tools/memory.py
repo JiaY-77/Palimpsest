@@ -12,6 +12,8 @@ import time
 
 logger = logging.getLogger(__name__)
 
+import contextlib  # noqa: E402
+
 from config import Config  # noqa: E402
 from core.conflict import resolve_conflict  # noqa: E402
 from core.fts_index import index_node, search_fts  # noqa: E402
@@ -155,17 +157,15 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
         # ---- 事务已提交 ----
         # 立即释放本连接的库锁，后续 FTS / 读回节点都经由 store._acquire() 重开，
         # 若此处不关闭，重开会触发 "Database locked"（同库双连接）。
-        try:
+        with contextlib.suppress(Exception):
             db.close()
-        except Exception:
-            pass
         db = None
 
         # FTS 全文索引同步（混合检索依赖；失败仅 warning，不阻塞主写入，
         # 可手动 fts-rebuild 兜底）。因事务已提交，node_id 在此对 store 可见。
         try:
             index_node(node_id, content)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 —— 写入后 FTS 索引失败仅告警主链已提交
             logger.warning("FTS 索引同步失败 node=%s: %s", node_id, e)
 
         # 弱规则命中标记（身份证/手机号）：弱规则放行但打 secret_hint 供审计。
@@ -180,7 +180,7 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
     except SecretScanError as e:
         # 强规则拒绝：事务回滚（未写任何节点），返回 stored:False
         return _to_json({"stored": False, "error": str(e), "rules": e.rules})
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— 事务异常回滚返回存储失败不留半状态
         # 事务内其他异常：整条写入链路回滚，无半状态；返回 stored:False + hint
         logger.error("mem_ingest 写入失败（事务已回滚）: %s", e)
         return _to_json({
@@ -190,10 +190,8 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
         })
     finally:
         if db is not None:
-            try:
+            with contextlib.suppress(Exception):
                 db.close()
-            except Exception:
-                pass
 
     outdated_ids = conflict["outdated_ids"]
     related_ids = conflict["related_ids"]
@@ -257,14 +255,12 @@ def mem_recent(domain: str = "", limit: int = 10) -> str:
                 nid = nd.get("id")
                 if nid is not None:
                     raw.append((nid, pl))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 —— TQL 失败退化为全遍历保证不丢结果
             # TQL 失败（语法/引擎异常）退化为 iter_payloads 全遍历，保证不丢结果。
             # 须先 close db 释放锁，否则 iter_payloads 内部 _acquire 双开报 Database locked。
             if db is not None:
-                try:
+                with contextlib.suppress(Exception):
                     db.close()
-                except Exception:
-                    pass
                 db = None
             logger.warning(f"mem_recent TQL 失败，退化为 iter_payloads: {e}")
             raw = [(nid, pl) for nid, pl in store.iter_payloads()
@@ -272,10 +268,8 @@ def mem_recent(domain: str = "", limit: int = 10) -> str:
         finally:
             # 0.7.6 的 with 退出不释放锁，必须显式 close；0.8.2+ 兼容（close 幂等）
             if db is not None:
-                try:
+                with contextlib.suppress(Exception):
                     db.close()
-                except Exception:
-                    pass
     items = [
         {
             "id": nid,
@@ -400,11 +394,8 @@ def _parse_version_content(content: str) -> tuple:
     date = m.group(1) if m else ""
     version = m.group(2) if m else ""
     t = _TITLE_RE.search(content)
-    if t:
-        title = t.group(1).strip()
-    else:
-        # 无 **标题** 时取「：」后的前 50 字
-        title = content.split("：", 1)[-1].strip()[:50]
+    # 无 **标题** 时取「：」后的前 50 字
+    title = t.group(1).strip() if t else content.split("：", 1)[-1].strip()[:50]
     return date, version, title
 
 
@@ -821,7 +812,7 @@ def _hybrid_search_impl(query: str, scope: str = "all", domain: str = "",
             result["neighbors"] = neighbors
             result["neighbor_count"] = len(neighbors)
         return result
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— 混合检索失败返回空结果附失败提示
         return {"results": [], "scope": scope, "hint": f"混合检索失败: {e}"}
 
 

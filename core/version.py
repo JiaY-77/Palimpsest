@@ -21,7 +21,7 @@ def get_version() -> str:
         mtime = os.path.getmtime(os.path.join(_PROJECT_ROOT, ".git", "HEAD"))
         if _cache["version"] and _cache["mtime"] == mtime:
             return _cache["version"]
-    except Exception:
+    except Exception:  # noqa: BLE001 —— 读取 git 元数据失败回退 mtime 继续走缓存判断
         mtime = 0.0
     try:
         out = subprocess.check_output(
@@ -30,7 +30,7 @@ def get_version() -> str:
             text=True, timeout=3,
         ).strip()
         version = out or "dev"
-    except Exception:
+    except Exception:  # noqa: BLE001 —— git describe 失败回退 dev 非 git 部署可用
         version = "dev"
     _cache.update(version=version, mtime=mtime)
     return version

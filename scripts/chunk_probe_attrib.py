@@ -46,13 +46,13 @@ def position(r, key):
     return r[key].index(gold) + 1 if gold in r[key] else None
 
 
-base_r1, base_r5, base_r10 = (avg(lambda r: r_at(r, "base", k)) for k in (1, 5, 10))
+base_r1, base_r5, base_r10 = (avg(lambda r, k=k: r_at(r, "base", k)) for k in (1, 5, 10))
 print(f"题数 {len(rows)}  base: R@1 {base_r1:.4f}  R@5 {base_r5:.4f}  R@10 {base_r10:.4f}\n")
 
 print(f"{'variant':<14} {'R@1':>7} {'ΔR@1':>7} {'R@5':>7} {'ΔR@5':>7} {'R@10':>7} {'ΔR@10':>7} "
       f"| R@5 gain/loss | R@1 gain/loss | 掉top5 | 掉top10")
 for v in keys:
-    r1v, r5v, r10v = (avg(lambda r: r_at(r, v, k)) for k in (1, 5, 10))
+    r1v, r5v, r10v = (avg(lambda r, k=k, v=v: r_at(r, v, k)) for k in (1, 5, 10))
     g5 = sum(1 for r in rows if r_at(r, v, 5) > r_at(r, "base", 5))
     l5 = sum(1 for r in rows if r_at(r, v, 5) < r_at(r, "base", 5))
     g1 = sum(1 for r in rows if r_at(r, v, 1) > r_at(r, "base", 1))

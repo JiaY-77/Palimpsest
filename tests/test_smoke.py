@@ -396,7 +396,7 @@ def test_ingest_tx_rollback(db_path, monkeypatch):
     from mcp_tools import store
 
     before = set(store._get_all_node_ids())
-    n_before = len(before)
+    len(before)
 
     def _boom(store_, embedding, node_id, tx=None, db=None, new_payload=None):
         raise RuntimeError("注入的冲突检测失败（模拟中途再开库撞锁）")

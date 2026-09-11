@@ -26,7 +26,6 @@ import sqlite3
 import sys
 
 try:
-    from _common import PROJECT_ROOT as _PROJECT_ROOT
     from _common import SCRIPT_DIR as _SCRIPT_DIR
 except ImportError:
     import os as _os

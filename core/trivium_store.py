@@ -1,5 +1,6 @@
 """TriviumDB 存储封装"""
 
+import contextlib
 import logging
 import time
 from typing import Any
@@ -46,9 +47,7 @@ def domain_in_block(node_domain: str, block: str) -> bool:
         return True
     if d == b:
         return True
-    if b == "kb" and d == "rule":
-        return True
-    return False
+    return bool(b == "kb" and d == "rule")
 
 
 def node_domain(payload: dict) -> str:
@@ -97,14 +96,12 @@ class TriviumStore:
             db.create_ordered_index("importance")
             db.create_composite_index(("type", "domain"))
             db.create_bitmap_index("status")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 —— 索引创建失败静默降级不影响启动
             logger.warning(f"初始化字段索引失败（静默降级）: {e}")
         finally:
             if db is not None:
-                try:
+                with contextlib.suppress(Exception):
                     db.close()
-                except Exception:
-                    pass
 
     def _acquire(self):
         """
@@ -350,15 +347,13 @@ class TriviumStore:
                 (float(hit.score), {"id": hit.id, "payload": hit.payload})
                 for hit in (hits or [])
             ]
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 —— 检索失败告警后降级空结果不抛断主流程
             logger.warning(f"search_advanced 失败，返回空结果: {e}")
             return []
         finally:
             if db is not None:
-                try:
+                with contextlib.suppress(Exception):
                     db.close()
-                except Exception:
-                    pass
 
         # 过滤 status="outdated" 节点（候选层修复）：新版取代旧版的过期记忆
         # 不应占用候选名额，浪费有效候选配额
@@ -461,10 +456,8 @@ class TriviumStore:
             logger.warning("命中计数回写失败（不影响检索）: %s", e)
         finally:
             if db is not None:
-                try:
+                with contextlib.suppress(Exception):
                     db.close()
-                except Exception:
-                    pass
 
     def _expand_neighbors(self, top: list, depth: int,
                           max_edges_per_node: int | None = None,
@@ -603,10 +596,8 @@ class TriviumStore:
         finally:
             # 0.7.6 的 with 退出不释放锁，必须显式 close；0.8.2 兼容（close 幂等）
             if db is not None:
-                try:
+                with contextlib.suppress(Exception):
                     db.close()
-                except Exception:
-                    pass
 
     def iter_nodes(self):
         """遍历所有节点，yield (node_id, {"id", "payload", "num_edges", "vector"})。
@@ -630,10 +621,8 @@ class TriviumStore:
                 }
         finally:
             if db is not None:
-                try:
+                with contextlib.suppress(Exception):
                     db.close()
-                except Exception:
-                    pass
 
     def count_by_type(self) -> dict[str, int]:
         """统计各节点类型数量，返回 {type: count}。
@@ -688,7 +677,7 @@ class TriviumStore:
                         "vector": vec,
                         "payload": payload,
                     })
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 —— 节点遍历失败返回空列表不阻断检测
                 logger.warning(f"find_similar_pairs 收集节点失败，返回空列表: {e}")
                 return []
 
@@ -735,7 +724,7 @@ class TriviumStore:
                             "a_content": (a_payload.get("content") or "")[:80],
                             "b_content": (b_payload.get("content") or "")[:80],
                         })
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 —— 扫描失败保留已收集候选尽量返回部分结果
             logger.warning(f"find_similar_pairs 扫描失败，返回已收集候选: {e}")
 
         candidates.sort(key=lambda x: x["score"], reverse=True)

@@ -62,7 +62,7 @@ def _copy_db_to_tmp() -> Path:
     tmp = _TMP_DIR
 
     # Copy main DB + all sidecar files
-    db_stem = str(_ORIG_DB_PATH)
+    str(_ORIG_DB_PATH)
     for p in _ORIG_DB_PATH.parent.iterdir():
         if p.name.startswith(_ORIG_DB_PATH.name) and p.is_file():
             dst = tmp / p.name
@@ -200,7 +200,7 @@ def _call_deepseek(prompt: str, max_retries: int = 1) -> str | None:
             det = u.get("completion_tokens_details") or {}
             _USAGE["reasoning"] += int(det.get("reasoning_tokens") or 0)
             return data["choices"][0]["message"]["content"]
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 —— DeepSeek 调用失败打印告警按策略重试
             print(f"  [WARN] DeepSeek call failed (attempt {attempt+1}): {e}")
             if attempt < max_retries:
                 time.sleep(2)
@@ -254,7 +254,7 @@ def _generate_batch(
     # Validate and enforce substring constraint
     result = []
     skipped = 0
-    for pos, (it, node) in enumerate(zip(items, batch)):
+    for pos, (it, node) in enumerate(zip(items, batch, strict=False)):
         query = it["query"]
         content = node["payload"].get("content", "")
         # kind 由脚本按批内位置强制分配（模型不返回该字段，依赖它会导致全 semantic）
@@ -373,7 +373,7 @@ def main() -> int:
     if shortfall_detail:
         remaining = [n for n in nodes if n not in sampled]
         rng.shuffle(remaining)
-        for layer, deficit in shortfall_detail.items():
+        for _, deficit in shortfall_detail.items():
             fill = remaining[:deficit]
             sampled.extend(fill)
             remaining = remaining[deficit:]

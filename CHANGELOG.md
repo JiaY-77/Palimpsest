@@ -4,6 +4,17 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
+## [Unreleased]
+
+### 工程化
+
+- **引入 ruff 静态质量门禁**：`pyproject.toml` 新增 `[tool.ruff]`（显式写 `select` 钉住规则集，避免随 ruff 版本漂移；中文项目下忽略 `RUF001/002/003` 的全角标点误报），CI 新增独立 `lint` job，`requirements-dev.txt` 与 CI 均钉 `ruff==0.16.7`。此前仓库从未有过 lint / 类型 / 覆盖率门禁（`git log --all -S "tool.ruff"` 为空）
+- **存量问题清零**（635 处 → 0）：自动修复 + 人工处理。`BLE001`（宽泛 except）与 `S110`（try-except-pass）逐处写明「为什么这里吞异常是设计」的理由；`try/except/pass` 关闭连接改为 `contextlib.suppress`；`raise` 补 `from e` / `from None` 标明异常链；未使用的导入、循环变量、模糊变量名等一并清理。全部 `# noqa` 重新生效（无失效指令）
+
+### 文档
+
+- `docs/refactor_plan.md` 更新状态（原文写 P1/P2「待启动」，实际已完成）：`mcp_server.py` 882 → 49 行、`generate_report` 抽入 `core/reporting.py`、数据访问层补全完成；剩余大函数拆分与 `scripts/` 瘦身归入 P3，并新增「静态质量门禁」章节
+
 ## [1.2.0] - 2026-09-11
 
 ### 新增

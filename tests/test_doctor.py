@@ -220,7 +220,7 @@ def test_key_files_config_missing(_fake_project_root):
     root = _fake_project_root
     os.remove(root / "config.py")
 
-    with pytest.raises(FileNotFoundError, match="config.py"):
+    with pytest.raises(FileNotFoundError, match=r"config\.py"):
         _check_key_files(root=str(root))
 
 

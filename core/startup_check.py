@@ -39,10 +39,7 @@ def _check_key_files(root: str | None = None) -> str:
 
     root 缺省时使用包所在的项目根（生产路径），仅供测试注入隔离目录使用。
     """
-    if root is None:
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    else:
-        root = str(root)
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) if root is None else str(root)
     missing = []
     auto_created = []
     for rel in ("config.py", "requirements.txt", "data"):
@@ -150,7 +147,7 @@ def _check_embedding() -> str:
         )
         resp.raise_for_status()
     except Exception as e:
-        raise RuntimeError(f"{fail_detail}（探测失败: {e}）")
+        raise RuntimeError(f"{fail_detail}（探测失败: {e}）") from e
 
     # HTTP 可达再实际 embed_text 验证非全零（模型未拉取时仍会返回全零）
     try:

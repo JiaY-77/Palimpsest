@@ -289,7 +289,7 @@ def _generate_report(
         gold_ids = set(item.get("gold_ids", []))
         if not gold_ids:
             continue
-        gold_id = list(gold_ids)[0]
+        gold_id = next(iter(gold_ids))
         gold_sp = source_map.get(gold_id, "")
         if not gold_sp:
             continue
@@ -455,10 +455,7 @@ def main() -> int:
     print(f"[run_eval] DB SHA256 (before): {sha256_before}")
 
     # ── Load eval set ────────────────────────────────────────────────────
-    if args.eval_set:
-        eval_set_path = Path(args.eval_set)
-    else:
-        eval_set_path = _EVAL_DIR / "eval_set.json"
+    eval_set_path = Path(args.eval_set) if args.eval_set else _EVAL_DIR / "eval_set.json"
     if not eval_set_path.exists():
         print(f"[run_eval] ERROR: {eval_set_path} not found")
         return 1
@@ -493,7 +490,7 @@ def main() -> int:
             try:
                 ranked_ids, ranked_scores = _MODE_FNS[mode](query, args.top_k, store)
                 mode_results[mode] = {"ids": ranked_ids, "scores": ranked_scores}
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 —— 单模式跑分失败记空结果继续评测其余模式
                 print(f"  [ERROR] {qid}/{mode}: {e}")
                 fail_count += 1
                 mode_results[mode] = {"ids": [], "scores": []}

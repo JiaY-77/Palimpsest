@@ -36,10 +36,8 @@ try:
     try:
         # 包形式（import scripts.palimpsest_cli，palimpsest-cli 控制台入口）
         from ._common import PROJECT_ROOT as _PROJECT_ROOT
-        from ._common import SCRIPT_DIR as _SCRIPT_DIR
     except ImportError:  # 直接运行 scripts/palimpsest_cli.py 时退化为同目录导入
         from _common import PROJECT_ROOT as _PROJECT_ROOT
-        from _common import SCRIPT_DIR as _SCRIPT_DIR
 
     # 复用 mcp_tools 的工具函数（config 已基于项目根解析绝对路径，与 cwd 无关）
     from core.consolidator import consolidate
@@ -150,7 +148,7 @@ def cmd_review(args):
         from core.trivium_store import TriviumStore
         _store = TriviumStore()
         decision_count = 0
-        for nid, payload in _store.iter_payloads():
+        for _nid, payload in _store.iter_payloads():
             if payload.get("type") == "decision":
                     decision_count += 1
         stats = data.get("stats", {})
@@ -249,7 +247,7 @@ def cmd_ingest_git(args):
     # 幂等检查：遍历库中已有节点，收集已有的 commit_hash
     store = TriviumStore()
     existing_hashes = set()
-    for nid, payload in store.iter_payloads():
+    for _nid, payload in store.iter_payloads():
         ch = payload.get("commit_hash")
         if ch:
             existing_hashes.add(ch)

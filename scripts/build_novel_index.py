@@ -143,7 +143,7 @@ def _load_existing_map(store) -> dict:
 def _count_by_kind(store) -> dict:
     """扫描库中全部 domain=novel 节点，按 kind 统计块数，返回 {kind: count}。"""
     counts = {}
-    for nid, payload in store.iter_payloads():
+    for _nid, payload in store.iter_payloads():
         if payload.get("type") != CHUNK_TYPE:
             continue
         if payload.get("domain") != DOMAIN:
@@ -156,7 +156,7 @@ def _count_by_kind(store) -> dict:
 def _count_novel_nodes(store) -> int:
     """统计库中全部 domain=novel 节点数。"""
     total = 0
-    for nid, payload in store.iter_payloads():
+    for _nid, payload in store.iter_payloads():
         if payload.get("type") != CHUNK_TYPE:
             continue
         if payload.get("domain") == DOMAIN:
@@ -198,7 +198,7 @@ def _upsert_node(store, payload: dict, content: str, existing: dict) -> str:
     return "inserted"
 
 
-def build(source: str = None, store=None, full: bool = False) -> dict:
+def build(source: str | None = None, store=None, full: bool = False) -> dict:
     """构建小说设定库索引（v1.0）。
 
     full=True（--full）：先删除库里所有 domain=novel 旧节点（delete_node 连带
@@ -230,7 +230,7 @@ def build(source: str = None, store=None, full: bool = False) -> dict:
             try:
                 store.delete_node(entry["node_id"])
                 deleted += 1
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 —— 旧节点删除失败计数后跳过继续清库
                 failed += 1
                 failed_paths.append(rel)
         existing = {}
@@ -252,7 +252,7 @@ def build(source: str = None, store=None, full: bool = False) -> dict:
                     inserted += 1
                 else:
                     updated += 1
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 —— 单文件处理失败计数后跳过继续其余文件
                 failed += 1
                 failed_paths.append(rel)
     else:
@@ -281,7 +281,7 @@ def build(source: str = None, store=None, full: bool = False) -> dict:
                     inserted += 1
                 else:
                     updated += 1
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 —— 增量处理失败计数后跳过继续其余文件
                 failed += 1
                 failed_paths.append(rel)
         # 孤儿清理：existing 中有但磁盘上已不存在的源文件旧节点删除
@@ -291,7 +291,7 @@ def build(source: str = None, store=None, full: bool = False) -> dict:
             try:
                 store.delete_node(entry["node_id"])
                 deleted += 1
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 —— 孤儿节点删除失败计数后跳过继续清理
                 failed += 1
                 failed_paths.append(rel)
 

@@ -9,6 +9,7 @@ mem_communities 社区发现工具回归测试
   - content 用低相似短语（fake embedder 2-gram 共享前缀会互相高相似，
     干扰 test_consolidate_dryrun 的候选断言）。
 """
+import contextlib
 import json
 import uuid
 
@@ -32,10 +33,8 @@ def _mk_cluster_graph():
         for a, b in [(0, 1), (1, 2), (2, 0), (3, 4), (4, 5), (5, 3), (0, 3)]:
             db.link(ids[a], ids[b], "REL")
     finally:
-        try:
+        with contextlib.suppress(Exception):
             db.close()
-        except Exception:
-            pass
     # 直插后必须同步 FTS 索引——否则共享 session 库主库/FTS 不一致，
     # 污染后跑的 test_fts_check（test_mem_recent_behavior 同款教训）
     _sync_fts(ids, [f"分析测试内容节点编号{i}" for i in range(6)])
@@ -46,12 +45,10 @@ def _sync_fts(ids, contents):
     """对直插节点同步 FTS（与 mem_ingest 事务后 index_node 链路一致）。"""
     try:
         from mcp_tools.memory import index_node
-        for nid, content in zip(ids, contents):
-            try:
+        for nid, content in zip(ids, contents, strict=False):
+            with contextlib.suppress(Exception):
                 index_node(nid, content)
-            except Exception:
-                pass
-    except Exception:
+    except Exception:  # noqa: S110, BLE001 —— FTS 同步失败静默不影响夹具主断言
         pass
 
 
@@ -93,10 +90,8 @@ def test_empty_graph_returns_hint():
     try:
         nid = db.insert([0.5] * store.dim, {"type": "memory", "domain": f"iso_{uuid.uuid4().hex[:8]}", "content": content})
     finally:
-        try:
+        with contextlib.suppress(Exception):
             db.close()
-        except Exception:
-            pass
     _sync_fts([nid], [content])
     r = _call(min_community_size=2)
     # 孤立节点无边：要么返回空社区列表，要么带 hint
@@ -118,7 +113,5 @@ def test_do_pagerank_internal_smoke():
         assert result.get("mode") == "pagerank"
         assert "top_nodes" in result
     finally:
-        try:
+        with contextlib.suppress(Exception):
             db.close()
-        except Exception:
-            pass

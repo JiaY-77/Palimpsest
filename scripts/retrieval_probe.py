@@ -12,17 +12,13 @@
   python scripts/retrieval_probe.py --no-warmup          # 计入冷启动（默认先预热一次）
 """
 import argparse
+import contextlib
 import json
 import os
 import sys
 import time
 
 try:
-    try:
-        from _common import PROJECT_ROOT as _PROJECT_ROOT
-    except ImportError:
-        from scripts._common import PROJECT_ROOT as _PROJECT_ROOT
-
     from config import Config
     from mcp_tools import mem_search
 except ImportError as _import_err:
@@ -256,18 +252,13 @@ def main():
                         help="跳过预热（默认先跑一次丢弃，避免模型冷启动污染延迟基线）")
     args = parser.parse_args()
 
-    if args.probe_file:
-        probes = load_probe_file(args.probe_file)
-    else:
-        probes = DEFAULT_PROBES
+    probes = load_probe_file(args.probe_file) if args.probe_file else DEFAULT_PROBES
 
     # 预热一次并丢弃：embedding 模型冷启动（首次加载可达数秒）不计入延迟基线，
     # 否则「换模型前后对比」第一条探针的延迟会不可比。
     if probes and not args.no_warmup:
-        try:
+        with contextlib.suppress(Exception):  # 预热失败不影响正式测量
             run_one_probe(probes[0], args.top_k)
-        except Exception:  # noqa: BLE001 —— 预热失败不影响正式测量（后续会报错）
-            pass
 
     all_results = []
     for probe in probes:

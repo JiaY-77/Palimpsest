@@ -18,6 +18,8 @@ import time
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import contextlib
+
 import triviumdb
 
 DIM = 1024
@@ -46,11 +48,9 @@ def main():
     report = {"ts": datetime.now().isoformat(), "dim": DIM, "db": DB, "stages": {}}
     # 清库必须连伴生文件一起删（triviumdb 多文件存储：.vec/.quiver/.wal/.lock/.flush_ok）
     for f in os.listdir(BASE):
-        if f.startswith(os.path.basename(DB)) or f.startswith("stress2.db"):
-            try:
+        if f.startswith((os.path.basename(DB), "stress2.db")):
+            with contextlib.suppress(Exception):
                 os.remove(os.path.join(BASE, f))
-            except Exception:
-                pass
 
     # 准备基础库：10000 节点（1..10000）
     db = open_db()
@@ -86,7 +86,7 @@ def main():
                         db.link(a, b, label="RELATED_TO", weight=rng2.random())
                         with lock:
                             stats["links"] += 1
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 —— 线程内异常记入 errs 混合压测不中断
                 with lock:
                     stats["errs"].append(f"{role}{wid} {type(e).__name__}: {str(e)[:60]}")
 
@@ -121,7 +121,7 @@ def main():
             for r in range(300):
                 nid = ids[r % len(ids)]
                 db.update_payload(nid, {"worker": wid, "round": r, "rand": rng3.random()})
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 —— 并发 upsert 异常记入 errs 统计冲突错率
             errs_b.append(f"{type(e).__name__}: {str(e)[:80]}")
 
     threads = [threading.Thread(target=upsert_worker, args=(w,)) for w in range(8)]
@@ -139,7 +139,7 @@ def main():
             nv = db.get(nid)
             if nv is None:
                 bad += 1
-        except Exception:
+        except Exception:  # noqa: BLE001 —— 抽查读取异常计坏节点不打断核对
             bad += 1
     report["stages"]["B_upsert_8x300"]["sample_bad"] = bad
     db.close()
@@ -152,7 +152,7 @@ def main():
         db.batch_insert([rvec() for _ in range(500)], [long_payload(i) for i in range(500)])
         db.close()
         report["stages"]["C_bigpayload_500"] = {"secs": round(time.time() - t0, 3), "errs": errs_c}
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— 大文本写入阶段异常记 fatal
         report["stages"]["C_bigpayload_500"] = {"fatal": f"{type(e).__name__}: {e}"}
 
     # ---- D. 真实 id 段 8 万边 + expand_depth=3 ----
@@ -163,7 +163,7 @@ def main():
         rng = random.Random(4)
         pool = list(range(1, 10001))
         linked = 0
-        for i in range(80000):
+        for _i in range(80000):
             a = pool[rng.randrange(len(pool))]
             b = pool[rng.randrange(len(pool))]
             if a == b:
@@ -171,11 +171,11 @@ def main():
             try:
                 db.link(a, b, label="RELATED_TO", weight=rng.random())
                 linked += 1
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 —— 建边异常记入 errs 继续载入
                 errs_d.append(f"{type(e).__name__}: {str(e)[:60]}")
         db.close()
         report["stages"]["D_graph_80k"] = {"linked": linked, "secs": round(time.time() - t0, 3), "errs": errs_d[:20]}
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— 建边阶段异常记 fatal
         report["stages"]["D_graph_80k"] = {"fatal": f"{type(e).__name__}: {e}"}
 
     # expand_depth=3 检索压力
@@ -185,12 +185,12 @@ def main():
     try:
         db = open_db()
         rng = random.Random(5)
-        for i in range(300):
+        for _i in range(300):
             s = time.time()
             try:
-                h = db.search(rvec(rng), top_k=10, min_score=0.0, expand_depth=3)
+                db.search(rvec(rng), top_k=10, min_score=0.0, expand_depth=3)
                 lat.append((time.time() - s) * 1000)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 —— 扩展检索异常记入 errs 继续采样
                 errs_d2.append(f"{type(e).__name__}: {str(e)[:60]}")
         db.close()
         lat.sort()
@@ -199,7 +199,7 @@ def main():
             "rate_per_sec": round(300 / (time.time() - t0), 2) if (time.time() - t0) else 0,
             "lat_ms": {"p50": round(lat[len(lat)//2], 2), "p95": round(lat[int(len(lat)*0.95)], 2), "max": round(lat[-1], 2)},
             "errs": errs_d2[:20]}
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— 扩展检索阶段异常记 fatal
         report["stages"]["D_expand3_300"] = {"fatal": f"{type(e).__name__}: {e}"}
 
     # ---- E. 硬杀精确对比 ----
@@ -221,7 +221,7 @@ def main():
             "delta": count_after - count_before, "child_retcode": proc.returncode,
             "reopen_ok": True}
         db.close()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— 硬杀阶段异常记 fatal F 核对仍执行
         report["stages"]["E_hardkill"] = {"fatal": f"{type(e).__name__}: {e}"}
 
     # ---- F. compact + 全量核对 ----
@@ -243,13 +243,13 @@ def main():
                 nv = db.get(nid)
                 if nv is None:
                     bad += 1
-            except Exception:
+            except Exception:  # noqa: BLE001 —— 抽查读取异常计坏节点不打断核对
                 bad += 1
         # 搜索 sanity
         try:
-            h = db.search(rvec(rng), top_k=5, min_score=0.0)
+            db.search(rvec(rng), top_k=5, min_score=0.0)
             search_ok = True
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 —— compact 后检索异常记入报告其余核对继续
             search_ok = f"ERR {type(e).__name__}: {e}"
         report["stages"]["F_compact_verify"] = {
             "before": before, "after": after, "consistent": before == after,
@@ -258,13 +258,11 @@ def main():
             "sample_bad": bad, "search_ok": search_ok,
             "est_memory_mb": round(db.estimated_memory() / (1024*1024), 2)}
         db.close()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 —— compact 核对阶段异常记 fatal
         report["stages"]["F_compact_verify"] = {"fatal": f"{type(e).__name__}: {e}"}
 
-    try:
+    with contextlib.suppress(Exception):
         report["db_size_mb"] = round(os.path.getsize(DB) / (1024*1024), 2)
-    except Exception:
-        pass
 
     with open(REPORT, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2, default=str)
@@ -295,7 +293,7 @@ def child_hard_kill(target_secs):
             db.insert_with_id(9_000_000 + i, rvec(rng), {"text": f"kill-{i}", "phase": "hardkill"})
             i += 1
         db.close()
-    except Exception:
+    except Exception:  # noqa: S110, BLE001 —— 硬杀子进程异常无需处理本就被杀掉
         pass
 
 

@@ -32,7 +32,7 @@ def _extract_recommendation(text: str) -> tuple:
     hit_configs = [c for c in _CONFIG_KEYWORDS if c in low]
     if hit_models:
         model = hit_models[0]
-        config_hints = [c for c in hit_configs]
+        config_hints = list(hit_configs)
         recommended = {"model": model}
         if config_hints:
             recommended["config"] = ", ".join(config_hints[:4])
