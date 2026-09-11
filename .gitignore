@@ -60,3 +60,14 @@ _novel_input/
 _novel_relations.json
 _task_novel_index.md
 _task_novel_links.md
+
+# 一次性探索脚本（文件名含内部任务编号，只在本地保留；
+# 有复用价值的脚本会去掉编号、中性化后再入库，参考 scripts/ab_snapshot_*.py）
+scripts/_t[0-9]*.py
+scripts/tdb_stress/_*.py
+
+# 压测工作区的临时产物
+scripts/tdb_stress/results/
+scripts/tdb_stress/patches/
+scripts/tdb_stress/smoke_086/
+scripts/tdb_stress/issue_draft_*.md
