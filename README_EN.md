@@ -288,11 +288,18 @@ All configuration is read from environment variables (a `.env` file is loaded au
 | `EMBEDDING_MODEL` | `voyage-3` | Cloud embedding model |
 | `EMBEDDING_DIM` | `1024` | Embedding dimension (cloud backend) |
 | `MEMORY_DECAY_FACTOR` | `0.95` | Monthly memory decay used in ranking (`score × importance × factor^(days/30)`); `1.0` disables decay; `kb_chunk` nodes never decay |
+| `MEMORY_RERANK_MODE` | `soft` | Rerank mode: `soft` = semantic score as the main line plus ε-level metadata nudges (default); `hard` = legacy multiplicative weighting (fallback) |
+| `SOFT_RERANK_EPS` | `0.02` | ε for `soft` mode: 15%–40% of the cosine gap, tie-break only |
+| `DOMAIN_BOOST_EPS` | `0.10` | Additive soft domain boost applied to the semantic score for same-domain candidates when `domain_boost` is set |
+| `KB_SOFT_RERANK_MULT` | `1.5` | ε multiplier for `kb_chunk` (knowledge blocks never decay) under `soft` mode |
 | `RULE_RETRIEVAL_WEIGHT` | `1.3` | Score multiplier for rule-domain knowledge slices |
 | `DOMAIN_BIAS_WEIGHT` | `1.15` | Extra weight for domain-biased retrieval |
 | `EXPAND_MAX_EDGES_PER_NODE` | `20` | Max strongest edges diffused per node during graph expansion |
 | `EXPAND_MIN_EDGE_WEIGHT` | `0.0` | Weak-edge pruning threshold during expansion (0 disables) |
 | `RRF_K` | `60.0` | RRF constant k for hybrid retrieval (single-side hits still count) |
+| `RRF_SEM_WEIGHT` | `1.0` | RRF weight for the semantic side |
+| `RRF_FTS_WEIGHT` | `0.1` | RRF weight for the exact (FTS) side — a small FTS boost on top of a clean semantic ordering |
+| `RETRIEVAL_EXPAND_DEPTH` | `0` | Graph expansion depth for the semantic ordering: `0` = pure semantic ranking (default); `1` = graph neighbors join the ordering (one-flag fallback) |
 | `MEM_INGEST_MAX_LENGTH` | `50000` | Max characters of a single memory `content`; longer writes are rejected |
 | `KNOWLEDGE_DIR` | *(optional)* | Root of the knowledge base (Obsidian `.md` files) to index |
 
@@ -358,8 +365,8 @@ python scripts/build_novel_index.py --source <vault-path> --full
 
 | Tool | Description |
 |---|---|
-| `mem_search` | Unified retrieval across memory / knowledge base / both; optional graph-neighbor expansion, domain bias, block-scoped isolation |
-| `mem_hybrid_search` | Hybrid FTS5 + vector retrieval; `mode=rrf` (k=60) or `cascade`; each hit labeled `fts_hit` / `sem_hit` |
+| `mem_search` | Unified retrieval across memory / knowledge base / both; optional graph-neighbor expansion, domain bias, **soft domain boosting (`domain_boost`)**, block-scoped isolation |
+| `mem_hybrid_search` | Hybrid FTS5 + vector retrieval; `mode=rrf` (k=60) or `cascade`; also supports `domain_boost`; each hit labeled `fts_hit` / `sem_hit` |
 | `mem_retrieve` | Semantic retrieval returning a 150-char summary + metadata (never full text) |
 | `mem_get_full` | Fetch the full content of a node by ID |
 | `mem_ingest` | Write a new memory — with conflict detection, `REVISED_BY` version chaining, secret scanning, and length guards |
@@ -397,6 +404,7 @@ python scripts/build_novel_index.py --source <vault-path> --full
 | `doctor` | Deployment health check: critical files / storage / FTS / dependencies / Embedding / vector-dimension consistency, with an actionable fix per failure (`--json`) |
 | `startup-check` | Run the startup self-check (lightweight subset of `doctor`; exit code 1 on failure) |
 | `task-archive` | Archive completed task nodes; `--apply` writes markdown and deletes the node |
+| `reindex` | Re-embed the whole store after switching embedding models (`--check` health check, `--dry-run` preview) |
 
 Examples:
 
@@ -478,20 +486,48 @@ The JSON report carries per-scenario qps, p50/p95/p99 latency and error rate, pl
 
 ---
 
+## Retrieval quality evaluation
+
+`eval/` is an **offline retrieval-quality evaluation framework**: it derives queries from real nodes in the store and scores four retrieval paths (`fts` / `vec` / `rrf` / `cascade`) with Recall@K, MRR@K and nDCG@K, so retrieval changes are measured instead of felt.
+
+```bash
+# Build the eval set (needs DEEPSEEK_API_KEY; --dry-run shows the layer distribution without calling the API)
+venv/Scripts/python.exe eval/gen_eval_set.py --dry-run
+
+# Run the evaluation (4 modes, top-10 by default; --modes rrf,cascade / --limit 20 available)
+venv/Scripts/python.exe eval/run_eval.py
+```
+
+**Read-only by construction:** every script copies the real store (plus sidecar files) into `eval/.tmp/` before it starts and works exclusively on the copy, computing SHA256 of the real files before and after and recording it in the report as proof. See [`eval/README.md`](eval/README.md) for the item schema and metric definitions.
+
+Supporting tools:
+
+- `scripts/retrieval_probe.py` — retrieval health probe: replays verified queries and reports top-1 hit rate plus latency baselines for cross-version / cross-embedding comparisons
+- `scripts/prod_entrypoint_check.py` — production-entrypoint re-check: calls the real retrieval implementation under two configurations, proving a config change actually takes effect on the production path (read-only, SHA256-verified)
+- `scripts/ab_snapshot_*.py` — single-variable A/B: two copies of the same store snapshot, one variable changed, per-question attribution of what won and at which layer
+
+---
+
 ## Project structure
 
 ```
 Palimpsest/
 ├── README.md                     # Chinese (primary)
 ├── README_EN.md                  # English
+├── CHANGELOG.md                  # version history
+├── CONTRIBUTING.md               # contribution guide
+├── CODE_OF_CONDUCT.md
+├── SECURITY.md
 ├── LICENSE
 ├── .env.example                  # commented config template
 ├── .gitignore
 ├── requirements.txt
+├── requirements-dev.txt          # dev dependencies (ruff / mypy / pytest-cov)
 ├── config.py                     # env-driven configuration
 ├── main.py                       # FastAPI REST entry (:8090)
 ├── mcp_server.py                 # MCP stdio entry (FastMCP)
 ├── dashboard.html
+├── docs/                         # RELEASING.md (release process) / HERMES_INTEGRATION.md / refactor_plan.md
 ├── core/                         # shared engine, framework-free
 │   ├── trivium_store.py          #   TriviumDB wrapper (vector + graph + doc)
 │   ├── conflict.py               #   conflict detection / version chains
@@ -529,7 +565,11 @@ Palimpsest/
 │   ├── rebuild_db.py             #   rebuild the database from an export snapshot
 │   ├── start_rest.vbs            #   Windows hidden-window REST launcher
 │   ├── rest_stress.py            #   REST application-level stress test (6 scenarios)
+│   ├── retrieval_probe.py        #   retrieval health probe (top-1 hit rate + latency baseline)
+│   ├── prod_entrypoint_check.py  #   production-entrypoint re-check (real implementation, two configs)
+│   ├── ab_snapshot_*.py          #   single-variable A/B (store copies + per-question attribution)
 │   └── tdb_stress/               #   TriviumDB stress tests (storage layer)
+├── eval/                         # offline retrieval-quality evaluation (eval set / 4 modes / Recall·MRR·nDCG)
 ├── hermes-plugin/                # Hermes dual plugins (Memory Provider + Context Engine)
 ├── tests/                        # pytest (isolated conftest + fake embedder, offline-green)
 └── data/                         # runtime database (gitignored)
@@ -547,10 +587,21 @@ Palimpsest/
 - **Changed the schema?** Rebuild the FTS index (`fts-rebuild`) and the knowledge-base index (`build_kb_index.py`); export / rebuild helpers live in `scripts/`.
 - **Tests:** stay isolated — never point tests at the production database.
 
-Run the tests before opening a PR:
+Run the quality gates before opening a PR (they map one-to-one onto the CI `lint` / `typecheck` / `test` jobs):
 
 ```bash
-python -m pytest tests/ -v
+python -m pytest tests/ -q                         # tests (CI runs 3.10 / 3.11 / 3.12)
+ruff check .                                       # lint (rules pinned in pyproject.toml [tool.ruff])
+mypy                                               # type check (core/ for now, non-strict to start)
+python -m pytest --cov=core --cov=mcp_tools -q     # coverage baseline (no gate yet, used to locate gaps)
+```
+
+Install dev dependencies with `pip install -r requirements-dev.txt`; the `ruff` version is aligned with CI so the gate cannot drift.
+
+Documentation-vs-code consistency is checked by `scripts/readme_check.py` (MCP tool list / CLI subcommands / REST routes / config keys / file references / inline-code pairing) — run it before any release:
+
+```bash
+python scripts/readme_check.py
 ```
 
 Releases follow [Semantic Versioning](https://semver.org/), see [RELEASING.md](docs/RELEASING.md) for the process and [CHANGELOG.md](CHANGELOG.md) for history.

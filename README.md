@@ -267,11 +267,18 @@ Windows 下 `scripts/start_rest.vbs` 可以隐藏窗口启动 REST 服务（如�
 | `EMBEDDING_MODEL` | `voyage-3` | 云端向量模型 |
 | `EMBEDDING_DIM` | `1024` | 向量维度（云端后端） |
 | `MEMORY_DECAY_FACTOR` | `0.95` | 月度记忆衰减（排序用，`score × importance × factor^(天/30)`）；`1.0` 关闭衰减；`kb_chunk` 节点永不衰减 |
+| `MEMORY_RERANK_MODE` | `soft` | 重排模式：`soft` = 语义分为主线 + ε 级元数据微调（默认）；`hard` = 旧版乘性硬加权（可回退） |
+| `SOFT_RERANK_EPS` | `0.02` | `soft` 模式的 ε：落在余弦分差区间的 15%–40%，只做 tie-break |
+| `DOMAIN_BOOST_EPS` | `0.10` | 域软加权加分（加性，作用在语义分上）：`domain_boost` 非空时对同域候选加此值 |
+| `KB_SOFT_RERANK_MULT` | `1.5` | `kb_chunk`（知识块不老化）在 `soft` 模式下的 ε 加成倍率 |
 | `RULE_RETRIEVAL_WEIGHT` | `1.3` | 规则域知识切片的分数倍率 |
 | `DOMAIN_BIAS_WEIGHT` | `1.15` | 域偏置检索的额外权重 |
 | `EXPAND_MAX_EDGES_PER_NODE` | `20` | 图谱扩散时每节点最多扩散的最强边数 |
 | `EXPAND_MIN_EDGE_WEIGHT` | `0.0` | 图谱扩散弱边过滤阈值（0 关闭） |
 | `RRF_K` | `60.0` | 混合检索 RRF 常数 k（单侧命中也计贡献） |
+| `RRF_SEM_WEIGHT` | `1.0` | 混合检索 RRF 语义侧权重 |
+| `RRF_FTS_WEIGHT` | `0.1` | 混合检索 RRF 精确（FTS）侧权重——语义主序干净后 FTS 小幅加成 |
+| `RETRIEVAL_EXPAND_DEPTH` | `0` | 语义主序的图扩散深度：`0` = 纯语义排序（默认）；`1` = 图邻居参与语义主序（可一键回退） |
 | `MEM_INGEST_MAX_LENGTH` | `50000` | 单条记忆 content 最大字符数，超长拒绝写入 |
 | `KNOWLEDGE_DIR` | *（可选）* | 知识库根目录（待索引的 Obsidian `.md` 文件） |
 
@@ -337,8 +344,8 @@ python scripts/build_novel_index.py --source <vault路径> --full
 
 | 工具 | 说明 |
 |---|---|
-| `mem_search` | 统一检索：记忆 / 知识库 / 两者；可选图谱邻居扩展、域偏置、块级隔离 |
-| `mem_hybrid_search` | 混合检索：FTS5 + 向量；`mode=rrf`（k=60）或 `cascade`；命中标注 `fts_hit` / `sem_hit` |
+| `mem_search` | 统一检索：记忆 / 知识库 / 两者；可选图谱邻居扩展、域偏置、**域软加权 `domain_boost`**、块级隔离 |
+| `mem_hybrid_search` | 混合检索：FTS5 + 向量；`mode=rrf`（k=60）或 `cascade`；同样支持 `domain_boost` 域软加权；命中标注 `fts_hit` / `sem_hit` |
 | `mem_retrieve` | 语义检索，返回 150 字摘要 + 元数据（绝不返回全文） |
 | `mem_get_full` | 按 ID 拉取节点完整内容 |
 | `mem_ingest` | 写入新记忆——含冲突检测、`REVISED_BY` 版本链、敏感扫描、长度护栏 |
@@ -458,20 +465,48 @@ python scripts/rest_stress.py --base http://127.0.0.1:8091 --seeds 200 --out rep
 
 ---
 
+## 检索质量评测
+
+`eval/` 是一套**离线检索质量评测框架**：从库内真实节点反推生成题集，对四条检索路径（`fts` / `vec` / `rrf` / `cascade`）计算 Recall@K、MRR@K、nDCG@K，让「改检索」的收益与回归可量化，而不是只凭主观感受。
+
+```bash
+# 生成题集（需要 DEEPSEEK_API_KEY；--dry-run 只看分层分布，不调 API）
+venv/Scripts/python.exe eval/gen_eval_set.py --dry-run
+
+# 跑评测（默认 4 种模式、top-10；可选 --modes rrf,cascade / --limit 20）
+venv/Scripts/python.exe eval/run_eval.py
+```
+
+**只读保护**：所有脚本启动时先把真实库连同 sidecar 文件复制到 `eval/.tmp/`，全部读写落在副本上，并在跑前跑后对真实库文件算 SHA256 写进报告自证。题集与指标定义见 [`eval/README.md`](eval/README.md)。
+
+配套工具：
+
+- `scripts/retrieval_probe.py` —— 检索体检探针：固化已验证查询，输出 top-1 命中率与延迟基线，用于跨版本 / 跨 embedding 模型快速对比
+- `scripts/prod_entrypoint_check.py` —— 生产入口复测：直接调检索的真实实现，在两种配置下各跑一遍题集，证明配置改动确实在生产链路上生效（只读，真库 SHA256 前后校验）
+- `scripts/ab_snapshot_*.py` —— 单变量 A/B：从同一份真库快照复制两份副本，只改其中一份的变量，逐题归因谁赢谁输、赢在哪一层
+
+---
+
 ## 项目结构
 
 ```
 Palimpsest/
 ├── README.md                     # 中文主版
 ├── README_EN.md                  # 英文版
+├── CHANGELOG.md                  # 版本历史
+├── CONTRIBUTING.md               # 贡献指南
+├── CODE_OF_CONDUCT.md
+├── SECURITY.md
 ├── LICENSE
 ├── .env.example                  # 配置模板（带注释）
 ├── .gitignore
 ├── requirements.txt
+├── requirements-dev.txt          # 开发依赖（ruff / mypy / pytest-cov）
 ├── config.py                     # 环境变量驱动配置
 ├── main.py                       # FastAPI REST 入口 (:8090)
 ├── mcp_server.py                 # MCP stdio 入口 (FastMCP)
 ├── dashboard.html
+├── docs/                         # RELEASING.md（发版流程）/ HERMES_INTEGRATION.md / refactor_plan.md
 ├── core/                         # 共享引擎，无框架依赖
 │   ├── trivium_store.py          #   TriviumDB 封装（向量+图谱+文档）
 │   ├── conflict.py               #   冲突检测 / 版本链（三层防误标）
@@ -510,7 +545,11 @@ Palimpsest/
 │   ├── reindex.py                #   全库向量重嵌入（换模型后一键重建）
 │   ├── start_rest.vbs            #   Windows 隐藏窗口 REST 启动器
 │   ├── rest_stress.py            #   REST 应用层压测（6 场景端到端）
+│   ├── retrieval_probe.py        #   检索体检探针（top-1 命中率 + 延迟基线）
+│   ├── prod_entrypoint_check.py  #   生产入口复测（真实实现 + 双配置对照）
+│   ├── ab_snapshot_*.py          #   单变量 A/B（库副本 + 逐题归因）
 │   └── tdb_stress/               #   TriviumDB 压力测试（存储层）
+├── eval/                         # 离线检索质量评测（题集 / 4 模式 / Recall·MRR·nDCG）
 ├── hermes-plugin/                # Hermes 双插件（Memory Provider + Context Engine）
 ├── tests/                        # pytest（conftest 隔离 + fake embedder，无需联网）
 └── data/                         # 运行时数据库（gitignore）
@@ -528,10 +567,21 @@ Palimpsest/
 - **改了 schema？** 重建 FTS 索引（`fts-rebuild`）与知识库索引（`build_kb_index.py`）；导出 / 重建工具在 `scripts/`。
 - **测试：** 保持隔离——绝不让测试指向生产数据库。
 
-提交 PR 前请先跑测试：
+提交 PR 前请先过质量门禁（与 CI 的 `lint` / `typecheck` / `test` 三个 job 一一对应）：
 
 ```bash
-python -m pytest tests/ -v
+python -m pytest tests/ -q                         # 测试（CI 上跑 3.10 / 3.11 / 3.12）
+ruff check .                                       # 静态检查（规则集钉在 pyproject.toml 的 [tool.ruff]）
+mypy                                               # 类型检查（当前覆盖 core/，非严格起步）
+python -m pytest --cov=core --cov=mcp_tools -q     # 覆盖率基线（暂不设门槛，用于定位缺口）
+```
+
+开发依赖用 `pip install -r requirements-dev.txt` 安装；`ruff` 版本与 CI 对齐，避免门禁含义随版本漂移。
+
+文档与代码的一致性由 `scripts/readme_check.py` 检查（MCP 工具清单 / CLI 子命令 / REST 路由 / 配置项 / 文件引用 / 行内代码配对），发版前必跑：
+
+```bash
+python scripts/readme_check.py
 ```
 
 版本发布遵循 [语义化版本](https://semver.org/lang/zh-CN/)，流程见 [RELEASING.md](docs/RELEASING.md)，历史见 [CHANGELOG.md](CHANGELOG.md)。
