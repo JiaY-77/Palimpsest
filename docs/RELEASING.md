@@ -22,14 +22,21 @@
 
 ```bash
 # 测试全绿
-python -m pytest tests/ -v
+python -m pytest tests/ -q
 
-# CI 全绿（GitHub Actions 三个 Python 版本）
-# 查看：https://github.com/JiaY-77/Palimpsest/actions
+# 静态检查 + 类型检查（与 CI 的 lint / typecheck job 对应）
+ruff check .
+mypy
+
+# 文档与代码一致性（MCP 工具清单 / CLI 子命令 / REST 路由 / 配置项 / 文件引用 / 行内代码配对）
+python scripts/readme_check.py
 
 # 启动自检
 venv\Scripts\python.exe scripts\palimpsest_cli.py startup-check
 ```
+
+CI 全绿：GitHub Actions 的 `lint` / `typecheck` / `test` 三个 job 全通过（`test` 覆盖 Python 3.10 / 3.11 / 3.12）——
+查看 https://github.com/JiaY-77/Palimpsest/actions 。
 
 ### 2. 版本号决策
 
@@ -42,7 +49,21 @@ venv\Scripts\python.exe scripts\palimpsest_cli.py startup-check
 - 补发布日期、版本链接
 - 重要变更写清「迁移指南」（若有）
 
-### 4. 打 tag + 发 Release
+### 4. 更新文档与版本引用（逐项过，漏一处对外就不一致）
+
+| 位置 | 要更新什么 |
+|---|---|
+| `pyproject.toml` | `version = "X.Y.Z"` |
+| `README.md` | badge `Version-vX.Y.Z`、`TriviumDB-0.x.y` |
+| `README_EN.md` | 表格 `Version | vX.Y.Z`、`Storage | TriviumDB 0.x.y`、架构图内的 TriviumDB 版本 |
+| `.env.example` | 本次新增 / 改名的配置项 |
+| `CHANGELOG.md` | 版本小节与底部版本链接（下一步） |
+| `tests/` | 依赖升级导致的 `package_version` 断言（改断言，不改生产代码） |
+
+改了对外行为（工具 / CLI 命令 / REST 路由 / 配置项）时，中英文两份 README、`CONTRIBUTING.md` 与 `.env.example` 一并更新，
+再用 `python scripts/readme_check.py` 验证——该脚本就是为「代码加了、文档漏了」这类不一致而设的。
+
+### 5. 打 tag + 发 Release
 
 ```bash
 # 打 tag（v 前缀）
@@ -57,7 +78,7 @@ gh release create v1.0.0 \
   --notes "$(sed -n '/## \[1.0.0\]/,/^## \[/p' CHANGELOG.md)"
 ```
 
-### 5. 发布后确认
+### 6. 发布后确认
 
 ```bash
 # REST 版本号正确
@@ -79,3 +100,4 @@ gh release view v1.0.0
 2. **脱敏审计不过不发版**（push 前 secret_scan 扫一遍，公开仓库历史无隐私文件）
 3. **不重复打同一版本号**（tag 已存在则用更高版本号）
 4. **破坏性变更必须有迁移指南**，否则不发
+5. **文档与代码不一致不发版**（`scripts/readme_check.py` 必须退出码 0；上表版本引用逐项过完）

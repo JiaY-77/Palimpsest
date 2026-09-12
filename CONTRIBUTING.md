@@ -10,6 +10,7 @@ Thanks for taking the time to contribute. Whether you are fixing a bug, adding a
 - [Project Structure](#project-structure)
 - [Adding a New Tool](#adding-a-new-tool)
 - [Testing](#testing)
+- [Code Quality](#code-quality)
 - [Commit Conventions](#commit-conventions)
 - [Pull Requests](#pull-requests)
 - [Releases](#releases)
@@ -35,7 +36,7 @@ pip install -r requirements.txt -r requirements-dev.txt
 # 4. Local embedding model — needs Ollama running first
 ollama pull qwen3-embedding:0.6b
 
-# 5. Run the test suite (should be all green — currently 51 tests)
+# 5. Run the test suite (should be all green)
 python -m pytest tests/ -v
 ```
 
@@ -62,7 +63,7 @@ Palimpsest/
 │   ├── secret_scan.py     # pre-write secret scanning
 │   ├── startup_check.py   # startup self-check
 │   └── task_archive.py    # completed-task auto-archiving
-├── mcp_tools/     # 14 MCP tools — shared by MCP / REST / CLI
+├── mcp_tools/     # 16 MCP tools — shared by MCP / REST / CLI
 ├── scripts/       # operational tooling (CLI, dashboard, KB indexing)
 ├── tests/         # pytest suite (conftest.py isolates the DB)
 └── data/          # runtime databases (gitignored — never commit)
@@ -112,7 +113,7 @@ python scripts/build_kb_index.py
 
 ## Testing
 
-The suite currently has **51 tests** (smoke + core algorithm unit tests + transaction tests):
+The suite covers smoke tests, core algorithm unit tests, and transaction tests:
 
 ```bash
 python -m pytest tests/ -v
@@ -123,6 +124,22 @@ Ground rules:
 - **Any new or modified feature must include tests**, and the full suite must pass before you open a PR.
 - **Keep tests isolated.** `tests/conftest.py` points `DB_PATH` at a temporary database and isolates the knowledge base. Never point a test at `data/mh_memory.db`.
 - Prefer asserting on behavior (return values, storage state) over implementation details, and keep the tests fast — they run on CI for every PR across Python 3.10 / 3.11 / 3.12.
+
+---
+
+## Code Quality
+
+Static gates run on CI for every PR — keep them green locally before pushing:
+
+```bash
+ruff check .                                       # lint — rule set pinned in pyproject.toml [tool.ruff]
+mypy                                               # type check — scoped to core/ for now, non-strict to start
+python -m pytest --cov=core --cov=mcp_tools -q     # coverage baseline (reported, not enforced yet)
+```
+
+Install the dev toolchain with `pip install -r requirements-dev.txt`. The `ruff` version is pinned there and in CI so the gate cannot drift between environments; when ruff reports a false positive, prefer a targeted `# noqa: <rule>` with a short reason over weakening the rule set.
+
+If your change touches user-facing behavior (CLI / REST / tools / config keys), update `README.md` **and** `README_EN.md`, plus `.env.example` when you add a configuration key. `python scripts/readme_check.py` verifies the docs against the code — MCP tool list, CLI subcommands, REST routes, config keys, file references, and inline-code pairing — and is meant to be run before opening the PR and before any release.
 
 ---
 
@@ -156,10 +173,10 @@ perf(store): single-connection iteration
 3. Push and open a pull request via GitHub.
 4. In the PR description, made clear:
    - What the change does and why (link to the issue if one exists).
-   - **Tests run** (e.g. `python -m pytest tests/ -v` → "51 passed") and any tests added.
+   - **Tests run** (e.g. `python -m pytest tests/ -q` → "N passed") and any tests added.
    - Screenshots or example output if your change affects user-visible behavior (CLI / REST / dashboard).
 
-5. **CI must be green.** Every PR runs the full test suite on Python 3.10 / 3.11 / 3.12 — if a job fails, fix it and re-push before requesting review.
+5. **CI must be green.** Every PR runs lint (`ruff`), type checks (`mypy`), and the full test suite on Python 3.10 / 3.11 / 3.12 — if a job fails, fix it and re-push before requesting review.
 
 A maintainer will review your PR; please be patient and responsive to feedback. Small, well-tested PRs review fastest.
 

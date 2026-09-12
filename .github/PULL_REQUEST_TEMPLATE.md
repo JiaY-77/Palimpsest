@@ -13,14 +13,18 @@ Please mark what applies (delete the rest):
 
 ## Tests
 
-<!-- Run the full suite and paste the result. e.g.:
+<!-- Run the gates and paste the results. e.g.:
 
-python -m pytest tests/ -v
-> 51 passed in 2.10s
+python -m pytest tests/ -q
+> 320 passed in 12.34s
+ruff check .
+mypy
 -->
 
-- [ ] `python -m pytest tests/ -v` passes (all green)
-- [ ] CI is green on all Python versions (3.10 / 3.11 / 3.12)
+- [ ] `python -m pytest tests/ -q` passes (all green)
+- [ ] `ruff check .` and `mypy` pass
+- [ ] User-facing docs updated (README / README_EN / CONTRIBUTING / .env.example) and `python scripts/readme_check.py` is green
+- [ ] CI is green (lint / typecheck / test on Python 3.10 / 3.11 / 3.12)
 
 ## Breaking changes
 
