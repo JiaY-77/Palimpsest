@@ -30,7 +30,9 @@ import sys
 from pathlib import Path
 
 DOC_FILES = ("README.md", "README_EN.md", "CONTRIBUTING.md")
-# 脱敏占位符检查还覆盖 CHANGELOG（历史条目同样对外可读）
+# CHANGELOG 只参与脱敏占位符检查（PLACEHOLDER_DOCS），不参与行内代码配对
+# 与文件引用检查（DOC_FILES）：历史条目会合法引用已删除 / 已重命名的文件
+# 与旧路径，纳入检查只会产生永远修不掉的历史噪音。
 PLACEHOLDER_DOCS = (*DOC_FILES, "CHANGELOG.md")
 FENCE = "```"
 

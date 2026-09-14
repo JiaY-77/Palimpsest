@@ -12,7 +12,7 @@
 
 ## 问题 2（严重）kb 文档级 recall 未实现
 
-`_doc_recall` 已定义但从未被调用，规格要求的 `Recall@5(doc)` 在报告里完全缺失。要实现：
+`_doc_recall` 已定义但从未被调用，规格要求的 `Recall@5(doc)` 在报告里完全缺失。要实现：（后续改名为 `_doc_hit`，语义不变）
 
 - 对 `gold_type == "kb_chunk"` 的题额外算 **doc-level** 指标：
   - `doc_recall@5`：top-5 里是否命中**同一 `source_path` 的任一节点**（二值 0/1，不是比例——比例会让多切片文档永远低分）

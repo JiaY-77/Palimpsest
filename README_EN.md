@@ -426,7 +426,7 @@ Node ownership is expressed by the `payload.domain` field. Specify a block at wr
 | `GET` | `/export` | Export memories as a paginated JSON snapshot (default 100/page, max 500) |
 | `GET` | `/summary` | Human-readable memory summary (events / character states / plans) |
 | `GET` | `/memory/{id}` | Read a single node's full payload |
-| `POST` | `/report` | Generate an LLM analysis report over the current store |
+| `POST` | `/report` | Generate an LLM analysis report over the current store (prompt is written for novel-writing / roleplay scenarios, not a generic summary) |
 | `DELETE` | `/memory/{id}` | Delete a memory node (FTS index synced) |
 | `PUT` | `/memory/{id}` | Update a node's payload (**merge semantics**: only supplied fields change, the rest are kept; FTS synced) |
 | `PATCH` | `/memory/{id}` | Partial update of a node (same merge semantics, REST-precise) |

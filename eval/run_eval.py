@@ -133,7 +133,7 @@ def _collect_source_paths(store: TriviumStore) -> dict[int, str]:
     return mapping
 
 
-def _doc_recall(
+def _doc_hit(
     ranked_ids: list[int],
     gold_id: int,
     source_path: str,
@@ -297,7 +297,7 @@ def _generate_report(
                    if sp == gold_sp and nid not in gold_ids}
         for mode in modes:
             ranked = mode_results.get(mode, {}).get("ids", [])
-            doc_hit = _doc_recall(ranked, gold_id, gold_sp, source_map, 5)
+            doc_hit = _doc_hit(ranked, gold_id, gold_sp, source_map, 5)
             kb_doc_agg[mode]["doc_recall@5"].append(doc_hit)
             kb_doc_agg[mode]["ndcg@5_partial"].append(
                 ndcg_at_k(ranked, gold_ids, 5, partial=partial))
