@@ -150,7 +150,7 @@ def cmd_review(args):
         decision_count = 0
         for _nid, payload in _store.iter_payloads():
             if payload.get("type") == "decision":
-                    decision_count += 1
+                decision_count += 1
         stats = data.get("stats", {})
         stats["decision"] = decision_count
         data["stats"] = stats

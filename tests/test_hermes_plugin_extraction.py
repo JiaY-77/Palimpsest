@@ -165,3 +165,8 @@ class TestIsNearDuplicate:
 
     def test_missing_score_returns_false(self):
         assert self._call({"results": [{}]}) is False
+
+    def test_score_exactly_at_threshold_returns_true(self):
+        threshold = _mod._NEAR_DUP_THRESHOLD
+        with patch.object(_mod, "_http_post", return_value={"results": [{"score": threshold}]}):
+            assert _is_near_duplicate("test", "http://x:8090", "hermes") is True

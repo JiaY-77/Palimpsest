@@ -6,7 +6,8 @@
 
 检查项：
   ①~⑤  复用 run_startup_check()（关键文件 / Store 初始化 / FTS5 / 依赖 / Embedding）
-  ⑥     向量维度一致性（实测 embedding 维度 vs 库实际维度，复用 reindex 逻辑）
+  ⑥     向量维度一致性（实测 embedding 维度 vs 库实际维度，复用 core.dims 逻辑）
+  ⑦     domain 字段迁移状态（无 domain 但有 character_name 的历史兼容镜像存量）
 
 设计原则：
   - 单项失败不中断（embedding 不可用时其余检查项仍全部执行并展示）
@@ -15,10 +16,9 @@
 """
 
 
+# 维度校验复用 core.dims 的实现（避免两份漂移）
+from core.dims import get_db_dim
 from core.startup_check import run_startup_check
-
-# 维度校验复用 reindex 的实现（避免两份漂移）
-from scripts.reindex import _get_db_dim
 
 
 def _check_dimension_consistency():
@@ -45,7 +45,7 @@ def _check_dimension_consistency():
     db_dim = None
     db_err = None
     try:
-        db_dim, db_err = _get_db_dim(store)
+        db_dim, db_err = get_db_dim(store)
     except Exception as e:  # noqa: BLE001 —— 读取库维度失败仅记录交由汇总分支提示
         db_err = str(e)
 
@@ -91,6 +91,37 @@ def _check_dimension_consistency():
     )
 
 
+def _check_legacy_domain_mirror():
+    """domain 字段迁移状态：统计「domain 为空/缺失、但 character_name 非空」的节点数。
+
+    domain 是正式区块字段（2026-08-29 起），character_name 只是历史兼容镜像。
+    返回 (ok, detail, fix)。内部永不抛异常：异常时返回 ok=False。
+    """
+    from core.trivium_store import TriviumStore
+
+    fix_cmd = "python scripts/migrate_domain.py"
+    try:
+        store = TriviumStore()
+        count = 0
+        for _nid, payload in store.iter_payloads():
+            if not payload.get("domain") and payload.get("character_name"):
+                count += 1
+    except Exception as e:  # noqa: BLE001 —— 遍历失败不抛异常，返回错误信息交由汇总提示
+        return (
+            False,
+            f"检查 domain 字段迁移状态失败: {e}",
+            fix_cmd,
+        )
+
+    if count == 0:
+        return (True, "所有节点都有 domain 字段", "")
+    return (
+        False,
+        f"发现 {count} 个只有 character_name 没有 domain 的节点，建议迁移",
+        f"{fix_cmd}（把 character_name 复制到 domain 使两字段一致；默认 dry-run 预览，--apply 才真正写库）",
+    )
+
+
 def run_doctor() -> dict:
     """执行全部体检，返回结构化结果（永不抛异常）。
 
@@ -113,6 +144,15 @@ def run_doctor() -> dict:
     ok, detail, fix = _check_dimension_consistency()
     checks.append({
         "name": "向量维度一致性",
+        "ok": ok,
+        "detail": detail,
+        "fix": fix,
+    })
+
+    # 第三阶段：domain 字段迁移状态（无 domain 但有 character_name 的历史兼容镜像存量）
+    ok, detail, fix = _check_legacy_domain_mirror()
+    checks.append({
+        "name": "domain 字段迁移状态",
         "ok": ok,
         "detail": detail,
         "fix": fix,

@@ -20,6 +20,12 @@ from core.doctor import render_text, run_doctor
 from core.startup_check import _check_key_files
 from mcp_tools import store
 
+# doctor 检查项数量：
+#   ①~⑤ run_startup_check（关键文件 / Store 初始化 / FTS5 / 依赖 / Embedding）
+#   ⑥ 向量维度一致性   ⑦ domain 字段迁移状态
+# 新增检查项时只改这一处（原先三处硬编码 6，加第 ⑦ 项时三处齐红）。
+_EXPECTED_CHECK_COUNT = 7
+
 
 @pytest.fixture
 def iso_db(tmp_path, monkeypatch):
@@ -34,7 +40,7 @@ def iso_db(tmp_path, monkeypatch):
 # ================================================================
 
 def test_doctor_all_pass(iso_db, monkeypatch):
-    """fake embedder 正常：6 项全部通过，退出码 0。
+    """fake embedder 正常：全部检查项通过，退出码 0。
 
     monkeypatch _check_embedding 跳过真实 HTTP 探测，
     仅验证 fake embedder 能产生非零向量——确保测试不依赖 Ollama 可达性
@@ -54,7 +60,7 @@ def test_doctor_all_pass(iso_db, monkeypatch):
 
     result = run_doctor()
     assert result["ok"]
-    assert len(result["checks"]) == 6
+    assert len(result["checks"]) == _EXPECTED_CHECK_COUNT
     for c in result["checks"]:
         assert c["ok"], f"检查项 {c['name']} 不应失败"
         assert c["fix"] == ""
@@ -84,7 +90,7 @@ def test_doctor_embedding_unavailable(iso_db, monkeypatch):
 
     result = run_doctor()
     assert not result["ok"]
-    assert len(result["checks"]) == 6
+    assert len(result["checks"]) == _EXPECTED_CHECK_COUNT
 
     emb_check = next(c for c in result["checks"] if c["name"] == "Embedding 服务可用")
     assert not emb_check["ok"]
@@ -171,7 +177,7 @@ def test_doctor_cli_subprocess():
     data = json.loads(result.stdout)
     assert "ok" in data
     assert "checks" in data
-    assert len(data["checks"]) == 6
+    assert len(data["checks"]) == _EXPECTED_CHECK_COUNT
     for c in data["checks"]:
         assert "name" in c
         assert "ok" in c
@@ -233,3 +239,52 @@ def test_key_files_data_already_exists(_fake_project_root):
     result = _check_key_files(root=str(root))
     assert "已存在" in result
     assert "已自动创建" not in result
+
+
+# ================================================================
+# ⑦ domain 字段迁移状态
+# ================================================================
+
+def test_legacy_domain_mirror_flags_node_without_domain():
+    """只有 character_name 没有 domain 的节点 → 该项失败并给出迁移命令。
+
+    用真库真节点（不经 mock）：插一个历史兼容镜像节点，检查必须发现它；
+    删除后同一检查恢复通过 —— 证明它统计的确实是这类节点，而不是恒真/恒假。
+    """
+    from core.doctor import _check_legacy_domain_mirror
+
+    emb = store.embed_text("legacy domain mirror probe")
+    nid = store.insert_node({
+        "type": "memory",
+        "character_name": "legacy_only",
+        "content": "只有 character_name 没有 domain 的历史节点（doctor ⑦ 用例）",
+    }, emb)
+    try:
+        ok, detail, fix = _check_legacy_domain_mirror()
+        assert ok is False
+        assert "character_name" in detail
+        assert "migrate_domain.py" in fix
+    finally:
+        store.delete_node(nid)
+
+    ok_after, detail_after, fix_after = _check_legacy_domain_mirror()
+    assert ok_after is True, detail_after
+    assert fix_after == ""
+
+
+def test_legacy_domain_mirror_ignores_official_domain_node():
+    """有正式 domain 字段的节点不算存量（即使同时带 character_name 镜像）。"""
+    from core.doctor import _check_legacy_domain_mirror
+
+    emb = store.embed_text("official domain probe")
+    nid = store.insert_node({
+        "type": "memory",
+        "domain": "hermes",
+        "character_name": "hermes",
+        "content": "domain 与 character_name 镜像一致的正式节点（doctor ⑦ 用例）",
+    }, emb)
+    try:
+        ok, detail, _fix = _check_legacy_domain_mirror()
+        assert ok is True, detail
+    finally:
+        store.delete_node(nid)

@@ -18,18 +18,20 @@
   - 异常中断保留进度，可 --resume 续跑（状态文件跟库绑定）
 """
 import argparse
-import contextlib
 import json
 import os
 import signal
 import sys
 import time
 
-with contextlib.suppress(ImportError):
-    pass
+# 项目根注入（脚本直接运行 / 包形式导入都要能用）
+try:
+    from ._common import PROJECT_ROOT as _PROJECT_ROOT
+except ImportError:  # 直接运行 scripts/reindex.py 时退化为同目录导入
+    from _common import PROJECT_ROOT as _PROJECT_ROOT  # type: ignore[import-not-found, no-redef]  # noqa: F401
 
-import contextlib
-
+from config import Config
+from core.dims import get_db_dim as _get_db_dim
 from core.trivium_store import EmbeddingUnavailableError, TriviumStore
 
 # ---- 进度状态文件（跟库绑定，不再硬编码到项目 data/） ----
@@ -61,25 +63,6 @@ def _save_state(state_path, state):
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
     os.replace(tmp, state_path)
-
-
-def _get_db_dim(store):
-    """读取库实际维度（从 DB 的 storage_info）。
-
-    返回 (dim: int, error: str | None)。
-    """
-    import triviumdb
-    db = None
-    try:
-        db = triviumdb.TriviumDB(store.db_path, dim=store.dim)
-        info = db.storage_info()
-        return info.get("dim"), None
-    except Exception as e:  # noqa: BLE001 —— 读维度失败返回错误信息交由体检汇总提示
-        return None, f"无法读取数据库维度: {e}"
-    finally:
-        if db is not None:
-            with contextlib.suppress(Exception):
-                db.close()
 
 
 def _check_dims(store):
@@ -151,18 +134,15 @@ def cmd_check(store):
 
     provider = store.provider
     if provider == "openai":
-        model = getattr(
-            __import__("config").Config, "EMBEDDING_MODEL", "unknown")
-        getattr(
-            __import__("config").Config, "EMBEDDING_BASE_URL", "")
+        model = getattr(Config, "EMBEDDING_MODEL", "unknown")
+        base_url = getattr(Config, "EMBEDDING_BASE_URL", "")
     else:
-        model = getattr(
-            __import__("config").Config, "OLLAMA_EMBEDDING_MODEL", "unknown")
-        getattr(
-            __import__("config").Config, "OLLAMA_EMBEDDING_BASE_URL", "")
+        model = getattr(Config, "OLLAMA_EMBEDDING_MODEL", "unknown")
+        base_url = getattr(Config, "OLLAMA_EMBEDDING_BASE_URL", "")
 
     print(f"\n当前 provider:  {provider}")
     print(f"当前模型:        {model}")
+    print(f"服务地址:        {base_url or '(未配置)'}")
     print(f"配置维度:        {store.dim}")
 
     # 库实际维度
@@ -320,7 +300,7 @@ def cmd_reindex(store, *, only=None, skip=None, batch=64,
         _save_state(state_file, {
             "provider": store.provider,
             "model": getattr(
-                __import__("config").Config,
+                Config,
                 "OLLAMA_EMBEDDING_MODEL"
                 if store.provider != "openai" else "EMBEDDING_MODEL",
                 "unknown",

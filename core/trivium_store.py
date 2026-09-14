@@ -354,7 +354,7 @@ class TriviumStore:
 
         A1 重构：将旧「db.search + Python BFS 扩散」两步合一，
         改为单次 db.search_advanced 调用，由 triviumdb 0.8.3 原生图扩散替代
-        Python BFS（_expand_neighbors），获得约 4.6x 性能提升（10 万节点实测）。
+        Python BFS（旧邻居扩展），获得约 4.6x 性能提升（10 万节点实测）。
 
         行为变化说明：
           - SA-PPR 认知管线的分数 scale 与旧 BFS 完全不同（非逐跳 ×weight），
@@ -479,73 +479,6 @@ class TriviumStore:
             if db is not None:
                 with contextlib.suppress(Exception):
                     db.close()
-
-    def _expand_neighbors(self, top: list, depth: int,
-                          max_edges_per_node: int | None = None,
-                          min_edge_weight: float | None = None,
-                          block: str = "") -> list:
-        """[deprecated] 沿边 BFS 扩散邻居（已被 search_advanced 原生图扩散替代）。
-
-        A1 重构后 search_similar 不再调用本方法，改用
-        db.search_advanced 的原生图扩散（expand_depth 参数）。保留本方法
-        供外部调用方引用或回退使用。若无外部调用方，后续可移除。
-
-        精馏（性能优化 + 分区块）：
-        - 每节点只扩散按 weight 降序的最强 max_edges_per_node 条边（默认 20），
-          防高节点（如 500 邻居）全量扩散撑爆计算/污染结果；
-        - 扩散分数 = 当前分数 × 边 weight（替代旧固定 ×0.8），强边自然靠前；
-        - min_edge_weight 可额外过滤弱边（默认 0.0 不启用）；
-        - block 非空时只扩散 target 节点 domain 匹配区块的边（图谱分区块，防跨域污染）。
-        """
-        max_edges = (max_edges_per_node if max_edges_per_node is not None
-                     else Config.EXPAND_MAX_EDGES_PER_NODE)
-        min_w = (min_edge_weight if min_edge_weight is not None
-                 else Config.EXPAND_MIN_EDGE_WEIGHT)
-        merged = {node.get("id"): (score, node) for score, node in top}
-        seen = set(merged.keys())
-        frontier = [(score, node.get("id"), 0) for score, node in top]
-        with self._acquire() as db:
-            while frontier:
-                score, nid, hop = frontier.pop(0)
-                if hop >= depth:
-                    continue
-                edges = list(db.get_edges(nid))
-                # 精馏 1：过滤弱边 + 按 weight 降序取最强 max_edges 条
-                edges = [e for e in edges
-                         if float(getattr(e, "weight", 1.0) or 1.0) >= min_w]
-                edges.sort(key=lambda e: float(getattr(e, "weight", 1.0) or 1.0),
-                           reverse=True)
-                edges = edges[:max_edges]
-                for edge in edges:
-                    w = float(getattr(edge, "weight", 1.0) or 1.0)
-                    nb = edge.target_id
-                    if nb in seen:
-                        continue
-                    # 精馏 3（分区块）：只扩散 target 节点 domain 匹配区块的边
-                    if block:
-                        nb_node = db.get(nb)
-                        if not nb_node:
-                            continue
-                        nb_payload = nb_node.payload or {}
-                        nb_domain = node_domain(nb_payload)
-                        if not domain_in_block(nb_domain, block):
-                            continue
-                    else:
-                        nb_node = db.get(nb)
-                        if not nb_node:
-                            continue
-                    seen.add(nb)
-                    # 精馏 2：扩散分数用边 weight（替代旧固定 ×0.8）
-                    nb_score = score * w
-                    merged[nb] = (nb_score, {
-                        "id": nb_node.id,
-                        "payload": nb_node.payload,
-                        "num_edges": nb_node.num_edges,
-                        "vector": nb_node.vector,
-                    })
-                    frontier.append((nb_score, nb, hop + 1))
-        # 扩散后按 score 降序重排
-        return sorted(merged.values(), key=lambda x: x[0], reverse=True)
 
     def get_edges(self, node_id: int) -> list:
         """获取节点的出边列表（Edge 对象，含 label/target_id/weight）"""

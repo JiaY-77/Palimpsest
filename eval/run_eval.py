@@ -77,7 +77,7 @@ from mcp_tools.memory import _hybrid_cascade, _hybrid_rrf  # noqa: E402
 
 # Metrics (from eval/ directory)
 sys.path.insert(0, str(_EVAL_DIR))
-from metrics import mrr_at_k, ndcg_at_k, recall_at_k  # noqa: E402
+from metrics import auc_separability, mrr_at_k, ndcg_at_k, recall_at_k  # noqa: E402
 
 ALL_MODES = ("fts", "vec", "rrf", "cascade")
 
@@ -368,6 +368,26 @@ def _generate_report(
     row += " |"
     lines.append(row)
 
+    mode_auc = {
+        m: auc_separability(pos_top1_scores[m], neg_top1_scores[m])
+        for m in modes
+    }
+
+    def _auc_cell(auc: float | None) -> str:
+        return "N/A" if auc is None else f"{auc:.4f}"
+
+    def _overlap_cell(auc: float | None) -> str:
+        return "N/A" if auc is None else f"{1.0 - auc:.4f}"
+
+    row = "| 正/负 top1 可分离度 (AUC) | "
+    row += " | ".join(_auc_cell(mode_auc[m]) for m in modes)
+    row += " |"
+    lines.append(row)
+    row = "| 正/负 top1 重叠度 (1-AUC) | "
+    row += " | ".join(_overlap_cell(mode_auc[m]) for m in modes)
+    row += " |"
+    lines.append(row)
+
     def _neg_result_ratio(has_res: list[bool]) -> str:
         if not has_res:
             return "N/A"
@@ -378,6 +398,9 @@ def _generate_report(
     row += " |"
     lines.append(row)
     lines.append("*负样本有返回结果比例: 无正确答案的查询中，该模式仍返回了检索结果的比例（越高说明误召回风险越大）*")
+    lines.append("*正/负 top1 可分离度 (AUC): P(随机正样本分数 > 随机负样本分数)，并列记 0.5；0.5 = 完全无法区分，1.0 = 完美可分。重叠度 (1-AUC) 越高，正负样本分数越重叠，越容易误召回。*")
+    lines.append("*分数可比性: 分数仅在同一个模式内可比（同一打分函数），跨模式分数不可比。*")
+    lines.append("*FTS 列显示 N/A: fts 模式只按 FTS5 rank 排序，不输出可比分数，因此其分数中位数与可分离度列恒为 N/A，无法与其他模式比较。*")
     lines.append("")
 
     # ── Error cases (top 10) ─────────────────────────────────────────────

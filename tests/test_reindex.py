@@ -548,3 +548,27 @@ def test_text_for_embed_uses_only_content():
     assert _text_for_embed({"label": "xyz"}) == ""
     assert _text_for_embed({"content": 123}) == ""
     assert _text_for_embed({"content": ""}) == ""
+
+
+# ================================================================
+# 脚本入口可直接运行（回归：脚本自己文档里写的调用方式必须能跑）
+# ================================================================
+
+def test_script_entrypoint_runs_as_file():
+    """`python scripts/reindex.py --check`（脚本方式，非 -m 包方式）必须能完成 import。
+
+    回归背景：项目根 sys.path 注入样板曾被清空成空语句，导致脚本方式直接
+    ModuleNotFoundError: No module named 'config'，而包方式（python -m）正常，
+    单测只覆盖包方式所以没发现。
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parent.parent
+    proc = subprocess.run(
+        [sys.executable, str(repo_root / "scripts" / "reindex.py"), "--help"],
+        cwd=str(repo_root), capture_output=True, text=True, timeout=180,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "全库向量重嵌入" in proc.stdout
