@@ -177,7 +177,7 @@ def test_consolidate_dryrun(db_path):
     assert store.get_node(b_id)["payload"]["status"] == "active"
 
 
-def test_task_archive(db_path):
+def test_task_archive(tmp_path):
     """已完成任务节点自动归档：dry-run 只预览；apply 写归档 md + 删节点。
 
     用 store.insert_node 直写 3 个 domain=task 节点（绕过 mem_ingest 冲突检测，
@@ -214,7 +214,10 @@ def test_task_archive(db_path):
     }, emb)
 
     # 独立临时知识库目录（与正式 KNOWLEDGE_DIR 完全隔离）
-    kb_dir = os.path.join(os.path.dirname(db_path), "kb_archive")
+    # 注意：用 pytest 的 tmp_path 而不是从 db_path 派生——DB_PATH 可能被 eval
+    # 模块改成 eval/.tmp 下的持久副本，上一轮 apply 留下的 05_任务归档 会让本轮
+    # dry-run 的「不应写目录」断言必红（套件第二次运行就失败）。
+    kb_dir = str(tmp_path / "kb_archive")
 
     # ---- dry_run：只预览，不写文件、不删节点 ----
     r = archive_tasks(store, dry_run=True, knowledge_dir=kb_dir)
