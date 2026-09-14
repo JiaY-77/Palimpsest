@@ -80,7 +80,18 @@ def _extract_points(messages: list[dict[str, Any]], limit: int, per_message_char
     return points
 
 
-def _is_near_duplicate(content: str, base_url: str, domain: str, threshold: float = 0.95) -> bool:
+# Semantic-score threshold for near-duplicate detection.  The top-1 result from
+# ``/mem/search`` is compared against this value:
+#   - This is the "content already exists" semantic-match threshold (0–1 scale).
+#   - The function is *fail-open*: HTTP errors, empty results, or missing scores
+#     are all treated as "not duplicate".  A high threshold here avoids false
+#     positives that would silently discard distinct-but-similar memories.
+# If you change this value, update the docstring and the boundary test in
+# ``tests/test_hermes_plugin_extraction.py`` accordingly.
+_NEAR_DUP_THRESHOLD = 0.95
+
+
+def _is_near_duplicate(content: str, base_url: str, domain: str, threshold: float = _NEAR_DUP_THRESHOLD) -> bool:
     """查询 Palimpsest 是否已存在近似内容。任何异常均返回 False（fail-open）。"""
     try:
         resp = _http_post(f"{base_url}/mem/search", {

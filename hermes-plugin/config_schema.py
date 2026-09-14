@@ -2,6 +2,13 @@
 
 Loaded by path (never package-imported) so the web dashboard can render
 a config panel without pulling in the agent runtime.
+
+Per Hermes design, each provider's config_schema.py is loaded by path — it is
+never package-imported. The only permitted import is the pure-data module
+``plugins.memory.config_schema`` (STORAGE_FLAT_JSON, ProviderConfigSchema,
+ProviderField). This module therefore must be importable at Hermes runtime;
+failing to import it outside Hermes is expected. That constraint is exercised
+and guarded by ``tests/test_plugin_config_schema.py``.
 """
 
 from plugins.memory.config_schema import (
