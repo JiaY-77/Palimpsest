@@ -13,6 +13,8 @@
 - **引入 mypy 类型检查**（非严格起步，当前覆盖 `core/`）：目标是让已有注解变成真约束而非一步到位 strict。配套补 `core/conflict.py` 两处列表标注、`types-requests` 类型存根（此前 `requests` 报 import-untyped）
 - **覆盖率基线**（`pytest-cov`，暂不设 `--cov-fail-under` 门槛）：`core/` + `mcp_tools/` 合计 **76%**（1770 语句 / 416 未覆盖）；最低为 `mcp_tools/routing.py` 22%、`mcp_tools/kb.py` 28%、`core/reporting.py` 5%。CI 输出报告但不阻断，先用数据定位缺口
 - **新增 `scripts/readme_check.py` 文档一致性检查**：对齐 MCP 工具清单 / CLI 子命令 / REST 路由 / 配置项（`config.py` ↔ `.env.example` ↔ 两份 README）/ 文档内文件引用 / 行内代码配对，支持 `--json` 与 `--strict`；`docs/RELEASING.md` 已将其列入发版前置检查
+- **文档一致性检查进 CI**（新增 `docs` job，`--strict`）：此前这个检查只活在发版清单里，PR 上无人拦截——唯一约束是模板里一个复选框，属自律而非门禁。现改为纯标准库的独立 job（无需安装依赖），文档与代码漂移在 PR 上直接红
+- **配置项默认值纳入比对**：`check_config_keys` 原先只比对键名是否存在，改了代码默认值而文档没跟着改会静默漂移。现解析 `config.py` 的 `os.getenv(..., DEFAULT)` 字面量（逐字符括号配平取实参，`str(50_000)` 这类嵌套不会被正则截断）并与两份 README 表格第二列逐项比对；默认值为空串的键（API Key 类）要求文档写成空值标记；`.env.example` 增加反向校验（有、但代码不读 → 报警）。派生默认值（`DB_PATH` / `EMBEDDING_PROVIDER`）与 `config.py` 之外读取的键（`KNOWLEDGE_DIR`）在新代码里显式登记原因，不再静默跳过；配套新增 `tests/test_readme_check.py` 覆盖漂移注入与 `--strict` 退出码
 - **静默异常留痕**：`mcp_tools/graph.py` 的「读节点 payload 失败按空处理」「读边数失败按 0 计」两处补 `logger.debug`——此前静默吞掉，出问题时没有任何线索。（其余静默点复核后确认无需补：关连接失败集中在 `contextlib.suppress`，业务失败路径本就有 `logger.warning/error`）
 
 ### 重构

@@ -578,10 +578,10 @@ python -m pytest --cov=core --cov=mcp_tools -q     # 覆盖率基线（暂不设
 
 开发依赖用 `pip install -r requirements-dev.txt` 安装；`ruff` 版本与 CI 对齐，避免门禁含义随版本漂移。
 
-文档与代码的一致性由 `scripts/readme_check.py` 检查（MCP 工具清单 / CLI 子命令 / REST 路由 / 配置项 / 文件引用 / 行内代码配对），发版前必跑：
+文档与代码的一致性由 `scripts/readme_check.py` 检查（MCP 工具清单 / CLI 子命令 / REST 路由 / 配置项键名与默认值 / 文件引用 / 行内代码配对）。CI 的 `docs` job 会以 `--strict` 跑它，本地跑法相同：
 
 ```bash
-python scripts/readme_check.py
+python scripts/readme_check.py --strict
 ```
 
 版本发布遵循 [语义化版本](https://semver.org/lang/zh-CN/)，流程见 [RELEASING.md](docs/RELEASING.md)，历史见 [CHANGELOG.md](CHANGELOG.md)。

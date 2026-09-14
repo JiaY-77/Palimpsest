@@ -598,10 +598,10 @@ python -m pytest --cov=core --cov=mcp_tools -q     # coverage baseline (no gate 
 
 Install dev dependencies with `pip install -r requirements-dev.txt`; the `ruff` version is aligned with CI so the gate cannot drift.
 
-Documentation-vs-code consistency is checked by `scripts/readme_check.py` (MCP tool list / CLI subcommands / REST routes / config keys / file references / inline-code pairing) — run it before any release:
+Documentation-vs-code consistency is checked by `scripts/readme_check.py` (MCP tool list / CLI subcommands / REST routes / config keys and their documented defaults / file references / inline-code pairing). CI runs it with `--strict` in the `docs` job; run it the same way locally:
 
 ```bash
-python scripts/readme_check.py
+python scripts/readme_check.py --strict
 ```
 
 Releases follow [Semantic Versioning](https://semver.org/), see [RELEASING.md](docs/RELEASING.md) for the process and [CHANGELOG.md](CHANGELOG.md) for history.

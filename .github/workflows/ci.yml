@@ -6,6 +6,23 @@ on:
   pull_request:
 
 jobs:
+  # 文档与代码漂移在 PR 上直接红，不再只靠发版前「记得跑一次」。
+  # readme_check 纯标准库实现，无需安装依赖；--strict 让警告也失败。
+  docs:
+    name: Docs (readme_check)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check docs against code
+        run: python scripts/readme_check.py --strict
+
   lint:
     name: Lint (ruff)
     runs-on: ubuntu-latest

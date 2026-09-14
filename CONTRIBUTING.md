@@ -139,7 +139,7 @@ python -m pytest --cov=core --cov=mcp_tools -q     # coverage baseline (reported
 
 Install the dev toolchain with `pip install -r requirements-dev.txt`. The `ruff` version is pinned there and in CI so the gate cannot drift between environments; when ruff reports a false positive, prefer a targeted `# noqa: <rule>` with a short reason over weakening the rule set.
 
-If your change touches user-facing behavior (CLI / REST / tools / config keys), update `README.md` **and** `README_EN.md`, plus `.env.example` when you add a configuration key. `python scripts/readme_check.py` verifies the docs against the code — MCP tool list, CLI subcommands, REST routes, config keys, file references, and inline-code pairing — and is meant to be run before opening the PR and before any release.
+If your change touches user-facing behavior (CLI / REST / tools / config keys), update `README.md` **and** `README_EN.md`, plus `.env.example` when you add a configuration key. `python scripts/readme_check.py` verifies the docs against the code — MCP tool list, CLI subcommands, REST routes, config keys **and their default values**, file references, and inline-code pairing — and is enforced by the CI `docs` job (`--strict`: warnings fail too), so a mismatch cannot be merged unnoticed.
 
 ---
 
