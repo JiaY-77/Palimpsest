@@ -43,8 +43,26 @@ EXEMPT_REFERENCES = {
 }
 EXEMPT_PREFIXES = ("/tmp/", "~/", "<", "${")
 
-# 文档里有、config.py 里没有的配置项：由 scripts/ 下的索引脚本直接读取，属正常
-CONFIG_ONLY_IN_DOCS = {"KNOWLEDGE_DIR"}
+# config.py 之外读取、但同属服务配置面的键 → 值 = 读取点。
+# 显式登记而不是静默放过：集中到 config.py 统一读取属于后续架构工作，在那之前必须
+# 写明「谁在读」，否则这些键既躲过 config.py 的键名/默认值比对，又会被误判成文档漂移。
+CONFIG_READ_OUTSIDE_CONFIG_PY = {
+    "KNOWLEDGE_DIR": "core/task_archive.py · mcp_tools/_common.py",
+}
+
+# 默认值不是字面量、无法与文档逐字比对的键 → 值 = 不能比对的原因（会打印在报告 info 里，避免静默跳过）
+CONFIG_DERIVED_DEFAULTS = {
+    "DB_PATH": "运行时解析：未给时 <项目根>/data/mh_memory.db",
+    "EMBEDDING_PROVIDER": "未设置时自动探测：有可用云端 key → openai，否则 → ollama",
+}
+
+# 默认值为空串（未设置即关闭 / 未配置）时，文档侧允许的写法
+CONFIG_EMPTY_MARKERS = ("空", "可选", "未设置", "empty", "optional", "unset")
+
+GETENV_CALL_RE = re.compile(r"os\.(?:getenv|environ\.get)\(")
+CONFIG_ROW_RE = re.compile(r"^\|\s*`([A-Z][A-Z0-9_]+)`\s*\|\s*(.*?)\s*\|", re.MULTILINE)
+CODE_STR_LITERAL_RE = re.compile(r"^[\"'](.*)[\"']$", re.DOTALL)
+CODE_STR_WRAPPER_RE = re.compile(r"^str\(\s*([\d_]+)\s*\)$")
 
 
 class Report:
@@ -204,16 +222,86 @@ def check_rest_routes(root: Path) -> Report:
 # ---------------------------------------------------------------------------
 
 
+def _iter_getenv_defaults(source: str) -> dict[str, str | None]:
+    """解析 ``os.getenv("KEY"[, DEFAULT])`` → {KEY: 默认值表达式}（无默认值为 None）。
+
+    逐字符做括号配平取实参，避免 ``str(50_000)`` 这类嵌套括号把正则截断。
+    """
+    found: dict[str, str | None] = {}
+    for call in GETENV_CALL_RE.finditer(source):
+        depth = 1
+        idx = call.end()
+        while idx < len(source) and depth:
+            if source[idx] == "(":
+                depth += 1
+            elif source[idx] == ")":
+                depth -= 1
+            idx += 1
+        args = source[call.end() : idx - 1]
+        key_match = re.match(r"\s*[\"']([A-Z0-9_]+)[\"']", args)
+        if not key_match:
+            continue
+        tail = args[key_match.end() :].lstrip()
+        found.setdefault(key_match.group(1), tail[1:].strip() if tail.startswith(",") else None)
+    return found
+
+
+def _canon_code_default(expr: str | None) -> str:
+    """源码默认值表达式 → 可比字符串（去引号、去数字分隔下划线、解开 ``str("50_000")``）。"""
+    if expr is None:
+        return ""
+    expr = expr.strip()
+    wrapper = CODE_STR_WRAPPER_RE.match(expr)
+    if wrapper:
+        return wrapper.group(1).replace("_", "")
+    literal = CODE_STR_LITERAL_RE.match(expr)
+    if literal:
+        return literal.group(1).strip()
+    return expr.replace("_", "")
+
+
+def _canon_doc_default(cell: str) -> str:
+    """文档默认值单元格 → 可比字符串（去掉 ``**强调**`` 与行内代码标记）。"""
+    text = cell.strip()
+    for mark in ("**", "*", "`"):
+        if len(text) > len(mark) and text.startswith(mark) and text.endswith(mark):
+            text = text[len(mark) : -len(mark)].strip()
+    return text
+
+
+def _compare_config_defaults(report: Report, doc: str, key: str, code_value: str, cell: str) -> None:
+    """比对单个配置项的默认值：写法允许不同，值必须一致。"""
+    doc_value = _canon_doc_default(cell)
+    if not code_value:
+        lowered = doc_value.lower()
+        if any(marker in doc_value or marker in lowered for marker in CONFIG_EMPTY_MARKERS):
+            return
+        report.errors.append(f"{doc}: `{key}` 代码默认值为空串（未设置即关闭 / 未配置），文档却写「{doc_value}」")
+        return
+    if doc_value != code_value:
+        report.errors.append(f"{doc}: `{key}` 默认值不一致 —— 代码 `{code_value}` / 文档 `{doc_value}`")
+
+
 def check_config_keys(root: Path) -> Report:
     report = Report("配置项")
-    cfg = set(re.findall(r"os\.getenv\(\s*[\"']([A-Z0-9_]+)[\"']", (root / "config.py").read_text(encoding="utf-8")))
-    env = set(
-        re.findall(r"^([A-Z][A-Z0-9_]+)=", (root / ".env.example").read_text(encoding="utf-8"), re.MULTILINE)
+    defaults = _iter_getenv_defaults((root / "config.py").read_text(encoding="utf-8"))
+    cfg = set(defaults)
+    outside = set(CONFIG_READ_OUTSIDE_CONFIG_PY)
+    comparable = sorted(cfg - set(CONFIG_DERIVED_DEFAULTS))
+    env = set(re.findall(r"^([A-Z][A-Z0-9_]+)=", (root / ".env.example").read_text(encoding="utf-8"), re.MULTILINE))
+    report.info = (
+        f"config.py {len(cfg)} 个（默认值比对 {len(comparable)} · 派生值 {len(cfg) - len(comparable)}："
+        f"{'、'.join(sorted(CONFIG_DERIVED_DEFAULTS))}）· .env.example {len(env)} 个"
     )
-    report.info = f"config.py {len(cfg)} 个 · .env.example {len(env)} 个"
 
     for name in sorted(cfg - env):
         report.errors.append(f".env.example: 缺少 config.py 已支持的配置项 —— {name}")
+    # .env.example 也可能攒下没人读的键：对外承诺了一个不生效的旋钮，同样是漂移
+    for name in sorted(env - cfg - outside):
+        report.warnings.append(
+            f".env.example: 有、config.py 未读取 —— {name}"
+            "（死键请删；确由 config.py 之外读取，请登记进 CONFIG_READ_OUTSIDE_CONFIG_PY）"
+        )
 
     specs = (
         ("README.md", "## 配置", "## 更换向量模型"),
@@ -225,10 +313,19 @@ def check_config_keys(root: Path) -> Report:
             report.warnings.append(f"{doc}: 未找到配置小节（{head}）")
             continue
         documented = table_first_column(segment, r"^\|\s*`([A-Z][A-Z0-9_]+)`")
+        cells = dict(CONFIG_ROW_RE.findall(segment))
         for name in sorted(cfg - documented):
             report.errors.append(f"{doc}: config.py 支持、文档未写 —— {name}")
-        for name in sorted(documented - cfg - CONFIG_ONLY_IN_DOCS):
+        for name in sorted(documented - cfg - outside):
             report.warnings.append(f"{doc}: 文档写了、config.py 里没有 —— {name}")
+        for name in comparable:
+            if name not in documented:
+                continue
+            cell = cells.get(name)
+            if cell is None:
+                report.warnings.append(f"{doc}: `{name}` 默认值单元格无法解析（表格列数异常？）")
+                continue
+            _compare_config_defaults(report, doc, name, _canon_code_default(defaults[name]), cell)
     return report
 
 
