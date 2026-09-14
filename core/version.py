@@ -12,17 +12,48 @@ import subprocess
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-_cache: dict = {"version": "", "mtime": 0.0}
+# .git 目录（供测试 monkeypatch 指向假仓库）；进程内缓存据此追踪 git 元数据
+_GIT_DIR = os.path.join(_PROJECT_ROOT, ".git")
+
+_cache: dict = {"version": "", "fingerprint": ()}
+
+
+def _mtime(path: str) -> float:
+    """文件 mtime；不存在/不可读记 0.0，不抛异常。"""
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
+
+
+def _git_fingerprint() -> tuple:
+    """git describe 结果是否可能变化的指纹（只 stat，不跑子进程）：
+    返回固定 4 元组 —— (HEAD mtime, index mtime, packed-refs mtime,
+    refs 目录下所有文件的最大 mtime)。仅用 mtime 判断是否重新取版本，
+    不含具体版本内容，保证贴近真实 .git 元数据。
+    """
+    refs_dir = os.path.join(_GIT_DIR, "refs")
+    refs_mtime = 0.0
+    if os.path.isdir(refs_dir):
+        for dirpath, _dirnames, filenames in os.walk(refs_dir):
+            for filename in filenames:
+                refs_mtime = max(refs_mtime, _mtime(os.path.join(dirpath, filename)))
+    return (
+        _mtime(os.path.join(_GIT_DIR, "HEAD")),
+        _mtime(os.path.join(_GIT_DIR, "index")),
+        _mtime(os.path.join(_GIT_DIR, "packed-refs")),
+        refs_mtime,
+    )
 
 
 def get_version() -> str:
     """从 git 读取版本（tag 优先，无 tag 用短 hash + dirty 标记）；失败回退 dev。"""
     try:
-        mtime = os.path.getmtime(os.path.join(_PROJECT_ROOT, ".git", "HEAD"))
-        if _cache["version"] and _cache["mtime"] == mtime:
+        fingerprint = _git_fingerprint()
+        if _cache["version"] and _cache["fingerprint"] == fingerprint:
             return _cache["version"]
-    except Exception:  # noqa: BLE001 —— 读取 git 元数据失败回退 mtime 继续走缓存判断
-        mtime = 0.0
+    except Exception:  # noqa: BLE001 —— 读取 git 元数据失败回退空指纹继续走缓存判断
+        fingerprint = ()
     try:
         out = subprocess.check_output(
             ["git", "describe", "--tags", "--always", "--dirty"],
@@ -32,7 +63,7 @@ def get_version() -> str:
         version = out or "dev"
     except Exception:  # noqa: BLE001 —— git describe 失败回退 dev 非 git 部署可用
         version = "dev"
-    _cache.update(version=version, mtime=mtime)
+    _cache.update(version=version, fingerprint=fingerprint)
     return version
 
 
