@@ -1,6 +1,6 @@
 """Unit tests for eval/metrics.py — pure functions, no network/DB."""
 
-from eval.metrics import mrr_at_k, ndcg_at_k, recall_at_k
+from eval.metrics import auc_separability, mrr_at_k, ndcg_at_k, recall_at_k
 
 
 class TestRecallAtK:
@@ -108,3 +108,37 @@ class TestNDCGAtK:
 
     def test_single_gold_not_in_results(self):
         assert ndcg_at_k([5, 6, 7], {1}, 5, partial=None) == 0.0
+
+
+class TestAucSeparability:
+    def test_perfectly_separable(self):
+        # 正样本分数全部高于负样本 → AUC = 1.0
+        assert auc_separability([3.0, 2.0], [1.0, 0.5]) == 1.0
+
+    def test_perfectly_reversed(self):
+        # 正样本分数全部低于负样本 → AUC = 0.0
+        assert auc_separability([0.1, 0.2], [0.8, 0.9]) == 0.0
+
+    def test_all_ties(self):
+        # 全并列 → 每对记 0.5 → AUC = 0.5
+        assert auc_separability([1.0, 1.0], [1.0, 1.0]) == 0.5
+
+    def test_none_ignored(self):
+        # None 被忽略；正侧剩 [2.0]，负侧剩 [1.0]，其余对决胜 → 1.0
+        assert auc_separability([2.0, None], [1.0]) == 1.0
+
+    def test_mixed_ties_and_wins(self):
+        # 2 对胜负：p>n → 1.0，p==n → 0.5，平均 0.75（原本就对/则等效 0.5）
+        assert auc_separability([2.0, 1.0], [1.0]) == 0.75
+
+    def test_pos_all_none(self):
+        assert auc_separability([None, None], [1.0]) is None
+
+    def test_neg_all_none(self):
+        assert auc_separability([1.0], [None, None]) is None
+
+    def test_pos_empty(self):
+        assert auc_separability([], [1.0]) is None
+
+    def test_neg_empty(self):
+        assert auc_separability([1.0], []) is None
