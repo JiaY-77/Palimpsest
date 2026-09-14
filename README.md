@@ -412,7 +412,7 @@ python scripts/palimpsest_cli.py consolidate --apply # 合并
 | `GET` | `/export` | 导出记忆为分页 JSON 快照（默认每页 100 条，上限 500） |
 | `GET` | `/summary` | 人类可读的记忆摘要（事件 / 角色状态 / 计划） |
 | `GET` | `/memory/{id}` | 读取单节点完整 payload |
-| `POST` | `/report` | 基于当前存储生成 LLM 分析报告 |
+| `POST` | `/report` | 基于当前存储生成 LLM 分析报告（Prompt 面向小说创作 / 角色扮演场景，不是通用摘要） |
 | `DELETE` | `/memory/{id}` | 删除记忆节点（FTS 索引同步） |
 | `PUT` | `/memory/{id}` | 更新节点 payload（**合并语义**：只改传入字段，其余保留；自动同步 FTS） |
 | `PATCH` | `/memory/{id}` | 部分更新节点 payload（与 PUT 同合并语义，REST 语义更精确） |

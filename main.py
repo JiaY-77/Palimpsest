@@ -18,6 +18,7 @@ Palimpsest — FastAPI 主入口
 这一约束是 fail-fast 的：不会静默产生重复 ID 或损坏数据。详见 README「启动」。
 """
 
+import json
 import logging
 import secrets
 
@@ -31,6 +32,24 @@ from core.reporting import generate_report
 from core.startup_check import run_startup_check
 from core.trivium_store import EmbeddingUnavailableError, TriviumStore
 from core.version import get_version
+from mcp_tools import (
+    graph_neighbors as _mcp_graph_neighbors,
+)
+from mcp_tools import (
+    mem_communities as _mcp_mem_communities,
+)
+from mcp_tools import (
+    mem_hybrid_search as _mcp_mem_hybrid_search,
+)
+from mcp_tools import (
+    mem_ingest as _mcp_mem_ingest,
+)
+from mcp_tools import (
+    mem_link as _mcp_mem_link,
+)
+from mcp_tools import (
+    mem_search as _mcp_mem_search,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +215,7 @@ async def report_endpoint():
     """
     基于当前数据库中的所有记忆，调用 LLM 生成一份角色灵魂分析报告。
     核心逻辑见 core/reporting.py 的 generate_report（函数式拆分，行为不变）。
+    Prompt 面向小说创作 / 角色扮演场景（角色心理分析），不是通用记忆摘要。
     """
     return await generate_report(store)
 
@@ -284,26 +304,6 @@ async def update_memory_vector(node_id: int, vector: list[float]):
 # 对齐 mcp_server 工具（mem_search / mem_ingest / mem_link / graph_neighbors），
 # 供 Hermes memory provider 插件（plugins/palimpsest/）通过 REST :8090 调用。
 # 返回解析后的 JSON（FastAPI 自动序列化），客户端无需再 parse 字符串。
-import json as _json  # noqa: E402
-
-from mcp_tools import (  # noqa: E402
-    graph_neighbors as _mcp_graph_neighbors,
-)
-from mcp_tools import (  # noqa: E402
-    mem_communities as _mcp_mem_communities,
-)
-from mcp_tools import (  # noqa: E402
-    mem_hybrid_search as _mcp_mem_hybrid_search,
-)
-from mcp_tools import (  # noqa: E402
-    mem_ingest as _mcp_mem_ingest,
-)
-from mcp_tools import (  # noqa: E402
-    mem_link as _mcp_mem_link,
-)
-from mcp_tools import (  # noqa: E402
-    mem_search as _mcp_mem_search,
-)
 
 
 class MemSearchRequest(BaseModel):
@@ -365,7 +365,7 @@ class GraphCommunitiesRequest(BaseModel):
 
 def _as_json(text: str):
     try:
-        return _json.loads(text)
+        return json.loads(text)
     except Exception:  # noqa: BLE001 —— JSON 解析失败回退原始文本保持 JSON 结构稳定
         return {"raw": text}
 
@@ -394,8 +394,6 @@ async def mem_hybrid_search(req: MemHybridSearchRequest):
 
 @app.post("/mem/ingest")
 async def mem_ingest(req: MemIngestRequest):
-    import json as _json_mod
-
     result = _mcp_mem_ingest(
         req.content, type=req.type, importance=req.importance,
         domain=req.domain, source=req.source,
@@ -403,7 +401,7 @@ async def mem_ingest(req: MemIngestRequest):
     # 校验类拒绝（空内容 / 超长）：REST 侧映射为 422，返回友好 message；
     # 其余 stored:false（如事务失败/secret 强拒，不携带 node_id 键）仍按 JSON 原样返回，不改语义。
     try:
-        payload = _json_mod.loads(result)
+        payload = json.loads(result)
     except Exception:  # noqa: BLE001 —— 解析失败以空字典兜底不影响后续校验
         payload = {}
     if (not payload.get("stored") and "node_id" in payload
