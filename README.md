@@ -111,7 +111,7 @@ hermes config set context.engine palimpsest-graph
 - **强信号自动沉淀** —— 高信号的事实自动写入记忆（启发式判断，不依赖 LLM）。
 - **会话结束提炼** —— `on_session_end` 把本轮要点沉淀为结构化记忆。
 - **压缩前图谱提炼** —— `on_pre_compress` 用 `context.engine=palimpsest-graph` 提炼图谱要点，喂给压缩阶段。
-- **记忆工具集** —— `palimpsest_search` / `palimpsest_ingest` / `palimpsest_link` / `palimpsest_graph` / `palimpsest_router` 等，供 agent 主动调用。
+- **记忆工具集** —— `palimpsest_search` / `palimpsest_ingest` / `palimpsest_link` / `palimpsest_graph` 等，供 agent 主动调用。
 
 两点注意：
 
@@ -127,15 +127,12 @@ hermes config set context.engine palimpsest-graph
 我们不把 Vault 当「文件」看待，而是当作**知识源**。读取分五步：
 
 1. **Vault 目录即知识源** —— 递归扫描 `KNOWLEDGE_DIR` 下的全部 `.md`（自动跳过 `.obsidian` 等配置目录），每个笔记就是一个待处理文档。
-2. **Frontmatter 解析** —— 读取 YAML Frontmatter，用 `tags` 驱动规则识别：含 `rule` 标签的笔记划入规则域（`domain=rule`），其余归 `kb`。
-3. **按 Markdown 标题智能切片** —— 以 `##` / `###` 为边界切成 300~800 字符的块，块内**原样保留 `[[双链]]`**，让「哪篇关联哪篇」的上下文不丢。
-4. **向量化入库** —— 每个切片经 embedding 编码，作为 `kb_chunk` 节点写入存储，构成可语义检索的知识资产。
-5. **规则加权** —— 规则域切片检索时 **×1.3 加权**，让「该怎么做」的规则压过普通知识浮上来。
+2. **按 Markdown 标题智能切片** —— 以 `##` / `###` 为边界切成 300~800 字符的块，块内**原样保留 `[[双链]]`**，让「哪篇关联哪篇」的上下文不丢。
+3. **向量化入库** —— 每个切片经 embedding 编码，作为 `kb_chunk` 节点（`domain=kb`）写入存储，构成可语义检索的知识资产。
 
-**想自己实现？** 这套流程的骨架很简单：一个向量库（sqlite-vec / chroma 皆可）+ 一个 embedding 服务就能复刻。真正的设计点有三个：
+**想自己实现？** 这套流程的骨架很简单：一个向量库（sqlite-vec / chroma 皆可）+ 一个 embedding 服务就能复刻。真正的设计点有两个：
 
 - **切片粒度** —— 太粗检索不准、太碎丢上下文。
-- **规则识别** —— 用 frontmatter / 路径 / 命名约定，把「该执行的规则」和「普通笔记」分开。
 - **双链保留** —— 让 `[[A]]⇄[[B]]` 的关系进入检索结果，而不是只在正文里躺着。
 
 本思路的现成实现即 `scripts/build_kb_index.py`（全量 `--full` / 增量默认，增量按 `mtime` 对比只重建变化文件）。
@@ -246,41 +243,40 @@ Windows 下 `scripts/start_rest.vbs` 可以隐藏窗口启动 REST 服务（如�
 
 所有配置均从环境变量读取（`.env` 文件由 `python-dotenv` 自动加载），完整带注释模板见 `.env.example`。
 
-| 变量 | 默认值 | 说明 |
-|---|---|---|
-| `REST_PORT` | `8090` | FastAPI REST 服务端口 |
-| `DASHBOARD_PORT` | `8010` | 监控面板服务端口 |
-| `DB_PATH` | `data/mh_memory.db` | 嵌入式 TriviumDB 数据库路径 |
-| `PALIMPSEST_API_KEY` | *（空 = 关闭）* | 可选 REST 鉴权；设置后除 `/` 外所有请求须带 Bearer / X-API-Key |
-| `LLM_BACKEND` | `deepseek` | LLM 后端：`deepseek` 或 `ollama` |
-| `DEEPSEEK_API_KEY` | *（空）* | DeepSeek API 密钥 |
-| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | DeepSeek API 基础地址 |
-| `DEEPSEEK_MODEL` | `deepseek-v4-flash` | DeepSeek 模型标识 |
-| `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Ollama OpenAI 兼容基础地址 |
-| `OLLAMA_MODEL` | `deepseek-r1:7b` | 作为 LLM 的 Ollama 对话模型 |
-| `EMBEDDING_PROVIDER` | *（空 = 自动探测）* | 向量后端：留空自动探测（有云端 key → `openai`，否则 → `ollama`）；显式写 `ollama`（本地、私有）或 `openai`（OpenAI 兼容云端，如 Voyage/硅基流动） |
-| `OLLAMA_EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | 本地 Ollama 向量模型 |
-| `OLLAMA_EMBEDDING_BASE_URL` | `http://localhost:11434` | Ollama 原生 embedding API 根地址（与 LLM 的 /v1 解耦） |
-| `OLLAMA_EMBEDDING_DIM` | `1024` | 向量维度（本地后端） |
-| `EMBEDDING_API_KEY` | *（空）* | 云端向量端点的 API 密钥 |
-| `EMBEDDING_BASE_URL` | `https://api.voyageai.com/v1` | 云端向量基础地址（任意 OpenAI 兼容端点） |
-| `EMBEDDING_MODEL` | `voyage-3` | 云端向量模型 |
-| `EMBEDDING_DIM` | `1024` | 向量维度（云端后端） |
-| `MEMORY_DECAY_FACTOR` | `0.95` | 月度记忆衰减（排序用，`score × importance × factor^(天/30)`）；`1.0` 关闭衰减；`kb_chunk` 节点永不衰减 |
-| `MEMORY_RERANK_MODE` | `soft` | 重排模式：`soft` = 语义分为主线 + ε 级元数据微调（默认）；`hard` = 旧版乘性硬加权（可回退） |
-| `SOFT_RERANK_EPS` | `0.02` | `soft` 模式的 ε：落在余弦分差区间的 15%–40%，只做 tie-break |
-| `DOMAIN_BOOST_EPS` | `0.10` | 域软加权加分（加性，作用在语义分上）：`domain_boost` 非空时对同域候选加此值 |
-| `KB_SOFT_RERANK_MULT` | `1.5` | `kb_chunk`（知识块不老化）在 `soft` 模式下的 ε 加成倍率 |
-| `RULE_RETRIEVAL_WEIGHT` | `1.3` | 规则域知识切片的分数倍率 |
-| `DOMAIN_BIAS_WEIGHT` | `1.15` | 域偏置检索的额外权重 |
-| `EXPAND_MAX_EDGES_PER_NODE` | `20` | 图谱扩散时每节点最多扩散的最强边数 |
-| `EXPAND_MIN_EDGE_WEIGHT` | `0.0` | 图谱扩散弱边过滤阈值（0 关闭） |
-| `RRF_K` | `60.0` | 混合检索 RRF 常数 k（单侧命中也计贡献） |
-| `RRF_SEM_WEIGHT` | `1.0` | 混合检索 RRF 语义侧权重 |
-| `RRF_FTS_WEIGHT` | `0.1` | 混合检索 RRF 精确（FTS）侧权重——语义主序干净后 FTS 小幅加成 |
-| `RETRIEVAL_EXPAND_DEPTH` | `0` | 语义主序的图扩散深度：`0` = 纯语义排序（默认）；`1` = 图邻居参与语义主序（可一键回退） |
-| `MEM_INGEST_MAX_LENGTH` | `50000` | 单条记忆 content 最大字符数，超长拒绝写入 |
-| `KNOWLEDGE_DIR` | *（可选）* | 知识库根目录（待索引的 Obsidian `.md` 文件） |
+| 变量 | 默认值 | 说明 | 生效前提（Precondition） |
+|---|---|---|---|
+| `REST_PORT` | `8090` | FastAPI REST 服务端口 | 启动 REST 服务时 |
+| `DASHBOARD_PORT` | `8010` | 监控面板服务端口 | 启动 dashboard 时 |
+| `DB_PATH` | `data/mh_memory.db` | 嵌入式 TriviumDB 数据库路径 | — |
+| `PALIMPSEST_API_KEY` | *（空 = 关闭）* | 可选 REST 鉴权；设置后除 `/` 外所有请求须带 Bearer / X-API-Key | 启用 REST 鉴权时 |
+| `LLM_BACKEND` | `deepseek` | LLM 后端：`deepseek` 或 `ollama` | 需要 LLM 调用时 |
+| `DEEPSEEK_API_KEY` | *（空）* | DeepSeek API 密钥 | `LLM_BACKEND=deepseek` |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | DeepSeek API 基础地址 | `LLM_BACKEND=deepseek` |
+| `DEEPSEEK_MODEL` | `deepseek-v4-flash` | DeepSeek 模型标识 | `LLM_BACKEND=deepseek` |
+| `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Ollama OpenAI 兼容基础地址 | `LLM_BACKEND=ollama` |
+| `OLLAMA_MODEL` | `deepseek-r1:7b` | 作为 LLM 的 Ollama 对话模型 | `LLM_BACKEND=ollama` |
+| `EMBEDDING_PROVIDER` | *（空 = 自动探测）* | 向量后端：留空自动探测（有云端 key → `openai`，否则 → `ollama`）；显式写 `ollama`（本地、私有）或 `openai`（OpenAI 兼容云端，如 Voyage/硅基流动） | — |
+| `OLLAMA_EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | 本地 Ollama 向量模型 | `EMBEDDING_PROVIDER=ollama` |
+| `OLLAMA_EMBEDDING_BASE_URL` | `http://localhost:11434` | Ollama 原生 embedding API 根地址（与 LLM 的 /v1 解耦） | `EMBEDDING_PROVIDER=ollama` |
+| `OLLAMA_EMBEDDING_DIM` | `1024` | 向量维度（本地后端） | `EMBEDDING_PROVIDER=ollama` |
+| `EMBEDDING_API_KEY` | *（空）* | 云端向量端点的 API 密钥 | `EMBEDDING_PROVIDER=openai` |
+| `EMBEDDING_BASE_URL` | `https://api.voyageai.com/v1` | 云端向量基础地址（任意 OpenAI 兼容端点） | `EMBEDDING_PROVIDER=openai` |
+| `EMBEDDING_MODEL` | `voyage-3` | 云端向量模型 | `EMBEDDING_PROVIDER=openai` |
+| `EMBEDDING_DIM` | `1024` | 向量维度（云端后端） | `EMBEDDING_PROVIDER=openai` |
+| `MEMORY_DECAY_FACTOR` | `0.95` | 月度记忆衰减（排序用，`score × importance × factor^(天/30)`）；`1.0` 关闭衰减；`kb_chunk` 节点永不衰减 | soft 模式：仅进入 ε 微调项 `recency_norm`（ε 默认 0.02 → 排序影响 ≤0.02，一年内约 0.01 量级，近乎半死参数）；hard 模式：乘性硬加权 |
+| `MEMORY_RERANK_MODE` | `soft` | 重排模式：`soft` = 语义分为主线 + ε 级元数据微调（默认）；`hard` = 旧版乘性硬加权（可回退） | — |
+| `SOFT_RERANK_EPS` | `0.02` | `soft` 模式的 ε：落在余弦分差区间的 15%–40%，只做 tie-break | `MEMORY_RERANK_MODE=soft` |
+| `DOMAIN_BOOST_EPS` | `0.10` | 域软加权加分（加性，作用在语义分上）：`domain_boost` 非空时对同域候选加此值 | `domain_boost` 参数非空 |
+| `KB_SOFT_RERANK_MULT` | `1.5` | `kb_chunk`（知识块不老化）在 `soft` 模式下的 ε 加成倍率 | `MEMORY_RERANK_MODE=soft` |
+| `DOMAIN_BIAS_WEIGHT` | `1.15` | 域偏置检索的额外权重 | `domain_bias` 参数非空 |
+| `EXPAND_MAX_EDGES_PER_NODE` | `20` | 图谱扩散时每节点最多扩散的最强边数 | 图扩散启用（`RETRIEVAL_EXPAND_DEPTH≥1` 或检索附带邻居） |
+| `EXPAND_MIN_EDGE_WEIGHT` | `0.0` | 图谱扩散弱边过滤阈值（0 关闭） | 图扩散启用（`RETRIEVAL_EXPAND_DEPTH≥1` 或检索附带邻居） |
+| `RRF_K` | `60.0` | 混合检索 RRF 常数 k（单侧命中也计贡献） | `mem_hybrid_search` 且 `mode=rrf` |
+| `RRF_SEM_WEIGHT` | `1.0` | 混合检索 RRF 语义侧权重 | `mem_hybrid_search` 且 `mode=rrf` |
+| `RRF_FTS_WEIGHT` | `0.1` | 混合检索 RRF 精确（FTS）侧权重——语义主序干净后 FTS 小幅加成 | `mem_hybrid_search` 且 `mode=rrf` |
+| `RETRIEVAL_EXPAND_DEPTH` | `0` | 语义主序的图扩散深度：`0` = 纯语义排序（默认）；`1` = 图邻居参与语义主序（可一键回退） | 检索启用图扩散时 |
+| `MEM_INGEST_MAX_LENGTH` | `50000` | 单条记忆 content 最大字符数，超长拒绝写入 | `mem_ingest` 写入时 |
+| `KNOWLEDGE_DIR` | *（可选）* | 知识库根目录（待索引的 Obsidian `.md` 文件） | 使用 `kb_index` / `build_kb_index.py` 时 |
 
 ---
 
@@ -340,7 +336,7 @@ python scripts/build_novel_index.py --source <vault路径> --full
 
 ## 使用
 
-### MCP 工具（16 个）— `mcp_tools/*`
+### MCP 工具（15 个）— `mcp_tools/*`
 
 | 工具 | 说明 |
 |---|---|
@@ -359,7 +355,6 @@ python scripts/build_novel_index.py --source <vault路径> --full
 | `kb_search` | 对已索引知识切片的语义搜索 |
 | `graph_neighbors` | 从某节点出发对知识图谱做 BFS（关系过滤、深度 1–3、弱边过滤） |
 | `mem_link` | 手动创建图边（`RELATED_TO` / `CAUSES` / `REFERS_TO`；默认双向） |
-| `router_query` | 查询规则域知识切片，提取模型/配置推荐 |
 
 ### CLI 命令 — `scripts/palimpsest_cli.py`
 
@@ -398,9 +393,9 @@ python scripts/palimpsest_cli.py consolidate --apply # 合并
 
 ### 区块（Blocks）
 
-`block` 是「域分组」概念：图谱按区块隔离，扩散检索只沿同区块的边，防止跨域污染。出厂内置通用区块：`task`（任务）、`kb`（知识库）、`hermes`（助手自身记忆）、`novel`（小说创作设定）、`general`（未分类兜底）；其中 `rule` 是 `kb` 的子集（规则切片，归入 `kb` 区块）。你也可以把自己的 `domain` 当作区块使用（如 `--block myproject`）。`--block` 留空则按全量模式检索。
+`block` 是「域分组」概念：图谱按区块隔离，扩散检索只沿同区块的边，防止跨域污染。出厂内置通用区块：`task`（任务）、`kb`（知识库）、`hermes`（助手自身记忆）、`novel`（小说创作设定）、`general`（未分类兜底）。你也可以把自己的 `domain` 当作区块使用（如 `--block myproject`）。`--block` 留空则按全量模式检索。
 
-节点归属统一由 `payload.domain` 字段表达。写入记忆时通过 `--domain X` 或 `mem_ingest(domain=...)` 指定区块；`kb` 类型节点由知识库索引自动设置（`kb` / `rule`）。
+节点归属统一由 `payload.domain` 字段表达。写入记忆时通过 `--domain X` 或 `mem_ingest(domain=...)` 指定区块；`kb` 类型节点由知识库索引自动设置为 `kb`。
 
 ### REST API — `main.py`，端口 8090
 
@@ -422,7 +417,6 @@ python scripts/palimpsest_cli.py consolidate --apply # 合并
 | `POST` | `/mem/stats` | 库级盘点统计 |
 | `POST` | `/graph/neighbors` | 某节点的图谱邻居 |
 | `POST` | `/graph/communities` | Leiden 社区发现 |
-| `POST` | `/mem/router` | 任务路由查询 |
 
 > 若设置了 `PALIMPSEST_API_KEY`，除 `/` 外所有端点要求 `Authorization: Bearer <key>` 或 `X-API-Key: <key>`。
 
@@ -520,13 +514,12 @@ Palimpsest/
 │   ├── task_archive.py           #   完成任务自动归档
 │   ├── utils.py
 │   └── version.py                #   版本号来自 git tag（兜底 dev）
-├── mcp_tools/                    # 16 个 MCP 工具（MCP/REST/CLI 共用）
+├── mcp_tools/                    # 15 个 MCP 工具（MCP/REST/CLI 共用）
 │   ├── __init__.py
 │   ├── _common.py                #   共享 store / mcp / 序列化助手
 │   ├── memory.py                 #   mem_* 工具
 │   ├── kb.py                     #   kb_index / kb_search
 │   ├── graph.py                  #   graph_neighbors / mem_link / mem_communities
-│   ├── routing.py                #   router_query
 │   ├── consolidate_tool.py       #   mem_consolidate
 │   └── stats_tool.py             #   mem_stats
 ├── scripts/                      # 运维工具
@@ -535,8 +528,6 @@ Palimpsest/
 │   ├── build_kb_index.py         #   知识库分块 & 向量化
 │   ├── build_novel_index.py      #   小说设定库整文件入库（--source 指定 vault）
 │   ├── link_novel_relations.py   #   小说人物关系批量建边（dry-run/--apply）
-│   ├── sync_rules.py             #   规则笔记 → 模型路由决策树
-│   ├── check_kb_consistency.py   #   知识库 vs 数据库一致性检查
 │   ├── check_fts_consistency.py  #   FTS 内容级对账
 │   ├── export_all_data.py        #   只读 JSON 备份导出
 │   ├── graph_edges.py            #   持久化知识图谱边

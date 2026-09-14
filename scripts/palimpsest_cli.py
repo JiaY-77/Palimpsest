@@ -82,10 +82,10 @@ def _validate_block(block: str) -> str:
     """校验 --block 参数：出厂通用区块直接通过；自定义 domain 放行但给提示（防拼写错误，不拦截）。"""
     if block and not is_valid_block(block):
         hint = (
-            f"提示：{block} 不是出厂内置区块（task / kb / hermes / general，rule 归入 kb）。"
+            f"提示：{block} 不是出厂内置区块（task / kb / hermes / novel / general）。"
             "若为自定义 domain 可正常使用，若为拼写错误请检查。\n"
-            f"Note: {block} is not a built-in block (task / kb / hermes / general, "
-            "rule is part of kb). Custom domains work as blocks; check for typos."
+            f"Note: {block} is not a built-in block (task / kb / hermes / novel / general). "
+            "Custom domains work as blocks; check for typos."
         )
         print(hint, file=sys.stderr)
     return block

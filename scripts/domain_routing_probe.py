@@ -13,7 +13,7 @@ R@5 0.579 → 0.632（+5.3pp，见 eval/docs/05）。但那是元数据硬加权
   maj_soft      用多数域给同域候选加小分（不过滤，同 ε 级软加权思路）
   llm_soft      用模型推断域给同域候选加小分
 
-域分组：payload.domain 归并成 5 类（rule→hermes、由佳→novel、tms/work→task、其余原样）。
+域分组：payload.domain 归并成 5 类（由佳→novel、tms/work→task、其余原样）。
 
 用法：
   venv/Scripts/python.exe scripts/domain_routing_probe.py [--limit N] [--model qwen2.5:7b-instruct]
@@ -52,7 +52,7 @@ ORIG_FTS = ORIG_DB.parent / "fts.db"
 CACHE = TMP / "domain_routing_cache.json"
 
 GROUPS = ("hermes", "kb", "novel", "task", "general")
-GROUP_MAP = {"hermes": "hermes", "rule": "hermes", "kb": "kb",
+GROUP_MAP = {"hermes": "hermes", "kb": "kb",
              "novel": "novel", "由佳": "novel",
              "task": "task", "tms": "task", "work": "task", "general": "general"}
 

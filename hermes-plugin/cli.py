@@ -53,7 +53,7 @@ def cmd_status(args: argparse.Namespace) -> None:
           f"v{root.get('version', '?')}")
     endpoints = root.get("endpoints", [])
     have_semantic = any(e in endpoints for e in ("/mem/search", "/mem/ingest"))
-    print("  语义层端点（/mem/search /mem/ingest /mem/link /graph/neighbors /mem/router）："
+    print("  语义层端点（/mem/search /mem/ingest /mem/link /graph/neighbors）："
           + ("✓ 齐备" if have_semantic else "⚠ 缺失——请确认服务版本包含统一语义层端点"))
     print(f"  插件配置：PALIMPSEST_BASE_URL={base}（env 覆盖可用）")
 

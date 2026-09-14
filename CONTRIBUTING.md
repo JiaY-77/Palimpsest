@@ -63,7 +63,7 @@ Palimpsest/
 │   ├── secret_scan.py     # pre-write secret scanning
 │   ├── startup_check.py   # startup self-check
 │   └── task_archive.py    # completed-task auto-archiving
-├── mcp_tools/     # 16 MCP tools — shared by MCP / REST / CLI
+├── mcp_tools/     # 15 MCP tools — shared by MCP / REST / CLI
 ├── scripts/       # operational tooling (CLI, dashboard, KB indexing)
 ├── tests/         # pytest suite (conftest.py isolates the DB)
 └── data/          # runtime databases (gitignored — never commit)
@@ -83,7 +83,7 @@ Keep the layering clean when you add code:
 
 New capabilities are exposed as MCP tools so that MCP, REST, and the CLI pick them up from a single registration point.
 
-1. Pick the right module in `mcp_tools/` (or create a new one) — `memory.py` (`mem_*`), `kb.py` (`kb_index` / `kb_search`), `graph.py` (`graph_neighbors` / `mem_link`), `routing.py` (`router_query`).
+1. Pick the right module in `mcp_tools/` (or create a new one) — `memory.py` (`mem_*`), `kb.py` (`kb_index` / `kb_search`), `graph.py` (`graph_neighbors` / `mem_link`).
 2. Write a plain Python function that receives a shared `store` (from `mcp_tools/_common.py`), keep docstrings in English, and keep side effects explicit.
 3. Register it with the shared decorator, e.g.:
 

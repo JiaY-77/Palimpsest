@@ -100,7 +100,7 @@ async def root():
         "version": get_version(),
         "endpoints": ["/export", "/memory/{id}",
                       "/mem/search", "/mem/hybrid-search", "/mem/ingest", "/mem/link",
-                      "/graph/neighbors", "/mem/router"],
+                      "/graph/neighbors"],
     }
 
 
@@ -266,7 +266,7 @@ async def update_memory_vector(node_id: int, vector: list[float]):
 
 
 # ---- 统一语义层端点（2026-08-27 换脑插件通道）----
-# 对齐 mcp_server 工具（mem_search / mem_ingest / mem_link / graph_neighbors / router_query），
+# 对齐 mcp_server 工具（mem_search / mem_ingest / mem_link / graph_neighbors），
 # 供 Hermes memory provider 插件（plugins/palimpsest/）通过 REST :8090 调用。
 # 返回解析后的 JSON（FastAPI 自动序列化），客户端无需再 parse 字符串。
 import json as _json  # noqa: E402
@@ -289,16 +289,13 @@ from mcp_tools import (  # noqa: E402
 from mcp_tools import (  # noqa: E402
     mem_search as _mcp_mem_search,
 )
-from mcp_tools import (  # noqa: E402
-    router_query as _mcp_router_query,
-)
 
 
 class MemSearchRequest(BaseModel):
     query: str
     scope: str = "all"        # memory | kb | all
     domain: str = ""
-    domain_bias: str = ""     # rule 等
+    domain_bias: str = ""
     top_k: int = 5
     include_neighbors: bool = False
     include_outdated: bool = False
@@ -318,7 +315,7 @@ class MemHybridSearchRequest(BaseModel):
     query: str
     scope: str = "all"        # memory | kb | all
     domain: str = ""
-    domain_bias: str = ""     # rule 等
+    domain_bias: str = ""
     top_k: int = 5
     mode: str = "rrf"         # rrf | cascade
     fts_limit: int = 50
@@ -349,11 +346,6 @@ class GraphCommunitiesRequest(BaseModel):
     min_community_size: int = 2
     top_k: int = 20
     with_summary: bool = True
-
-
-class RouterQueryRequest(BaseModel):
-    task: str
-    top_k: int = 3
 
 
 def _as_json(text: str):
@@ -428,11 +420,6 @@ async def graph_communities(req: GraphCommunitiesRequest):
         min_community_size=req.min_community_size,
         top_k=req.top_k, with_summary=req.with_summary,
     ))
-
-
-@app.post("/mem/router")
-async def router_query(req: RouterQueryRequest):
-    return _as_json(_mcp_router_query(req.task, top_k=req.top_k))
 
 
 @app.post("/mem/stats")

@@ -19,6 +19,7 @@
 
 ### 重构
 
+- **退役 rule 域**：移除整个规则域机制——`mcp_tools/routing.py`（`router_query`）、`palimpsest_router` 插件工具、`/mem/router` REST 端点、`RULE_RETRIEVAL_WEIGHT` 配置与 `×1.3` 内置加权、`domain_bias="rule"` 取值、`DEFAULT_BLOCKS` 中的 `rule` 区块及 `domain_in_block` 的 rule→kb 兼容分支、`build_kb_index.py` 的规则类文档标记（所有知识切片统一 `domain=kb`）、`scripts/sync_rules.py` / `scripts/check_kb_consistency.py`。生产库 `domain=rule` 节点为 0，故零兼容垫片直接删除。文档（两份 README / CONTRIBUTING / hermes-plugin README）同步刷新，配置表新增「生效前提（Precondition）」列
 - **拆分 4 个 >100 行函数**（`core/trivium_store.search_similar` 137 行 · `mcp_tools/memory.mem_ingest` 125 · `core/stats.compute_stats` 119 · `core/consolidator._apply_merge` 100）：按单一职责抽出 helper（候选过期过滤 / 衰减重排 / block 过滤 / 统计累加器 / 事务写入 / 单对合并），主函数退回编排。**行为不变**，且不是靠「测试绿」自证：每处都在**生产库副本**上做了跨版本等价比对（`compute_stats` 输出、`mem_ingest` 两次写入（其中一次触发冲突检测）、`consolidate` 的 dry-run 与真实合并，重构前后零差异）；端到端检索评测 40 题 × 4 模式排序 **160/160 一致**（唯一差异是浮点末位 ≤2e-08，同版本重跑可复现，来自 embedding 服务而非本次改动）
 
 ### 文档

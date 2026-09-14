@@ -12,18 +12,11 @@ v1.1 增量更新（默认模式）：
     或「mtime 变化」的文件（先删旧块再重新切片插入），mtime 未变的文件跳过。
     老数据（无 source_mtime 字段）视为「未知」，一律重建（保险起见）。
 
-v1.0 统一语义层（规则类标记）：
-    规则类文档（文件名/路径含 副官加班协议/宪法/模型军团管理办法/模型路由决策树）
-    的切片 domain 打 "rule"（type 仍为 kb_chunk，是知识的子集），其余保持 "kb"。
-    增量模式下若文件已有索引的 domain 与当前判定不一致（如 kb→rule），也会触发重建。
-    构建完成后输出 domain=rule / domain=kb 块数统计（返回 dict 含 domain_counts）。
-
 v2.1 退役文档排除：
     文档引言区（frontmatter 之后、首个 ## 节标题之前）出现「⛔ 已退役」或
     「已退役（」横幅标记 → 判定为已退役文档，不进入索引（不切片、不向量化），
     并清理其在库中的旧 kb_chunk 节点（否则旧块仍会被语义检索命中）。
-    只检测引言区，避免误伤正文提到「已退役」的文档（如模型军团管理办法的
-    模型退役表格、模型路由决策树的「宪法已退役」说明、知识库首页的导航列表）。
+    只检测引言区，避免误伤正文提到「已退役」的文档（如知识库首页的导航列表）。
     幂等：退役文档第二次运行时库中已无其旧节点，重复执行无副作用。
 
 v1.0 Upsert 重建策略：
@@ -63,17 +56,10 @@ MAX_CHUNK_LEN = 800
 
 # 目标块类型（与 mcp_server.py 的 kb_search / mem_search 过滤条件保持一致）
 CHUNK_TYPE = "kb_chunk"
+KB_DOMAIN = "kb"
 
 # mtime 比较容差（秒）：浮点序列化/反序列化可能有微小误差，差值小于该值视为未变化
 MTIME_TOLERANCE = 1e-3
-
-# ---- v1.0 统一语义层：规则类文档标记 ----
-# 规则类文档（文件名/相对路径包含以下任一关键词）的切片 domain 打 "rule"，
-# 其余笔记保持 "kb"。rule 是知识的子集（type 仍为 kb_chunk），mem_search 会对
-# rule 节点内置 ×1.3 加权，router_query 只查 rule 切片做任务路由。
-RULE_KEYWORDS = ["副官加班协议", "宪法", "模型军团管理办法", "模型路由决策树"]
-RULE_DOMAIN = "rule"
-KB_DOMAIN = "kb"
 
 # ---- v2.1 退役文档排除 ----
 # 退役横幅标记（文档引言区出现任一即视为退役）。样例：
@@ -107,17 +93,6 @@ def _is_retired_doc(text: str) -> bool:
         head.append(line)
     intro = "\n".join(head)
     return any(m in intro for m in RETIRED_MARKERS)
-
-
-def _doc_domain(rel_path: str) -> str:
-    """
-    判断文档所属域：文件名/相对路径包含任一规则类关键词 → "rule"，
-    否则 → "kb"。与 mcp_server 的 rule 加权、router_query、check_kb_consistency 保持一致。
-    """
-    for kw in RULE_KEYWORDS:
-        if kw in rel_path:
-            return RULE_DOMAIN
-    return KB_DOMAIN
 
 
 def _kb_md_files(knowledge_dir: str) -> list:
@@ -223,10 +198,9 @@ def _delete_nodes(store, node_ids: list) -> int:
 
 def _count_domain_chunks(store) -> dict:
     """
-    扫描库中全部 kb_chunk 节点，统计 domain=rule / domain=kb 的块数
-    （rule 是 kb_chunk 的子集，此处按 payload.domain 区分）。
+    扫描库中全部 kb_chunk 节点，统计 domain=kb 的块数（按 payload.domain 区分）。
     """
-    counts = {RULE_DOMAIN: 0, KB_DOMAIN: 0, "other": 0}
+    counts = {KB_DOMAIN: 0, "other": 0}
     for _nid, payload in store.iter_payloads():
         if payload.get("type") != CHUNK_TYPE:
             continue
@@ -262,7 +236,7 @@ def _determine_pending(full: bool, active_files: list, existing: dict,
     """确定待重建文件列表（v1.0）。
 
     全量模式：所有 active 文件强制重建；
-    增量模式：新文件 / 老数据无 mtime / mtime 变化 / domain 变化 → 重建，其余跳过。
+    增量模式：新文件 / 老数据无 mtime / mtime 变化 → 重建，其余跳过。
     返回 (pending, skipped)。
     """
     if full:
@@ -281,8 +255,6 @@ def _determine_pending(full: bool, active_files: list, existing: dict,
         elif entry["mtime"] is None \
                 or abs(entry["mtime"] - cur_mtime) > MTIME_TOLERANCE:
             pending.append(fp)  # 老数据无 mtime（未知）或 mtime 变化
-        elif entry["domain"] != _doc_domain(rel):
-            pending.append(fp)  # v1.0 domain 变化（如 kb→rule），需重建
         else:
             skipped += 1  # mtime 未变，跳过
     return pending, skipped
@@ -351,7 +323,7 @@ def _rebuild_file(store, fp: str, knowledge_dir: str, existing: dict) -> tuple:
                 old_index_map[int(ci)] = nid
 
     char_lens = []
-    doc_domain = _doc_domain(rel)
+    doc_domain = KB_DOMAIN
 
     for i, chunk in enumerate(chunks):
         emb = store.embed_text(chunk)
@@ -435,12 +407,11 @@ def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False) ->
 
     elapsed = round(time.time() - t0, 2)
     mode = "full" if full else "incremental"
-    # v1.0 统一语义层：重建完成后统计 rule / kb 块数
     domain_counts = _count_domain_chunks(store)
     print(f"\n=== 知识库索引构建完成（{'全量' if full else '增量'}模式）v1.0 upsert ===")
     print(f"总块数: {total_chunks} | 新增/重建: {rebuilt} 篇 | 跳过: {skipped} 篇 | 耗时: {elapsed} 秒")
-    print(f"[v1.0 域统计] domain=rule（规则类）: {domain_counts.get(RULE_DOMAIN, 0)} 块 | "
-          f"domain=kb（普通知识）: {domain_counts.get(KB_DOMAIN, 0)} 块")
+    print(f"[域统计] domain=kb（知识块）: {domain_counts.get(KB_DOMAIN, 0)} 块 | "
+          f"其他: {domain_counts.get('other', 0)} 块")
     if deleted_old:
         print(f"（删除旧 kb_chunk 节点 {deleted_old} 个）")
     # v1.0 FTS 联动（混合检索依赖）：知识库重建后同步全文索引；
@@ -459,7 +430,7 @@ def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False) ->
         "rebuilt": rebuilt,
         "skipped": skipped,
         "deleted_old": deleted_old,
-        "domain_counts": domain_counts,  # v1.0: {rule: n, kb: n}
+        "domain_counts": domain_counts,  # v1.0: {kb: n, other: n}
         "fts_count": fts_count,  # v1.0: FTS 同步节点数（-1=失败）
     }
 

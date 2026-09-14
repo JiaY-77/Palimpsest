@@ -15,20 +15,17 @@ Ollama 的 qwen3-embedding:0.6b 生成（1024 维，已验证可用）。
   3. mem_ingest   - 写入新记忆（带冲突检测：相似旧记忆标记 outdated + REVISED_BY 链）
   4. mem_recent   - 最近记忆列表（按 created_at 倒序）
   5. kb_index     - 知识库文件索引（扫描知识库根目录下所有 .md）
-  6. kb_search    - 知识库语义检索（向量检索，只查 build_kb_index.py 建的 kb_chunk 节点，
-                   含 domain=rule 规则类切片）
-  7. mem_search   - 统一检索入口：scope=memory/kb/all 混合检索记忆与知识库
-                   （v2.0：domain=rule 规则切片内置 ×1.3 加权；
-                    v3.0：include_neighbors=True 时返回图关联区（分区返回），
-                    语义区原样 + neighbors 区展示已命中节点的一跳邻居）
-  8. router_query - 任务路由查询（v2.0）：查规则类知识切片，提取推荐模型/配置
-  9. mem_version_history - 版本历史查询：沿 REVISED_BY 修订链返回版本演进摘要
-                 （如 SOUL 版本日志；domain/full_content/offset/limit 参数）
-  10. graph_neighbors  - 图谱邻居查询：从任意节点沿出边 BFS 遍历
-                 （relation 过滤 / depth 1-3 / limit 截断，去重）
-  11. mem_link         - 手动建边（RELATED_TO / CAUSES / REFERS_TO 等）
-   12. mem_hybrid_search - 混合检索（FTS5 精确 + 语义向量：RRF 融合 k=60 / 级联粗筛→精排）
-   13. mem_consolidate  - 容量自动合并（扫描高相似度 memory 节点对，dry_run 预览 / apply 真正合并）
+   6. kb_search    - 知识库语义检索（向量检索，只查 build_kb_index.py 建的 kb_chunk 节点）
+   7. mem_search   - 统一检索入口：scope=memory/kb/all 混合检索记忆与知识库
+                    （v3.0：include_neighbors=True 时返回图关联区（分区返回），
+                     语义区原样 + neighbors 区展示已命中节点的一跳邻居）
+   8. mem_version_history - 版本历史查询：沿 REVISED_BY 修订链返回版本演进摘要
+                  （如 SOUL 版本日志；domain/full_content/offset/limit 参数）
+   9. graph_neighbors  - 图谱邻居查询：从任意节点沿出边 BFS 遍历
+                  （relation 过滤 / depth 1-3 / limit 截断，去重）
+   10. mem_link         - 手动建边（RELATED_TO / CAUSES / REFERS_TO 等）
+   11. mem_hybrid_search - 混合检索（FTS5 精确 + 语义向量：RRF 融合 k=60 / 级联粗筛→精排）
+   12. mem_consolidate  - 容量自动合并（扫描高相似度 memory 节点对，dry_run 预览 / apply 真正合并）
 
 边类型约定：
   - REVISED_BY : 版本修订链（mem_ingest 自动建，新 → 旧；单向语义）

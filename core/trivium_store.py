@@ -27,9 +27,8 @@ class EmbeddingUnavailableError(Exception):
 # 图谱扩散参数来自 Config（性能优化）：每节点最多扩散最强 N 条边；弱边阈值。
 
 # 出厂通用区块（domain 分组概念：图谱分区块防跨域污染）。
-# rule 归入 kb 区块的兼容已有逻辑（domain_in_block），单独列出便于校验。
 # novel = 小说创作设定库（本地小说 vault 设定语料）。
-DEFAULT_BLOCKS = ("task", "kb", "rule", "hermes", "novel", "general")
+DEFAULT_BLOCKS = ("task", "kb", "hermes", "novel", "general")
 
 
 def is_valid_block(block: str) -> bool:
@@ -40,14 +39,12 @@ def is_valid_block(block: str) -> bool:
 
 
 def domain_in_block(node_domain: str, block: str) -> bool:
-    """区块匹配（分区块）：domain 是否属于 block。kb 区块兼容 rule（rule 是知识子集）。"""
+    """区块匹配（分区块）：domain 是否属于 block。"""
     d = (node_domain or "general").strip().lower()
     b = (block or "").strip().lower()
     if not b:
         return True
-    if d == b:
-        return True
-    return bool(b == "kb" and d == "rule")
+    return d == b
 
 
 def node_domain(payload: dict) -> str:
@@ -119,12 +116,7 @@ def _rerank_by_decay(scored: list[tuple[float, dict]]) -> list[tuple[float, dict
 
 
 def _filter_candidates_by_block(scored: list[tuple[float, dict]], block: str) -> list[tuple[float, dict]]:
-    """block 后置过滤。
-
-    search_advanced 的 payload_filter 不直接支持 domain+rule 复合语义
-    （kb block 需匹配 domain=kb OR domain=rule），故用 Python 后置过滤
-    保持与旧 _expand_neighbors 一致的区块行为。
-    """
+    """block 后置过滤：domain 匹配 block 时保留，否则丢弃。"""
     return [
         (s, n) for s, n in scored
         if domain_in_block(node_domain(n.get("payload", {})), block)
@@ -371,8 +363,7 @@ class TriviumStore:
           - teleport_alpha=0.0（纯向量+扩散，无随机跳跃）+ expand_depth 透传
             参数，与现状行为最接近。
           - block 参数：若非空，search_advanced 返回的候选会经过 Python 后置
-            domain 过滤（search_advanced 的 payload_filter 不直接支持 domain+rule
-            的复合语义）。
+            domain 过滤。
 
         - expand_depth：透传给 search_advanced 的图扩散深度（默认 1）
         - apply_decay=False 供 mem_ingest 内部阈值判断保持原样
@@ -430,7 +421,7 @@ class TriviumStore:
         if apply_decay:
             scored = _rerank_by_decay(scored)
 
-        # block 后置过滤（domain+rule 复合语义无法下推给 search_advanced）
+        # block 后置过滤：domain 匹配 block 时保留，否则丢弃
         if block:
             scored = _filter_candidates_by_block(scored, block)
 
