@@ -142,3 +142,29 @@ def test_cross_process_reader_shared(base):
             r1.communicate(timeout=10)
         except subprocess.TimeoutExpired:
             r1.kill()
+
+
+# ---------------------------------------------------------------------------
+# Palimpsest 层：写者互斥 —— 「REST 必须单进程 / 禁止多 worker」的实证依据
+# ---------------------------------------------------------------------------
+
+
+def test_store_write_rejected_while_another_writer_holds_db():
+    """库被另一个写连接占着时，Palimpsest 的写入路径必须 fail-fast 报「锁」。
+
+    节点 ID 由应用层按「当前最大 id + 1」分配，能撞车的前提是两个写者同时握有
+    连接 —— 而 triviumdb 在第二个写连接构造时就拒绝。所以多 worker / 多实例并发
+    写同一库不是「静默产生重复 ID」，而是写请求直接报错（详见 README「单进程写入约束」）。
+    """
+    from mcp_tools._common import store as pstore
+
+    holder = triviumdb.TriviumDB(pstore.db_path, dim=pstore.dim)
+    try:
+        with pytest.raises(RuntimeError) as ei:
+            pstore.insert_node(
+                {"type": "memory", "domain": "lock_probe", "content": "锁探针"},
+                pstore.embed_text("锁探针"),
+            )
+        assert "锁" in str(ei.value), ei.value
+    finally:
+        holder.close()

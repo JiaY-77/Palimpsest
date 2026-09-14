@@ -3,7 +3,26 @@ core.reporting —— 记忆报告生成
 ============================
 将 main.py 的 /report 端点核心逻辑抽出，独立为可复用函数：
 基于当前数据库中的所有记忆，调用 LLM 生成一份角色灵魂分析报告。
+
+本模块服务于小说创作场景（Prompt 为角色扮演心理分析向），并被 async 端点
+/report 直接 await —— 因此函数体内【不得有阻塞调用】：全库扫描丢线程池，
+LLM 请求走 AsyncOpenAI。
 """
+
+import asyncio
+
+
+def _collect_memories(store) -> list[str]:
+    """读取全库记忆文本（同步 DB 扫描，由 generate_report 丢进线程池执行）。
+
+    单独成函数是为了让 async 调用方用 `asyncio.to_thread` 一次性把整段阻塞
+    扫描移出事件循环，而不是每读一条 await 一次。
+    """
+    memories: list[str] = []
+    for _nid, payload in store.iter_payloads():
+        if payload.get("content"):
+            memories.append(f"[{payload.get('type', '')}] {payload['content']}")
+    return memories
 
 
 async def generate_report(store):
@@ -12,12 +31,12 @@ async def generate_report(store):
     这不再是简单的摘要，而是对角色命运的洞察。
 
     参数 store：TriviumStore 实例（迭代其 payload 取记忆内容）。
+
+    全异步：DB 扫描走线程池、LLM 调用走 AsyncOpenAI，不阻塞事件循环
+    （同步调用会让一次几十秒的生成卡死整个 REST 服务的其他请求）。
     """
-    # 1. 先从数据库获取所有记忆
-    memories = []
-    for _nid, payload in store.iter_payloads():
-        if payload.get("content"):
-            memories.append(f"[{payload.get('type', '')}] {payload['content']}")
+    # 1. 先从数据库获取所有记忆（阻塞扫描 → 线程池）
+    memories = await asyncio.to_thread(_collect_memories, store)
 
     if not memories:
         return {
@@ -49,16 +68,17 @@ async def generate_report(store):
 === 记忆碎片 ===
 {memory_text}
 """
-    # 4. 调用 DeepSeek
+    # 4. 调用 DeepSeek（AsyncOpenAI：本函数被 async 端点 await，用同步 client 会
+    #    阻塞整个事件循环——一次 max_tokens=4000 的生成可能几十秒）
     try:
-        from openai import OpenAI
+        from openai import AsyncOpenAI
 
         from config import Config
 
         llm_cfg = Config.get_llm_config()
-        client = OpenAI(api_key=llm_cfg["api_key"], base_url=llm_cfg["base_url"])
+        client = AsyncOpenAI(api_key=llm_cfg["api_key"], base_url=llm_cfg["base_url"])
 
-        completion = client.chat.completions.create(
+        completion = await client.chat.completions.create(
             model=llm_cfg["model"],
             messages=[{"role": "user", "content": report_prompt}],
             temperature=0.8,

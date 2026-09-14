@@ -5,7 +5,7 @@
 Palimpsest scans content **before it is written to the store**. See [`core/secret_scan.py`](core/secret_scan.py) for the implementation:
 
 - **Strong rules** (API keys, tokens, private keys, bearer tokens, SSH keys, …) — a match **rejects the write** and reports which rule fired.
-- **Weak rules** (Chinese ID-card numbers, phone numbers) — a match is allowed through but marked with a `secret_hint` flag for later audit.
+- **Weak rules** (Chinese ID-card numbers, phone numbers) — a match is allowed through but marked with a `secret_hint` flag for later audit. **The matched text is not redacted**: it is stored as written, and the flag is metadata kept alongside it. `GET /memory/{id}` strips the `secret_hint` field from its response, but the other read paths (MCP `mem_get_full`, `kb_search`, exports) still return the original content. Weak rules are an audit hint, not a data-loss-prevention control — sanitize the input before calling `mem_ingest` if the write must be blocked.
 
 The rest of the design is privacy-friendly by default: all data stays in a local embedded database, and the default embedding backend is **Ollama**, running locally. Nothing is sent to a cloud embedding endpoint unless you explicitly configure `EMBEDDING_PROVIDER=openai`.
 

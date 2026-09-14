@@ -115,3 +115,40 @@ def test_do_pagerank_internal_smoke():
     finally:
         with contextlib.suppress(Exception):
             db.close()
+
+
+def test_communities_reports_acquire_failure(monkeypatch):
+    """store._acquire() 抛异常时：回传原始错误，且不得再被 NameError 掩盖。
+
+    回归点：finally 里若无条件 db.close()，db 未绑定会抛 NameError 并被
+    contextlib.suppress 吞掉，真实失败原因被掩盖（现为 if db is not None）。
+    做法：把 mcp_tools.graph 用的 contextlib.suppress 换成「记录所有被吞异常」的
+    严格替身 —— 修复前这里能抓到 NameError，修复后不应再有任何被吞异常。
+    本测试同时锁定「_acquire 失败 = 返回错误结构而非抛异常」的对外契约。
+    """
+    import contextlib as ctx
+
+    from mcp_tools import graph
+    from mcp_tools._common import store as pstore
+
+    def _boom():
+        raise RuntimeError("acquire 探针失败")
+
+    swallowed: list[BaseException] = []
+
+    @ctx.contextmanager
+    def _recording_suppress(*exc_types):
+        try:
+            yield
+        except BaseException as e:  # noqa: BLE001 —— 测试替身：记录被吞掉的异常
+            swallowed.append(e)
+
+    monkeypatch.setattr(pstore, "_acquire", _boom)
+    monkeypatch.setattr(graph.contextlib, "suppress", _recording_suppress)
+
+    result = json.loads(graph.mem_communities())
+
+    assert result["error"] == "acquire 探针失败", result
+    assert not [e for e in swallowed if isinstance(e, NameError)], (
+        f"finally 里抛了 NameError 并被吞掉: {swallowed}"
+    )

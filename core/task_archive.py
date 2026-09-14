@@ -119,12 +119,27 @@ def find_completed_tasks(store: TriviumStore) -> list[dict]:
     return completed
 
 
+# 归档 md 的 YAML frontmatter 幂等键（重跑归档时据此判断该节点是否已归档）
+_FRONTMATTER_NODE_ID_RE = re.compile(r"^node_id:\s*(\d+)\s*$", re.MULTILINE)
+
+
 def build_archive_md(item: dict) -> str:
-    """生成归档 Markdown 内容（含标题、元数据表、任务正文原文）。"""
+    """生成归档 Markdown 内容（YAML frontmatter + 标题、元数据表、任务正文原文）。
+
+    frontmatter 的 `node_id` 是幂等键：写文件与删节点非原子（崩在中途、或删节点
+    失败），重跑归档时据它复用磁盘上已有的那份文件，不再产出 `_2` 重复归档
+    （见 `_scan_archived_node_ids`）。
+    """
     title = item.get("title") or str(item.get("id", ""))
     now = datetime.now().isoformat(timespec="seconds")
     content = (item.get("content") or "").rstrip()
     return "\n".join([
+        "---",
+        f"node_id: {item.get('id', '')}",
+        f"archived_at: {now}",
+        f"type: {item.get('type', '')}",
+        "---",
+        "",
         f"# {title}",
         "",
         "> 归档自 Palimpsest（自动归档）",
@@ -167,6 +182,45 @@ def _unique_target(archive_dir: str, date_str: str, base: str,
     return os.path.join(archive_dir, name)
 
 
+def _scan_archived_node_ids(archive_dir: str) -> dict[int, str]:
+    """扫描归档目录，返回 {node_id: 文件路径}（幂等键来自 frontmatter 的 node_id）。
+
+    只读每个文件前 1KB（frontmatter 在文件头）。没有 node_id 的文件（手工写的归档、
+    本工具早期版本产出的归档）直接跳过——不认识的格式不影响正常写入。
+    """
+    found: dict[int, str] = {}
+    if not os.path.isdir(archive_dir):
+        return found
+    for fname in sorted(os.listdir(archive_dir)):
+        if not fname.endswith(".md"):
+            continue
+        path = os.path.join(archive_dir, fname)
+        try:
+            with open(path, encoding="utf-8") as f:
+                head = f.read(1024)
+        except OSError as e:  # 单个文件读不动不阻塞整批归档
+            logger.warning(f"归档目录读取失败 {path}: {e}")
+            continue
+        m = _FRONTMATTER_NODE_ID_RE.search(head)
+        if m:
+            found.setdefault(int(m.group(1)), path)
+    return found
+
+
+def _write_archive_file(path: str, text: str) -> None:
+    """原子写归档文件：先写同目录 `.tmp`，flush + fsync 后 os.replace 成正式名。
+
+    崩在 replace 之前只会留下 .tmp（不参与幂等扫描，下次写正式文件时被覆盖），
+    正式归档文件不会出现半截内容。
+    """
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
 def archive_tasks(store: TriviumStore, dry_run: bool = True,
                   knowledge_dir: str | None = None) -> dict:
     """已完成任务节点自动归档主入口。
@@ -176,24 +230,36 @@ def archive_tasks(store: TriviumStore, dry_run: bool = True,
                    store.delete_node(id) + fts_index.remove_node(id)；任一节点删除失败
                    记录到 errors，不中断整体。
 
-    返回 {dry_run, candidates, archived, errors, skipped}。
+    幂等性：写文件与删节点不是同一个事务，中途失败会留下「文件已写、节点还在」的
+    状态。因此候选先按 frontmatter 的 node_id 与磁盘比对——已归档的复用原文件
+    （跳过写入，直接补删节点），重跑不会产出 `_2` 重复归档。
+
+    返回 {dry_run, candidates, archived, errors, skipped}；candidates / archived 的
+    每个条目带 `already_archived`，预览与执行决策一致。
     """
     completed, skipped = _scan(store)
     archive_dir = os.path.join(_resolve_knowledge_dir(knowledge_dir), "05_任务归档")
     date_str = datetime.now().strftime("%Y%m%d")
 
     # 统一计算各候选的落盘路径（dry-run 与执行共用，保证预览=执行）
+    # 幂等：磁盘上已有该 node_id 的归档 → 复用原文件，不再新写一份
+    archived_ids = _scan_archived_node_ids(archive_dir)
     used_names: set[str] = set()
     planned: list[dict] = []
     for item in completed:
+        existing = archived_ids.get(item["id"])
+        if existing:
+            planned.append({**item, "target_path": existing, "already_archived": True})
+            continue
         base = _sanitize_filename(item["title"] or str(item["id"]))
         target = _unique_target(archive_dir, date_str, base, used_names)
-        planned.append({**item, "target_path": target})
+        planned.append({**item, "target_path": target, "already_archived": False})
 
     preview = [{
         "id": p["id"],
         "title": p["title"],
         "target_path": p["target_path"],
+        "already_archived": p["already_archived"],
     } for p in planned]
 
     if dry_run:
@@ -206,17 +272,19 @@ def archive_tasks(store: TriviumStore, dry_run: bool = True,
         }
 
     # ---- 真正执行：写 md → 删节点 + 清 FTS 索引 ----
+    # 幂等命中的（already_archived）跳过写入，直接补删残留节点 —— 把上次中断的
+    # 「文件已写、节点还在」收敛回一致状态，且不会产生第二份归档文件
     archived: list[dict] = []
     errors: list[dict] = []
     os.makedirs(archive_dir, exist_ok=True)
     for p in planned:
-        try:
-            with open(p["target_path"], "w", encoding="utf-8") as f:
-                f.write(build_archive_md(p))
-        except Exception as e:  # noqa: BLE001 —— 写入失败记 errors 继续归档其余节点
-            errors.append({"id": p["id"], "title": p["title"], "error": f"写入归档文件失败: {e}"})
-            logger.error(f"归档写入失败 node={p['id']} -> {p['target_path']}: {e}")
-            continue
+        if not p["already_archived"]:
+            try:
+                _write_archive_file(p["target_path"], build_archive_md(p))
+            except Exception as e:  # noqa: BLE001 —— 写入失败记 errors 继续归档其余节点
+                errors.append({"id": p["id"], "title": p["title"], "error": f"写入归档文件失败: {e}"})
+                logger.error(f"归档写入失败 node={p['id']} -> {p['target_path']}: {e}")
+                continue
         try:
             store.delete_node(p["id"])
         except Exception as e:  # noqa: BLE001 —— 节点删除失败记 errors 继续处理其余项
@@ -228,7 +296,12 @@ def archive_tasks(store: TriviumStore, dry_run: bool = True,
         except Exception as e:  # noqa: BLE001 —— FTS 清理失败仅告警不阻塞归档主流程
             errors.append({"id": p["id"], "title": p["title"], "error": f"移除 FTS 索引失败: {e}"})
             logger.warning(f"FTS 索引清理失败 node={p['id']}: {e}")
-        archived.append({"id": p["id"], "title": p["title"], "target_path": p["target_path"]})
+        archived.append({
+            "id": p["id"],
+            "title": p["title"],
+            "target_path": p["target_path"],
+            "already_archived": p["already_archived"],
+        })
 
     return {
         "dry_run": False,
