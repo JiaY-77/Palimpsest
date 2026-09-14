@@ -265,6 +265,8 @@ def mem_communities(min_community_size: int = 2, top_k: int = 20,
     communities:[{community_id, size, node_ids, members:[{id, type, title, domain, importance}]}], hint}
     members 里 title = content 前 60 字，importance 转 float。
     """
+    db = None  # _acquire 失败时 db 未绑定：finally 里不能无条件 close（否则抛
+    # NameError 并被 contextlib.suppress 吞掉，掩盖真实失败原因）
     try:
         db = store._acquire()
         node_count = db.node_count()
@@ -287,8 +289,9 @@ def mem_communities(min_community_size: int = 2, top_k: int = 20,
         return _to_json({"mode": "communities", "error": str(e),
                          "hint": "图分析异常，请检查 TriviumDB 版本/图数据"})
     finally:
-        with contextlib.suppress(Exception):
-            db.close()
+        if db is not None:
+            with contextlib.suppress(Exception):
+                db.close()
 
 
 def _get_node_payload(db, nid: int) -> dict:
