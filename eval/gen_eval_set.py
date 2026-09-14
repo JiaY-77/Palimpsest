@@ -209,7 +209,6 @@ def _call_deepseek(prompt: str, max_retries: int = 1) -> str | None:
 
 def _generate_batch(
     batch: list[dict],
-    rng: random.Random,
 ) -> list[dict] | None:
     """Generate queries for a batch of 5 nodes. Returns list of items or None."""
     lines = []
@@ -254,7 +253,7 @@ def _generate_batch(
     # Validate and enforce substring constraint
     result = []
     skipped = 0
-    for pos, (it, node) in enumerate(zip(items, batch, strict=False)):
+    for pos, (it, node) in enumerate(zip(items, batch, strict=True)):
         query = it["query"]
         content = node["payload"].get("content", "")
         # kind 由脚本按批内位置强制分配（模型不返回该字段，依赖它会导致全 semantic）
@@ -435,7 +434,7 @@ def main() -> int:
         print(f"[gen_eval_set] Batch {batch_idx+1}/{len(batches)} "
               f"(nodes {[n['node_id'] for n in batch]})")
 
-        results = _generate_batch(batch, rng)
+        results = _generate_batch(batch)
         if results is None:
             fail_count += 1
             print(f"  [FAIL] Batch {batch_idx+1} failed entirely")
