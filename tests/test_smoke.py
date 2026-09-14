@@ -274,7 +274,7 @@ def test_startup_check_embedding():
 
 
 def test_block_validation():
-    """出厂内置 block 为通用区块（task/kb/hermes/general/novel，rule 归入 kb，work 不在列）。
+    """出厂内置 block 为通用区块（task/kb/hermes/general/novel，work 不在列）。
 
     注：novel 已于「register novel domain block for fiction corpus import」提交
     注册为小说创作设定区块（领域入库），因此为合法 block；work 仍非出厂区块。

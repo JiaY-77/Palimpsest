@@ -100,7 +100,7 @@ _LAYER_OTHER = "other"
 
 _HERMES_TYPES = {"memory", "record", "correction", "plan", "decision"}
 _NOVEL_TYPES = {"novel_chunk", "character_state", "plot_plan"}
-_TASK_RULE_TYPES = {"task", "rule"}
+_TASK_RULE_TYPES = {"task"}
 
 # 会话末自动提炼的转录片段，不适合作为评测基准答案
 _DEFAULT_EXCLUDED_SOURCES = {"hermes-session_end"}

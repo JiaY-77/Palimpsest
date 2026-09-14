@@ -5,7 +5,6 @@ mcp_tools —— MCP 工具包
   memory.py   记忆读写与查询（mem_* 系列 + _mem_search_impl）
   kb.py       知识库（kb_index / kb_search）
   graph.py    图谱（graph_neighbors / mem_link / _collect_neighbors / _edge_exists）
-  routing.py  任务路由（router_query / _extract_recommendation）
   _common.py  共享基础设施（store / mcp / 序列化工具 / 知识库根目录）
 本包只导出公共工具符号，供 main.py / palimpsest_cli 等外部直接复用；
 私有实现符号（_.* 前缀）由各子模块内部直连导入，不经过本包入口。
@@ -26,7 +25,6 @@ from mcp_tools.memory import (
     mem_search,
     mem_version_history,
 )
-from mcp_tools.routing import router_query
 from mcp_tools.stats_tool import mem_stats
 
 __all__ = [
@@ -46,6 +44,5 @@ __all__ = [
     "mem_search",
     "mem_stats",
     "mem_version_history",
-    "router_query",
     "store",
 ]

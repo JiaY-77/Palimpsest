@@ -56,9 +56,12 @@ class Config:
     DB_PATH = _resolve_db_path()
 
     # ---- 记忆时间衰减（记忆生命周期）----
-    # 检索排序时旧记忆自然降权（不改存储）：
+    # MEMORY_DECAY_FACTOR 生效前提：检索排序走入库时间衰减分支——soft 模式（默认）
+    # 下它只进入 ε 微调项 recency_norm（ε=SOFT_RERANK_EPS 默认 0.02，故排序影响
+    # 上限 0.02、一年内约 0.01 量级，近乎半死参数）；hard 模式下才做乘性硬加权。
+    # kb_chunk 知识块在两种模式下都不衰减。
     #   有效分 = 余弦分 × importance × MEMORY_DECAY_FACTOR^(距创建天数/30)
-    # 0.95 ≈ 每月衰减 5%（保守）；设为 1.0 完全关闭衰减；kb_chunk 知识块不衰减
+    # 0.95 ≈ 每月衰减 5%（保守）；设为 1.0 完全关闭衰减
     MEMORY_DECAY_FACTOR = float(os.getenv("MEMORY_DECAY_FACTOR", "0.95"))
     # 重排模式：soft = 语义分为主线 + ε 级元数据微调（默认）；hard = 旧版乘性硬加权（可回退）
     MEMORY_RERANK_MODE = os.getenv("MEMORY_RERANK_MODE", "soft").strip().lower()
@@ -70,7 +73,6 @@ class Config:
     KB_SOFT_RERANK_MULT = float(os.getenv("KB_SOFT_RERANK_MULT", "1.5"))
 
     # ---- 检索权重（魔法数字配置化）----
-    RULE_RETRIEVAL_WEIGHT = float(os.getenv("RULE_RETRIEVAL_WEIGHT", "1.3"))
     DOMAIN_BIAS_WEIGHT = float(os.getenv("DOMAIN_BIAS_WEIGHT", "1.15"))
 
     # ---- 图谱扩散精馏（魔法数字配置化）----

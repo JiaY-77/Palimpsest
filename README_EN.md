@@ -131,7 +131,7 @@ Once active, every round of conversation does this automatically:
 - **Auto sedimentation** — high-signal facts are written into memory automatically, via heuristics, no LLM involved.
 - **Session-end distillation** — `on_session_end` condenses the round into structured memory.
 - **Pre-compress graph distillation** — `on_pre_compress` distills graph highlights for the compression stage (`context.engine=palimpsest-graph`).
-- **Memory tools** — `palimpsest_search` / `palimpsest_ingest` / `palimpsest_link` / `palimpsest_graph` / `palimpsest_router`, etc., for the agent to call proactively.
+- **Memory tools** — `palimpsest_search` / `palimpsest_ingest` / `palimpsest_link` / `palimpsest_graph`, etc., for the agent to call proactively.
 
 Two notes:
 
@@ -144,18 +144,15 @@ Two notes:
 
 > This section is about the *approach*, not an ad — even if you never use Palimpsest, you can replicate this pipeline with any toolchain.
 
-We don't treat a vault as "files" but as a **source of knowledge**. Reading takes five steps:
+We don't treat a vault as "files" but as a **source of knowledge**. Reading takes three steps:
 
 1. **The vault directory is the source** — recursively scan every `.md` under `KNOWLEDGE_DIR` (skipping config dirs like `.obsidian`); each note is one document.
-2. **Frontmatter parsing** — read the YAML frontmatter and use its `tags` to drive rule detection: notes tagged `rule` are classified as rule-domain (`domain=rule`), the rest go to `kb`.
-3. **Smart slicing by Markdown headings** — split on `##` / `###` into 300–800 char chunks, keeping `[[wikilinks]]` verbatim so cross-note context survives.
-4. **Vectorize into the store** — each slice is embedded and stored as a `kb_chunk` node, becoming a semantically searchable asset.
-5. **Rule weighting** — rule-domain slices get a **×1.3 weight** at retrieval, so "how it should be done" rules surface above ordinary knowledge.
+2. **Smart slicing by Markdown headings** — split on `##` / `###` into 300–800 char chunks, keeping `[[wikilinks]]` verbatim so cross-note context survives.
+3. **Vectorize into the store** — each slice is embedded and stored as a `kb_chunk` node (`domain=kb`), becoming a semantically searchable asset.
 
-**Want to build it yourself?** The skeleton is simple: one vector store (sqlite-vec, chroma, …) plus one embedding service is enough. The real design points are three:
+**Want to build it yourself?** The skeleton is simple: one vector store (sqlite-vec, chroma, …) plus one embedding service is enough. The real design points are two:
 
 - **Chunk granularity** — too coarse hurts precision, too fine loses context.
-- **Rule detection** — use frontmatter / path / naming conventions to separate "rules to follow" from ordinary notes.
 - **Wikilink preservation** — let `[[A]]⇄[[B]]` relationships enter retrieval results instead of lying inert in the body text.
 
 A working implementation of this approach is `scripts/build_kb_index.py` (full `--full` / incremental by default; incremental mode diffs `mtime` and only rebuilds changed files).
@@ -267,41 +264,40 @@ On Windows, `scripts/start_rest.vbs` launches the REST service in a hidden windo
 
 All configuration is read from environment variables (a `.env` file is loaded automatically via `python-dotenv`). See `.env.example` for a commented template.
 
-| Variable | Default | Description |
-|---|---|---|
-| `REST_PORT` | `8090` | Port for the FastAPI REST service |
-| `DASHBOARD_PORT` | `8010` | Port for the dashboard service |
-| `DB_PATH` | `data/mh_memory.db` | Path to the embedded TriviumDB database |
-| `PALIMPSEST_API_KEY` | *(empty = off)* | Optional REST auth; when set, every route except `/` requires a Bearer / X-API-Key header |
-| `LLM_BACKEND` | `deepseek` | LLM backend: `deepseek` or `ollama` |
-| `DEEPSEEK_API_KEY` | *(empty)* | API key for the DeepSeek API |
-| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | DeepSeek API base URL |
-| `DEEPSEEK_MODEL` | `deepseek-v4-flash` | DeepSeek model identifier |
-| `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Ollama OpenAI-compatible base URL |
-| `OLLAMA_MODEL` | `deepseek-r1:7b` | Ollama chat model used as the LLM |
-| `EMBEDDING_PROVIDER` | *(empty = auto-detect)* | Embedding backend: leave empty for auto-detection (valid `EMBEDDING_API_KEY` → `openai`, otherwise → `ollama`); set `ollama` (local, private) or `openai` (OpenAI-compatible cloud, e.g. Voyage / SiliconFlow) explicitly to force |
-| `OLLAMA_EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | Local Ollama embedding model |
-| `OLLAMA_EMBEDDING_BASE_URL` | `http://localhost:11434` | Ollama native embedding API root (decoupled from the LLM's `/v1` URL) |
-| `OLLAMA_EMBEDDING_DIM` | `1024` | Embedding dimension (local backend) |
-| `EMBEDDING_API_KEY` | *(empty)* | API key for the cloud embedding endpoint |
-| `EMBEDDING_BASE_URL` | `https://api.voyageai.com/v1` | Cloud embedding base URL (any OpenAI-compatible endpoint) |
-| `EMBEDDING_MODEL` | `voyage-3` | Cloud embedding model |
-| `EMBEDDING_DIM` | `1024` | Embedding dimension (cloud backend) |
-| `MEMORY_DECAY_FACTOR` | `0.95` | Monthly memory decay used in ranking (`score × importance × factor^(days/30)`); `1.0` disables decay; `kb_chunk` nodes never decay |
-| `MEMORY_RERANK_MODE` | `soft` | Rerank mode: `soft` = semantic score as the main line plus ε-level metadata nudges (default); `hard` = legacy multiplicative weighting (fallback) |
-| `SOFT_RERANK_EPS` | `0.02` | ε for `soft` mode: 15%–40% of the cosine gap, tie-break only |
-| `DOMAIN_BOOST_EPS` | `0.10` | Additive soft domain boost applied to the semantic score for same-domain candidates when `domain_boost` is set |
-| `KB_SOFT_RERANK_MULT` | `1.5` | ε multiplier for `kb_chunk` (knowledge blocks never decay) under `soft` mode |
-| `RULE_RETRIEVAL_WEIGHT` | `1.3` | Score multiplier for rule-domain knowledge slices |
-| `DOMAIN_BIAS_WEIGHT` | `1.15` | Extra weight for domain-biased retrieval |
-| `EXPAND_MAX_EDGES_PER_NODE` | `20` | Max strongest edges diffused per node during graph expansion |
-| `EXPAND_MIN_EDGE_WEIGHT` | `0.0` | Weak-edge pruning threshold during expansion (0 disables) |
-| `RRF_K` | `60.0` | RRF constant k for hybrid retrieval (single-side hits still count) |
-| `RRF_SEM_WEIGHT` | `1.0` | RRF weight for the semantic side |
-| `RRF_FTS_WEIGHT` | `0.1` | RRF weight for the exact (FTS) side — a small FTS boost on top of a clean semantic ordering |
-| `RETRIEVAL_EXPAND_DEPTH` | `0` | Graph expansion depth for the semantic ordering: `0` = pure semantic ranking (default); `1` = graph neighbors join the ordering (one-flag fallback) |
-| `MEM_INGEST_MAX_LENGTH` | `50000` | Max characters of a single memory `content`; longer writes are rejected |
-| `KNOWLEDGE_DIR` | *(optional)* | Root of the knowledge base (Obsidian `.md` files) to index |
+| Variable | Default | Description | Precondition |
+|---|---|---|---|
+| `REST_PORT` | `8090` | Port for the FastAPI REST service | When starting the REST service |
+| `DASHBOARD_PORT` | `8010` | Port for the dashboard service | When starting the dashboard |
+| `DB_PATH` | `data/mh_memory.db` | Path to the embedded TriviumDB database | — |
+| `PALIMPSEST_API_KEY` | *(empty = off)* | Optional REST auth; when set, every route except `/` requires a Bearer / X-API-Key header | When REST auth is enabled |
+| `LLM_BACKEND` | `deepseek` | LLM backend: `deepseek` or `ollama` | When LLM calls are made |
+| `DEEPSEEK_API_KEY` | *(empty)* | API key for the DeepSeek API | `LLM_BACKEND=deepseek` |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | DeepSeek API base URL | `LLM_BACKEND=deepseek` |
+| `DEEPSEEK_MODEL` | `deepseek-v4-flash` | DeepSeek model identifier | `LLM_BACKEND=deepseek` |
+| `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Ollama OpenAI-compatible base URL | `LLM_BACKEND=ollama` |
+| `OLLAMA_MODEL` | `deepseek-r1:7b` | Ollama chat model used as the LLM | `LLM_BACKEND=ollama` |
+| `EMBEDDING_PROVIDER` | *(empty = auto-detect)* | Embedding backend: leave empty for auto-detection (valid `EMBEDDING_API_KEY` → `openai`, otherwise → `ollama`); set `ollama` (local, private) or `openai` (OpenAI-compatible cloud, e.g. Voyage / SiliconFlow) explicitly to force | — |
+| `OLLAMA_EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | Local Ollama embedding model | `EMBEDDING_PROVIDER=ollama` |
+| `OLLAMA_EMBEDDING_BASE_URL` | `http://localhost:11434` | Ollama native embedding API root (decoupled from the LLM's `/v1` URL) | `EMBEDDING_PROVIDER=ollama` |
+| `OLLAMA_EMBEDDING_DIM` | `1024` | Embedding dimension (local backend) | `EMBEDDING_PROVIDER=ollama` |
+| `EMBEDDING_API_KEY` | *(empty)* | API key for the cloud embedding endpoint | `EMBEDDING_PROVIDER=openai` |
+| `EMBEDDING_BASE_URL` | `https://api.voyageai.com/v1` | Cloud embedding base URL (any OpenAI-compatible endpoint) | `EMBEDDING_PROVIDER=openai` |
+| `EMBEDDING_MODEL` | `voyage-3` | Cloud embedding model | `EMBEDDING_PROVIDER=openai` |
+| `EMBEDDING_DIM` | `1024` | Embedding dimension (cloud backend) | `EMBEDDING_PROVIDER=openai` |
+| `MEMORY_DECAY_FACTOR` | `0.95` | Monthly memory decay used in ranking (`score × importance × factor^(days/30)`); `1.0` disables decay; `kb_chunk` nodes never decay | soft mode: enters only the ε term `recency_norm` (ε defaults to 0.02, so ranking impact ≤0.02, ~0.01 over a year — nearly a dead knob); hard mode: multiplicative weighting |
+| `MEMORY_RERANK_MODE` | `soft` | Rerank mode: `soft` = semantic score as the main line plus ε-level metadata nudges (default); `hard` = legacy multiplicative weighting (fallback) | — |
+| `SOFT_RERANK_EPS` | `0.02` | ε for `soft` mode: 15%–40% of the cosine gap, tie-break only | `MEMORY_RERANK_MODE=soft` |
+| `DOMAIN_BOOST_EPS` | `0.10` | Additive soft domain boost applied to the semantic score for same-domain candidates when `domain_boost` is set | When the `domain_boost` parameter is non-empty |
+| `KB_SOFT_RERANK_MULT` | `1.5` | ε multiplier for `kb_chunk` (knowledge blocks never decay) under `soft` mode | `MEMORY_RERANK_MODE=soft` |
+| `DOMAIN_BIAS_WEIGHT` | `1.15` | Extra weight for domain-biased retrieval | When the `domain_bias` parameter is non-empty |
+| `EXPAND_MAX_EDGES_PER_NODE` | `20` | Max strongest edges diffused per node during graph expansion | Graph expansion enabled (`RETRIEVAL_EXPAND_DEPTH≥1` or neighbor-inclusion) |
+| `EXPAND_MIN_EDGE_WEIGHT` | `0.0` | Weak-edge pruning threshold during expansion (0 disables) | Graph expansion enabled (`RETRIEVAL_EXPAND_DEPTH≥1` or neighbor-inclusion) |
+| `RRF_K` | `60.0` | RRF constant k for hybrid retrieval (single-side hits still count) | `mem_hybrid_search` with `mode=rrf` |
+| `RRF_SEM_WEIGHT` | `1.0` | RRF weight for the semantic side | `mem_hybrid_search` with `mode=rrf` |
+| `RRF_FTS_WEIGHT` | `0.1` | RRF weight for the exact (FTS) side — a small FTS boost on top of a clean semantic ordering | `mem_hybrid_search` with `mode=rrf` |
+| `RETRIEVAL_EXPAND_DEPTH` | `0` | Graph expansion depth for the semantic ordering: `0` = pure semantic ranking (default); `1` = graph neighbors join the ordering (one-flag fallback) | When graph expansion is enabled for retrieval |
+| `MEM_INGEST_MAX_LENGTH` | `50000` | Max characters of a single memory `content`; longer writes are rejected | On `mem_ingest` writes |
+| `KNOWLEDGE_DIR` | *(optional)* | Root of the knowledge base (Obsidian `.md` files) to index | With `kb_index` / `build_kb_index.py` |
 
 ---
 
@@ -361,7 +357,7 @@ python scripts/build_novel_index.py --source <vault-path> --full
 
 ## Usage
 
-### MCP tools (16) — `mcp_tools/*`
+### MCP tools (15) — `mcp_tools/*`
 
 | Tool | Description |
 |---|---|
@@ -380,7 +376,6 @@ python scripts/build_novel_index.py --source <vault-path> --full
 | `kb_search` | Semantic search over indexed knowledge chunks |
 | `graph_neighbors` | BFS over the knowledge graph from a node (relation filter, depth 1–3, weak-edge filter) |
 | `mem_link` | Manually create graph edges (`RELATED_TO` / `CAUSES` / `REFERS_TO`; bidirectional by default) |
-| `router_query` | Query rule-domain knowledge slices and extract model/configuration recommendations |
 
 ### CLI — `scripts/palimpsest_cli.py`
 
@@ -419,9 +414,9 @@ python scripts/palimpsest_cli.py consolidate --apply # execute merges
 
 ### Blocks
 
-`block` is the "domain-group" concept: the graph is isolated per block, and diffusion retrieval only follows edges inside the same block, preventing cross-domain pollution. Built-in generic blocks: `task` (tasks), `kb` (knowledge base), `hermes` (the assistant's own memory), `novel` (fiction / worldbuilding settings), `general` (unclassified fallback); `rule` is a subset of `kb` (rule slices live in the `kb` block). Any of your own `domain` values can be used as a block (e.g. `--block myproject`). Leaving `--block` empty runs in full mode.
+`block` is the "domain-group" concept: the graph is isolated per block, and diffusion retrieval only follows edges inside the same block, preventing cross-domain pollution. Built-in generic blocks: `task` (tasks), `kb` (knowledge base), `hermes` (the assistant's own memory), `novel` (fiction / worldbuilding settings), `general` (unclassified fallback). Any of your own `domain` values can be used as a block (e.g. `--block myproject`). Leaving `--block` empty runs in full mode.
 
-Node ownership is expressed by the `payload.domain` field. Specify a block at write time via `--domain X` or `mem_ingest(domain=...)`; `kb`-type nodes are set automatically by the knowledge-base indexer (`kb` / `rule`).
+Node ownership is expressed by the `payload.domain` field. Specify a block at write time via `--domain X` or `mem_ingest(domain=...)`; `kb`-type nodes are set automatically by the knowledge-base indexer to `kb`.
 
 ### REST API — `main.py`, port 8090
 
@@ -443,7 +438,6 @@ Node ownership is expressed by the `payload.domain` field. Specify a block at wr
 | `POST` | `/mem/stats` | Store-wide statistics |
 | `POST` | `/graph/neighbors` | Graph neighbors of a node |
 | `POST` | `/graph/communities` | Leiden community detection |
-| `POST` | `/mem/router` | Task-routing query |
 
 > If `PALIMPSEST_API_KEY` is set, every route except `/` requires `Authorization: Bearer <key>` or `X-API-Key: <key>`.
 
@@ -541,13 +535,12 @@ Palimpsest/
 │   ├── task_archive.py           #   task auto-archiving
 │   ├── utils.py
 │   └── version.py                #   version from git tag (falls back to dev)
-├── mcp_tools/                    # 16 MCP tools (shared across MCP/REST/CLI)
+├── mcp_tools/                    # 15 MCP tools (shared across MCP/REST/CLI)
 │   ├── __init__.py
 │   ├── _common.py                #   shared store / mcp / serialization helpers
 │   ├── memory.py                 #   mem_* tools
 │   ├── kb.py                     #   kb_index / kb_search
 │   ├── graph.py                  #   graph_neighbors / mem_link / mem_communities
-│   ├── routing.py                #   router_query
 │   ├── consolidate_tool.py       #   mem_consolidate
 │   └── stats_tool.py             #   mem_stats
 ├── scripts/                      # ops tooling
@@ -556,8 +549,6 @@ Palimpsest/
 │   ├── build_kb_index.py         #   knowledge-base chunking & vectorization
 │   ├── build_novel_index.py      #   fiction vault whole-file import (--source)
 │   ├── link_novel_relations.py   #   fiction relationship bulk edge creation
-│   ├── sync_rules.py             #   rule notes → routing decision tree
-│   ├── check_kb_consistency.py   #   knowledge-base vs database consistency
 │   ├── check_fts_consistency.py  #   FTS content-level reconciliation
 │   ├── export_all_data.py        #   read-only JSON backup export
 │   ├── graph_edges.py            #   persisted knowledge-graph edges

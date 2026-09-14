@@ -1,6 +1,6 @@
 # Palimpsest × Hermes 插件
 
-把 **Hermes 的记忆层换成 Palimpsest**：中文语义召回、加权知识图谱、规则路由、自动沉淀，全部跑在本地。
+把 **Hermes 的记忆层换成 Palimpsest**：中文语义召回、加权知识图谱、自动沉淀，全部跑在本地。
 
 本目录是 **Palimpsest 的 Hermes 双插件**源码，包含两个独立插槽的实现：
 
@@ -13,7 +13,7 @@
 
 ```
 hermes-plugin/
-├── __init__.py          # Memory Provider 主实现（5 个模型工具 + 生命周期 hooks）
+├── __init__.py          # Memory Provider 主实现（4 个模型工具 + 生命周期 hooks）
 ├── context_engine.py    # Context Engine（图谱增强压缩）
 ├── cli.py               # hermes palimpsest status/test 子命令
 ├── config_schema.py     # 配置面板声明（Hermes dashboard 渲染用）
@@ -51,7 +51,7 @@ hermes config set context.engine palimpsest-graph
 | `PALIMPSEST_BASE_URL` | `http://127.0.0.1:8090` | Palimpsest REST 服务地址 |
 | `PALIMPSEST_DOMAIN` | `hermes` | 记忆域（节点隔离） |
 | `PALIMPSEST_PREFETCH_TOP_K` | `5` | 每轮自动召回条数 |
-| `PALIMPSEST_AUTO_INGEST` | `true` | 是否自动沉淀；`false` 时仅保留 5 个手动工具 |
+| `PALIMPSEST_AUTO_INGEST` | `true` | 是否自动沉淀；`false` 时仅保留 4 个手动工具 |
 | `PALIMPSEST_GRAPH_TOPICS` | `3` | 压缩前图谱提炼的主题数（1-5） |
 
 ## 验证
@@ -69,4 +69,4 @@ hermes palimpsest test     # 端到端自检：search + ingest 连通性
 - **自动沉淀克制**：不是每轮都写库——只有命中强信号（纠正/偏好/决策/规则）才写入，避免低价值轮次污染记忆库。
 - **trivial 过滤**：`好的` / `嗯` / `继续` 等寒暄输入跳过召回，省 HTTP 往返。
 - **cron/flush 跳过**：cron 与 flush 会话不初始化记忆层（防污染）。
-- **5 个模型工具**：`palimpsest_search` / `palimpsest_ingest` / `palimpsest_link` / `palimpsest_graph` / `palimpsest_router`（规则路由），agent 可主动调用。
+- **4 个模型工具**：`palimpsest_search` / `palimpsest_ingest` / `palimpsest_link` / `palimpsest_graph`，agent 可主动调用。

@@ -7,8 +7,8 @@
   - sync_turn(): 检测重要信号（纠正/偏好/决策/规则）自动沉淀，避免垃圾写入
   - on_session_end(): 会话末提炼要点（含强信号的消息）
   - on_pre_compress(): 压缩前抽取要点，贡献给压缩 prompt（不写入）
-  - 5 个工具: palimpsest_search / palimpsest_ingest / palimpsest_link /
-    palimpsest_graph / palimpsest_router —— 模型可主动检索/写入/建边/路由
+  - 4 个工具: palimpsest_search / palimpsest_ingest / palimpsest_link /
+    palimpsest_graph —— 模型可主动检索/写入/建边
 
 配置（环境变量，可选；默认即指向本机 Palimpsest）:
   PALIMPSEST_BASE_URL       默认 http://127.0.0.1:8090
@@ -173,25 +173,8 @@ GRAPH_SCHEMA = {
     },
 }
 
-ROUTER_SCHEMA = {
-    "name": "palimpsest_router",
-    "description": (
-        "任务路由查询：给 Palimpsest 一个任务描述，返回规则类知识（模型路由决策树）"
-        "推荐的模型与配置。用于派活/选模型时快速对齐纪律。"
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "task": {"type": "string", "description": "任务描述"},
-            "top_k": {"type": "integer", "description": "返回条数（默认 3）"},
-        },
-        "required": ["task"],
-    },
-}
-
-
 class PalimpsestMemoryProvider(MemoryProvider):
-    """Palimpsest 记忆后端：语义召回 + 自动沉淀 + 图谱 + 规则路由。"""
+    """Palimpsest 记忆后端：语义召回 + 自动沉淀 + 图谱。"""
 
     pre_compress_checkpoint_api_version = 1
 
@@ -242,7 +225,7 @@ class PalimpsestMemoryProvider(MemoryProvider):
             return ""
         return (
             "\n[Palimpsest 记忆层] 本会话已接入 Palimpsest 语义记忆。"
-            "相关历史记忆会自动注入；可用 palimpsest_* 工具主动检索/写入/建图谱边/规则路由。"
+            "相关历史记忆会自动注入；可用 palimpsest_* 工具主动检索/写入/建图谱边。"
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
@@ -323,7 +306,7 @@ class PalimpsestMemoryProvider(MemoryProvider):
     # -- 工具 --------------------------------------------------------
 
     def get_tool_schemas(self) -> list[dict[str, Any]]:
-        return [SEARCH_SCHEMA, INGEST_SCHEMA, LINK_SCHEMA, GRAPH_SCHEMA, ROUTER_SCHEMA]
+        return [SEARCH_SCHEMA, INGEST_SCHEMA, LINK_SCHEMA, GRAPH_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: dict[str, Any], **kwargs) -> str:
         handlers = {
@@ -331,7 +314,6 @@ class PalimpsestMemoryProvider(MemoryProvider):
             "palimpsest_ingest": self._tool_ingest,
             "palimpsest_link": self._tool_link,
             "palimpsest_graph": self._tool_graph,
-            "palimpsest_router": self._tool_router,
         }
         fn = handlers.get(tool_name)
         if fn is None:
@@ -375,11 +357,6 @@ class PalimpsestMemoryProvider(MemoryProvider):
             "relation": args.get("relation", ""),
             "depth": int(args.get("depth", 1)),
             "limit": int(args.get("limit", 20)),
-        })
-
-    def _tool_router(self, args: dict[str, Any]) -> dict:
-        return _http_post(f"{self._base_url}/mem/router", {
-            "task": args.get("task", ""), "top_k": int(args.get("top_k", 3)),
         })
 
 

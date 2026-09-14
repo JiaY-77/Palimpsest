@@ -502,15 +502,11 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
                      include_outdated: bool = False,
                      domain_boost: str = "") -> dict:
     """
-    mem_search 的核心实现（返回 dict，供 mem_search 工具与 router_query 复用）。
+    mem_search 的核心实现（返回 dict，供 mem_search 工具复用）。
     v2.0 统一语义层：
-      - 内置 rule 加权：domain="rule" 的 kb_chunk（规则类知识）恒 ×RULE_RETRIEVAL_WEIGHT
-        （config 可配，默认 1.3），无论是否显式传 domain_bias（rule 是知识子集，理应排在普通知识前）。
       - domain_bias："" 不额外 bias；"memory" 非 kb_chunk ×DOMAIN_BIAS_WEIGHT；
-        "kb" 对 kb_chunk（含 rule）×DOMAIN_BIAS_WEIGHT；"rule" 对 rule 节点 ×DOMAIN_BIAS_WEIGHT
-        （叠加内置 ×RULE_RETRIEVAL_WEIGHT）。
-      - 最终权重 = base_score × (rule?RULE_RETRIEVAL_WEIGHT:1) × (bias 系数)，
-        权重来自 config（RULE_RETRIEVAL_WEIGHT / DOMAIN_BIAS_WEIGHT，可配），
+        "kb" 对 kb_chunk ×DOMAIN_BIAS_WEIGHT。
+      - 最终权重 = base_score × (bias 系数)，权重来自 config（DOMAIN_BIAS_WEIGHT，可配），
         在过滤之后、排序之前应用。
       - domain_boost："" 不额外加分；非空时对 node_domain(payload) == domain_boost 的
         候选在语义分上「加」Config.DOMAIN_BOOST_EPS（加性软加权，不同于 domain 的硬过滤、
@@ -522,7 +518,7 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
         include_outdated = False
     if scope not in ("memory", "kb", "all"):
         scope = "all"
-    if domain_bias not in ("memory", "kb", "rule"):
+    if domain_bias not in ("memory", "kb"):
         domain_bias = ""
     query = (query or "").strip()
     if not query:
@@ -555,10 +551,7 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
             continue
         # v2.0 统一语义层加权：过滤之后、排序之前应用（只乘系数，不改变过滤逻辑）
         score = _to_float(r.get("score"), 0.0)
-        is_rule = is_kb and payload.get("domain") == "rule"
-        if is_rule:
-            score *= Config.RULE_RETRIEVAL_WEIGHT  # 内置 rule 加权：规则类知识恒优先
-        if (domain_bias == "memory" and not is_kb) or (domain_bias == "kb" and is_kb) or (domain_bias == "rule" and is_rule):
+        if (domain_bias == "memory" and not is_kb) or (domain_bias == "kb" and is_kb):
             score *= Config.DOMAIN_BIAS_WEIGHT
         if domain_boost and node_domain(payload) == domain_boost.strip().lower():
             score += Config.DOMAIN_BOOST_EPS
@@ -602,13 +595,11 @@ def mem_search(query: str, scope: str = "all", domain: str = "",
     """
     统一检索入口：记忆 + 知识库混合检索。
     scope 取值：memory（只查记忆节点，排除 kb_chunk）/ kb（只查知识库块）/ all（都查）。
-    domain 非空时按 node_domain 过滤记忆（kb_chunk 的 domain 是 "kb" 或 "rule"，不受影响）。
-    domain_bias 取值 "" / "memory" / "kb" / "rule"：为空不额外 bias；"memory" 记忆优先
+    domain 非空时按 node_domain 过滤记忆（kb_chunk 的 domain 是 "kb"，不受影响）。
+    domain_bias 取值 "" / "memory" / "kb"：为空不额外 bias；"memory" 记忆优先
         （非 kb_chunk 的 score *= DOMAIN_BIAS_WEIGHT）；"kb" 知识优先（kb_chunk 的 score
-        *= DOMAIN_BIAS_WEIGHT）；"rule" 规则优先（rule 节点再 ×DOMAIN_BIAS_WEIGHT）。
-        v2.0 起 domain="rule" 的规则类知识切片内置恒乘 RULE_RETRIEVAL_WEIGHT 加权
-        （排在普通知识前），rule 是知识的子集，kb bias 时同样叠加。
-        权重均来自 config（RULE_RETRIEVAL_WEIGHT / DOMAIN_BIAS_WEIGHT，可配）。
+        *= DOMAIN_BIAS_WEIGHT）。
+        权重来自 config（DOMAIN_BIAS_WEIGHT，可配）。
         bias 在过滤之后、排序之前应用（先 bias 再按最终 score 排序截断）。
     domain_boost 非空时对 node_domain(payload) == domain_boost 的候选在语义分上
         「加」Config.DOMAIN_BOOST_EPS（加性软加权，不同于 domain 的硬过滤、也不同于
@@ -812,7 +803,7 @@ def _hybrid_search_impl(query: str, scope: str = "all", domain: str = "",
         include_outdated = False
     if scope not in ("memory", "kb", "all"):
         scope = "all"
-    if domain_bias not in ("memory", "kb", "rule"):
+    if domain_bias not in ("memory", "kb"):
         domain_bias = ""
     if mode not in ("rrf", "cascade"):
         mode = "rrf"
