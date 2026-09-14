@@ -33,7 +33,7 @@ Palimpsest 是一个 **本地优先的嵌入式长期记忆系统**，将 **语�
 - 🔗 **图谱扩散召回** —— 节点由 **加权边**（`RELATED_TO` / `REVISED_BY` / `CAUSES` / `REFERS_TO`）相连，BFS 沿边扩散召回；扩散按最强边截断、弱边过滤、可按域「块」隔离，防止跨域污染
 - 🕸️ **社区发现** —— 内置 Leiden 聚类，一键把记忆库分成主题簇（如项目簇、人物关系簇），回答「记忆库里都有哪些圈子」
 - 🔄 **冲突检测与版本链** —— 写入时与相似旧记忆比对：高相似度（score > 0.75）判为同一事实被取代，旧版标记 `outdated` 并通过 `REVISED_BY` 链向新版；中相似度只记 `related_ids` 提示相关不误标；type / domain 双隔离防跨类误标
-- 🛡️ **写入前敏感扫描** —— 存储前按 **10 条正则规则**（API Key、令牌、私钥、银行卡/手机号、Bearer Token 等）扫描，命中即**拒绝写入**并报告命中的规则
+- 🛡️ **写入前敏感扫描** —— 存储前按 **10 条正则规则**扫描：**强规则**（API Key、令牌、私钥、SSH Key、Bearer Token 等 8 条）命中即**拒绝写入**并报告命中的规则；**弱规则**（身份证、手机号 2 条）命中仅**放行并打 `secret_hint` 标记**供审计——命中原文仍会入库，弱规则是审计线索而非脱敏（详见 [`SECURITY.md`](SECURITY.md)）
 - 🧹 **容量合并与记忆盘点** —— `mem_consolidate` 把近似重复节点合并（相似度 ≥ 0.85、保护高价值记忆）；`mem_stats` 统一盘点库内分布（类型/域/重要度/时间/图谱/热点），回答「库里有什么」
 - ⏫ **高频记忆自动升级** —— 检索命中自动计数（`hit_count`），`promote` 把反复被用到的记忆浮出水面：升权 + 打标（dry-run 预览、幂等可逆），为人工升级知识库提供依据
 - ⏳ **记忆生命周期** —— 时间衰减加权（`MEMORY_DECAY_FACTOR`，默认 0.95/月）在排序中淡化陈旧记忆而不动存储；`kb_chunk` 知识切片豁免衰减；`outdated` 旧版默认不再参与普通检索（可显式追溯）
@@ -223,6 +223,13 @@ python scripts/dashboard.py
 # 索引知识库（KNOWLEDGE_DIR 下的 Obsidian .md 文件）
 python scripts/build_kb_index.py
 ```
+
+> **单进程写入约束（重要）**：库文件由 triviumdb 以**独占写模式**打开——第二个写连接（同进程或跨进程）会在
+> 构造 `TriviumDB` 时直接失败并报 `Database locked`；节点 ID 由应用层按「当前已提交最大 id + 1」分配。
+> 因此：
+> - REST 服务**禁止多 worker / 多实例**并发写同一库（不要用 `uvicorn --workers N`，保持上面这条单进程命令）；
+> - MCP 服务、CLI、dashboard 与 REST 同时指向同一个 `DB_PATH` 时，写操作互斥失败——需要并行写请各自指向不同 `DB_PATH`；
+> - 该约束是 fail-fast 的：不会静默产生重复 ID 或损坏数据，而是把冲突的写请求直接报错。
 
 Windows 下 `scripts/start_rest.vbs` 可以隐藏窗口启动 REST 服务（如开机自启），日志写入 `scripts/start_rest.log`。
 

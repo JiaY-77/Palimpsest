@@ -1,6 +1,21 @@
 """
 Palimpsest — FastAPI 主入口
 提供记忆提取、检索、导入、导出的完整 API 服务
+
+运行约束（单进程写入）
+=====================
+库文件由 triviumdb 以独占写模式打开：第二个写连接（同进程或跨进程）会在
+构造 TriviumDB 时直接失败并报 `Database locked`；节点 ID 由应用层按
+「当前已提交最大 id + 1」分配（见 core/trivium_store.py 的 insert_node_tx）。
+
+因此本服务必须单进程运行：
+
+  - 不要用 `uvicorn --workers N` / gunicorn 多 worker，也不要在同一 `DB_PATH`
+    上跑多个 REST 实例——写请求会直接报错；
+  - MCP 服务 / CLI / dashboard 与 REST 同时指向同一 `DB_PATH` 时，写操作互斥；
+    需要并行写请各自指向不同的 `DB_PATH`。
+
+这一约束是 fail-fast 的：不会静默产生重复 ID 或损坏数据。详见 README「启动」。
 """
 
 import logging

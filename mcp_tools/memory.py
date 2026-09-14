@@ -107,7 +107,10 @@ def _insert_with_conflict(store, node_data: dict, emb: list[float]) -> tuple[int
 
     「insert（含 created_at）+ resolve_conflict 标脏」整体包进单事务：任一步抛异常
     自动 rollback，不会出现「新节点已写入、旧记忆未标 outdated」的半状态。
-    id 分配走模块级锁保护临界区（多请求并发时 next_id 可能撞车）。
+    id 分配走模块级锁保护临界区：同一进程内多线程并发写入时，「读 max(id)」
+    与「按该 id 写入」必须原子，否则两个线程会挑到同一个 next_id。跨进程不必
+    靠这把锁 —— triviumdb 以独占写模式打开库文件，第二个写进程在构造时即抛
+    `Database locked`，走不到分配 ID 这一步（详见 core/trivium_store.py）。
 
     返回前显式关闭连接释放库锁：后续 FTS 同步 / 读回节点都经 store._acquire()
     重开，若不关闭会触发 "Database locked"（同库双连接）。
