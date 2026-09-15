@@ -361,8 +361,8 @@ python scripts/build_novel_index.py --source <vault-path> --full
 
 | Tool | Description |
 |---|---|
-| `mem_search` | Unified retrieval across memory / knowledge base / both; optional graph-neighbor expansion, domain bias, **soft domain boosting (`domain_boost`)**, block-scoped isolation |
-| `mem_hybrid_search` | Hybrid FTS5 + vector retrieval; `mode=rrf` (k=60) or `cascade`; also supports `domain_boost`; each hit labeled `fts_hit` / `sem_hit` |
+| `mem_search` | Unified retrieval across memory / knowledge base / both; optional graph-neighbor expansion, domain bias, **soft domain boosting (`domain_boost`)**, block-scoped isolation, **memory tiering (`tier`)** (default `facts` returns only the facts layer, excluding `record`/`event`/`git_commit`; `""` = no filtering) |
+| `mem_hybrid_search` | Hybrid FTS5 + vector retrieval; `mode=rrf` (k=60) or `cascade`; also supports `domain_boost` and `tier`; each hit labeled `fts_hit` / `sem_hit` |
 | `mem_retrieve` | Semantic retrieval returning a 150-char summary + metadata (never full text) |
 | `mem_get_full` | Fetch the full content of a node by ID |
 | `mem_ingest` | Write a new memory — with conflict detection, `REVISED_BY` version chaining, secret scanning, and length guards |

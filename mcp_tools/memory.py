@@ -498,12 +498,36 @@ def mem_version_history(domain: str = "hermes", full_content: bool = False,
     })
 
 
+# ---- 记忆分层（tier）：检索侧视图，不改存储、不迁数据 ----
+# facts = 事实层（默认检索与注入池）；logs = 日志层（从默认池摘出）；
+# ""（空串）= 不过滤，回到改动前的全量行为（显式历史通道）。
+# kb_chunk / novel_chunk 不入本体系，走既有 scope 隔离；
+# 未登记的 type 一律归 facts（保守兜底，避免静默丢结果）。
+TIER_FACTS = frozenset({
+    "memory", "correction", "decision", "plan", "task", "review",
+    "solution", "inspiration", "user_intent", "character_state",
+})
+TIER_LOGS = frozenset({"record", "event", "git_commit"})
+DEFAULT_TIER = "facts"
+
+
+def _tier_matches(ptype: str, tier: str) -> bool:
+    """type 是否落在 tier 层。tier 为空串 = 不过滤（恒 True）；未知 tier 值 = 退回不过滤。"""
+    t = (tier or "").strip().lower()
+    if t not in ("facts", "logs"):
+        return True
+    if t == "logs":
+        return (ptype or "") in TIER_LOGS
+    # facts：日志层排除，其余（含未登记 type 与 kb_chunk/novel_chunk）保留
+    return (ptype or "") not in TIER_LOGS
+
+
 def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
                      domain_bias: str = "", top_k: int = 5,
                      include_neighbors: bool = False,
                      neighbor_limit: int = 5, block: str = "",
                      include_outdated: bool = False,
-                     domain_boost: str = "") -> dict:
+                     domain_boost: str = "", tier: str = DEFAULT_TIER) -> dict:
     """
     mem_search 的核心实现（返回 dict，供 mem_search 工具复用）。
     v2.0 统一语义层：
@@ -540,6 +564,10 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
         # v4.0 outdated 语义：默认跳过被取代的旧版本（不区分类型；kb_chunk 若被标
         # outdated 同样过滤），显式 include_outdated=True 时保留（历史可追溯）。
         if not include_outdated and payload.get("status") == "outdated":
+            continue
+        # 记忆分层（tier）：后置视图过滤，与 scope/domain/block 并列。
+        # tier="" 时 _tier_matches 恒 True，逐条等价于改动前行为（回归红线）。
+        if not _tier_matches(ptype, tier):
             continue
         if scope == "memory" and is_kb:
             continue
@@ -594,7 +622,7 @@ def mem_search(query: str, scope: str = "all", domain: str = "",
                include_neighbors: bool = False,
                neighbor_limit: int = 5, block: str = "",
                include_outdated: bool = False,
-               domain_boost: str = "") -> str:
+               domain_boost: str = "", tier: str = DEFAULT_TIER) -> str:
     """
     统一检索入口：记忆 + 知识库混合检索。
     scope 取值：memory（只查记忆节点，排除 kb_chunk）/ kb（只查知识库块）/ all（都查）。
@@ -615,12 +643,16 @@ def mem_search(query: str, scope: str = "all", domain: str = "",
     v4.0 outdated 语义：默认只回当前有效节点（status != "outdated"）——被新版本取代的
         旧版保留在库中可追溯但不参与普通检索；include_outdated=True 时返回全部
         （历史可追溯通道）。
+    v5.0 记忆分层（tier）：tier="facts"（默认）只回事实层，把日志层（record/event/
+        git_commit，约占活跃节点四成）从检索池摘出；tier="logs" 只回日志层；
+        tier=""（空串）不过滤，等价于改动前行为（显式历史通道）。
+        kb_chunk / novel_chunk 不入本体系，走 scope 隔离；未登记 type 一律归 facts。
     """
     return _to_json(_mem_search_impl(
         query, scope=scope, domain=domain, domain_bias=domain_bias, top_k=top_k,
         include_neighbors=include_neighbors, neighbor_limit=neighbor_limit,
         block=block, include_outdated=include_outdated,
-        domain_boost=domain_boost,
+        domain_boost=domain_boost, tier=tier,
     ))
 
 
@@ -631,20 +663,23 @@ def mem_search(query: str, scope: str = "all", domain: str = "",
 
 def _sem_candidate_items(query: str, scope: str, domain: str,
                          domain_bias: str, top_k: int, block: str,
-                         include_outdated: bool = False) -> list:
+                         include_outdated: bool = False,
+                         tier: str = DEFAULT_TIER) -> list:
     """语义候选：复用 _mem_search_impl 宽松召回（top_k*3），按 score 降序排名。"""
     sem = _mem_search_impl(query, scope, domain, domain_bias,
                            top_k=max(top_k * 3, 30), include_neighbors=False,
-                           block=block, include_outdated=include_outdated)
+                           block=block, include_outdated=include_outdated,
+                           tier=tier)
     items = sem.get("results", [])
     return sorted(items, key=lambda it: it.get("score", 0.0), reverse=True)
 
 
 def _fts_only_item(node_id: int, scope: str, domain: str, block: str,
-                   include_outdated: bool = False):
+                   include_outdated: bool = False,
+                   tier: str = DEFAULT_TIER):
     """FTS 命中但语义未命中的节点：按 payload 补全 mem_search 同构条目。
 
-    复用 _mem_search_impl 的 scope/domain/block 过滤语义，
+    复用 _mem_search_impl 的 scope/domain/block/tier 过滤语义，
     避免不同 scope 下 FTS 侧混入越界结果。
     """
     node = store.get_node(node_id)
@@ -655,6 +690,9 @@ def _fts_only_item(node_id: int, scope: str, domain: str, block: str,
     is_kb = ptype == "kb_chunk"
     # v4.0 outdated 语义：FTS-only 侧与语义侧保持一致，默认过滤旧版本
     if not include_outdated and payload.get("status") == "outdated":
+        return None
+    # v5.0 tier：FTS-only 侧同样受分层约束，否则日志层会从 FTS 路漏回结果集
+    if not _tier_matches(ptype, tier):
         return None
     if scope == "memory" and is_kb:
         return None
@@ -715,13 +753,14 @@ def _rrf_fuse(sem_ids: list, fts_ids: list, top_k: int,
 
 def _hybrid_rrf(query: str, scope: str, domain: str, domain_bias: str,
                 top_k: int, fts_limit: int, block: str,
-                include_outdated: bool = False) -> list:
+                include_outdated: bool = False,
+                tier: str = DEFAULT_TIER) -> list:
     """RRF 融合：语义排名 + FTS 排名的 reciprocal rank 求和（k=60）。
 
     两个排名都是 0-based；单侧命中也计入 rrf；按 rrf 降序取 top_k。
     """
     sem_items = _sem_candidate_items(query, scope, domain, domain_bias, top_k, block,
-                                     include_outdated=include_outdated)
+                                     include_outdated=include_outdated, tier=tier)
     fts = search_fts(query, limit=fts_limit)
 
     ranked = _rrf_fuse(
@@ -740,7 +779,7 @@ def _hybrid_rrf(query: str, scope: str, domain: str, domain_bias: str,
         item = by_id.get(nid)
         if item is None:
             item = _fts_only_item(nid, scope, domain, block,
-                                  include_outdated=include_outdated)
+                                  include_outdated=include_outdated, tier=tier)
             if item is None:
                 continue
         item = dict(item)
@@ -757,7 +796,8 @@ def _hybrid_rrf(query: str, scope: str, domain: str, domain_bias: str,
 
 def _hybrid_cascade(query: str, scope: str, domain: str, domain_bias: str,
                     top_k: int, fts_limit: int, block: str,
-                    include_outdated: bool = False) -> list:
+                    include_outdated: bool = False,
+                    tier: str = DEFAULT_TIER) -> list:
     """级联：FTS 粗筛候选集 → 向量精排（只留交集）→ 不足 top_k 从剩余语义补足。
 
     候选集为空时退化为纯语义结果；兜底条目 fts_hit=False 如实标记未过 FTS 粗筛。
@@ -765,7 +805,7 @@ def _hybrid_cascade(query: str, scope: str, domain: str, domain_bias: str,
     fts = search_fts(query, limit=fts_limit)
     fts_ids = {r.get("node_id") for r in fts if r.get("node_id") is not None}
     sem_items = _sem_candidate_items(query, scope, domain, domain_bias, top_k, block,
-                                     include_outdated=include_outdated)
+                                     include_outdated=include_outdated, tier=tier)
 
     in_candidate = [it for it in sem_items if it.get("id") in fts_ids]
     rest = [it for it in sem_items if it.get("id") not in fts_ids]
@@ -789,7 +829,8 @@ def _hybrid_search_impl(query: str, scope: str = "all", domain: str = "",
                         domain_bias: str = "", top_k: int = 5, mode: str = "rrf",
                         fts_limit: int = 50, include_neighbors: bool = False,
                         neighbor_limit: int = 5, block: str = "",
-                        include_outdated: bool = False) -> dict:
+                        include_outdated: bool = False,
+                        tier: str = DEFAULT_TIER) -> dict:
     """
     mem_hybrid_search 的核心实现（返回 dict，供 mem_hybrid_search 工具复用）。
     混合检索增强：
@@ -819,11 +860,11 @@ def _hybrid_search_impl(query: str, scope: str = "all", domain: str = "",
         if mode == "cascade":
             items = _hybrid_cascade(query, scope, domain, domain_bias,
                                     top_k, fts_limit, block,
-                                    include_outdated=include_outdated)
+                                    include_outdated=include_outdated, tier=tier)
         else:
             items = _hybrid_rrf(query, scope, domain, domain_bias,
                                 top_k, fts_limit, block,
-                                include_outdated=include_outdated)
+                                include_outdated=include_outdated, tier=tier)
         result = {"results": items, "scope": scope, "mode": mode}
         if domain_bias:
             result["bias"] = domain_bias
@@ -841,7 +882,8 @@ def mem_hybrid_search(query: str, scope: str = "all", domain: str = "",
                       domain_bias: str = "", top_k: int = 5, mode: str = "rrf",
                       fts_limit: int = 50, include_neighbors: bool = False,
                       neighbor_limit: int = 5, block: str = "",
-                      include_outdated: bool = False) -> str:
+                      include_outdated: bool = False,
+                      tier: str = DEFAULT_TIER) -> str:
     """
     混合检索：FTS5 精确检索 + 语义向量检索的融合排序。
     mode 取值："rrf"（默认，Reciprocal Rank Fusion，k=60，单侧命中也算）/
@@ -852,8 +894,10 @@ def mem_hybrid_search(query: str, scope: str = "all", domain: str = "",
     其余参数（domain/domain_bias/neighbor_limit/block）语义同 mem_search。
     v4.0 outdated 语义：默认过滤 status=="outdated" 旧版本；include_outdated=True 时返回全部
         （历史可追溯通道）。
+    v5.0 记忆分层（tier）：同 mem_search——"facts"（默认）只回事实层 / "logs" 只回日志层 /
+        ""（空串）不过滤（等价改动前行为）。语义侧与 FTS-only 侧同时受约束。
     """
     return _to_json(_hybrid_search_impl(
         query, scope, domain, domain_bias, top_k, mode, fts_limit,
-        include_neighbors, neighbor_limit, block, include_outdated,
+        include_neighbors, neighbor_limit, block, include_outdated, tier,
     ))

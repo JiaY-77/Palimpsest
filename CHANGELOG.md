@@ -6,6 +6,11 @@
 
 ## [Unreleased]
 
+### 新功能
+
+- **记忆分层（tier 过滤）**：检索侧新增 `tier` 视图，把日志层（`record` / `event` / `git_commit`，约占活跃节点四成）从默认检索与自动注入池摘出，提升检索精度、削减注入噪音。**不改存储、不迁数据**，仅在 `_mem_search_impl` / `_hybrid_search_impl` 的后置过滤加判定（与 `scope` / `domain` / `block` 并列）。取值：`facts`（默认，只回事实层）/ `logs`（只回日志层）/ `""`（不过滤，等价于此前行为——显式历史通道）。`kb_chunk` / `novel_chunk` 不入本体系（走既有 `scope` 隔离）；未登记 `type` 一律保守归 `facts`，不静默丢结果。全链路透传：MCP 工具 → REST 路由 → CLI `--tier` → Hermes 插件。语义侧与 FTS-only 侧同时受约束（否则日志层会从 FTS 路漏回）
+- **注入降噪三项**（Hermes 插件）：`include_neighbors` 注入默认关（记忆域图近乎无边，原为硬编码 `True` 纯空转）；`PALIMPSEST_PREFETCH_TOP_K` 默认 `5` → `3`；注入最低相关度门槛提为可配 `PALIMPSEST_PREFETCH_MIN_SCORE`（默认 `0.3`，与原硬编码一致）。另新增 `PALIMPSEST_PREFETCH_NEIGHBORS` / `PALIMPSEST_PREFETCH_TIER` 开关
+
 ### 工程化
 
 - **引入 ruff 静态质量门禁**：`pyproject.toml` 新增 `[tool.ruff]`（显式写 `select` 钉住规则集，避免随 ruff 版本漂移；中文项目下忽略 `RUF001/002/003` 的全角标点误报），CI 新增独立 `lint` job，`requirements-dev.txt` 与 CI 均钉 `ruff==0.16.7`。此前仓库从未有过 lint / 类型 / 覆盖率门禁（`git log --all -S "tool.ruff"` 为空）

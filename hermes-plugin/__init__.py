@@ -13,7 +13,10 @@
 配置（环境变量，可选；默认即指向本机 Palimpsest）:
   PALIMPSEST_BASE_URL       默认 http://127.0.0.1:8090
   PALIMPSEST_DOMAIN         默认 hermes
-  PALIMPSEST_PREFETCH_TOP_K 默认 5
+  PALIMPSEST_PREFETCH_TOP_K 默认 3（注入降噪：5→3）
+  PALIMPSEST_PREFETCH_NEIGHBORS   默认 false（图邻居不入注入；true 打开）
+  PALIMPSEST_PREFETCH_MIN_SCORE   默认 0.3（注入最低相关度门槛）
+  PALIMPSEST_PREFETCH_TIER        默认 facts（只注入事实层；空串=不过滤）
   PALIMPSEST_AUTO_INGEST    默认 true；false 关闭自动沉淀（只用工具）
 """
 
@@ -126,6 +129,7 @@ SEARCH_SCHEMA = {
             "scope": {"type": "string", "enum": ["all", "memory", "kb"], "description": "all=记忆+知识库(默认)；memory=只记忆；kb=只知识库"},
             "top_k": {"type": "integer", "description": "返回条数（默认 5）"},
             "include_neighbors": {"type": "boolean", "description": "是否附带图谱邻居（默认 false）"},
+            "tier": {"type": "string", "description": "记忆分层：facts(默认，只回事实层) / logs(只回日志层) / 空串(不过滤)"},
         },
         "required": ["query"],
     },
@@ -194,7 +198,15 @@ class PalimpsestMemoryProvider(MemoryProvider):
             "PALIMPSEST_BASE_URL", "http://127.0.0.1:8090"
         ).rstrip("/")
         self._domain = os.environ.get("PALIMPSEST_DOMAIN", "hermes")
-        self._top_k = int(os.environ.get("PALIMPSEST_PREFETCH_TOP_K", "5"))
+        self._top_k = int(os.environ.get("PALIMPSEST_PREFETCH_TOP_K", "3"))
+        # 注入降噪（T081 配套）：图邻居默认关（记忆域图近乎无边，纯空转）；
+        # 注入最低相关度门槛可配，默认与旧硬编码一致 0.3，可调高再砍噪音。
+        self._include_neighbors = (
+            os.environ.get("PALIMPSEST_PREFETCH_NEIGHBORS", "false").lower() == "true"
+        )
+        self._min_score = float(os.environ.get("PALIMPSEST_PREFETCH_MIN_SCORE", "0.3"))
+        # 记忆分层：默认只注入事实层，日志层（record/event/git_commit）不进上下文。
+        self._tier = os.environ.get("PALIMPSEST_PREFETCH_TIER", "facts")
         self._auto_ingest = (
             os.environ.get("PALIMPSEST_AUTO_INGEST", "true").lower() != "false"
         )
@@ -248,11 +260,12 @@ class PalimpsestMemoryProvider(MemoryProvider):
             return ""
         resp = _http_post(f"{self._base_url}/mem/search", {
             "query": query, "scope": "all", "domain": self._domain,
-            "top_k": self._top_k, "include_neighbors": True,
+            "top_k": self._top_k, "include_neighbors": self._include_neighbors,
+            "tier": self._tier,
         })
         if "error" in resp or not resp.get("results"):
             return ""
-        hits = [r for r in resp["results"] if r.get("score", 0) >= 0.3]
+        hits = [r for r in resp["results"] if r.get("score", 0) >= self._min_score]
         if not hits:
             return ""
         lines = ["[Palimpsest 记忆注入]"]
@@ -342,6 +355,7 @@ class PalimpsestMemoryProvider(MemoryProvider):
             "include_neighbors": (
                 str(args.get("include_neighbors", False)).lower() == "true"
             ),
+            "tier": args.get("tier", self._tier),
         })
 
     def _tool_ingest(self, args: dict[str, Any]) -> dict:

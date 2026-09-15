@@ -347,8 +347,8 @@ python scripts/build_novel_index.py --source <vault路径> --full
 
 | 工具 | 说明 |
 |---|---|
-| `mem_search` | 统一检索：记忆 / 知识库 / 两者；可选图谱邻居扩展、域偏置、**域软加权 `domain_boost`**、块级隔离 |
-| `mem_hybrid_search` | 混合检索：FTS5 + 向量；`mode=rrf`（k=60）或 `cascade`；同样支持 `domain_boost` 域软加权；命中标注 `fts_hit` / `sem_hit` |
+| `mem_search` | 统一检索：记忆 / 知识库 / 两者；可选图谱邻居扩展、域偏置、**域软加权 `domain_boost`**、块级隔离、**记忆分层 `tier`**（默认 `facts` 只回事实层，不含 `record`/`event`/`git_commit`；`""` = 不过滤） |
+| `mem_hybrid_search` | 混合检索：FTS5 + 向量；`mode=rrf`（k=60）或 `cascade`；同样支持 `domain_boost` 域软加权与 `tier` 分层；命中标注 `fts_hit` / `sem_hit` |
 | `mem_retrieve` | 语义检索，返回 150 字摘要 + 元数据（绝不返回全文） |
 | `mem_get_full` | 按 ID 拉取节点完整内容 |
 | `mem_ingest` | 写入新记忆——含冲突检测、`REVISED_BY` 版本链、敏感扫描、长度护栏 |
