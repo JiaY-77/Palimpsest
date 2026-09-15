@@ -98,6 +98,25 @@ class Config:
     RRF_SEM_WEIGHT = float(os.getenv("RRF_SEM_WEIGHT", "1.0"))
     RRF_FTS_WEIGHT = float(os.getenv("RRF_FTS_WEIGHT", "0.1"))
 
+    # ---- 记忆分层（tier）：检索侧视图，不改存储、不迁数据 ----
+    # facts = 事实层（默认检索与注入池）；logs = 日志层（从默认池摘出）；
+    # ""（空串）= 不过滤，回到改动前的全量行为（显式历史通道）。
+    # kb_chunk / novel_chunk 不入本体系，走既有 scope 隔离；
+    # 未登记的 type 一律归 facts（保守兜底，避免静默丢结果）。
+    # 逗号分隔便于按部署调整，无需改代码（默认值与 2.0 行为一致）。
+    TIER_FACTS = frozenset(
+        t.strip() for t in os.getenv(
+            "TIER_FACTS",
+            "memory,correction,decision,plan,task,review,solution,inspiration,user_intent,character_state",
+        ).split(",") if t.strip()
+    )
+    TIER_LOGS = frozenset(
+        t.strip() for t in os.getenv(
+            "TIER_LOGS", "record,event,git_commit"
+        ).split(",") if t.strip()
+    )
+    DEFAULT_TIER = os.getenv("DEFAULT_TIER", "facts")
+
     # ---- LLM 后端选择 ----
     # 可选: "ollama" 或 "deepseek"
     LLM_BACKEND = os.getenv("LLM_BACKEND", "deepseek")

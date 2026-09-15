@@ -14,7 +14,7 @@ def mem_stats() -> str:
     """
     库级盘点统计：回答「库里有什么 / 领域密度 / 图谱状态」。
     返回分节 JSON：
-      - totals：节点总数 / active / outdated / 按 type 分布 / 按 domain 分布
+      - totals：节点总数 / active / outdated / 按 type 分布 / 按 domain 分布 / 弱敏感标记数
       - kinds：novel_chunk 按 kind 统计（character/setting/relation/overview）
       - importance：按区间计数（<0.4 / 0.4-0.6 / 0.6-0.8 / >=0.8）
       - time：按 created_at 月份分布

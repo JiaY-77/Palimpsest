@@ -25,7 +25,7 @@ def _get(result: str) -> dict:
 
 def test_domain_unified(db_path):
     """写入侧统一 + 读侧统一（2026-08-29 记忆领域无二义性）：
-    mem_ingest 的 domain 写到 payload.domain（并保留 character_name 兼容镜像）；
+    mem_ingest 的 domain 只写到 payload.domain（character_name 兼容镜像已退役）；
     node_domain(payload) 返回 domain；mem_search 按 domain 过滤能命中。
     """
     from core.trivium_store import node_domain
@@ -38,7 +38,8 @@ def test_domain_unified(db_path):
 
     payload = store.get_node(nid)["payload"]
     assert payload.get("domain") == "testdom", f"payload 应写 domain: {payload}"
-    assert payload.get("character_name") == "testdom", f"character_name 应为兼容镜像: {payload}"
+    # 兼容镜像已退役：新写入不应再带 character_name（旧库读侧仍可回退）
+    assert "character_name" not in payload, f"新写入不应再带 character_name: {payload}"
     assert node_domain(payload) == "testdom", node_domain(payload)
 
     # 读侧按 domain 过滤能命中刚写入的节点

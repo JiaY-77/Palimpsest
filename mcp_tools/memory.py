@@ -211,7 +211,6 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
         "content": content,
         "importance": importance,
         "domain": domain,
-        "character_name": domain,  # 兼容镜像：读侧清理完成前保留，两字段始终一致
         "source": source,
         "created_at": now,
         "linked_from": linked_kb_ids,
@@ -499,16 +498,15 @@ def mem_version_history(domain: str = "hermes", full_content: bool = False,
 
 
 # ---- 记忆分层（tier）：检索侧视图，不改存储、不迁数据 ----
+# 定义已移到 config.py（可经环境变量 TIER_FACTS / TIER_LOGS / DEFAULT_TIER 调整），
+# 此处仅从配置读取，避免同一份清单在两处漂移。
 # facts = 事实层（默认检索与注入池）；logs = 日志层（从默认池摘出）；
 # ""（空串）= 不过滤，回到改动前的全量行为（显式历史通道）。
 # kb_chunk / novel_chunk 不入本体系，走既有 scope 隔离；
 # 未登记的 type 一律归 facts（保守兜底，避免静默丢结果）。
-TIER_FACTS = frozenset({
-    "memory", "correction", "decision", "plan", "task", "review",
-    "solution", "inspiration", "user_intent", "character_state",
-})
-TIER_LOGS = frozenset({"record", "event", "git_commit"})
-DEFAULT_TIER = "facts"
+TIER_FACTS = Config.TIER_FACTS
+TIER_LOGS = Config.TIER_LOGS
+DEFAULT_TIER = Config.DEFAULT_TIER
 
 
 def _tier_matches(ptype: str, tier: str) -> bool:

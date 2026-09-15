@@ -109,7 +109,6 @@ def _merge_one_pair(db, tx, c: dict, next_id: int) -> dict | None:
         "content": merge_content,
         "importance": merge_importance,
         "domain": merge_domain,
-        "character_name": merge_domain,
         "label": high_payload.get("label", ""),
         "source": "consolidate",
         "status": "active",
