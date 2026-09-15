@@ -4,12 +4,30 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
-## [Unreleased]
+## [2.0.0] - 2026-09-15
 
-### 新功能
+### 破坏性变更
+
+- **移除规则域（rule domain）**：整个规则域机制连同其对外接口一并删除——MCP 工具 `router_query`、REST 端点 `/mem/router`、Hermes 插件的 `palimpsest_router` 工具、配置键 `RULE_RETRIEVAL_WEIGHT` 与内置 `×1.3` 加权、`domain_bias="rule"` 取值、`DEFAULT_BLOCKS` 中的 `rule` 区块及 `domain_in_block` 的 rule→kb 兼容分支、`build_kb_index.py` 的规则类文档标记（知识切片统一为 `domain=kb`）、`scripts/sync_rules.py` / `scripts/check_kb_consistency.py`。**迁移指南**：调用方改用 `mem_search` / `mem_hybrid_search` 配合 `scope` / `domain` / `domain_bias` / `domain_boost`；原 `domain_bias="rule"` 传空串即可。生产库 `domain=rule` 节点为 0，故未提供兼容垫片
+- **检索默认只回事实层**：`mem_search` / `mem_hybrid_search` 新增 `tier` 参数并默认 `facts`，日志层（`record` / `event` / `git_commit`）不再出现在默认结果中。**迁移指南**：需要旧行为的调用方显式传 `tier=""`；要专门查日志传 `tier="logs"`
+- **Hermes 插件注入默认收敛**：`include_neighbors` 注入默认由开改为关；`PALIMPSEST_PREFETCH_TOP_K` 默认 `5` → `3`。需要旧行为的部署显式设 `PALIMPSEST_PREFETCH_NEIGHBORS=true` 与 `PALIMPSEST_PREFETCH_TOP_K=5`
+
+### 新增
 
 - **记忆分层（tier 过滤）**：检索侧新增 `tier` 视图，把日志层（`record` / `event` / `git_commit`，约占活跃节点四成）从默认检索与自动注入池摘出，提升检索精度、削减注入噪音。**不改存储、不迁数据**，仅在 `_mem_search_impl` / `_hybrid_search_impl` 的后置过滤加判定（与 `scope` / `domain` / `block` 并列）。取值：`facts`（默认，只回事实层）/ `logs`（只回日志层）/ `""`（不过滤，等价于此前行为——显式历史通道）。`kb_chunk` / `novel_chunk` 不入本体系（走既有 `scope` 隔离）；未登记 `type` 一律保守归 `facts`，不静默丢结果。全链路透传：MCP 工具 → REST 路由 → CLI `--tier` → Hermes 插件。语义侧与 FTS-only 侧同时受约束（否则日志层会从 FTS 路漏回）
 - **注入降噪三项**（Hermes 插件）：`include_neighbors` 注入默认关（记忆域图近乎无边，原为硬编码 `True` 纯空转）；`PALIMPSEST_PREFETCH_TOP_K` 默认 `5` → `3`；注入最低相关度门槛提为可配 `PALIMPSEST_PREFETCH_MIN_SCORE`（默认 `0.3`，与原硬编码一致）。另新增 `PALIMPSEST_PREFETCH_NEIGHBORS` / `PALIMPSEST_PREFETCH_TIER` 开关
+
+### 修复
+
+- **任务归档幂等**：归档不再重复或漏删——归档文件 frontmatter 写入 `node_id` 作幂等键，重跑复用已有归档并补齐残留节点；写盘改为 `.tmp` → `fsync` → `os.replace` 原子替换（此前「写临时文件 → 删节点 → 重命名」在重命名前崩溃会丢归档）
+- **`mem_communities` 未绑定变量**：`db` 在异常路径下未赋值即使用，触发 `UnboundLocalError`（全仓唯一漏 `if db is not None` 的位置）
+- **`/report` 阻塞事件循环**：改为 `AsyncOpenAI` + `await`，全库扫描挪进 `asyncio.to_thread`，避免长报告卡住整个 REST 服务
+- **`core/version.py` 版本缓存**：修正缓存后打 tag 不刷新的问题（指纹退化到 HEAD-only 时旧值残留）
+
+### 重构
+
+- **拆分 4 个 >100 行函数**（`core/trivium_store.search_similar` 137 行 · `mcp_tools/memory.mem_ingest` 125 · `core/stats.compute_stats` 119 · `core/consolidator._apply_merge` 100）：按单一职责抽出 helper（候选过期过滤 / 衰减重排 / block 过滤 / 统计累加器 / 事务写入 / 单对合并），主函数退回编排。**行为不变**，且不是靠「测试绿」自证：每处都在**生产库副本**上做了跨版本等价比对（`compute_stats` 输出、`mem_ingest` 两次写入（其中一次触发冲突检测）、`consolidate` 的 dry-run 与真实合并，重构前后零差异）；端到端检索评测 40 题 × 4 模式排序 **160/160 一致**（唯一差异是浮点末位 ≤2e-08，同版本重跑可复现，来自 embedding 服务而非本次改动）
+- **消除 `core → scripts` 反向依赖**：`core/doctor.py` 等 6 处改为不引用 `scripts/`，依赖方向回归单向
 
 ### 工程化
 
@@ -24,7 +42,7 @@
 
 ### 重构
 
-- **退役 rule 域**：移除整个规则域机制——`mcp_tools/routing.py`（`router_query`）、`palimpsest_router` 插件工具、`/mem/router` REST 端点、`RULE_RETRIEVAL_WEIGHT` 配置与 `×1.3` 内置加权、`domain_bias="rule"` 取值、`DEFAULT_BLOCKS` 中的 `rule` 区块及 `domain_in_block` 的 rule→kb 兼容分支、`build_kb_index.py` 的规则类文档标记（所有知识切片统一 `domain=kb`）、`scripts/sync_rules.py` / `scripts/check_kb_consistency.py`。生产库 `domain=rule` 节点为 0，故零兼容垫片直接删除。文档（两份 README / CONTRIBUTING / hermes-plugin README）同步刷新，配置表新增「生效前提（Precondition）」列
+- **文档（rule 退役配套）**：两份 README / CONTRIBUTING / hermes-plugin README 同步刷新，配置表新增「生效前提（Precondition）」列
 - **拆分 4 个 >100 行函数**（`core/trivium_store.search_similar` 137 行 · `mcp_tools/memory.mem_ingest` 125 · `core/stats.compute_stats` 119 · `core/consolidator._apply_merge` 100）：按单一职责抽出 helper（候选过期过滤 / 衰减重排 / block 过滤 / 统计累加器 / 事务写入 / 单对合并），主函数退回编排。**行为不变**，且不是靠「测试绿」自证：每处都在**生产库副本**上做了跨版本等价比对（`compute_stats` 输出、`mem_ingest` 两次写入（其中一次触发冲突检测）、`consolidate` 的 dry-run 与真实合并，重构前后零差异）；端到端检索评测 40 题 × 4 模式排序 **160/160 一致**（唯一差异是浮点末位 ≤2e-08，同版本重跑可复现，来自 embedding 服务而非本次改动）
 
 ### 文档
@@ -207,7 +225,8 @@
 
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
-[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.0.0
 [1.2.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v1.2.0
 [1.1.1]: https://github.com/JiaY-77/Palimpsest/releases/tag/v1.1.1
 [1.1.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v1.1.0

@@ -10,7 +10,7 @@ Pa·limp·sest: *a writing surface that is overwritten again and again while old
 
 | | |
 |---|---|
-| Version | v1.2.0 |
+| Version | v2.0.0 |
 | Python | 3.10+ |
 | License | MIT |
 | Storage | TriviumDB 0.8.8 (vector + graph + document, embedded) |
