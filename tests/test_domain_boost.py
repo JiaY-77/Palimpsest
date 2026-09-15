@@ -25,9 +25,14 @@ def _insert(payload: dict, content: str) -> int:
 
 
 def _run(query: str, domain_boost: str = "") -> dict:
-    """真实调用被测函数，返回 {node_id: score}。"""
+    """真实调用被测函数，返回 {node_id: score}。
+
+    显式传 tier="" —— 本文件测的是 domain_boost 加权逻辑，与记忆分层（T081）无关；
+    种子节点用 type=event（logs 层），若不隔离会被默认 tier="facts" 过滤掉。
+    分层本身的回归在 tests/test_memory_tier.py。
+    """
     out = _mem_search_impl(query, scope="all", top_k=20,
-                           domain_boost=domain_boost)
+                           domain_boost=domain_boost, tier="")
     return {r["id"]: r["score"] for r in out.get("results", [])}
 
 
@@ -53,8 +58,8 @@ def test_default_equals_omitted(db_path):
             "域加权护栏乙：东京湾海底隧道的通风系统设计参数")
     q = "檀香山火山口附近的红外望远镜观测记录"
 
-    explicit = _mem_search_impl(q, scope="all", top_k=20, domain_boost="")
-    implicit = _mem_search_impl(q, scope="all", top_k=20)
+    explicit = _mem_search_impl(q, scope="all", top_k=20, domain_boost="", tier="")
+    implicit = _mem_search_impl(q, scope="all", top_k=20, tier="")
     result_explicit = [(r["id"], r["score"]) for r in explicit["results"]]
     result_implicit = [(r["id"], r["score"]) for r in implicit["results"]]
     assert result_explicit == result_implicit

@@ -50,7 +50,10 @@ hermes config set context.engine palimpsest-graph
 |---|---|---|
 | `PALIMPSEST_BASE_URL` | `http://127.0.0.1:8090` | Palimpsest REST 服务地址 |
 | `PALIMPSEST_DOMAIN` | `hermes` | 记忆域（节点隔离） |
-| `PALIMPSEST_PREFETCH_TOP_K` | `5` | 每轮自动召回条数 |
+| `PALIMPSEST_PREFETCH_TOP_K` | `3` | 每轮自动召回条数 |
+| `PALIMPSEST_PREFETCH_NEIGHBORS` | `false` | 注入是否附带图谱邻居（默认关，记忆域图近无边） |
+| `PALIMPSEST_PREFETCH_MIN_SCORE` | `0.3` | 注入最低相关度门槛 |
+| `PALIMPSEST_PREFETCH_TIER` | `facts` | 注入只取事实层（`facts`/`logs`/空串=不过滤） |
 | `PALIMPSEST_AUTO_INGEST` | `true` | 是否自动沉淀；`false` 时仅保留 4 个手动工具 |
 | `PALIMPSEST_GRAPH_TOPICS` | `3` | 压缩前图谱提炼的主题数（1-5） |
 

@@ -96,6 +96,7 @@ def cmd_search(args):
     print(mem_search(
         query=args.query, scope=args.scope, domain=args.domain,
         top_k=args.top_k, include_neighbors=args.neighbors, block=args.block,
+        tier=args.tier,
     ))
 
 
@@ -103,6 +104,7 @@ def cmd_hybrid_search(args):
     print(mem_hybrid_search(
         query=args.query, scope=args.scope, domain=args.domain,
         top_k=args.top_k, mode=args.mode, fts_limit=args.fts_limit,
+        tier=args.tier,
     ))
 
 
@@ -348,7 +350,8 @@ def cmd_reindex(args):
     sys.exit(code)
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
+    """构造 CLI 参数解析器（独立成函数以便单测直接断言参数定义）。"""
     p = argparse.ArgumentParser(
         prog="palimpsest_cli",
         description="Palimpsest 本地 CLI",
@@ -362,6 +365,7 @@ def main():
     sp.add_argument("--top-k", type=int, default=5)
     sp.add_argument("--neighbors", action="store_true", help="返回图关联区")
     sp.add_argument("--block", default="", help="图谱扩散只走同区块边（内置：task/kb/hermes/general；可传自定义 domain）")
+    sp.add_argument("--tier", default="facts", help="记忆分层：facts(默认，只回事实层) | logs(只回日志层) | ''(不过滤，改动前行为)")
     sp.set_defaults(fn=cmd_search)
 
     sp = sub.add_parser("hybrid-search", help="混合检索（FTS5 精确 + 语义向量：RRF 融合 / 级联）")
@@ -371,6 +375,7 @@ def main():
     sp.add_argument("--top-k", type=int, default=5)
     sp.add_argument("--mode", default="rrf", choices=["rrf", "cascade"], help="rrf=倒数排名融合；cascade=FTS 粗筛→向量精排")
     sp.add_argument("--fts-limit", type=int, default=50, help="FTS 侧候选量（粗筛/桶大小）")
+    sp.add_argument("--tier", default="facts", help="记忆分层：facts(默认，只回事实层) | logs(只回日志层) | ''(不过滤，改动前行为)")
     sp.set_defaults(fn=cmd_hybrid_search)
 
     sp = sub.add_parser("ingest", help="写入记忆（内容/分级由用户定）")
@@ -469,6 +474,11 @@ def main():
     sp.add_argument("--yes", "-y", action="store_true", help="跳过二次确认提示（脚本 / CI 自动化时使用）")
     sp.set_defaults(fn=cmd_reindex)
 
+    return p
+
+
+def main():
+    p = build_parser()
     try:
         args = p.parse_args()
         args.fn(args)

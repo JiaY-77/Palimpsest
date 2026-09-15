@@ -316,6 +316,7 @@ class MemSearchRequest(BaseModel):
     include_outdated: bool = False
     block: str = ""
     domain_boost: str = ""    # 加性软加权：对 node_domain == domain_boost 的候选加分
+    tier: str = "facts"       # 记忆分层：facts(默认) | logs | ""(不过滤，改动前行为)
 
 
 class MemIngestRequest(BaseModel):
@@ -338,6 +339,7 @@ class MemHybridSearchRequest(BaseModel):
     neighbor_limit: int = 5
     include_outdated: bool = False
     block: str = ""
+    tier: str = "facts"       # 记忆分层：facts(默认) | logs | ""(不过滤，改动前行为)
 
 
 class MemLinkRequest(BaseModel):
@@ -377,7 +379,7 @@ async def mem_search(req: MemSearchRequest):
         domain_bias=req.domain_bias, top_k=req.top_k,
         include_neighbors=req.include_neighbors, block=req.block,
         include_outdated=req.include_outdated,
-        domain_boost=req.domain_boost,
+        domain_boost=req.domain_boost, tier=req.tier,
     ))
 
 
@@ -388,7 +390,7 @@ async def mem_hybrid_search(req: MemHybridSearchRequest):
         domain_bias=req.domain_bias, top_k=req.top_k, mode=req.mode,
         fts_limit=req.fts_limit, include_neighbors=req.include_neighbors,
         neighbor_limit=req.neighbor_limit, block=req.block,
-        include_outdated=req.include_outdated,
+        include_outdated=req.include_outdated, tier=req.tier,
     ))
 
 
