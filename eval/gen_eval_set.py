@@ -57,25 +57,42 @@ def _sha256(path: Path) -> str:
 
 
 def _copy_db_to_tmp() -> Path:
-    """Copy DB + sidecars + FTS into .tmp/.  Set DB_PATH and return tmp dir."""
+    """Copy DB + sidecars + FTS into .tmp/.  Set DB_PATH and return tmp dir.
+
+    跳过已在 ``.tmp`` 内的文件：DB_PATH 已指向副本时（同一 pytest 会话里重复
+    import，或上一个用例改过 DB_PATH），复制到自身会在 Windows 抛 PermissionError。
+    """
     _TMP_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = _TMP_DIR
+    tmp = _TMP_DIR.resolve()
 
     # Copy main DB + all sidecar files
-    str(_ORIG_DB_PATH)
     for p in _ORIG_DB_PATH.parent.iterdir():
         if p.name.startswith(_ORIG_DB_PATH.name) and p.is_file():
             dst = tmp / p.name
+            if _is_same_file(p.resolve(), dst):
+                continue
             shutil.copy2(p, dst)
 
     # Copy FTS db
     if _ORIG_FTS_DB.exists():
-        shutil.copy2(_ORIG_FTS_DB, tmp / _ORIG_FTS_DB.name)
+        dst = tmp / _ORIG_FTS_DB.name
+        if not _is_same_file(_ORIG_FTS_DB.resolve(), dst):
+            shutil.copy2(_ORIG_FTS_DB, dst)
 
     # Point DB_PATH to copy
     tmp_db = tmp / _ORIG_DB_PATH.name
     os.environ["DB_PATH"] = str(tmp_db)
     return tmp
+
+
+def _is_same_file(a: Path, b: Path) -> bool:
+    """两个路径是否指向同一文件（目标不存在时按字面比较）。"""
+    if a == b:
+        return True
+    try:
+        return b.exists() and os.path.samefile(a, b)
+    except OSError:
+        return False
 
 
 _copy_db_to_tmp()

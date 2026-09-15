@@ -52,20 +52,40 @@ def _sha256(path: Path) -> str:
 
 
 def _copy_db_to_tmp() -> Path:
-    """Copy DB + sidecars + FTS into .tmp/.  Set DB_PATH and return tmp dir."""
+    """Copy DB + sidecars + FTS into .tmp/.  Set DB_PATH and return tmp dir.
+
+    Skips files already located inside ``.tmp`` —— 否则重复导入（同一 pytest 会话
+    里再次 import，或 DB_PATH 已被指到副本上）会把文件复制到自身，在 Windows 上
+    直接抛 PermissionError。
+    """
     _TMP_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = _TMP_DIR
+    tmp = _TMP_DIR.resolve()
 
     for p in _ORIG_DB_PATH.parent.iterdir():
         if p.name.startswith(_ORIG_DB_PATH.name) and p.is_file():
-            shutil.copy2(p, tmp / p.name)
+            dst = tmp / p.name
+            if _is_same_file(p.resolve(), dst):
+                continue
+            shutil.copy2(p, dst)
 
     if _ORIG_FTS_DB.exists():
-        shutil.copy2(_ORIG_FTS_DB, tmp / _ORIG_FTS_DB.name)
+        dst = tmp / _ORIG_FTS_DB.name
+        if not _is_same_file(_ORIG_FTS_DB.resolve(), dst):
+            shutil.copy2(_ORIG_FTS_DB, dst)
 
     tmp_db = tmp / _ORIG_DB_PATH.name
     os.environ["DB_PATH"] = str(tmp_db)
     return tmp
+
+
+def _is_same_file(a: Path, b: Path) -> bool:
+    """两个路径是否指向同一文件（目标不存在时按字面比较）。"""
+    if a == b:
+        return True
+    try:
+        return b.exists() and os.path.samefile(a, b)
+    except OSError:
+        return False
 
 
 _copy_db_to_tmp()
@@ -73,7 +93,13 @@ _copy_db_to_tmp()
 # Now safe to import project modules
 from core.fts_index import search_fts  # noqa: E402
 from core.trivium_store import TriviumStore  # noqa: E402
-from mcp_tools.memory import _hybrid_cascade, _hybrid_rrf  # noqa: E402
+from mcp_tools.memory import (  # noqa: E402
+    DEFAULT_TIER,
+    _hybrid_cascade,
+    _hybrid_rrf,
+    _mem_search_impl,
+    _tier_matches,
+)
 
 # Metrics (from eval/ directory)
 sys.path.insert(0, str(_EVAL_DIR))
@@ -82,35 +108,65 @@ from metrics import auc_separability, mrr_at_k, ndcg_at_k, recall_at_k  # noqa: 
 ALL_MODES = ("fts", "vec", "rrf", "cascade")
 
 
-def _run_fts(query: str, top_k: int, _store: TriviumStore) -> tuple[list[int], list[float | None]]:
-    results = search_fts(query, limit=top_k)
-    ids = [r["node_id"] for r in results if "node_id" in r][:top_k]
-    scores = [None] * len(ids)
+def _run_fts(query: str, top_k: int, _store: TriviumStore,
+             tier: str = DEFAULT_TIER) -> tuple[list[int], list[float | None]]:
+    """FTS 模式：与其余模式同口径 —— 过 tier、过 outdated（历史通道见 tier=""）。
+
+    先按「召回口径」拉宽候选（limit 放大 3 倍），再逐条套用与 _mem_search_impl
+    一致的过滤（status=outdated 剔除、tier 不匹配剔除），最后截断 top_k。
+    tier="" 时不过滤，等价于改动前行为。
+    """
+    limit = max(top_k * 3, 30) if tier != "" else top_k
+    results = search_fts(query, limit=limit)
+    ids: list[int] = []
+    for r in results:
+        node_id = r.get("node_id")
+        if node_id is None:
+            continue
+        if tier != "":
+            payload = _store.get_node(node_id) or {}
+            if payload.get("status") == "outdated":
+                continue
+            if not _tier_matches(payload.get("type", ""), tier):
+                continue
+        ids.append(node_id)
+        if len(ids) >= top_k:
+            break
+    return ids, [None] * len(ids)
+
+
+def _run_vec(query: str, top_k: int, _store: TriviumStore,
+             tier: str = DEFAULT_TIER) -> tuple[list[int], list[float]]:
+    """向量模式：与 fts/rrf/cascade 同口径 —— 走 _mem_search_impl 过滤链。
+
+    改动前直调 store.search_similar，绕过了 tier 过滤与 outdated 语义，导致同一条
+    查询在不同模式间口径不一致（向量模式会把日志层/被取代版本算进结果）。
+    现改为复用 _mem_search_impl，保证四模式共享同一套 scope/tier/outdated 语义。
+    """
+    result = _mem_search_impl(query, scope="all", domain="", domain_bias="",
+                              top_k=top_k, include_outdated=False,
+                              tier=tier)
+    items = result.get("results", [])
+    ids = [r.get("id") for r in items if r.get("id") is not None]
+    scores = [r.get("score") for r in items[:len(ids)]]
     return ids, scores
 
 
-def _run_vec(query: str, top_k: int, store: TriviumStore) -> tuple[list[int], list[float]]:
-    emb = store.embed_text(query)
-    results = store.search_similar(emb, top_k=top_k, expand_depth=0,
-                                   apply_decay=True, block="")
-    ids = [r["id"] for r in results if "id" in r][:top_k]
-    scores = [r.get("score") for r in results[:top_k]]
-    return ids, scores
-
-
-def _run_rrf(query: str, top_k: int, store: TriviumStore) -> tuple[list[int], list[float]]:
+def _run_rrf(query: str, top_k: int, store: TriviumStore,
+             tier: str = DEFAULT_TIER) -> tuple[list[int], list[float]]:
     results = _hybrid_rrf(query, scope="all", domain="", domain_bias="",
                           top_k=top_k, fts_limit=top_k * 3, block="",
-                          include_outdated=False)
+                          include_outdated=False, tier=tier)
     ids = [r.get("id") for r in results if r.get("id") is not None][:top_k]
     scores = [r.get("score") for r in results[:top_k]]
     return ids, scores
 
 
-def _run_cascade(query: str, top_k: int, store: TriviumStore) -> tuple[list[int], list[float]]:
+def _run_cascade(query: str, top_k: int, store: TriviumStore,
+                 tier: str = DEFAULT_TIER) -> tuple[list[int], list[float]]:
     results = _hybrid_cascade(query, scope="all", domain="", domain_bias="",
                               top_k=top_k, fts_limit=top_k * 3, block="",
-                              include_outdated=False)
+                              include_outdated=False, tier=tier)
     ids = [r.get("id") for r in results if r.get("id") is not None][:top_k]
     scores = [r.get("score") for r in results[:top_k]]
     return ids, scores
@@ -463,6 +519,9 @@ def main() -> int:
                         help="Number of results to retrieve per query")
     parser.add_argument("--eval-set", type=str, default=None,
                         help="Path to eval set JSON (default: eval/eval_set.json)")
+    parser.add_argument("--tier", type=str, default=DEFAULT_TIER,
+                        help="Memory tier for retrieval (facts|logs|''=no filter); "
+                             "all modes share this口径")
     args = parser.parse_args()
 
     modes = [m.strip() for m in args.modes.split(",") if m.strip()]
@@ -511,7 +570,9 @@ def main() -> int:
 
         for mode in modes:
             try:
-                ranked_ids, ranked_scores = _MODE_FNS[mode](query, args.top_k, store)
+                ranked_ids, ranked_scores = _MODE_FNS[mode](
+                    query, args.top_k, store, args.tier
+                )
                 mode_results[mode] = {"ids": ranked_ids, "scores": ranked_scores}
             except Exception as e:  # noqa: BLE001 —— 单模式跑分失败记空结果继续评测其余模式
                 print(f"  [ERROR] {qid}/{mode}: {e}")

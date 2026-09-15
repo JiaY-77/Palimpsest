@@ -18,9 +18,11 @@ Palimpsest — FastAPI 主入口
 这一约束是 fail-fast 的：不会静默产生重复 ID 或损坏数据。详见 README「启动」。
 """
 
+import asyncio
 import json
 import logging
 import secrets
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -53,7 +55,19 @@ from mcp_tools import (
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Palimpsest")
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """应用生命周期：启动时跑一次自检，退出时无需清理（store 由进程回收）。
+
+    自检是独立协程（与 store 懒加载解耦）：首次请求才建连库，进程启动只做
+    只读自检；阻塞文件 IO 经 to_thread 下放，不占用事件循环。
+    """
+    await _startup_self_check()
+    yield
+
+
+app = FastAPI(title="Palimpsest", lifespan=_lifespan)
 
 # API Key 鉴权开关：PALIMPSEST_API_KEY 默认空 = 不启用（localhost 本机直连）。
 # 设置后除 / 健康检查外所有请求须带 Bearer 或 X-API-Key，否则 401。
@@ -102,7 +116,20 @@ async def _api_key_middleware(request: Request, call_next):
     return await call_next(request)
 
 
-@app.on_event("startup")
+# ---- 全局服务实例（首次访问时惰性初始化） ----
+# 不在 import 期构造 TriviumStore：避免 import main 即连库、建索引等副作用
+# （测试、CLI、打包扫描导入本模块时不应触碰数据库）。
+_store: TriviumStore | None = None
+
+
+def _get_store() -> TriviumStore:
+    """取全局 TriviumStore，首次调用时构造（惰性单例）。"""
+    global _store
+    if _store is None:
+        _store = TriviumStore()
+    return _store
+
+
 async def _startup_self_check():
     """启动自检（工程护栏）：只记录，不阻断 —— 避免自检失败拖垮服务可用性。
 
@@ -110,7 +137,7 @@ async def _startup_self_check():
     """
     import json
 
-    result = run_startup_check()
+    result = await asyncio.to_thread(run_startup_check)
     if result["ok"]:
         logger.info("启动自检全部通过（%s 项）", len(result["checks"]))
     else:
@@ -121,9 +148,6 @@ async def _startup_self_check():
             len(result["checks"]),
             json.dumps({c["name"]: c["detail"] for c in failed}, ensure_ascii=False),
         )
-
-# ---- 全局服务实例（启动时初始化一次） ----
-store = TriviumStore()
 
 
 # ---- API 端点 ----
@@ -149,7 +173,7 @@ async def export_memories(page: int = 1, page_size: int = 100):
         page = 1
 
     nodes = []
-    for nid, payload in store.iter_payloads():
+    for nid, payload in _get_store().iter_payloads():
         nodes.append(
             {
                 "id": nid,
@@ -188,7 +212,7 @@ async def summary():
     plots = []
     total = 0
 
-    for _nid, payload in store.iter_payloads():
+    for _nid, payload in _get_store().iter_payloads():
         total += 1
         t = payload.get("type", "")
         content = payload.get("content", "")
@@ -217,14 +241,14 @@ async def report_endpoint():
     核心逻辑见 core/reporting.py 的 generate_report（函数式拆分，行为不变）。
     Prompt 面向小说创作 / 角色扮演场景（角色心理分析），不是通用记忆摘要。
     """
-    return await generate_report(store)
+    return await generate_report(_get_store())
 
 
 
 @app.get("/memory/{node_id}")
 async def get_memory(node_id: int):
     """获取指定 ID 的记忆节点 payload（剥掉内部字段 secret_hint / linked_from / linked_kb_ids / superseded）"""
-    node = store.get_node(node_id)
+    node = _get_store().get_node(node_id)
     if not node:
         raise HTTPException(status_code=404, detail=f"节点 {node_id} 不存在")
     payload = node.get("payload", {})
@@ -239,7 +263,7 @@ async def get_memory(node_id: int):
 async def delete_memory(node_id: int):
     """删除指定 ID 的记忆节点"""
     try:
-        store.delete_node(node_id)
+        _get_store().delete_node(node_id)
         # FTS 全文索引同步（失败不阻塞主删除，可手动 fts-rebuild 兜底）
         sync_node(node_id, "")
         return {"status": "ok", "message": f"节点 {node_id} 已删除"}
@@ -251,7 +275,7 @@ async def delete_memory(node_id: int):
 def _sync_fts_after_update(node_id: int) -> None:
     """更新节点后同步 FTS 全文索引（失败不阻塞主更新，可手动 fts-rebuild 兜底）。"""
     try:
-        node = store.get_node(node_id)
+        node = _get_store().get_node(node_id)
         content = ((node or {}).get("payload") or {}).get("content", "")
         sync_node(node_id, content)
     except Exception as e:  # noqa: BLE001 —— FTS 同步失败仅告警不阻塞节点更新
@@ -262,7 +286,7 @@ def _sync_fts_after_update(node_id: int) -> None:
 async def update_memory_payload(node_id: int, payload: dict):
     """更新指定 ID 的记忆 payload（部分更新合并语义：只改传入字段，其余保留）"""
     try:
-        store.update_payload(node_id, payload)
+        _get_store().update_payload(node_id, payload)
         _sync_fts_after_update(node_id)
         return {"status": "ok", "message": f"节点 {node_id} payload 已更新"}
     except Exception as e:
@@ -274,7 +298,7 @@ async def update_memory_payload(node_id: int, payload: dict):
 async def patch_memory_payload(node_id: int, payload: dict):
     """PATCH：部分更新指定 ID 的记忆 payload（与 PUT 同逻辑，但语义上更精确）"""
     try:
-        store.update_payload(node_id, payload)
+        _get_store().update_payload(node_id, payload)
         _sync_fts_after_update(node_id)
         return {"status": "ok", "message": f"节点 {node_id} payload 已更新"}
     except Exception as e:
@@ -286,12 +310,12 @@ async def patch_memory_payload(node_id: int, payload: dict):
 async def update_memory_vector(node_id: int, vector: list[float]):
     """更新指定 ID 的记忆向量（维度必须匹配）"""
     try:
-        if len(vector) != store.dim:
+        if len(vector) != _get_store().dim:
             raise HTTPException(
                 status_code=400,
-                detail=f"向量维度应为 {store.dim}，实际为 {len(vector)}",
+                detail=f"向量维度应为 {_get_store().dim}，实际为 {len(vector)}",
             )
-        store.update_vector(node_id, vector)
+        _get_store().update_vector(node_id, vector)
         return {"status": "ok", "message": f"节点 {node_id} 向量已更新"}
     except HTTPException:
         raise
@@ -445,7 +469,7 @@ async def mem_stats():
     """
     from core.stats import compute_stats
 
-    stats = compute_stats(store)
+    stats = compute_stats(_get_store())
     stats.pop("elapsed_ms", None)
     return stats
 

@@ -312,7 +312,7 @@ def cmd_startup_check(args):
 
 
 def cmd_doctor(args):
-    """部署体检：6 项全面检查，每项失败给具体修复命令，任一失败退出码 1。"""
+    """部署体检：7 项全面检查，每项失败给具体修复命令，任一失败退出码 1。"""
     result = run_doctor()
     if getattr(args, "json_output", False):
         print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -453,7 +453,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("startup-check", help="启动自检（文件/存储/FTS/依赖），失败退出码 1")
     sp.set_defaults(fn=cmd_startup_check)
 
-    sp = sub.add_parser("doctor", help="部署体检（6 项全面检查，每项失败给具体修复命令）")
+    sp = sub.add_parser("doctor", help="部署体检（7 项全面检查，每项失败给具体修复命令）")
     sp.add_argument("--json", dest="json_output", action="store_true",
                     help="输出机器可读 JSON（默认人类可读）")
     sp.set_defaults(fn=cmd_doctor)

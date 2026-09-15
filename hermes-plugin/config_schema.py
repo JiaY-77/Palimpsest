@@ -40,9 +40,29 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         ProviderField(
             key="prefetch_top_k",
             label="召回条数",
-            default="5",
+            default="3",
             kind="number",
             description="每轮自动召回的 top_k（1-10）",
+        ),
+        ProviderField(
+            key="prefetch_neighbors",
+            label="附带图邻居",
+            default="false",
+            kind="bool",
+            description="召回时附带一跳图邻居（记忆域图边稀疏，默认关闭降噪）",
+        ),
+        ProviderField(
+            key="prefetch_min_score",
+            label="召回最低分",
+            default="0.3",
+            kind="number",
+            description="低于该相关度的召回结果直接丢弃（默认 0.3，调高更省上下文）",
+        ),
+        ProviderField(
+            key="prefetch_tier",
+            label="召回分层",
+            default="facts",
+            description="只注入该分层的记忆：facts（默认）/ logs / 空串 = 不过滤",
         ),
         ProviderField(
             key="auto_ingest",

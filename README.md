@@ -34,12 +34,13 @@ Palimpsest 是一个 **本地优先的嵌入式长期记忆系统**，将 **语�
 - 🕸️ **社区发现** —— 内置 Leiden 聚类，一键把记忆库分成主题簇（如项目簇、人物关系簇），回答「记忆库里都有哪些圈子」
 - 🔄 **冲突检测与版本链** —— 写入时与相似旧记忆比对：高相似度（score > 0.75）判为同一事实被取代，旧版标记 `outdated` 并通过 `REVISED_BY` 链向新版；中相似度只记 `related_ids` 提示相关不误标；type / domain 双隔离防跨类误标
 - 🛡️ **写入前敏感扫描** —— 存储前按 **10 条正则规则**扫描：**强规则**（API Key、令牌、私钥、SSH Key、Bearer Token 等 8 条）命中即**拒绝写入**并报告命中的规则；**弱规则**（身份证、手机号 2 条）命中仅**放行并打 `secret_hint` 标记**供审计——命中原文仍会入库，弱规则是审计线索而非脱敏（详见 [`SECURITY.md`](SECURITY.md)）
-- 🧹 **容量合并与记忆盘点** —— `mem_consolidate` 把近似重复节点合并（相似度 ≥ 0.85、保护高价值记忆）；`mem_stats` 统一盘点库内分布（类型/域/重要度/时间/图谱/热点），回答「库里有什么」
+- 🧹 **容量合并与记忆盘点** —— `mem_consolidate` 把近似重复节点合并（相似度 ≥ 0.85、保护高价值记忆）；`mem_stats` 统一盘点库内分布（类型/域/重要度/时间/图谱/热点/弱敏感标记数），回答「库里有什么」
 - ⏫ **高频记忆自动升级** —— 检索命中自动计数（`hit_count`），`promote` 把反复被用到的记忆浮出水面：升权 + 打标（dry-run 预览、幂等可逆），为人工升级知识库提供依据
 - ⏳ **记忆生命周期** —— 时间衰减加权（`MEMORY_DECAY_FACTOR`，默认 0.95/月）在排序中淡化陈旧记忆而不动存储；`kb_chunk` 知识切片豁免衰减；`outdated` 旧版默认不再参与普通检索（可显式追溯）
 - 📁 **任务自动归档** —— 完成任务自动移出热库，写成 markdown 归档至知识库归档目录后删除——先 `dry-run` 预览，`apply` 提交
 - ✅ **部署体检** —— `doctor` 一键体检关键文件 / 存储 / FTS / 依赖 / Embedding 可达性与**向量维度一致性**（实测 vs 库），每个失败项直接给出修复命令（`--json` 机器可读）；`startup-check` 为其轻量子集
 - ✂️ **省 token 设计** —— 检索默认只返回 **150 字摘要 + 元数据**，而非全文；完整内容按需二次拉取
+- 🗂️ **记忆分层（`tier`）** —— 检索侧的轻量视图，不迁数据、不改存储：默认只取**事实层**（`memory` / `correction` / `decision` / `plan` / `task` 等），把日志层（`record` / `event` / `git_commit`，约占活跃节点四成）从默认检索与注入池中摘出；`tier="logs"` 只取日志层，`tier=""` 显式回到全量（历史追溯通道）。层清单由 `TIER_FACTS` / `TIER_LOGS` 配置，未登记的 type 保守归事实层
 - 🔐 **可选 API Key 鉴权** —— 默认关闭（localhost 本机直连）；设置 `PALIMPSEST_API_KEY` 后 REST 层要求 Bearer / X-API-Key 头，适合局域网受信部署
 - 🎯 **三接口、一核心** —— MCP（stdio）、FastAPI REST、完整 CLI 三套接入共用同一套底层工具，行为永不割裂
 - 🧠 **Hermes 双插件换脑** —— 把 Hermes 的记忆层整体换成 Palimpsest：Memory Provider（语义召回 + 自动沉淀）+ Context Engine（压缩前图谱提炼），一行命令激活，记忆跨会话不丢
@@ -282,6 +283,9 @@ Windows 下 `scripts/start_rest.vbs` 可以隐藏窗口启动 REST 服务（如�
 | `RRF_SEM_WEIGHT` | `1.0` | 混合检索 RRF 语义侧权重 | `mem_hybrid_search` 且 `mode=rrf` |
 | `RRF_FTS_WEIGHT` | `0.1` | 混合检索 RRF 精确（FTS）侧权重——语义主序干净后 FTS 小幅加成 | `mem_hybrid_search` 且 `mode=rrf` |
 | `RETRIEVAL_EXPAND_DEPTH` | `0` | 语义主序的图扩散深度：`0` = 纯语义排序（默认）；`1` = 图邻居参与语义主序（可一键回退） | 检索启用图扩散时 |
+| `TIER_FACTS` | `memory,correction,decision,plan,task,review,solution,inspiration,user_intent,character_state` | 归入事实层的记忆 type（逗号分隔）；未登记的 type 一律归事实层 | 检索与注入按 tier 过滤时 |
+| `TIER_LOGS` | `record,event,git_commit` | 归入日志层的记忆 type（逗号分隔），默认不进检索与注入池 | 检索与注入按 tier 过滤时 |
+| `DEFAULT_TIER` | `facts` | 检索与注入的默认分层；`logs` 只回日志层，空串 = 不过滤（全量历史通道） | 未显式指定 `tier` 时 |
 | `MEM_INGEST_MAX_LENGTH` | `50000` | 单条记忆 content 最大字符数，超长拒绝写入 | `mem_ingest` 写入时 |
 | `KNOWLEDGE_DIR` | *（可选）* | 知识库根目录（待索引的 Obsidian `.md` 文件） | 使用 `kb_index` / `build_kb_index.py` 时 |
 

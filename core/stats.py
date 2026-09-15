@@ -60,6 +60,7 @@ def _new_accumulator() -> dict:
         "label_dist": {},
         "hit_count_total": 0,
         "hit_nodes": [],
+        "secret_hint": 0,
     }
 
 
@@ -94,6 +95,10 @@ def _accumulate_node(acc: dict, nid, node, db) -> None:
         if pred(imp):
             acc["imp_buckets"][name] += 1
             break
+
+    # 弱敏感信号（secret_hint）：弱命中会被放行并标记，此处单独计数便于巡检
+    if payload.get("secret_hint"):
+        acc["secret_hint"] += 1
 
     # time：按 created_at 月份分布（null/0/非法跳过）
     m = _month_label(payload.get("created_at"))
@@ -135,6 +140,7 @@ def _build_stats_result(acc: dict, start: float) -> dict:
             "outdated": acc["outdated"],
             "by_type": dict(sorted(acc["by_type"].items(), key=lambda kv: kv[0])),
             "by_domain": dict(sorted(acc["by_domain"].items(), key=lambda kv: kv[0])),
+            "secret_hint": acc["secret_hint"],
         },
         "kinds": dict(sorted(acc["kind_counter"].items(), key=lambda kv: kv[0])),
         "importance": acc["imp_buckets"],
@@ -156,7 +162,7 @@ def compute_stats(store) -> dict:
 
     返回结构：
       {
-        "totals": {total_nodes, active, outdated, by_type, by_domain},
+        "totals": {total_nodes, active, outdated, by_type, by_domain, secret_hint},
         "kinds":  {kind: count}（仅当存在含 kind 字段的 novel_chunk 时非空，否则空 dict），
         "importance": {小于0.4 / 0.4到0.6 / 0.6到0.8 / 大于等于0.8},
         "time":   {"2026-08": n, ...}（created_at 为 null/0 的跳过），

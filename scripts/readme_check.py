@@ -249,17 +249,35 @@ def _iter_getenv_defaults(source: str) -> dict[str, str | None]:
 
 
 def _canon_code_default(expr: str | None) -> str:
-    """源码默认值表达式 → 可比字符串（去引号、去数字分隔下划线、解开 ``str("50_000")``）。"""
+    """源码默认值表达式 → 可比字符串（去引号、去数字分隔下划线、解开 ``str("50_000")``）。
+
+    只对「非字符串字面量」去下划线：字符串默认值里的下划线是内容的一部分
+    （如 ``"memory,user_intent,character_state"``），按数字分隔符剥掉会把
+    ``user_intent`` 变成 ``userintent``，与文档永远对不上。
+    """
     if expr is None:
         return ""
-    expr = expr.strip()
+    expr = expr.strip().rstrip(",").strip()
     wrapper = CODE_STR_WRAPPER_RE.match(expr)
     if wrapper:
-        return wrapper.group(1).replace("_", "")
+        # str("50_000") → 内层是字符串字面量，按字面量处理（不去下划线）
+        return _canon_str_literal(wrapper.group(1))
     literal = CODE_STR_LITERAL_RE.match(expr)
     if literal:
-        return literal.group(1).strip()
+        return _canon_str_literal(literal.group(1))
+    # 形如 "a","b" 的元组/多值默认值：拼接各段字面量再规范化
+    parts = re.findall(r"[\"']([^\"']*)[\"']", expr)
+    if parts:
+        return ",".join(_canon_str_literal(p) for p in parts)
     return expr.replace("_", "")
+
+
+def _canon_str_literal(value: str) -> str:
+    """字符串字面量内容 → 可比字符串（数字分隔下划线才剥，标识符内下划线保留）。"""
+    # 仅当整体是「纯数字+下划线」时才剥下划线（50_000 → 50000）
+    if re.fullmatch(r"[\d_]+", value):
+        return value.replace("_", "")
+    return value.strip()
 
 
 def _canon_doc_default(cell: str) -> str:
