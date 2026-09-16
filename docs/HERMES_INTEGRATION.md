@@ -1,8 +1,8 @@
 # 将 Palimpsest 接入 Hermes（换脑指南）
 
-> 本文档面向 **Hermes 用户**：把 Hermes 的默认记忆层替换为 Palimpsest，实现中文语义召回、知识图谱、规则路由与自动沉淀。全文分七步，**每步都有验证方法**，照做即可完成接入。
+> 本文档面向 **Hermes 用户**：把 Hermes 的默认记忆层替换为 Palimpsest，实现中文语义召回、知识图谱、记忆分层与自动沉淀。全文分七步，**每步都有验证方法**，照做即可完成接入。
 >
-> 适用版本：Palimpsest v1.0.0 · Hermes 任意支持 memory provider / context engine 插槽的版本。
+> 适用版本：Palimpsest v2.1.0 · Hermes 任意支持 memory provider / context engine 插槽的版本。
 
 ---
 
