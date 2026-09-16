@@ -28,6 +28,20 @@ def test_negative_success_blocks_write() -> None:
     assert len(reason) > 0
 
 
+def test_existing_items_with_empty_new_items_blocks_write() -> None:
+    """有旧题集、新题集为空 → 覆盖会清空已有数据，必须拦截。"""
+    allow, reason = should_write_output(3, [{"qid": "old"}], [])
+    assert allow is False
+    assert "1" in reason
+
+
+def test_existing_items_with_new_items_allows_write() -> None:
+    """有旧题集、也有新题集 → 正常覆盖放行。"""
+    allow, reason = should_write_output(3, [{"qid": "old"}], [{"qid": "new"}])
+    assert allow is True
+    assert reason == ""
+
+
 # ---------------------------------------------------------------------------
 # _generate_batch：模型返回条数与 batch 不一致 → 整批放弃
 # ---------------------------------------------------------------------------

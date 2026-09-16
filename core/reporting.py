@@ -11,6 +11,8 @@ LLM 请求走 AsyncOpenAI。
 
 import asyncio
 
+from config import Config
+
 
 def _collect_memories(store) -> list[str]:
     """读取全库记忆文本（同步 DB 扫描，由 generate_report 丢进线程池执行）。
@@ -71,9 +73,8 @@ async def generate_report(store):
     # 4. 调用 DeepSeek（AsyncOpenAI：本函数被 async 端点 await，用同步 client 会
     #    阻塞整个事件循环——一次 max_tokens=4000 的生成可能几十秒）
     try:
+        # openai 为可选依赖，延迟导入避免模块级强依赖（仅报告场景需要）
         from openai import AsyncOpenAI
-
-        from config import Config
 
         llm_cfg = Config.get_llm_config()
         client = AsyncOpenAI(api_key=llm_cfg["api_key"], base_url=llm_cfg["base_url"])
