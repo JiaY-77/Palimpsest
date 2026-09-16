@@ -511,7 +511,7 @@ Palimpsest/
 ├── main.py                       # FastAPI REST 入口 (:8090)
 ├── mcp_server.py                 # MCP stdio 入口 (FastMCP)
 ├── dashboard.html
-├── docs/                         # RELEASING.md（发版流程）/ HERMES_INTEGRATION.md / refactor_plan.md
+├── docs/                         # RELEASING.md（发版流程）/ DEPRECATIONS.md（退役计划）/ HERMES_INTEGRATION.md / refactor_plan.md
 ├── core/                         # 共享引擎，无框架依赖
 │   ├── trivium_store.py          #   TriviumDB 封装（向量+图谱+文档）
 │   ├── conflict.py               #   冲突检测 / 版本链（三层防误标）
@@ -586,7 +586,7 @@ python -m pytest --cov=core --cov=mcp_tools -q     # 覆盖率基线（暂不设
 python scripts/readme_check.py --strict
 ```
 
-版本发布遵循 [语义化版本](https://semver.org/lang/zh-CN/)，流程见 [RELEASING.md](docs/RELEASING.md)，历史见 [CHANGELOG.md](CHANGELOG.md)。
+版本发布遵循 [语义化版本](https://semver.org/lang/zh-CN/)，流程见 [RELEASING.md](docs/RELEASING.md)，历史见 [CHANGELOG.md](CHANGELOG.md)。字段 / 接口的弃用与退役计划见 [DEPRECATIONS.md](docs/DEPRECATIONS.md)。
 
 ---
 

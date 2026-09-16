@@ -525,7 +525,7 @@ Palimpsest/
 ├── main.py                       # FastAPI REST entry (:8090)
 ├── mcp_server.py                 # MCP stdio entry (FastMCP)
 ├── dashboard.html
-├── docs/                         # RELEASING.md (release process) / HERMES_INTEGRATION.md / refactor_plan.md
+├── docs/                         # RELEASING.md (release process) / DEPRECATIONS.md (retirements) / HERMES_INTEGRATION.md / refactor_plan.md
 ├── core/                         # shared engine, framework-free
 │   ├── trivium_store.py          #   TriviumDB wrapper (vector + graph + doc)
 │   ├── conflict.py               #   conflict detection / version chains
@@ -599,7 +599,7 @@ Documentation-vs-code consistency is checked by `scripts/readme_check.py` (MCP t
 python scripts/readme_check.py --strict
 ```
 
-Releases follow [Semantic Versioning](https://semver.org/), see [RELEASING.md](docs/RELEASING.md) for the process and [CHANGELOG.md](CHANGELOG.md) for history.
+Releases follow [Semantic Versioning](https://semver.org/), see [RELEASING.md](docs/RELEASING.md) for the process and [CHANGELOG.md](CHANGELOG.md) for history. Deprecated fields / interfaces and their retirement schedule live in [DEPRECATIONS.md](docs/DEPRECATIONS.md).
 
 ---
 

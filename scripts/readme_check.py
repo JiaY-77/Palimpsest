@@ -4,6 +4,7 @@
   1. MCP 工具清单   mcp_tools/*.py 的 @mcp.tool() 注册 ↔ README / README_EN 的工具表与标题数字
   2. CLI 子命令     scripts/palimpsest_cli.py 的 add_parser ↔ README / README_EN 的命令表
   3. REST 路由      main.py 的 @app.<method>(...) ↔ README / README_EN 的路由表
+  3.5 端点索引      main.py root() 的 endpoints 列表 ↔ main.py 实际注册的路由
   4. 配置项         config.py ↔ .env.example ↔ README / README_EN 的配置表
   5. 文件引用       三份文档中的 markdown 链接 / 反引号路径 / 项目结构树条目是否真实存在
   6. 行内代码配对   文档正文（跳过代码块）每行的反引号必须成对
@@ -89,10 +90,17 @@ def read_text(root: Path, name: str) -> str:
     return (root / name).read_text(encoding="utf-8")
 
 
-def section(text: str, start: str, end: str | None) -> str:
-    """返回 start 之后、end 之前的片段；end 为 None 表示到文末。找不到 start 时返回空串。"""
+def section(text: str, start: str, end: str | None, required: bool = False) -> str:
+    """返回 start 之后、end 之前的片段；end 为 None 表示到文末。找不到 start 时返回空串。
+
+    required=True 时找不到 start 直接抛 ValueError（消息即 «未找到区块 {start}»）：
+    把「标记写错/被改名 → section 返回空串 → 检查静默假绿」变成显式失败，
+    调用方 catch 后自行转成 warning / error。
+    """
     idx = text.find(start)
     if idx < 0:
+        if required:
+            raise ValueError(f"未找到区块 {start}")
         return ""
     rest = text[idx + len(start) :]
     if end:
@@ -170,9 +178,10 @@ def check_cli_commands(root: Path) -> Report:
         ("README_EN.md", "### CLI —", "### Blocks"),
     )
     for doc, head, end in specs:
-        segment = section(read_text(root, doc), head, end)
-        if not segment:
-            report.warnings.append(f"{doc}: 未找到 CLI 小节（{head}）")
+        try:
+            segment = section(read_text(root, doc), head, end, required=True)
+        except ValueError as exc:
+            report.warnings.append(f"{doc}: {exc}")
             continue
         documented = table_first_column(segment, r"^\|\s*`([a-z][a-z0-9]*(?:-[a-z0-9]+)*)")
         for name in sorted(actual - documented):
@@ -209,13 +218,49 @@ def check_rest_routes(root: Path) -> Report:
         ("README_EN.md", "### REST API", "## Tests"),
     )
     for doc, head, end in specs:
-        segment = section(read_text(root, doc), head, end)
+        try:
+            segment = section(read_text(root, doc), head, end, required=True)
+        except ValueError as exc:
+            report.warnings.append(f"{doc}: {exc}")
+            continue
         rows = re.findall(r"^\|\s*`(GET|POST|PUT|PATCH|DELETE)`\s*\|\s*`([^`]+)`", segment, re.MULTILINE)
         documented = {(method.upper(), normalize_route(path)) for method, path in rows}
         for method, path in sorted(actual - documented):
             report.errors.append(f"{doc}: 代码有、文档未列 —— {method} {path}")
         for method, path in sorted(documented - actual):
             report.errors.append(f"{doc}: 文档有、代码没有 —— {method} {path}")
+    return report
+
+
+# ---- 3.5 root() 端点索引 ----
+
+ENDPOINTS_BLOCK_RE = re.compile(r'"endpoints"\s*:\s*\[(.*?)\]', re.DOTALL)
+ENDPOINTS_STR_RE = re.compile(r"[\"']([^\"']*)[\"']")
+
+
+def index_payload_paths(source: str) -> set[str]:
+    """解析 main.py 的 root() 里 `"endpoints": [...]` 列表的路径字面量（已规范化）。
+
+    抓不到 endpoints 区块时返回空集：此时若有注册路由，diff 会报「代码有、索引缺」；
+    区块为空列表（`[]`）与「没有这个键」由此自然区分——前者与空路由集自洽，后者暴露缺失。
+    """
+    match = ENDPOINTS_BLOCK_RE.search(source)
+    if not match:
+        return set()
+    return {normalize_route(p) for p in ENDPOINTS_STR_RE.findall(match.group(1)) if p.strip()}
+
+
+def check_route_index(root: Path) -> Report:
+    """root() 的 endpoints 索引 ↔ @app.<method> 实际注册路由（按规范化路径比对）。"""
+    report = Report("端点索引")
+    source = (root / "main.py").read_text(encoding="utf-8")
+    indexed = index_payload_paths(source)
+    actual = {normalize_route(path) for _method, path in actual_routes(root)}
+    report.info = f"root() 索引 {len(indexed)} 条 · 代码注册 {len(actual)} 条"
+    for path in sorted(indexed - actual):
+        report.errors.append(f"main.py: 端点索引有、代码没有 —— {path}")
+    for path in sorted(actual - indexed):
+        report.errors.append(f"main.py: 代码有、端点索引缺 —— {path}")
     return report
 
 
@@ -280,6 +325,26 @@ def _canon_str_literal(value: str) -> str:
     return value.strip()
 
 
+def _is_literal_default(expr: str | None) -> bool:
+    """默认值表达式是否为「字面量」——即能被 `_canon_code_default` 当作字面量规范化。
+
+    字面量：字符串字面量（`""` 也算）、`str("50_000")` 包装、纯数字（含下划线/小数点）。
+    无默认值（`os.getenv("FOO")`）与默认值由函数/变量算出（如 `_resolve_db_path()`、
+    自动探测的 `EMBEDDING_PROVIDER`）都不是字面量——只能靠结构判断，不能只看
+    `_canon_code_default` 的输出：它把「无默认值」与「空串字面量」都归一成空串。
+    """
+    if expr is None:
+        return False
+    expr = expr.strip().rstrip(",").strip()
+    if CODE_STR_WRAPPER_RE.match(expr):
+        return True
+    if CODE_STR_LITERAL_RE.match(expr):
+        return True
+    if re.findall(r"[\"']([^\"']*)[\"']", expr):
+        return True
+    return bool(re.fullmatch(r"[\d_]+(?:\.[\d_]+)?", expr))
+
+
 def _canon_doc_default(cell: str) -> str:
     """文档默认值单元格 → 可比字符串（去掉 ``**强调**`` 与行内代码标记）。"""
     text = cell.strip()
@@ -308,6 +373,18 @@ def check_config_keys(root: Path) -> Report:
     cfg = set(defaults)
     outside = set(CONFIG_READ_OUTSIDE_CONFIG_PY)
     comparable = sorted(cfg - set(CONFIG_DERIVED_DEFAULTS))
+    # 每个 os.getenv 键必须可归类，否则不能参与字面量比对：要么有字面量默认值、
+    # 要么在 CONFIG_DERIVED_DEFAULTS / CONFIG_READ_OUTSIDE_CONFIG_PY 登记过。
+    # 漏登记的非字面量默认值（无默认值、或函数算出的默认值）会被误当普通键比对，
+    # 产生不可信的误报/漏报——这里显式报 warning 而不是静默放过。
+    for key in sorted(cfg):
+        if key in CONFIG_DERIVED_DEFAULTS or key in CONFIG_READ_OUTSIDE_CONFIG_PY:
+            continue
+        if not _is_literal_default(defaults[key]):
+            report.warnings.append(
+                f"config.py: 键 {key} 的默认值不是字面量且未登记"
+                "（请加入 CONFIG_DERIVED_DEFAULTS 或 CONFIG_READ_OUTSIDE_CONFIG_PY）"
+            )
     env = set(re.findall(r"^([A-Z][A-Z0-9_]+)=", (root / ".env.example").read_text(encoding="utf-8"), re.MULTILINE))
     report.info = (
         f"config.py {len(cfg)} 个（默认值比对 {len(comparable)} · 派生值 {len(cfg) - len(comparable)}："
@@ -486,6 +563,7 @@ def run_checks(root: Path) -> list[Report]:
         check_mcp_tools(root),
         check_cli_commands(root),
         check_rest_routes(root),
+        check_route_index(root),
         check_config_keys(root),
         check_file_references(root),
         check_inline_code(root),
