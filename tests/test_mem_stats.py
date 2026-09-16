@@ -16,6 +16,7 @@ import time
 
 import pytest
 
+from config import Config
 from core.stats import compute_stats
 from core.trivium_store import TriviumStore
 
@@ -138,3 +139,42 @@ def test_stats_empty_db(iso_store):
     assert stats["graph"]["total_edges"] == 0
     assert stats["graph"]["top_hit_nodes"] == []
     assert stats["graph"]["avg_outdegree"] == 0.0
+    # tiers 分节（新增）：空库各层 count 为 0，by_type 为空，但仍输出生效分类
+    assert stats["tiers"]["facts"]["count"] == 0
+    assert stats["tiers"]["logs"]["count"] == 0
+    assert stats["tiers"]["unclassified"]["count"] == 0
+    assert stats["tiers"]["facts"]["by_type"] == {}
+    assert stats["tiers"]["logs"]["by_type"] == {}
+    assert stats["tiers"]["facts_types"] == sorted(Config.TIER_FACTS)
+    assert stats["tiers"]["logs_types"] == sorted(Config.TIER_LOGS)
+    assert stats["tiers"]["default_tier"] == Config.DEFAULT_TIER
+
+
+def test_stats_tiers_section(iso_store):
+    """tiers 分节：按检索侧 tier 语义（memory._tier_matches）分组，新增不替换 totals。"""
+    from config import Config as Cfg
+
+    s = iso_store
+    _mk(s, "事实层盘点", "memory", "general", 0.5)
+    _mk(s, "日志层盘点", "record", "general", 0.5)
+    _mk(s, "未登记盘点", "plot_plan", "general", 0.5)
+
+    stats = compute_stats(s)
+    tiers = stats["tiers"]
+
+    # facts = 不在 TIER_LOGS（memory + 未登记的 plot_plan 保守归 facts）
+    assert tiers["facts"]["count"] == 2, tiers
+    assert tiers["facts"]["by_type"] == {"memory": 1, "plot_plan": 1}, tiers
+    # logs = 在 TIER_LOGS
+    assert tiers["logs"]["count"] == 1, tiers
+    assert tiers["logs"]["by_type"] == {"record": 1}, tiers
+    # unclassified = 两层白名单都未登记的 type（检索侧回落 facts，故是 facts 子集）
+    assert tiers["unclassified"]["count"] == 1, tiers
+    assert tiers["unclassified"]["by_type"] == {"plot_plan": 1}, tiers
+    # 分节与 totals 自洽：facts + logs = 全部节点；totals 原样保留
+    assert tiers["facts"]["count"] + tiers["logs"]["count"] == stats["totals"]["total_nodes"]
+    assert stats["totals"]["by_type"] == {"memory": 1, "plot_plan": 1, "record": 1}
+    # 实际生效分类自解释（对应 Issue 6 的 1c）
+    assert tiers["facts_types"] == sorted(Cfg.TIER_FACTS), tiers
+    assert tiers["logs_types"] == sorted(Cfg.TIER_LOGS), tiers
+    assert tiers["default_tier"] == Cfg.DEFAULT_TIER, tiers

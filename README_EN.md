@@ -28,13 +28,13 @@ Pa·limp·sest: *a writing surface that is overwritten again and again while old
 - **Community detection.** Built-in Leiden clustering splits the store into topical clusters (project groups, character-relationship groups, …) — answering "what circles exist in my memory?"
 - **Conflict detection & version chains.** Every write is compared against similar existing memories. High similarity (score > 0.75) means the same fact was superseded: the old record is marked `outdated` and linked to its replacement with a `REVISED_BY` edge. Medium similarity only records `related_ids` (no false marking); type and domain isolation prevent cross-category mistakes.
 - **Pre-write secret scan.** Before anything is stored, content is scanned against **10 regular-expression rules**: a **strong-rule** match (API keys, tokens, private keys, SSH keys, bearer tokens — 8 rules) **rejects the write** and reports which rule fired, while a **weak-rule** match (Chinese ID-card numbers, phone numbers — 2 rules) is **let through and marked with a `secret_hint` flag** for later audit — the matched text itself is still stored as written (see [`SECURITY.md`](SECURITY.md)).
-- **Consolidation & memory stats.** `mem_consolidate` collapses near-duplicate memory pairs (similarity ≥ 0.85, protecting `importance ≥ 0.8`); `mem_stats` reports store-wide distributions (type / domain / importance / time / graph / hot spots / weak-secret flags).
+- **Consolidation & memory stats.** `mem_consolidate` collapses near-duplicate memory pairs (similarity ≥ 0.85, protecting `importance ≥ 0.8`); `mem_stats` reports store-wide distributions (type / domain / importance / time / graph / hot spots / weak-secret flags) plus a tier-grouped `tiers` section.
 - **Auto-promotion of hot memories.** Retrieval hits are counted (`hit_count`); `promote` surfaces frequently-used memories — raises importance and tags them (dry-run first, idempotent, reversible) as candidates for human-reviewed knowledge-base promotion.
 - **Memory lifecycle.** Time decay weighting (`MEMORY_DECAY_FACTOR`, default 0.95 /month) fades stale memories in ranking without touching storage; `kb_chunk` knowledge slices are exempt; `outdated` versions no longer pollute ordinary retrieval (traceable on demand).
 - **Task auto-archiving.** Completed task nodes are moved out of the hot store into markdown archives under the knowledge base, then deleted — dry-run first, `apply` to commit.
 - **Deployment doctor.** `doctor` checks critical files / storage / FTS / dependencies / Embedding reachability and **vector-dimension consistency** (measured vs stored), printing an actionable fix for every failing check (`--json` for machines); `startup-check` is its lightweight subset.
 - **Token-efficient by design.** Retrieval returns a **150-character summary plus metadata** instead of full text; full content is fetched on demand.
-- **Memory tiering (`tier`).** A lightweight retrieval-side view that moves no data and changes no storage: by default only the **facts tier** is returned (`memory` / `correction` / `decision` / `plan` / `task`, …), keeping the logs tier (`record` / `event` / `git_commit`, roughly 40% of active nodes) out of both default retrieval and context injection. `tier="logs"` returns only the logs tier and `tier=""` restores the full pool explicitly (the history-traversal channel). Tier membership is configured via `TIER_FACTS` / `TIER_LOGS`; unregistered types conservatively fall back to facts.
+- **Memory tiering (`tier`).** A lightweight retrieval-side view that moves no data and changes no storage: by default only the **facts tier** is returned (`memory` / `correction` / `decision` / `plan` / `task`, …), keeping the logs tier (`record` / `event` / `git_commit`, roughly 40% of active nodes) out of both default retrieval and context injection. `tier="logs"` returns only the logs tier and `tier=""` restores the full pool explicitly (the history-traversal channel). The same view also scopes `mem_review`'s `recent_ingests` and `mem_stats`' `tiers` section. Tier membership is configured via `TIER_FACTS` / `TIER_LOGS`; unregistered types conservatively fall back to facts.
 - **Optional API-key auth.** Off by default (localhost direct access); setting `PALIMPSEST_API_KEY` requires a Bearer / X-API-Key header on all REST routes except `/` — for LAN / trusted-network deployments.
 - **Three interfaces, one core.** MCP (stdio) for agent tooling, a FastAPI REST service, and a full CLI — all reuse the same underlying tools, so behavior never drifts.
 - **Swap Hermes memory with two plugins.** Replace Hermes' memory layer with Palimpsest entirely: a Memory Provider (semantic recall + auto-sedimentation) plus a Context Engine (graph distillation before compression) — enabled with one command each, memory survives across sessions.
@@ -371,8 +371,8 @@ python scripts/build_novel_index.py --source <vault-path> --full
 | `mem_get_full` | Fetch the full content of a node by ID |
 | `mem_ingest` | Write a new memory — with conflict detection, `REVISED_BY` version chaining, secret scanning, and length guards |
 | `mem_recent` | Most recent memories (newest first) |
-| `mem_review` | Periodic recap of the last N days plus governance candidates (high-value upgrades / outdated cleanup / low-value) |
-| `mem_stats` | Store-wide statistics: type / domain / importance / time / graph distributions + hot nodes |
+| `mem_review` | Periodic recap of the last N days plus governance candidates (high-value upgrades / outdated cleanup / low-value); `tier` (default `facts`) scopes `recent_ingests`: `logs` returns only the logs tier, `""` disables filtering |
+| `mem_stats` | Store-wide statistics: type / domain / importance / time / graph distributions + hot nodes; the `tiers` section groups types by retrieval-tier semantics (facts / logs / unclassified) and lists the effective `TIER_FACTS` / `TIER_LOGS` classification |
 | `mem_version_history` | Walk the `REVISED_BY` chain to show how a fact evolved |
 | `mem_consolidate` | Near-duplicate detection; dry-run preview or apply merge |
 | `mem_communities` | Leiden community detection: cluster the store into topical groups |
@@ -392,7 +392,7 @@ python scripts/build_novel_index.py --source <vault-path> --full
 | `index` | Scan and index the knowledge base |
 | `graph --id N` | Graph neighbors of a node (`--depth`, `--relation`, `--min-weight`) |
 | `recent` | Most recent memories (`--limit`, `--domain`) |
-| `review` | Periodic recap of the last N days |
+| `review` | Periodic recap of the last N days (`--tier facts\|logs\|''` scopes recent_ingests) |
 | `stats` | Store-wide statistics (totals / domains / importance / time / graph) |
 | `kb "QUERY"` | Semantic search over knowledge chunks |
 | `consolidate` | Preview merges; `--apply` executes (`--threshold 0.85`, `--max-importance 0.8`) |

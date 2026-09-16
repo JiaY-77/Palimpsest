@@ -26,6 +26,18 @@ logger = logging.getLogger(__name__)
 # 加锁保护「id 分配 + 插入」的临界区（只锁分配段，不锁整个 ingest 流程）
 _INGEST_ID_LOCK = threading.Lock()
 
+# ---- 记忆分层（tier）：检索侧视图，不改存储、不迁数据 ----
+# 定义已移到 config.py（可经环境变量 TIER_FACTS / TIER_LOGS / DEFAULT_TIER 调整），
+# 此处仅从配置读取，避免同一份清单在两处漂移。
+# facts = 事实层（默认检索与注入池）；logs = 日志层（从默认池摘出）；
+# ""（空串）= 不过滤，回到改动前的全量行为（显式历史通道）。
+# kb_chunk / novel_chunk 不入本体系，走既有 scope 隔离；
+# 未登记的 type 一律归 facts（保守兜底，避免静默丢结果）。
+# 常量在模块级定义（mem_review 等默认参数在函数定义期求值，须先于此可用）。
+TIER_FACTS = Config.TIER_FACTS
+TIER_LOGS = Config.TIER_LOGS
+DEFAULT_TIER = Config.DEFAULT_TIER
+
 
 @mcp.tool()
 def mem_retrieve(query: str, domain: str = "", top_k: int = 5,
@@ -315,7 +327,7 @@ def mem_recent(domain: str = "", limit: int = 10) -> str:
 
 
 @mcp.tool()
-def mem_review(days: int = 7, domain: str = "") -> str:
+def mem_review(days: int = 7, domain: str = "", tier: str = DEFAULT_TIER) -> str:
     """复盘盘点（复盘机制融入系统，复盘=记忆治理）。
 
     统计全库节点 + 盘点最近 days 天 ingest 的记忆，输出复盘草稿：
@@ -324,6 +336,11 @@ def mem_review(days: int = 7, domain: str = "") -> str:
       - stale_outdated：outdated 节点（版本链历史，可清理候选）
       - low_value_candidates：importance<=0.4 且 active 的非知识节点（清理候选）
     供每日复盘使用：维护者裁决后升级/清理，再存 type=review 节点。
+
+    tier：记忆分层视图，仅作用于 recent_ingests（与 mem_search 同款判定，
+    复用 _tier_matches）——"facts"（默认）只回事实层 / "logs" 只回日志层 /
+    ""（空串）不过滤（等价改动前行为）。kb_chunk / novel_chunk 不入本体系，
+    走既有 scope 隔离；未登记的 type 一律归 facts。
 
     A3 候选集回退全遍历：triviumdb 0.8.3 的 TQL FIND/MATCH 硬截断 5000 条，且
     TQL 返回顺序为 id 升序、不同于 iter_payloads 的 all_node_ids 顺序——对
@@ -359,12 +376,14 @@ def mem_review(days: int = 7, domain: str = "") -> str:
         return _to_float(x.get("importance"), 0)
 
     # 四类候选（与旧实现同一构造规则 + 同一排序）
-    # recent_ingests：窗口内 type=memory，created_at 倒序
+    # recent_ingests：窗口内 type=memory，created_at 倒序；tier 视图过滤
+    # （_tier_matches 语义与检索一致：facts=默认/ logs=日志层/ ""=不过滤）
     recent = [
         {k: x[k] for k in ("id", "type", "content", "importance", "status",
                            "domain", "created_at")}
         for x in items
         if x["type"] == "memory"
+        and _tier_matches(x["type"], tier)
         and isinstance(x["created_at"], (int, float))
         and x["created_at"]
         and (now - x["created_at"]) <= window
@@ -497,15 +516,9 @@ def mem_version_history(domain: str = "hermes", full_content: bool = False,
 
 
 # ---- 记忆分层（tier）：检索侧视图，不改存储、不迁数据 ----
-# 定义已移到 config.py（可经环境变量 TIER_FACTS / TIER_LOGS / DEFAULT_TIER 调整），
-# 此处仅从配置读取，避免同一份清单在两处漂移。
-# facts = 事实层（默认检索与注入池）；logs = 日志层（从默认池摘出）；
-# ""（空串）= 不过滤，回到改动前的全量行为（显式历史通道）。
-# kb_chunk / novel_chunk 不入本体系，走既有 scope 隔离；
-# 未登记的 type 一律归 facts（保守兜底，避免静默丢结果）。
-TIER_FACTS = Config.TIER_FACTS
-TIER_LOGS = Config.TIER_LOGS
-DEFAULT_TIER = Config.DEFAULT_TIER
+# 常量（TIER_FACTS / TIER_LOGS / DEFAULT_TIER）已在文件顶部从 config.py 读取；
+# 此处仅保留判定函数。facts = 事实层（默认检索与注入池）；logs = 日志层；
+# ""（空串）= 不过滤（显式历史通道）；未登记 type 一律归 facts。
 
 
 def _tier_matches(ptype: str, tier: str) -> bool:
