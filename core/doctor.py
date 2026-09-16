@@ -17,6 +17,7 @@
 
 
 # 维度校验复用 core.dims 的实现（避免两份漂移）
+from config import Config
 from core.dims import get_db_dim
 from core.startup_check import run_startup_check
 
@@ -50,8 +51,9 @@ def _check_dimension_consistency():
         db_err = str(e)
 
     # 3) 汇总判断
+    ollama_model = getattr(Config, "OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:0.6b")
     emb_fix = (
-        "启动 Ollama 并拉取模型: ollama pull qwen3-embedding:0.6b；"
+        f"启动 Ollama 并拉取模型: ollama pull {ollama_model}；"
         "若使用云端 provider，请确认 EMBEDDING_API_KEY 已设置"
     )
     if probe_err and (db_dim is None):
@@ -96,6 +98,10 @@ def _check_legacy_domain_mirror():
 
     domain 是正式区块字段（2026-08-29 起），character_name 只是历史兼容镜像。
     返回 (ok, detail, fix)。内部永不抛异常：异常时返回 ok=False。
+
+    本检查基于 store.iter_payloads() 全量遍历：需要判断「domain 缺失」这一存在性条件，
+    triviumdb 的等值索引（indexed_lookup）无法表达，故保持全遍历；库规模显著增长时
+    需重新评估此检查的代价（当前为 doctor 第 7 项，按需触发，不在热路径）。
     """
     from core.trivium_store import TriviumStore
 
@@ -169,9 +175,10 @@ def _suggest_fix(check: dict) -> str:
     if name == "依赖可导入":
         return "运行: pip install -r requirements.txt"
     if name == "Embedding 服务可用":
+        ollama_model = getattr(Config, "OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:0.6b")
         return (
             "启动 Ollama 并拉取模型:\n"
-            "  ollama pull qwen3-embedding:0.6b\n"
+            f"  ollama pull {ollama_model}\n"
             "若使用云端 EMBEDDING_PROVIDER=openai，请确认 EMBEDDING_API_KEY 已设置"
         )
     return ""
