@@ -145,7 +145,11 @@ def _merge_one_pair(db, tx, c: dict, next_id: int) -> dict | None:
     }
 
 
-def _apply_merge(store: TriviumStore, will_merge: list[dict]) -> tuple[int, list[dict]]:
+def _apply_merge(
+    store: TriviumStore,
+    will_merge: list[dict],
+    per_pair_commit: bool = False,
+) -> tuple[int, list[dict]]:
     """真正执行合并：新建合并节点、旧节点标 outdated、建 REVISED_BY 边。
 
     返回 (merged, merged_ids)。
@@ -157,23 +161,62 @@ def _apply_merge(store: TriviumStore, will_merge: list[dict]) -> tuple[int, list
 
     安全注意：合并内容来自库内已有记忆，但为保留 secret_scan 语义，事务内先
     手动 scan_secret_classified（strong 命中 → raise，触发回滚），再 tx.insert_with_id。
+
+    整批原子 vs 逐对提交（per_pair_commit）：
+    - per_pair_commit=False（当前默认 · 整批单事务）：任意一对失败 → 整批回滚，
+      不会出现「前 N-1 对已提交、第 N 对失败」的【部分合并】状态；代价是批次
+      中途失败时前面已成功的合并也一并丢弃，需整批重跑（重跑幂等：候选基于
+      当前库状态重新扫描，回滚后节点/边已不存在，重扫结果一致）。
+    - per_pair_commit=True（逐对提交）：每对合并在自己的事务里提交。单对失败
+      不影响此前已提交的其它对（会留下【部分合并】状态）；但逐对事务的写放大
+      更高（每对独立 begin/commit，多 N-1 次事务开销）。
+    为何默认选整批：合并是低频运维动作（CLI / 显式调用触发，不走高频热路径），
+    一致性 > 吞吐；「要么全成、要么全无」的落点对失败后的人工复核更清晰。
+
+    per_pair_commit=True 的失败语义：某对在自身事务内抛异常（如 SecretScanError）
+    → 该对事务回滚，异常【向上传播由调用方处理】，循环中断。此前已逐对提交的
+    对保留在库中，后续对不再执行；本函数不吞异常、不发明新的错误处理协议
+    （吞掉会让返回的 merged_ids 与库内实际写入状态产生歧义）。该开关目前
+    【未对外暴露】——consolidate() 公开入口暂无真实调用方需要，仅保留在
+    _apply_merge 层。
     """
     merged = 0
     merged_ids: list[dict] = []
     db = None
     try:
         db = store._acquire()
-        # 为整个批次挑一个安全的起始 id：大于当前最大已提交 id，后续新节点顺序递增
+        # 为整个批次挑一个安全的起始 id：大于当前最大已提交 id，后续新节点顺序递增。
+        #
+        # 【这里不需要 mcp_tools/memory.py 里 _INGEST_ID_LOCK 那样的锁】——那把锁
+        # 保护的是「REST 多请求并发 ingest」场景：多线程同时计算 next_id 的临界区，
+        # 「读 max(id)」与「按该 id 写入」必须原子，否则两个线程会挑到同一个 id。
+        # 而本路径是单进程调用（CLI / 显式调用触发的合并，不经 REST 多请求并发）；
+        # 跨进程/跨连接由 triviumdb 的独占写锁在构造/写时拦截（第二个写连接会报
+        # Database locked，根本走不到分配 id 这一步）。故 max(id)+1 的竞态在此
+        # 调用路径上不可达 —— 这里的「无锁」是有意为之的差异，不是遗漏。
         existing = db.all_node_ids()
         next_id = (max(existing) + 1) if existing else 1
-        with db.transaction() as tx:
+        if per_pair_commit:
+            # 逐对提交：每对合并独立事务。next_id 在同一连接内继续 +1 即可
+            # （同连接同进程，无需重新 all_node_ids()）。某对抛异常 → 该对事务
+            # 回滚、异常向上传播，已提交的对保留在库中。
             for c in will_merge:
-                info = _merge_one_pair(db, tx, c, next_id)
+                with db.transaction() as tx:
+                    info = _merge_one_pair(db, tx, c, next_id)
                 if info is None:
                     continue
                 next_id += 1
                 merged += 1
                 merged_ids.append(info)
+        else:
+            with db.transaction() as tx:
+                for c in will_merge:
+                    info = _merge_one_pair(db, tx, c, next_id)
+                    if info is None:
+                        continue
+                    next_id += 1
+                    merged += 1
+                    merged_ids.append(info)
     finally:
         if db is not None:
             with contextlib.suppress(Exception):
