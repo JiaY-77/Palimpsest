@@ -2,7 +2,7 @@
 core.version —— 版本号动态获取
 ================================
 版本不写死在代码里（自动化判断版本迭代）：
-从 git 读取 —— 有 tag 用 tag（v1.0.0），无 tag 用短 hash + dirty 标记；
+从 git 读取 —— 有 tag 用 tag（如 v2.1.0），无 tag 用短 hash + dirty 标记；
 读取失败回退 "dev"（非 git 部署/打包场景）。
 调用方：main.py 的根端点 /  README 版本描述等。
 """
