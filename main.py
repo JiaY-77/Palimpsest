@@ -156,9 +156,21 @@ async def root():
     return {
         "service": "Palimpsest",
         "version": get_version(),
-        "endpoints": ["/export", "/memory/{id}",
-                      "/mem/search", "/mem/hybrid-search", "/mem/ingest", "/mem/link",
-                      "/graph/neighbors"],
+        "endpoints": [
+            "/",
+            "/export",
+            "/summary",
+            "/report",
+            "/memory/{node_id}",
+            "/memory/{node_id}/vector",
+            "/mem/search",
+            "/mem/hybrid-search",
+            "/mem/ingest",
+            "/mem/link",
+            "/graph/neighbors",
+            "/graph/communities",
+            "/mem/stats",
+        ],
     }
 
 
