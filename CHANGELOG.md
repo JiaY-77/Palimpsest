@@ -4,6 +4,41 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
+## [2.1.0] - 2026-09-16
+
+### 新增
+
+- **`mem_review` 支持 `tier` 参数**：复盘盘点的 `recent_ingests` 现在受 `tier` 视图约束，与 `mem_search` 同款判定（`facts` 默认 / `logs` / `""` 不过滤）。CLI 新增 `review --tier`。`tier=""` 保持改动前的输出不变
+- **`mem_stats` 新增 `tiers` 分节**：按检索侧 tier 语义输出 type 分布（`facts` / `logs` / `unclassified`），并回显本次生效的 `facts_types` / `logs_types` / `default_tier`，让「哪些 type 落在哪层」自解释。`totals` 保持不变
+- **`_apply_merge` 新增 `per_pair_commit` 开关**（默认 `False`）：默认整批单事务保持不变；置 `True` 时每对合并独立提交。该开关暂未通过 `consolidate()` 对外暴露
+- **`docs/DEPRECATIONS.md`**（新增）：登记字段 / 接口的弃用与退役计划。首条为 `character_name`（`domain` 的历史兼容镜像），含四阶段退役步骤与验证命令
+
+### 修复
+
+- **`eval/run_eval.py` 四条检索路径口径统一**：`_run_fts` / `_run_vec` 此前绕过共享过滤链，`tier` 与 `outdated` 语义与 `_run_rrf` / `_run_cascade` 不一致，四种模式不可比。现四条路径共用同一套 `scope` / `tier` / `outdated` 判定，`_run_vec` 不再直调 `store.search_similar`；新增 `--tier` 暴露口径
+- **应用生命周期改用 `lifespan`**：替换已弃用的 `@app.on_event("startup")`；全局 `TriviumStore` 改为懒加载（`_get_store()`），import `main` 不再作为副作用打开数据库、建索引；启动自检经 `asyncio.to_thread` 移出事件循环
+
+### 文档
+
+- **`readme_check.py` 三项增强**：① `config.py` 中默认值非字面量的 `os.getenv` 键必须登记，否则报 warning；② 新增 `root()` 端点索引一致性检查（与真实路由比对）；③ 文档区块标记缺失时由静默假绿改为显式 warning
+- **`main.py` `root()` 的 `endpoints` 列表补全**：此前缺 `/`、`/summary`、`/report`、`/memory/{node_id}/vector`、`/graph/communities`、`/mem/stats`
+- **`eval/README.md` 说明题集版本**：明确 `eval_set.json` 为当前基准，`eval_set_v1_149.json` / `manual_set.json` 为历史/手工题集且均不入库
+- **`core/doctor.py` 的修复建议不再硬编码模型名**：改从 `Config.OLLAMA_EMBEDDING_MODEL` 读取（带兜底），换 embedding 模型后建议不再误导
+
+### 技术债与整洁度
+
+- 记忆分层常量（`TIER_FACTS` / `TIER_LOGS` / `DEFAULT_TIER`）移至 `mcp_tools/memory.py` 顶部——此前定义在 `mem_review` 之后，模块导入时求值默认参数会取不到
+- `core/reporting.py` 的 `Config` 导入提到模块级；`openai` 保持函数内延迟导入并注明原因
+- `mcp_tools/memory.py` 的 import 块恢复连续，去掉 8 处 `# noqa: E402`；删除两处 `if include_outdated is None` 死代码
+- `core/conflict.py` 的 `_similar_hits` docstring 修正为与代码一致（召回 `max(9, 10)` 取前 3）
+- `eval/pool_filter.py` 的 `should_write_output` 补上此前被忽略的两个参数检查：已有题集而新题集为空时拒绝覆盖，避免失败运行清空已存题目
+- `core/dims.py` 注明对 triviumdb「打开已有库忽略 `dim` 入参」这一未文档化行为的依赖与风险
+- `core/doctor.py` 的全量遍历检查注明保持理由（triviumdb 等值索引无法表达「字段缺失」判断）
+
+### 测试
+
+- 新增 `tests/test_eval_mode_parity.py`（四模式口径一致性）、`tests/test_readme_check.py` 扩充（三项新检查的漂移注入）、secret-scan 边界用例 6 组（邻位数字 / 全角数字 / `Bearer` 长度阈值 / 强弱规则同时命中 / `secret_hint` 形状）、`mem_review` 的 tier 过滤、`mem_stats` 的 `tiers` 分节、`_apply_merge` 的整批回滚与逐对提交
+
 ## [2.0.0] - 2026-09-15
 
 ### 破坏性变更
@@ -225,7 +260,8 @@
 
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
-[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.1.0
 [2.0.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.0.0
 [1.2.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v1.2.0
 [1.1.1]: https://github.com/JiaY-77/Palimpsest/releases/tag/v1.1.1
