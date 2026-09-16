@@ -5,23 +5,22 @@ mem_retrieve / mem_get_full / mem_ingest / mem_recent / mem_review /
 mem_version_history / mem_search（及核心 _mem_search_impl）/ mem_hybrid_search。
 """
 
+import contextlib
 import logging
 import re
 import threading
 import time
 
+from config import Config
+from core.conflict import resolve_conflict
+from core.fts_index import index_node, search_fts
+from core.secret_scan import SecretScanError
+from core.trivium_store import domain_in_block, node_domain
+from core.utils import _to_float
+from mcp_tools._common import _shorten, _to_json, mcp, store
+from mcp_tools.graph import _collect_neighbors
+
 logger = logging.getLogger(__name__)
-
-import contextlib  # noqa: E402
-
-from config import Config  # noqa: E402
-from core.conflict import resolve_conflict  # noqa: E402
-from core.fts_index import index_node, search_fts  # noqa: E402
-from core.secret_scan import SecretScanError  # noqa: E402
-from core.trivium_store import domain_in_block, node_domain  # noqa: E402
-from core.utils import _to_float  # noqa: E402
-from mcp_tools._common import _shorten, _to_json, mcp, store  # noqa: E402
-from mcp_tools.graph import _collect_neighbors  # noqa: E402
 
 # mem_ingest 并发 id 分配锁：多请求同时算 next_id 可能得到相同 id，
 # 加锁保护「id 分配 + 插入」的临界区（只锁分配段，不锁整个 ingest 流程）
@@ -539,8 +538,6 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
       - v4.0 outdated 语义：默认过滤 status=="outdated" 的旧版本（只回当前有效节点），
         include_outdated=True 时不过滤，返回全部（显式历史可追溯通道）。
     """
-    if include_outdated is None:
-        include_outdated = False
     if scope not in ("memory", "kb", "all"):
         scope = "all"
     if domain_bias not in ("memory", "kb"):
@@ -841,8 +838,6 @@ def _hybrid_search_impl(query: str, scope: str = "all", domain: str = "",
     空 query 返回 hint；任何异常吞掉返回 hint，不抛出。
     v4.0 outdated 语义：默认过滤 status=="outdated" 旧版本；include_outdated=True 时返回全部。
     """
-    if include_outdated is None:
-        include_outdated = False
     if scope not in ("memory", "kb", "all"):
         scope = "all"
     if domain_bias not in ("memory", "kb"):

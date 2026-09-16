@@ -77,4 +77,7 @@ def should_write_output(
     """
     if success_count <= 0:
         return False, "生成成功数为 0，拒绝覆盖已有题集文件"
+    # 有旧题集、但本次生成结果为空 → 覆盖会清空已有数据，同样拦截。
+    if existing_items and not new_items:
+        return False, f"新题集为空，拒绝覆盖 {len(existing_items)} 条已有题目"
     return True, ""

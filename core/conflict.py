@@ -103,8 +103,9 @@ def resolve_conflict(store, embedding, node_id, tx=None, db=None,
 def _similar_hits(db, embedding: list[float]) -> list[dict]:
     """事务内查找相似旧记忆（对已打开连接 db 用原生 search：只返回已提交节点）。
 
-    复用 store.search_similar 的候选语义（top_k=3、不衰减、不扩散），但使用
-    已打开的事务连接，避免事务期间二次 _acquire 触发 "Database locked"。
+    复用 store.search_similar 的候选语义（不衰减、不扩散）：召回 top_k=max(9,10)=10
+    个候选，再截取前 3 个返回。但使用已打开的事务连接，避免事务期间二次
+    _acquire 触发 "Database locked"。
     """
     try:
         hits = db.search(embedding, top_k=max(3 * 3, 10), min_score=0.0,
