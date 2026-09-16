@@ -6,8 +6,16 @@
 隔离保证：conftest 已把 DB_PATH 指向临时库，全部测试不触碰正式库 data/mh_memory.db。
 """
 
+import contextlib
 import json
+import os
+import shutil
+import tempfile
 
+import pytest
+
+from config import Config
+from core.trivium_store import TriviumStore
 from mcp_tools import (
     graph_neighbors,
     mem_get_full,
@@ -21,6 +29,27 @@ from mcp_tools import (
 def _get(result: str) -> dict:
     """MCP 工具返回 JSON 字符串 → dict"""
     return json.loads(result)
+
+
+@pytest.fixture
+def iso_consolidator_store():
+    """consolidate 事务测试专用独立临时库（不污染会话级共享库）。
+
+    mkdtemp + 临时把 Config.DB_PATH 指到独立库文件，结束即删；embedding 走
+    conftest 的类级 fake（TriviumStore.embed_text 已在 session 夹具里替换），
+    不需要每次手动赋 _fake_embed。
+    """
+    tmp = tempfile.mkdtemp(prefix="palimpsest_consolidator_iso_")
+    old = Config.DB_PATH
+    Config.DB_PATH = os.path.join(tmp, "consolidator.db")
+    s = TriviumStore()
+    try:
+        yield s
+    finally:
+        Config.DB_PATH = old
+        with contextlib.suppress(Exception):
+            s._acquire().close()
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def test_domain_unified(db_path):
@@ -364,6 +393,136 @@ def test_transaction_merge(db_path):
     # 新节点到两个旧节点各建了一条 REVISED_BY 边
     edges = store.get_node(new_id)["num_edges"]
     assert edges >= 2, f"新合并节点应有 >=2 条 REVISED_BY 边, 实际 {edges}"
+
+
+def _edge_count(store) -> int:
+    """库内全部节点的边数总和（合并会新增 REVISED_BY 边，回滚应还原）。"""
+    total = 0
+    for nid in store._get_all_node_ids():
+        total += store.get_node(nid)["num_edges"]
+    return total
+
+
+def _pair_will_merge(a_id, b_id, score=0.9, imp_a=0.3, imp_b=0.5) -> dict:
+    """构造一条 _apply_merge 可直接消费的候选对。"""
+    return {
+        "a": a_id, "b": b_id, "score": score,
+        "a_imp": imp_a, "b_imp": imp_b,
+        "a_content": "x", "b_content": "x",
+    }
+
+
+def test_consolidate_batch_rollback(iso_consolidator_store, monkeypatch):
+    """per_pair_commit=False（默认）：整批事务内一对失败 → 整批回滚。
+
+    注入 _merge_one_pair 对第二对抛 SecretScanError（模拟 strong 敏感命中），
+    即便第一对已写入事务，断言整批回滚后节点数、边数、旧节点状态全部还原，
+    无「前 N-1 对已提交、第 N 对失败」的部分合并状态。
+    """
+    import core.consolidator as consolidator
+    from core.secret_scan import SecretScanError
+
+    s = iso_consolidator_store
+    n1 = s.insert_node({"type": "memory", "content": "整批回滚护栏甲", "importance": 0.3},
+                       s.embed_text("整批回滚护栏甲"))
+    n2 = s.insert_node({"type": "memory", "content": "整批回滚护栏甲副", "importance": 0.5},
+                       s.embed_text("整批回滚护栏甲副"))
+    n3 = s.insert_node({"type": "memory", "content": "整批回滚护栏乙", "importance": 0.3},
+                       s.embed_text("整批回滚护栏乙"))
+    n4 = s.insert_node({"type": "memory", "content": "整批回滚护栏乙副", "importance": 0.5},
+                       s.embed_text("整批回滚护栏乙副"))
+    will_merge = [_pair_will_merge(n1, n2), _pair_will_merge(n3, n4)]
+
+    before_ids = set(s._get_all_node_ids())
+    before_edges = _edge_count(s)
+    before_status = {i: s.get_node(i)["payload"]["status"] for i in (n1, n2, n3, n4)}
+
+    real_merge = consolidator._merge_one_pair
+
+    def _explode_on_second(db, tx, c, next_id):
+        if {c["a"], c["b"]} == {n3, n4}:
+            raise SecretScanError("注入的敏感强命中")
+        return real_merge(db, tx, c, next_id)
+
+    monkeypatch.setattr(consolidator, "_merge_one_pair", _explode_on_second)
+
+    with pytest.raises(SecretScanError):
+        consolidator._apply_merge(s, will_merge)
+
+    after_ids = set(s._get_all_node_ids())
+    after_edges = _edge_count(s)
+    assert after_ids == before_ids, f"整批回滚后不应残留合并节点: {before_ids} -> {after_ids}"
+    assert after_edges == before_edges, f"整批回滚后边数应还原: {before_edges} -> {after_edges}"
+    for i in (n1, n2, n3, n4):
+        assert s.get_node(i)["payload"]["status"] == before_status[i], \
+            f"整批回滚后节点 {i} 不应被标 outdated"
+
+
+def test_consolidate_per_pair_commit(iso_consolidator_store, monkeypatch):
+    """per_pair_commit=True：失败对之前已提交、失败对自身回滚、异常上抛循环中断。
+
+    三对候选：第一对成功提交；第二对抛 SecretScanError 回滚并传播异常；
+    第三对不应被执行（循环中断）。断言第一对的合并节点/边/标脏真实落库，
+    第二对无残留，第三对保持 active、无新合并节点。
+    """
+    import core.consolidator as consolidator
+    from core.secret_scan import SecretScanError
+
+    s = iso_consolidator_store
+    n1 = s.insert_node({"type": "memory", "content": "逐对提交护栏甲", "importance": 0.3},
+                       s.embed_text("逐对提交护栏甲"))
+    n2 = s.insert_node({"type": "memory", "content": "逐对提交护栏甲副", "importance": 0.5},
+                       s.embed_text("逐对提交护栏甲副"))
+    n3 = s.insert_node({"type": "memory", "content": "逐对提交护栏乙", "importance": 0.3},
+                       s.embed_text("逐对提交护栏乙"))
+    n4 = s.insert_node({"type": "memory", "content": "逐对提交护栏乙副", "importance": 0.5},
+                       s.embed_text("逐对提交护栏乙副"))
+    n5 = s.insert_node({"type": "memory", "content": "逐对提交护栏丙", "importance": 0.3},
+                       s.embed_text("逐对提交护栏丙"))
+    n6 = s.insert_node({"type": "memory", "content": "逐对提交护栏丙副", "importance": 0.5},
+                       s.embed_text("逐对提交护栏丙副"))
+    will_merge = [
+        _pair_will_merge(n1, n2),
+        _pair_will_merge(n3, n4),
+        _pair_will_merge(n5, n6),
+    ]
+
+    max_id = max(s._get_all_node_ids())
+    merged_first_id = max_id + 1
+    failed_second_id = max_id + 2
+    unreached_third_id = max_id + 3
+
+    real_merge = consolidator._merge_one_pair
+
+    def _explode_on_second(db, tx, c, next_id):
+        if {c["a"], c["b"]} == {n3, n4}:
+            raise SecretScanError("注入的敏感强命中")
+        return real_merge(db, tx, c, next_id)
+
+    monkeypatch.setattr(consolidator, "_merge_one_pair", _explode_on_second)
+
+    with pytest.raises(SecretScanError):
+        consolidator._apply_merge(s, will_merge, per_pair_commit=True)
+
+    # 第一对已逐对提交：合并节点 + 2 条 REVISED_BY 边 + 旧节点标 outdated
+    first = s.get_node(merged_first_id)
+    assert first is not None, f"逐对模式下第一对应已提交: id={merged_first_id}"
+    assert first["payload"]["status"] == "active", first["payload"]
+    assert first["num_edges"] >= 2, f"第一对合并节点应有 REVISED_BY 边: {first}"
+    assert s.get_node(n1)["payload"]["status"] == "outdated"
+    assert s.get_node(n2)["payload"]["status"] == "outdated"
+
+    # 第二对自身事务回滚：无残留合并节点，旧节点保持 active
+    assert s.get_node(failed_second_id) is None, \
+        f"失败对的事务应回滚: id={failed_second_id} 不应存在"
+    assert s.get_node(n3)["payload"]["status"] == "active", "n3 不应被标 outdated"
+    assert s.get_node(n4)["payload"]["status"] == "active", "n4 不应被标 outdated"
+
+    # 第三对未执行（异常传播 → 循环中断）：无新合并节点，旧节点保持 active
+    assert s.get_node(unreached_third_id) is None, \
+        f"异常后循环应中断: id={unreached_third_id} 不应存在"
+    assert s.get_node(n5)["payload"]["status"] == "active", "n5 不应被标 outdated"
+    assert s.get_node(n6)["payload"]["status"] == "active", "n6 不应被标 outdated"
 
 
 def test_insert_tx_success(db_path):
