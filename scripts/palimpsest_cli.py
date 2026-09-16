@@ -143,7 +143,7 @@ def cmd_recent(args):
 
 
 def cmd_review(args):
-    raw = mem_review(days=args.days, domain=args.domain)
+    raw = mem_review(days=args.days, domain=args.domain, tier=args.tier)
     try:
         data = json.loads(raw)
         # 统计 decision 节点数
@@ -412,6 +412,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("review", help="复盘盘点（近 N 天记忆 + 治理候选）")
     sp.add_argument("--days", type=int, default=7)
     sp.add_argument("--domain", default="")
+    sp.add_argument("--tier", default="facts", help="记忆分层（仅作用于 recent_ingests）：facts(默认，只回事实层) | logs(只回日志层) | ''(不过滤，改动前行为)")
     sp.set_defaults(fn=cmd_review)
 
     sp = sub.add_parser("kb", help="知识库语义检索")

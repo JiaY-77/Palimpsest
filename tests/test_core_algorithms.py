@@ -448,3 +448,110 @@ def test_scan_secret_classified_empty_text():
 
     cls = scan_secret_classified("")
     assert cls == {"strong": [], "weak": []}
+
+
+# ---------------------------------------------------------------------------
+# 6. secret_scan 边界（Issue 3：弱规则边界 + 强规则阈值）
+#    每条断言 = 实测真实行为（先跑后写），不为了变绿而弱化。
+# ---------------------------------------------------------------------------
+def test_phone_boundary_adjacent_digits_only_run():
+    """手机号前后紧邻数字：16 位纯数字串不误命中（lookbehind/lookahead 拦截）。
+
+    实测：'1391234567890123'（前邻+后邻数字）→ weak == []，无误报。
+    """
+    from core.secret_scan import scan_secret_classified
+
+    cls = scan_secret_classified("1391234567890123")
+    assert cls == {"strong": [], "weak": []}
+
+
+def test_phone_boundary_single_side_adjacent_digit():
+    """手机号单侧紧邻数字：前方 / 后方紧邻一位数字都不会命中（防截断式漏报）。
+
+    实测：'813800138000'（前邻 '8'）→ 不命中；'138001380008'（尾邻 '8'）→ 不命中。
+    """
+    from core.secret_scan import scan_secret_classified
+
+    assert scan_secret_classified("813800138000") == {"strong": [], "weak": []}
+    assert scan_secret_classified("138001380008") == {"strong": [], "weak": []}
+
+
+def test_id_card_boundary_trailing_digit_not_hit():
+    """身份证后紧邻数字：合法 ID + 尾随数字 → 不命中（lookahead 拦截）。
+
+    实测：'11010119900307749X1' → weak == []。
+    """
+    from core.secret_scan import scan_secret_classified
+
+    cls = scan_secret_classified("11010119900307749X1")
+    assert cls == {"strong": [], "weak": []}
+
+
+def test_id_card_boundary_leading_digit_still_hit():
+    """身份证前紧邻数字：前邻数字（合成 18 位连续数字串）→ 仍命中 id_card。
+
+    实测：'911010119900307749X' → weak == ['id_card']。这是正则
+    [0-9]{17}[0-9Xx]「18 位连续数字且两侧非数字」的固有行为——前邻数字与身份证
+    连成 18 位纯数字 run，被当成 id_card 误报（漏判隐患，报告见结论）。
+    （示例串为构造数据，非真实证件号。）
+    """
+    from core.secret_scan import scan_secret_classified
+
+    cls = scan_secret_classified("911010119900307749X")
+    assert cls["strong"] == []
+    assert cls["weak"] == ["id_card"]
+
+
+def test_fullwidth_digits_not_scanned():
+    """全角数字（１３９１２３４５６７８）：不在 [0-9] 字符集 → 完全漏扫。
+
+    实测：全角手机号字形（'１３８００１３８０００'）与全角示例均 weak == []。
+    半角与全角字形信息是不同的 Unicode 码位，弱规则不覆盖（脱敏盲区）。
+    """
+    from core.secret_scan import scan_secret_classified
+
+    assert scan_secret_classified("１３８００１３８０００") == {"strong": [], "weak": []}
+    assert scan_secret_classified("１３９１２３４５６７８") == {"strong": [], "weak": []}
+
+
+def test_bearer_strong_rule_min_length_threshold_is_20():
+    """Bearer 强规则最小长度阈值实际为 20（正则 'Bearer [A-Za-z0-9._~+/=-]{20,}'）。
+
+    实测：'Bearer ' + 19 字符 → 不命中；'Bearer ' + 20 字符 → 强规则 bearer 命中。
+    """
+    from core.secret_scan import scan_secret_classified
+
+    assert scan_secret_classified("Bearer " + "A" * 19) == {"strong": [], "weak": []}
+    assert scan_secret_classified("Bearer " + "A" * 20)["strong"] == ["bearer"]
+
+
+def test_multi_rule_strong_and_weak_both_classified():
+    """一条文本同时命中手机号 + API key：分类扫描里强、弱同时报告，
+
+    存储层强规则优先整体拒绝（见 test_smoke 的入库断言）。
+    实测：strong == ['openai_key']、weak == ['phone']。
+    """
+    from core.secret_scan import scan_secret_classified
+
+    cls = scan_secret_classified("13800138000 sk-abcdefghijklmnopqrstuvwxyz123")
+    assert cls["strong"] == ["openai_key"], cls
+    assert cls["weak"] == ["phone"], cls
+
+
+def test_weak_secret_hint_is_rule_name_list():
+    """弱规则命中的 secret_hint 形状 = 规则名列表（不是匹配文本、不含原文）。"""
+    from core.secret_scan import scan_secret_classified
+
+    assert scan_secret_classified("13800138000")["weak"] == ["phone"]
+    assert scan_secret_classified("11010119900307749X")["weak"] == ["id_card"]
+
+
+def test_secret_scan_error_type_and_message():
+    """SecretScanError：携带 rules 列表，消息含「敏感信息」与规则名关键字段。"""
+    from core.secret_scan import SecretScanError
+
+    exc = SecretScanError(["openai_key", "bearer"])
+    assert exc.rules == ["openai_key", "bearer"]
+    msg = str(exc)
+    assert "敏感信息" in msg, msg
+    assert "openai_key" in msg and "bearer" in msg, msg

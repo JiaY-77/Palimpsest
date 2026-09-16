@@ -126,6 +126,51 @@ def _accumulate_node(acc: dict, nid, node, db) -> None:
         })
 
 
+def _build_tiers_result(by_type: dict) -> dict:
+    """按检索侧 tier 判定（mcp_tools.memory._tier_matches）把 by_type 分组。
+
+    语义与检索侧逐条一致：
+      - facts = 不在 TIER_LOGS 的 type（含未登记 type / kb_chunk / novel_chunk，
+        与「未登记 type 一律归 facts」的保守兜底一致）；
+      - logs = 在 TIER_LOGS 的 type；
+      - unclassified = 既不在 TIER_FACTS 也不在 TIER_LOGS 的 type（部署了但未登记，
+        检索侧保守回落 facts，故与 facts 有交叠、不额外计入总数）。
+    另输出实际生效的 facts_types / logs_types / default_tier，让「哪些 type 落在
+    哪层」在输出里自解释（对应 Issue 6 的 1c，不靠文档记忆）。
+    """
+    from config import Config
+
+    logs_types = set(Config.TIER_LOGS)
+    facts_types = set(Config.TIER_FACTS)
+    facts: dict = {}
+    logs: dict = {}
+    unclassified: dict = {}
+    for t, n in by_type.items():
+        if t in logs_types:
+            logs[t] = n
+        else:
+            facts[t] = n
+        if t not in facts_types and t not in logs_types:
+            unclassified[t] = n
+    return {
+        "facts": {
+            "count": sum(facts.values()),
+            "by_type": dict(sorted(facts.items(), key=lambda kv: kv[0])),
+        },
+        "logs": {
+            "count": sum(logs.values()),
+            "by_type": dict(sorted(logs.items(), key=lambda kv: kv[0])),
+        },
+        "unclassified": {
+            "count": sum(unclassified.values()),
+            "by_type": dict(sorted(unclassified.items(), key=lambda kv: kv[0])),
+        },
+        "facts_types": sorted(facts_types),
+        "logs_types": sorted(logs_types),
+        "default_tier": Config.DEFAULT_TIER,
+    }
+
+
 def _build_stats_result(acc: dict, start: float) -> dict:
     """把累加器汇总成 compute_stats 的返回结构（label top10 / 平均出度 / 耗时）。"""
     total = acc["total"]
@@ -142,6 +187,8 @@ def _build_stats_result(acc: dict, start: float) -> dict:
             "by_domain": dict(sorted(acc["by_domain"].items(), key=lambda kv: kv[0])),
             "secret_hint": acc["secret_hint"],
         },
+        # v5.0 记忆分层分节（新增不替换）：按检索侧 tier 语义分组的 type 分布
+        "tiers": _build_tiers_result(acc["by_type"]),
         "kinds": dict(sorted(acc["kind_counter"].items(), key=lambda kv: kv[0])),
         "importance": acc["imp_buckets"],
         "time": dict(sorted(acc["month_counter"].items(), key=lambda kv: kv[0])),
@@ -163,6 +210,12 @@ def compute_stats(store) -> dict:
     返回结构：
       {
         "totals": {total_nodes, active, outdated, by_type, by_domain, secret_hint},
+        "tiers":  {facts: {count, by_type}, logs: {count, by_type},
+                   unclassified: {count, by_type}, facts_types, logs_types, default_tier}
+                   —— 按检索侧 tier 语义分组的 type 分布 + 实际生效的分类清单，
+                   facts = 不在 TIER_LOGS（未登记 type 保守归 facts），
+                   logs = 在 TIER_LOGS，unclassified = 两层白名单都未登记的 type，
+                   facts_types / logs_types / default_tier = 本次生效配置（自解释）。
         "kinds":  {kind: count}（仅当存在含 kind 字段的 novel_chunk 时非空，否则空 dict），
         "importance": {小于0.4 / 0.4到0.6 / 0.6到0.8 / 大于等于0.8},
         "time":   {"2026-08": n, ...}（created_at 为 null/0 的跳过），

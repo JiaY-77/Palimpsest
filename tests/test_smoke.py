@@ -115,6 +115,33 @@ def test_secret_scan_weak_idcard(db_path):
     assert "id_card" in full["payload"].get("secret_hint", []), full
 
 
+def test_secret_scan_strong_wins_over_weak(db_path):
+    """一条文本同时含手机号 + API key：强规则优先、整体拒绝（stored:False）。
+
+    实测（Issue 3 #5）：拒绝由强规则决定——rules 含 openai_key、不含 phone，
+    error 含「敏感信息」与规则名关键字段；弱命中仅体现在扫描分类，不覆盖强拒。
+    """
+    content = "13800138000 sk-abcdefghijklmnopqrstuvwxyz123 请勿外泄"
+    r = _get(mem_ingest(content=content, type="memory"))
+    assert r["stored"] is False, r
+    rules = r.get("rules", [])
+    assert "openai_key" in rules, rules
+    assert "phone" not in rules, rules
+    assert "敏感信息" in r.get("error", ""), r
+    assert "openai_key" in r.get("error", ""), r
+
+
+def test_secret_scan_weak_hint_shape(db_path):
+    """弱规则命中时 secret_hint 形状 = 规则名列表（精确断言，含入库原样保留）。"""
+    content = "13800138000"
+    r = _get(mem_ingest(content=content, type="memory"))
+    assert r["stored"] is True, r
+    assert r.get("secret_hint") == ["phone"], r
+    nid = r["node_id"]
+    full = _get(mem_get_full(nid))
+    assert full["payload"].get("secret_hint") == ["phone"], full
+
+
 def test_fts_check(db_path):
     """临时库写入后 check_fts_consistency 应判定主库与 FTS 索引一致。"""
     from mcp_tools import store

@@ -248,3 +248,58 @@ def test_cli_parsers_accept_tier():
         assert build_parser().parse_args([cmd, "词"]).tier == "facts", \
             f"{cmd} 默认应为 facts"
         assert build_parser().parse_args([cmd, "词", "--tier", ""]).tier == ""
+
+
+# ---------------------------------------------------------------------------
+# 5. mem_review 的 tier 参数（Issue 6：检索分层一致性）
+# ---------------------------------------------------------------------------
+def test_mem_review_accepts_tier_default_facts():
+    import inspect
+
+    from mcp_tools.memory import mem_review
+
+    params = inspect.signature(mem_review).parameters
+    assert "tier" in params, "mem_review 应新增 tier 参数"
+    assert params["tier"].default == "facts", "默认应与其它检索函数一致（facts）"
+
+
+def test_cli_review_parser_accepts_tier():
+    from scripts.palimpsest_cli import build_parser
+
+    p = build_parser()
+    assert p.parse_args(["review", "--days", "3"]).tier == "facts"
+    assert p.parse_args(["review", "--tier", ""]).tier == ""
+    assert p.parse_args(["review", "--tier", "logs"]).tier == "logs"
+
+
+def test_mem_review_tier_filters_recent_ingests(iso):
+    """recent_ingests 仅收录 type=memory（现状）；tier 在既有 type 约束上再过滤：
+
+      - tier=""：不过滤，窗口内 memory 全回（回归红线）；
+      - tier="facts"（默认)：memory 属事实层，照常返回；
+      - tier="logs"：memory 非日志层 → recent_ingests 为空（真实行为）。
+      记录型（record）节点历来不在 recent_ingests（type=memory 硬过滤），
+      tier 参数不改变这一既有约束。
+    """
+    import json
+    import time
+
+    from mcp_tools.memory import mem_review
+
+    now = time.time()
+    fact = _insert(iso, {"type": "memory", "domain": "hermes", "importance": 0.5},
+                   "复盘分层：事实层内容")
+    log = _insert(iso, {"type": "record", "domain": "hermes", "importance": 0.5},
+                  "复盘分层：日志层内容")
+    iso.update_payload(fact, {"created_at": now})
+    iso.update_payload(log, {"created_at": now})
+
+    ids_all = {it["id"] for it in json.loads(mem_review(days=7, tier=""))["recent_ingests"]}
+    assert fact in ids_all, "tier='' 时应回窗口内 memory"
+    assert log not in ids_all, "record 历来不被 recent_ingests 收录（type=memory 硬过滤）"
+
+    ids_facts = {it["id"] for it in json.loads(mem_review(days=7))["recent_ingests"]}
+    assert fact in ids_facts, "默认 facts 层应回 memory"
+
+    logs_ids = {it["id"] for it in json.loads(mem_review(days=7, tier="logs"))["recent_ingests"]}
+    assert logs_ids == set(), "tier='logs' 时 memory 不在日志层 → recent_ingests 为空"
