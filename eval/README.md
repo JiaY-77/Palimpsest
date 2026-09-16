@@ -36,6 +36,12 @@ venv/Scripts/python.exe eval/run_eval.py --eval-set eval/.tmp/mini_set.json --li
 | `DEEPSEEK_MODEL` | 否 | 默认 `deepseek-v4-flash` |
 | `DB_PATH` | 否 | 覆盖默认库路径（默认 `data/mh_memory.db`） |
 
+## 题集版本
+
+- **当前基准**：`eval_set.json`，由 `gen_eval_set.py` 产出，评测默认使用。它生成到本地评测数据目录，**不入库**（`eval/` 下不跟踪题集 JSON）。
+- **历史题集**：`eval_set_v1_149.json`（149 题版本）与 `manual_set.json`（手工题）保存在本地评测数据目录，同样不入库；前者是历史版本、后者是手工补充集，**均非当前基准**。
+- 新增评测一律以 `eval_set.json` 为基准。
+
 ## 题集 Schema (`eval/eval_set.json`)
 
 ```json
