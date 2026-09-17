@@ -30,16 +30,22 @@ insert_node / update_payload / update_vector / delete_node 用例一致）。
 可直接运行，也可 import 调用 build(source=..., full=...)。
 """
 import argparse
+import dataclasses
 import os
 
 # 确保能 import 项目 core 模块（以项目根为基准，_common 导入即把项目根注入 sys.path）
 import _common  # noqa: F401
 
+from core.index_rules import IndexRules, is_included, load_rules, match_kind
 from core.trivium_store import TriviumStore
 
 # 节点类型与域（与 mcp_server 的 novel 区块检索条件保持一致）
 CHUNK_TYPE = "novel_chunk"
 DOMAIN = "novel"
+
+# 库根约定文件名：通用名优先，创作 vault 专用的旧名作为兼容回退。
+# 优先级：--rules > <vault>/.palimpsest-novel-index.json > <vault>/.palimpsest-index.json > 内置默认
+NOVEL_RULES_FILENAME = ".palimpsest-novel-index.json"
 
 # 默认数据源：无硬编码默认路径（个人 vault 路径不入开源仓库）。
 # 通过环境变量 PALIMPSEST_NOVEL_DIR 或命令行 --source 提供。
@@ -66,23 +72,33 @@ def _strip_frontmatter(text: str) -> str:
     return text
 
 
-def _kind_of(rel_path: str) -> str:
-    """按相对 vault 根的路径判定节点 kind。
+def _has_frontmatter_id(text: str) -> bool:
+    """检查 frontmatter 中是否存在 id: 键。"""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return False
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            return False
+        stripped = lines[i].strip()
+        if stripped.startswith(("id:", "id :")):
+            return True
+    return False
 
-    - 01_世界观/ 下 → setting（世界观设定）
-    - 文件名是 00_角色总览.md → overview（角色总览索引）
-    - 01_人物关系/ 下 → relation（人物关系 / 家族血缘等）
-    - 其余 02_角色 门派目录下的角色卡 → character
+
+def _kind_of(rel_path: str, rules: IndexRules | None = None) -> str:
+    """按相对库根路径判定节点 kind（委托给规则引擎）。
+
+    rel_path 一律是「相对库根」的正斜杠路径。
+
+    契约：**解析不出 kind 就返回 default_kind**（默认 "default"），绝不伪装成某个
+    具体业务 kind。真实的误判事故（角色卡从 02_角色/ 迁到 01_世界观/03_角色/ 后 77 张卡
+    全被归类为 setting、脚本照常退出无任何提示）就源于旧实现的 `return "character"`
+    兜底——先把「不知道」写成「知道」，再被静默接受。未匹配路径由调用方收集并显式列出。
     """
-    name = os.path.basename(rel_path)
-    if name == "00_角色总览.md":
-        return "overview"
-    norm = rel_path.replace("\\", "/")
-    if norm.startswith("01_世界观/"):
-        return "setting"
-    if "/01_人物关系/" in norm:
-        return "relation"
-    return "character"
+    if rules is None:
+        rules = load_rules()
+    return match_kind(rel_path, rules)
 
 
 def _extract_title(rel_path: str, content: str, kind: str) -> str:
@@ -99,24 +115,34 @@ def _extract_title(rel_path: str, content: str, kind: str) -> str:
     return os.path.splitext(os.path.basename(rel_path))[0]
 
 
-def _md_files(source_dir: str) -> list:
+def _md_files(source_dir: str, rules: IndexRules | None = None) -> list:
     """遍历源目录，返回所有 .md 文件（递归，按路径排序）。
 
-    排除非设定目录：03_章节/、04_草稿/、.obsidian/（只入定稿设定数据）。
+    使用规则的 exclude/include 过滤路径。
     """
-    SKIP_DIRS = {"03_章节", "04_草稿", ".obsidian"}
+    if rules is None:
+        rules = load_rules()
     files = []
     for root, dirs, names in os.walk(source_dir):
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        # 过滤目录：把目录名转为相对路径后用 is_included 检查
+        filtered_dirs = []
+        for d in dirs:
+            abs_dir = os.path.join(root, d)
+            rel_dir = os.path.relpath(abs_dir, source_dir).replace("\\", "/")
+            if is_included(rel_dir, True, rules):
+                filtered_dirs.append(d)
+        dirs[:] = filtered_dirs
         for name in names:
             if name.lower().endswith(".md"):
-                files.append(os.path.join(root, name))
+                abs_fp = os.path.join(root, name)
+                rel_fp = os.path.relpath(abs_fp, source_dir).replace("\\", "/")
+                if is_included(rel_fp, False, rules):
+                    files.append(abs_fp)
     return sorted(files)
 
 
 def _rel_path(fp: str, source_dir: str) -> str:
-    """源文件相对 vault 根的正斜杠路径（与 --source 指向哪个目录无关，
-    二者顶层结构一致：01_世界观/ 02_角色/）。"""
+    """源文件相对 vault 根的正斜杠路径。"""
     return os.path.relpath(fp, source_dir).replace("\\", "/")
 
 
@@ -198,7 +224,8 @@ def _upsert_node(store, payload: dict, content: str, existing: dict) -> str:
     return "inserted"
 
 
-def build(source: str | None = None, store=None, full: bool = False) -> dict:
+def build(source: str | None = None, store=None, full: bool = False,
+          rules: IndexRules | str | None = None) -> dict:
     """构建小说设定库索引（v1.0）。
 
     full=True（--full）：先删除库里所有 domain=novel 旧节点（delete_node 连带
@@ -207,14 +234,27 @@ def build(source: str | None = None, store=None, full: bool = False) -> dict:
         只处理新文件或 mtime 变化的文件（upsert 保持 id），孤儿（源文件已删除）
         节点一并清理。
 
+    rules: IndexRules 对象、规则文件路径字符串、或 None（按库根约定文件 + 内置默认）。
     单文件向量化 / 写入失败收集到 failed，不中断整体。
     返回统计 dict {mode, processed_files, inserted, updated, deleted, failed,
-        total_novel_nodes, by_kind}。
+        total_novel_nodes, by_kind, unmatched_paths, rules_source, rules_warnings}。
+
+    unmatched_paths：kind 落到 default_kind（规则未匹配）的文件路径，显式列出而不是
+    静默归并——旧实现把「不知道」兜底成 character，误判时全程无声。
     """
     if not source:
         raise ValueError("source 必填：小说 vault 根目录（--source 或 PALIMPSEST_NOVEL_DIR）")
+
+    # 加载规则
+    if rules is None:
+        rules_obj = load_rules(root=source, legacy_filename=NOVEL_RULES_FILENAME)
+    elif isinstance(rules, str):
+        rules_obj = load_rules(root=source, explicit=rules)
+    else:
+        rules_obj = rules
+
     store = store or TriviumStore()
-    md_files = _md_files(source)
+    md_files = _md_files(source, rules_obj)
     existing = _load_existing_map(store)
 
     inserted = 0
@@ -223,6 +263,7 @@ def build(source: str | None = None, store=None, full: bool = False) -> dict:
     failed = 0
     failed_paths = []
     processed_files = 0
+    unmatched_paths: list[str] = []
 
     if full:
         # 全量模式：先清空所有旧 domain=novel 节点（连带其图谱边），再全量重建
@@ -244,7 +285,11 @@ def build(source: str | None = None, store=None, full: bool = False) -> dict:
                 content = _strip_frontmatter(text)
                 if not content.strip():
                     continue  # 空文件/空正文跳过（如世界观占位文件），不计失败
-                kind = _kind_of(rel)
+                # require_frontmatter_id 检查
+                if rules_obj.require_frontmatter_id and not _has_frontmatter_id(text):
+                    unmatched_paths.append(rel)
+                    continue
+                kind = _kind_of(rel, rules_obj)
                 title = _extract_title(rel, content, kind)
                 payload = _build_payload(rel, content, kind, title, mtime)
                 result = _upsert_node(store, payload, content, existing)
@@ -252,6 +297,8 @@ def build(source: str | None = None, store=None, full: bool = False) -> dict:
                     inserted += 1
                 else:
                     updated += 1
+                if kind == rules_obj.default_kind:
+                    unmatched_paths.append(rel)
             except Exception:  # noqa: BLE001 —— 单文件处理失败计数后跳过继续其余文件
                 failed += 1
                 failed_paths.append(rel)
@@ -268,7 +315,11 @@ def build(source: str | None = None, store=None, full: bool = False) -> dict:
                 content = _strip_frontmatter(text)
                 if not content.strip():
                     continue  # 空文件/空正文跳过（如世界观占位文件），不计失败
-                kind = _kind_of(rel)
+                # require_frontmatter_id 检查
+                if rules_obj.require_frontmatter_id and not _has_frontmatter_id(text):
+                    unmatched_paths.append(rel)
+                    continue
+                kind = _kind_of(rel, rules_obj)
                 title = _extract_title(rel, content, kind)
                 payload = _build_payload(rel, content, kind, title, mtime)
                 entry = existing.get(rel)
@@ -281,6 +332,8 @@ def build(source: str | None = None, store=None, full: bool = False) -> dict:
                     inserted += 1
                 else:
                     updated += 1
+                if kind == rules_obj.default_kind:
+                    unmatched_paths.append(rel)
             except Exception:  # noqa: BLE001 —— 增量处理失败计数后跳过继续其余文件
                 failed += 1
                 failed_paths.append(rel)
@@ -297,6 +350,7 @@ def build(source: str | None = None, store=None, full: bool = False) -> dict:
 
     total_novel_nodes = _count_novel_nodes(store)
     by_kind = _count_by_kind(store)
+    unmatched_paths.sort()
 
     return {
         "mode": "full" if full else "incremental",
@@ -308,6 +362,9 @@ def build(source: str | None = None, store=None, full: bool = False) -> dict:
         "failed_paths": failed_paths,
         "total_novel_nodes": total_novel_nodes,
         "by_kind": by_kind,
+        "unmatched_paths": unmatched_paths,
+        "rules_source": rules_obj.source,
+        "rules_warnings": list(rules_obj.warnings),
     }
 
 
@@ -318,17 +375,35 @@ if __name__ == "__main__":
                         help="全量重建：先删除所有 domain=novel 旧节点再重建全部文件")
     parser.add_argument("--source", default=DEFAULT_SOURCE_DIR,
                         help="novel vault 根目录（必填；或设环境变量 PALIMPSEST_NOVEL_DIR）")
+    parser.add_argument("--rules", default=None,
+                        help="索引规则 JSON 文件路径（不传则使用 vault 根 .palimpsest-index.json 或内置默认）")
+    parser.add_argument("--require-frontmatter-id", action="store_true",
+                        help="仅索引 frontmatter 含 id: 键的文件，其余跳过并计入未匹配")
     args = parser.parse_args()
     if not args.source:
         parser.error("--source 必填：本地小说 vault 根目录（个人路径不入仓库，请显式传入）")
 
     import json
+    rules_arg = (load_rules(root=args.source, explicit=args.rules)
+                 if args.rules
+                 else load_rules(root=args.source, legacy_filename=NOVEL_RULES_FILENAME))
+    if args.require_frontmatter_id:
+        # 用户显式 --require-frontmatter-id 时强制开启
+        rules_arg = dataclasses.replace(rules_arg, require_frontmatter_id=True)
+    for w in rules_arg.warnings:
+        print(f"[警告] {w}")
     print(f"novel vault 根目录: {args.source}")
+    print(f"规则来源: {rules_arg.source}")
     print(f"模式: {'全量重建' if args.full else '增量更新（mtime 对比）'}")
-    result = build(source=args.source, full=args.full)
+    result = build(source=args.source, full=args.full, rules=rules_arg)
     # 只输出统计 JSON，不打印小说正文内容（避免刷屏）
     print(json.dumps({k: v for k, v in result.items() if k != "failed_paths"},
                      ensure_ascii=False))
     if result["failed"]:
         print(f"失败文件 {result['failed']} 个: {result['failed_paths'][:10]}",
               file=__import__("sys").stderr)
+    if result["unmatched_paths"]:
+        shown = result["unmatched_paths"]
+        print(f"未匹配 kind 的文件 {len(shown)} 个（default_kind 兜底）:")
+        for p in shown[:10]:
+            print(f"  {p}")

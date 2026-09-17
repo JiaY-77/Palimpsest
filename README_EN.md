@@ -10,7 +10,7 @@ Pa·limp·sest: *a writing surface that is overwritten again and again while old
 
 | | |
 |---|---|
-| Version | v2.1.0 |
+| Version | v2.2.0 |
 | Python | 3.10+ |
 | License | MIT |
 | Storage | TriviumDB 0.8.8 (vector + graph + document, embedded) |
@@ -356,6 +356,38 @@ python scripts/build_kb_index.py --full
 # 5. If you have a fiction vault
 python scripts/build_novel_index.py --source <vault-path> --full
 ```
+
+---
+
+## Custom index rules
+
+The scan scope, per-node `kind`, chunking strategy, and payload `domain` of `build_novel_index.py` / `build_kb_index.py` are all driven by a **declarative JSON rule set** (built-in defaults, zero config to get started). Pass a rule file explicitly with `--rules`:
+
+```bash
+# Explicit rule file (--rules)
+python scripts/build_novel_index.py --source <vault-path> --rules rules.json
+python scripts/build_kb_index.py --rules rules.json
+
+# Without --rules, lookups follow this order:
+#   1. <vault root>/.palimpsest-index.json (build_kb_index: knowledge dir root)
+#   2. built-in defaults
+```
+
+**Loading priority**: `--rules <path>` (a missing path errors out) > `<vault root>/<legacy filename>` (the novel script also honors the old `.palimpsest-novel-index.json` convention) > `<vault root>/.palimpsest-index.json` > built-in defaults. A legacy `.palimpsest-index.yaml` found in the root is **not parsed**; a warning tells you to switch to `.json`.
+
+**JSON schema**: top-level keys are `kind_map` / `default_kind` / `chunk_strategy` / `min_chunk_len` / `max_chunk_len` / `domain` / `include` / `exclude` / `require_frontmatter_id`. Unknown keys only raise a warning (forward compatible); invalid types or values raise an error. Each `kind_map` rule looks like:
+
+```json
+[
+  { "kind": "reference", "dir_prefix": "reference" },
+  { "kind": "overview", "filename": "00-overview.md" },
+  { "kind": "archive", "glob": "archive/**/*" }
+]
+```
+
+Three match modes (combinable within one rule — multiple fields mean AND): `dir_prefix` matches a directory of that name at any depth, `filename` must **equal** the basename exactly, and `glob` is fnmatch-matched against the whole relative path. Rules are evaluated in declaration order, first match wins; if none matches, the path falls back to `default_kind` (default `"default"` — never silently folded into a concrete business kind). Unmatched paths are surfaced in the `unmatched_paths` stat and printed in the summary.
+
+A complete example with generic directory names (`notes/` / `reference/` / `archive/`) is in [`examples/index-rules.example.json`](examples/index-rules.example.json).
 
 ---
 
