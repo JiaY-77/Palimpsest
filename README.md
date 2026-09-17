@@ -10,7 +10,7 @@
 >
 > 我们把这个意象搬进记忆里：**新的事实覆盖旧的事实，但旧迹永不真正丢失**——每一次改写都通过一条有迹可循的 **版本链**（`REVISED_BY`）连接，新旧记忆可查可溯。
 
-[![Version](https://img.shields.io/badge/Version-v2.1.0-4c6ef5.svg)](/)
+[![Version](https://img.shields.io/badge/Version-v2.2.0-4c6ef5.svg)](/)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Storage](https://img.shields.io/badge/TriviumDB-0.8.8-2d9cdb.svg)](/)
@@ -342,6 +342,38 @@ python scripts/build_kb_index.py --full
 # 5. 如有小说设定库
 python scripts/build_novel_index.py --source <vault路径> --full
 ```
+
+---
+
+## 自定义索引规则
+
+`build_novel_index.py` 与 `build_kb_index.py` 的扫描范围、节点 kind 分类、分块策略、payload domain 等均来自一套 **声明式 JSON 规则**（默认内置，零配置即用）。把规则同样可以从命令行显式指定：
+
+```bash
+# 显式指定规则文件（--rules）
+python scripts/build_novel_index.py --source <vault路径> --rules rules.json
+python scripts/build_kb_index.py --rules rules.json
+
+# 不传 --rules 时按以下优先级自动查找：
+#   1. <vault 根>/.palimpsest-index.json（kb 脚本为 knowledge dir 根）
+#   2. 内置默认规则
+```
+
+**规则加载优先级**：`--rules <path>`（路径不存在会直接报错）> `<vault 根>/<legacy 文件名>`（novel 脚本兼容旧约定 `.palimpsest-novel-index.json`）> `<vault 根>/.palimpsest-index.json` > 内置默认。目录下若存在旧格式 `.palimpsest-index.yaml`，**不会解析**，仅在警告里提示改用 `.json`。
+
+**JSON 文件格式**：顶层键为 `kind_map` / `default_kind` / `chunk_strategy` / `min_chunk_len` / `max_chunk_len` / `domain` / `include` / `exclude` / `require_frontmatter_id`；未知键只产生警告（向前兼容），类型或取值非法会报错。`kind_map` 每条规则形如：
+
+```json
+[
+  { "kind": "reference", "dir_prefix": "reference" },
+  { "kind": "overview", "filename": "00-overview.md" },
+  { "kind": "archive", "glob": "archive/**/*" }
+]
+```
+
+三种匹配方式（同一条规则里可组合，多个字段 = AND）：`dir_prefix` 匹配任意层级的同名目录；`filename` 与文件名**精确相等**；`glob` 用 `fnmatch` 匹配整条相对路径。按声明顺序先匹配者胜，全不命中 → `default_kind`（默认 `"default"`，**绝不静默归并**到具体业务 kind，未命中路径会出现在统计的 `unmatched_paths` 并打印在摘要里）。
+
+完整示例见 [`examples/index-rules.example.json`](examples/index-rules.example.json)，内含通用目录名（`notes/` / `reference/` / `archive/`）演示全部字段。
 
 ---
 

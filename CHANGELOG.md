@@ -4,6 +4,28 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
+## [Unreleased]
+
+## [2.2.0] - 2026-09-17
+
+### 新增
+
+- **索引规则可配置（`core/index_rules.py`）**：`build_novel_index.py` 与 `build_kb_index.py` 的扫描范围、目录 → `kind` 映射、分块策略、payload `domain` 不再写死在代码里，改由一套声明式 JSON 规则驱动。加载优先级：`--rules <path>` > `<库根>/<legacy 文件名>`（novel 脚本兼容 `.palimpsest-novel-index.json`）> `<库根>/.palimpsest-index.json` > 内置默认。规则文件字段：`kind_map`（支持 `dir_prefix` / `filename` / `glob` 三种匹配，按声明顺序先匹配者胜）、`default_kind`、`chunk_strategy`（`file` / `heading` / `chars`）、`min_chunk_len` / `max_chunk_len`、`domain`、`include` / `exclude`、`require_frontmatter_id`。未知键只告警（向前兼容），类型或取值非法直接报错
+- **未匹配路径显式可见**：`kind` 落到 `default_kind` 的文件会单列进统计新字段 `unmatched_paths` 并打印在摘要里。此前 `_kind_of()` 用 `return "character"` 兜底，把「不知道」伪装成「知道」——某库角色卡迁移目录后 77 张卡被误判为 `setting` 而脚本无任何提示，正是这条静默兜底造成的
+- **`--require-frontmatter-id`（novel 脚本）**：只索引 frontmatter 含 `id:` 键的文件，其余跳过并计入未匹配
+- **`examples/index-rules.example.json`**：不含任何个人目录名的规则示例，演示全部字段与三种匹配方式
+- README / README_EN 新增「自定义索引规则 / Custom index rules」一节
+
+### 变更
+
+- 两个索引脚本的内置默认不再包含任何具体库的目录名（`01_世界观/` 之类的约定从开源仓库移除），只保留通用行为：novel 脚本「整文件 + 排除 `03_章节` / `04_草稿` / `.obsidian`」，kb 脚本「按 `##`/`###` 标题切 300~800 字符 + 排除 `.obsidian`」
+- `scripts/build_kb_index.py` 的 `split_markdown()` 实现迁至 `core/index_rules.chunk_markdown()`；公开函数名与签名保留（新增可选 `rules` 参数），默认行为不变
+- 返回统计新增 `unmatched_paths`（novel 脚本另加 `rules_source` / `rules_warnings`），既有键保持不变
+
+### 测试
+
+- 新增 `tests/test_index_rules.py`：27 条，覆盖默认加载、加载优先级（含 legacy 文件名与 `.yaml` 迁移提示）、非法配置与未知键、三种匹配方式、`is_included` 白/黑名单、`chunk_markdown` 与 `split_markdown` 的迁移等价性、内置默认可被调用方覆盖、以及「未匹配不静默归并」的回归断言
+
 ## [2.1.0] - 2026-09-16
 
 ### 新增
@@ -260,7 +282,8 @@
 
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
-[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.2.0
 [2.1.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.1.0
 [2.0.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.0.0
 [1.2.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v1.2.0
