@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-09-19
+
+### 新增
+
+- **Hermes 技能语义索引与检索**：`scripts/build_skill_index.py` 扫描技能目录（默认 `$HERMES_HOME/skills`，`--skills-dir` 可覆盖）下的每个 `SKILL.md`，以一个 `type=skill_chunk` 节点入库（frontmatter `name` / `description`，`category` 取相对父目录），增量按 `source_mtime`、孤儿清理、幂等；新增 MCP / REST 工具 `skill_search`（`POST /skill/search`）按语义检索技能
+
 ## [2.2.0] - 2026-09-17
 
 ### 新增
@@ -282,7 +288,8 @@
 
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
-[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.3.0...HEAD
+[2.3.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.3.0
 [2.2.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.2.0
 [2.1.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.1.0
 [2.0.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.0.0
