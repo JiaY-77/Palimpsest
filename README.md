@@ -10,7 +10,7 @@
 >
 > 我们把这个意象搬进记忆里：**新的事实覆盖旧的事实，但旧迹永不真正丢失**——每一次改写都通过一条有迹可循的 **版本链**（`REVISED_BY`）连接，新旧记忆可查可溯。
 
-[![Version](https://img.shields.io/badge/Version-v2.2.0-4c6ef5.svg)](/)
+[![Version](https://img.shields.io/badge/Version-v2.3.0-4c6ef5.svg)](/)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Storage](https://img.shields.io/badge/TriviumDB-0.8.8-2d9cdb.svg)](/)
