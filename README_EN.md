@@ -393,7 +393,7 @@ A complete example with generic directory names (`notes/` / `reference/` / `arch
 
 ## Usage
 
-### MCP tools (15) — `mcp_tools/*`
+### MCP tools (16) — `mcp_tools/*`
 
 | Tool | Description |
 |---|---|
@@ -410,6 +410,7 @@ A complete example with generic directory names (`notes/` / `reference/` / `arch
 | `mem_communities` | Leiden community detection: cluster the store into topical groups |
 | `kb_index` | Index knowledge-base `.md` files into `kb_chunk` nodes (vectorized) |
 | `kb_search` | Semantic search over indexed knowledge chunks |
+| `skill_search` | Semantic search over indexed Hermes skills (`skill_chunk` nodes) — returns name / description / category / source_path |
 | `graph_neighbors` | BFS over the knowledge graph from a node (relation filter, depth 1–3, weak-edge filter) |
 | `mem_link` | Manually create graph edges (`RELATED_TO` / `CAUSES` / `REFERS_TO`; bidirectional by default) |
 
@@ -468,6 +469,7 @@ Node ownership is expressed by the `payload.domain` field. Specify a block at wr
 | `PATCH` | `/memory/{id}` | Partial update of a node (same merge semantics, REST-precise) |
 | `PATCH` | `/memory/{id}/vector` | Update a node's vector (dimension must match) |
 | `POST` | `/mem/search` | Unified retrieval |
+| `POST` | `/skill/search` | Semantic search over indexed skills |
 | `POST` | `/mem/hybrid-search` | FTS5 + vector hybrid retrieval |
 | `POST` | `/mem/ingest` | Write a new memory (conflict detection + secret scan) |
 | `POST` | `/mem/link` | Create a graph edge |
@@ -571,7 +573,7 @@ Palimpsest/
 │   ├── task_archive.py           #   task auto-archiving
 │   ├── utils.py
 │   └── version.py                #   version from git tag (falls back to dev)
-├── mcp_tools/                    # 15 MCP tools (shared across MCP/REST/CLI)
+├── mcp_tools/                    # 16 MCP tools (shared across MCP/REST/CLI)
 │   ├── __init__.py
 │   ├── _common.py                #   shared store / mcp / serialization helpers
 │   ├── memory.py                 #   mem_* tools

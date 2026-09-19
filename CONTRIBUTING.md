@@ -63,7 +63,7 @@ Palimpsest/
 │   ├── secret_scan.py     # pre-write secret scanning
 │   ├── startup_check.py   # startup self-check
 │   └── task_archive.py    # completed-task auto-archiving
-├── mcp_tools/     # 15 MCP tools — shared by MCP / REST / CLI
+├── mcp_tools/     # 16 MCP tools — shared by MCP / REST / CLI
 ├── scripts/       # operational tooling (CLI, dashboard, KB indexing)
 ├── tests/         # pytest suite (conftest.py isolates the DB)
 └── data/          # runtime databases (gitignored — never commit)

@@ -52,6 +52,9 @@ from mcp_tools import (
 from mcp_tools import (
     mem_search as _mcp_mem_search,
 )
+from mcp_tools import (
+    skill_search as _mcp_skill_search,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +167,7 @@ async def root():
             "/memory/{node_id}",
             "/memory/{node_id}/vector",
             "/mem/search",
+            "/skill/search",
             "/mem/hybrid-search",
             "/mem/ingest",
             "/mem/link",
@@ -355,6 +359,11 @@ class MemSearchRequest(BaseModel):
     tier: str = "facts"       # 记忆分层：facts(默认) | logs | ""(不过滤，改动前行为)
 
 
+class SkillSearchRequest(BaseModel):
+    query: str
+    top_k: int = 5
+
+
 class MemIngestRequest(BaseModel):
     content: str
     type: str = "memory"      # memory | plan | record | correction | event | kb_chunk ...
@@ -417,6 +426,11 @@ async def mem_search(req: MemSearchRequest):
         include_outdated=req.include_outdated,
         domain_boost=req.domain_boost, tier=req.tier,
     ))
+
+
+@app.post("/skill/search")
+async def skill_search(req: SkillSearchRequest):
+    return _as_json(_mcp_skill_search(req.query, top_k=req.top_k))
 
 
 @app.post("/mem/hybrid-search")
