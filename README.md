@@ -379,7 +379,7 @@ python scripts/build_kb_index.py --rules rules.json
 
 ## 使用
 
-### MCP 工具（15 个）— `mcp_tools/*`
+### MCP 工具（16 个）— `mcp_tools/*`
 
 | 工具 | 说明 |
 |---|---|
@@ -396,6 +396,7 @@ python scripts/build_kb_index.py --rules rules.json
 | `mem_communities` | Leiden 社区发现：把记忆库聚成主题簇，回答「有哪些圈子」 |
 | `kb_index` | 将知识库 `.md` 文件索引为 `kb_chunk` 节点（向量化） |
 | `kb_search` | 对已索引知识切片的语义搜索 |
+| `skill_search` | 技能语义检索：检索 Hermes 技能（`skill_chunk` 节点），返回 name / description / category / source_path |
 | `graph_neighbors` | 从某节点出发对知识图谱做 BFS（关系过滤、深度 1–3、弱边过滤） |
 | `mem_link` | 手动创建图边（`RELATED_TO` / `CAUSES` / `REFERS_TO`；默认双向） |
 
@@ -454,6 +455,7 @@ python scripts/palimpsest_cli.py consolidate --apply # 合并
 | `PATCH` | `/memory/{id}` | 部分更新节点 payload（与 PUT 同合并语义，REST 语义更精确） |
 | `PATCH` | `/memory/{id}/vector` | 更新节点的向量（维度需一致） |
 | `POST` | `/mem/search` | 统一检索 |
+| `POST` | `/skill/search` | 技能语义检索 |
 | `POST` | `/mem/hybrid-search` | FTS5 + 向量混合检索 |
 | `POST` | `/mem/ingest` | 写入新记忆（含冲突检测 + 敏感扫描） |
 | `POST` | `/mem/link` | 创建图边 |
@@ -557,7 +559,7 @@ Palimpsest/
 │   ├── task_archive.py           #   完成任务自动归档
 │   ├── utils.py
 │   └── version.py                #   版本号来自 git tag（兜底 dev）
-├── mcp_tools/                    # 15 个 MCP 工具（MCP/REST/CLI 共用）
+├── mcp_tools/                    # 16 个 MCP 工具（MCP/REST/CLI 共用）
 │   ├── __init__.py
 │   ├── _common.py                #   共享 store / mcp / 序列化助手
 │   ├── memory.py                 #   mem_* 工具
