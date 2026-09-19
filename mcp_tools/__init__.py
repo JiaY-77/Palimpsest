@@ -15,7 +15,6 @@ from mcp_tools._common import mcp, store
 from mcp_tools.consolidate_tool import mem_consolidate
 from mcp_tools.graph import graph_neighbors, mem_communities, mem_link
 from mcp_tools.kb import kb_index, kb_search
-from mcp_tools.skill import skill_search
 from mcp_tools.memory import (
     mem_get_full,
     mem_hybrid_search,
@@ -26,6 +25,7 @@ from mcp_tools.memory import (
     mem_search,
     mem_version_history,
 )
+from mcp_tools.skill import skill_search
 from mcp_tools.stats_tool import mem_stats
 
 __all__ = [

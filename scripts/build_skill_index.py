@@ -164,7 +164,7 @@ def _load_frontmatter(raw: str) -> dict[str, Any]:
             loaded = yaml.safe_load(raw)
             if isinstance(loaded, dict):
                 return loaded
-        except Exception:  # noqa: BLE001 - 轻量解析器作为无依赖兜底
+        except Exception:  # noqa: BLE001, S110 - 轻量解析器作为无依赖兜底
             pass
     return _parse_simple_yaml(raw)
 
@@ -190,7 +190,7 @@ def _parse_skill_file(fp: str) -> dict[str, Any]:
         "category": "",  # 由调用方按技能根目录补全
         "source_path": os.path.abspath(fp),
         "source_mtime": os.path.getmtime(fp),
-        "content": f"{str(name)}\n{str(description)}\n{body}",
+        "content": f"{name!s}\n{description!s}\n{body}",
     }
 
 

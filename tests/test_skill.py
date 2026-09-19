@@ -3,17 +3,17 @@
 测试使用临时 TriviumDB 和确定性 fake embedding，不连接 Ollama，也不触碰正式库。
 """
 
+import contextlib
 import json
 import os
 import shutil
-import tempfile
 
 import pytest
 
+import mcp_tools.skill as skill_tool
 from config import Config
 from core.trivium_store import TriviumStore
 from scripts.build_skill_index import build as build_skill_index
-import mcp_tools.skill as skill_tool
 
 
 @pytest.fixture
@@ -25,10 +25,8 @@ def iso_store(tmp_path, monkeypatch):
     try:
         yield store
     finally:
-        try:
+        with contextlib.suppress(Exception):
             store._acquire().close()
-        except Exception:
-            pass
         shutil.rmtree(tmp_path, ignore_errors=True)
 
 
