@@ -349,6 +349,7 @@ class TriviumStore:
         apply_decay: bool = True,
         block: str = "",
         include_outdated: bool = False,
+        payload_filter: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """使用 search_advanced（SA-PPR 认知管线）检索，保留时间衰减
 
@@ -367,6 +368,10 @@ class TriviumStore:
 
         - expand_depth：透传给 search_advanced 的图扩散深度（默认 1）
         - apply_decay=False 供 mem_ingest 内部阈值判断保持原样
+        - payload_filter：透传给 search_advanced 的负载过滤（如
+          {"type": "skill_chunk"}）。用于候选池隔离：库里记忆/知识块节点远多于
+          技能节点，同池竞争时少数类型会被挤出候选窗口，按类型先过滤再排序
+          可保证该类节点的召回。
 
         重排模式（MEMORY_RERANK_MODE）：
           hard（旧版，可回退）：
@@ -400,6 +405,7 @@ class TriviumStore:
                 enable_advanced_pipeline=True,
                 max_edges_per_node=Config.EXPAND_MAX_EDGES_PER_NODE,
                 min_edge_weight=Config.EXPAND_MIN_EDGE_WEIGHT,
+                payload_filter=payload_filter,
             )
             scored = [
                 (float(hit.score), {"id": hit.id, "payload": hit.payload})
