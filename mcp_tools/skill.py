@@ -16,9 +16,13 @@ def skill_search(query: str, top_k: int = 5) -> str:
     if not query:
         return _to_json({"results": [], "hint": "查询内容不能为空"})
     emb = store.embed_text(query)
+    # 先取一批候选再过滤：普通记忆/知识库节点常与查询更相近，直接按 top_k
+    # 取会把这些非技能节点算进窗口，过滤后技能被挤空（小 top_k 尤其明显）。
+    # 因此候选窗口放大（至少 20 条），过滤出 skill_chunk 后再截断到 top_k。
+    candidate_k = max(top_k * 4, 20)
     results = store.search_similar(
         emb,
-        top_k=top_k,
+        top_k=candidate_k,
         expand_depth=getattr(Config, "RETRIEVAL_EXPAND_DEPTH", 0),
     )
     items = []
@@ -33,6 +37,8 @@ def skill_search(query: str, top_k: int = 5) -> str:
             "source_path": payload.get("source_path", ""),
             "score": round(_to_float(r.get("score"), 0.0), 4),
         })
+        if len(items) >= max(top_k, 1):
+            break
     if not items:
         return _to_json({
             "results": [],
