@@ -16,14 +16,14 @@ def skill_search(query: str, top_k: int = 5) -> str:
     if not query:
         return _to_json({"results": [], "hint": "查询内容不能为空"})
     emb = store.embed_text(query)
-    # 先取一批候选再过滤：普通记忆/知识库节点常与查询更相近，直接按 top_k
-    # 取会把这些非技能节点算进窗口，过滤后技能被挤空（小 top_k 尤其明显）。
-    # 因此候选窗口放大（至少 20 条），过滤出 skill_chunk 后再截断到 top_k。
-    candidate_k = max(top_k * 4, 20)
+    # 候选池隔离：技能节点在库里是少数派（记忆/知识块远多于技能），
+    # 同池竞争时会被挤出候选窗口，过滤后返回空。这里把过滤条件下推到检索层
+    # （payload_filter），只在 skill_chunk 子集内排序，噪声再多也不影响召回。
     results = store.search_similar(
         emb,
-        top_k=candidate_k,
+        top_k=max(top_k, 1),
         expand_depth=getattr(Config, "RETRIEVAL_EXPAND_DEPTH", 0),
+        payload_filter={"type": "skill_chunk"},
     )
     items = []
     for r in results:

@@ -90,3 +90,54 @@ def test_skill_search_survives_dense_non_skill_competition(iso_store, fake_embed
     assert result["results"], "技能被非技能候选挤出窗口后返回了空结果"
     assert result["results"][0]["name"] == "release-flow"
     assert len(result["results"]) == 1
+
+
+def test_skill_search_survives_competition_beyond_candidate_window(
+    iso_store, fake_embedder
+):
+    """噪声节点多到填满候选放大窗口时，技能仍应被检索到。
+
+    候选放大（top_k*4，至少 20）只能缓解挤压：噪声足够多时窗口会被填满，
+    技能依旧被过滤掉。真正的修法是让检索在 skill 子集内进行（payload_filter），
+    候选池隔离后噪声再多也不影响。
+    """
+    query = "release workflow"
+    emb = fake_embedder(query)
+
+    # 30 个「完全等同查询」的普通记忆节点——超过任意候选放大窗口。
+    for index in range(30):
+        iso_store.insert_node(
+            {
+                "type": "memory",
+                "domain": "hermes",
+                "content": f"noise memory {index}",
+                "name": f"noise-{index}",
+                "status": "active",
+            },
+            list(emb),
+        )
+
+    # 技能节点内容相关，但向量弱于噪声（向量减半）。
+    iso_store.insert_node(
+        {
+            "type": "skill_chunk",
+            "domain": "skill",
+            "content": "release workflow\nShip a release safely.\n",
+            "name": "release-flow",
+            "description": "Ship a release safely.",
+            "category": "software-development",
+            "source_path": "C:/skills/software-development/release-flow/SKILL.md",
+            "status": "active",
+        },
+        [value * 0.5 for value in emb],
+    )
+
+    original = skill_tool.store
+    try:
+        skill_tool.store = iso_store
+        result = json.loads(skill_tool.skill_search(query, top_k=1))
+    finally:
+        skill_tool.store = original
+
+    assert result["results"], "噪声填满候选窗口后技能检索返回了空结果"
+    assert result["results"][0]["name"] == "release-flow"
