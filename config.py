@@ -134,7 +134,10 @@ class Config:
     DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
 
     # ---- Ollama 配置（备用）----
-    OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+    # 端点默认写 IPv4 字面量而非 localhost：部分系统把 localhost 优先解析为
+    # IPv6 回环 [::1]，而 Ollama 默认只监听 IPv4，于是每个请求都要先经历一次
+    # 连接超时再回落（实测单次 embedding 由数十毫秒退化为约 2 秒）。
+    OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1")
     OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-r1:7b")
 
     # ---- Embedding 配置（2026-08-25 开源多选择：本地隐私优先，云端精度可选）----
@@ -147,7 +150,8 @@ class Config:
     OLLAMA_EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:0.6b")
     # Ollama 原生 embedding API 根地址（/api/embeddings），与 LLM 用的
     # OLLAMA_BASE_URL（OpenAI 兼容 /v1 路径）解耦。
-    OLLAMA_EMBEDDING_BASE_URL = os.getenv("OLLAMA_EMBEDDING_BASE_URL", "http://localhost:11434")
+    # 同上：用 IPv4 字面量而非 localhost，避免 IPv6 优先解析带来的连接超时。
+    OLLAMA_EMBEDDING_BASE_URL = os.getenv("OLLAMA_EMBEDDING_BASE_URL", "http://127.0.0.1:11434")
     OLLAMA_EMBEDDING_DIM = int(os.getenv("OLLAMA_EMBEDDING_DIM", "1024"))
     # 云端 OpenAI 兼容 Embedding API（默认 Voyage，可换任意 OpenAI 兼容端点）
     EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY", "")

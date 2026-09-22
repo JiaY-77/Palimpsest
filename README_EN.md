@@ -275,11 +275,11 @@ All configuration is read from environment variables (a `.env` file is loaded au
 | `DEEPSEEK_API_KEY` | *(empty)* | API key for the DeepSeek API | `LLM_BACKEND=deepseek` |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | DeepSeek API base URL | `LLM_BACKEND=deepseek` |
 | `DEEPSEEK_MODEL` | `deepseek-v4-flash` | DeepSeek model identifier | `LLM_BACKEND=deepseek` |
-| `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Ollama OpenAI-compatible base URL | `LLM_BACKEND=ollama` |
+| `OLLAMA_BASE_URL` | `http://127.0.0.1:11434/v1` | Ollama OpenAI-compatible base URL | `LLM_BACKEND=ollama` |
 | `OLLAMA_MODEL` | `deepseek-r1:7b` | Ollama chat model used as the LLM | `LLM_BACKEND=ollama` |
 | `EMBEDDING_PROVIDER` | *(empty = auto-detect)* | Embedding backend: leave empty for auto-detection (valid `EMBEDDING_API_KEY` → `openai`, otherwise → `ollama`); set `ollama` (local, private) or `openai` (OpenAI-compatible cloud, e.g. Voyage / SiliconFlow) explicitly to force | — |
 | `OLLAMA_EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | Local Ollama embedding model | `EMBEDDING_PROVIDER=ollama` |
-| `OLLAMA_EMBEDDING_BASE_URL` | `http://localhost:11434` | Ollama native embedding API root (decoupled from the LLM's `/v1` URL) | `EMBEDDING_PROVIDER=ollama` |
+| `OLLAMA_EMBEDDING_BASE_URL` | `http://127.0.0.1:11434` | Ollama native embedding API root (decoupled from the LLM's `/v1` URL) | `EMBEDDING_PROVIDER=ollama` |
 | `OLLAMA_EMBEDDING_DIM` | `1024` | Embedding dimension (local backend) | `EMBEDDING_PROVIDER=ollama` |
 | `EMBEDDING_API_KEY` | *(empty)* | API key for the cloud embedding endpoint | `EMBEDDING_PROVIDER=openai` |
 | `EMBEDDING_BASE_URL` | `https://api.voyageai.com/v1` | Cloud embedding base URL (any OpenAI-compatible endpoint) | `EMBEDDING_PROVIDER=openai` |
