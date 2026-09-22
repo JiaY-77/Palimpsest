@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 """Palimpsest 数据库整文件组冷备份。
 
 为什么必须整组

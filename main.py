@@ -37,6 +37,7 @@ from core.version import get_version
 from mcp_tools import (
     graph_neighbors as _mcp_graph_neighbors,
 )
+from mcp_tools import mcp as _mcp_server
 from mcp_tools import (
     mem_communities as _mcp_mem_communities,
 )
@@ -55,7 +56,6 @@ from mcp_tools import (
 from mcp_tools import (
     skill_search as _mcp_skill_search,
 )
-from mcp_tools import mcp as _mcp_server
 
 logger = logging.getLogger(__name__)
 

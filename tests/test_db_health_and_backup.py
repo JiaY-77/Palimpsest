@@ -11,8 +11,8 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.db_health import check_db_health, health_hint  # noqa: E402
-from scripts.backup_db import collect_group, prune_backups  # noqa: E402
+from core.db_health import check_db_health, health_hint
+from scripts.backup_db import collect_group, prune_backups
 
 DIM = 16
 
