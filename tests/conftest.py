@@ -68,7 +68,7 @@ def fake_embedder():
     - class 级替换（TriviumStore.embed_text）：测试里自建独立 store 实例
       （如 test_mem_stats / test_promote 的隔离临时库）同样走 fake，绝不连
       Ollama——CI 无 Ollama 环境必须全绿（此前只 patch mcp_tools 全局 store
-      单例，自建实例仍真连 localhost:11434，CI 上 ConnectionRefused）。
+      单例，自建实例仍真连 127.0.0.1:11434，CI 上 ConnectionRefused）。
     - 全局 store 单例也替换（保留原行为）。
     真实 embedding 由 startup-check / 生产环境验证。session 级别不恢复。
     """

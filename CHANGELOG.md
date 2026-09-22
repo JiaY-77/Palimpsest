@@ -6,6 +6,10 @@
 
 ## [Unreleased]
 
+### 修复
+
+- **Ollama 端点默认值改用 IPv4 字面量**：`OLLAMA_BASE_URL` / `OLLAMA_EMBEDDING_BASE_URL` 的默认值由 `http://localhost:11434` 改为 `http://127.0.0.1:11434`（含 `.env.example` 与两份 README 配置表）。部分系统把 `localhost` 优先解析为 IPv6 回环 `[::1]`，而 Ollama 默认只监听 IPv4，导致每个请求都要先经历一次连接超时再回落——实测单次 embedding 由数十毫秒退化为约 2 秒，检索与写入吞吐随之下降约两个数量级
+
 ## [2.3.0] - 2026-09-19
 
 ### 新增

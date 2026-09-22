@@ -206,7 +206,7 @@ class TriviumStore:
             raise EmbeddingUnavailableError(
                 f"Ollama embedding 生成失败: {e}。请确认已启动 Ollama "
                 "(ollama serve)，model 已拉取（ollama pull qwen3-embedding:0.6b），"
-                "且 OLLAMA_EMBEDDING_BASE_URL（默认 http://localhost:11434）正确。"
+                "且 OLLAMA_EMBEDDING_BASE_URL（默认 http://127.0.0.1:11434）正确。"
             ) from e
 
     def _embed_openai(self, text: str) -> list[float]:
