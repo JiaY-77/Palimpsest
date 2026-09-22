@@ -13,6 +13,7 @@ import time
 
 from config import Config
 from core.conflict import resolve_conflict
+from core.db_health import check_db_health, health_hint
 from core.fts_index import index_node, search_fts
 from core.secret_scan import SecretScanError
 from core.trivium_store import domain_in_block, node_domain
@@ -242,13 +243,23 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
         # 强规则拒绝：事务回滚（未写任何节点），返回 stored:False
         return _to_json({"stored": False, "error": str(e), "rules": e.rules})
     except Exception as e:  # noqa: BLE001 —— 事务异常回滚返回存储失败不留半状态
-        # 事务内其他异常：整条写入链路回滚，无半状态；返回 stored:False + hint
+        # 事务内其他异常：整条写入链路回滚，无半状态；返回 stored:False + hint。
+        # 写入失败可能已污染文件组（残留 .tmp/.wal → generation 校验失败 → 库
+        # 从可读写退化为读不动），故失败后立即做一次健康探测并明确回报，避免
+        # 后续重试在坏库上继续加重污染（见 issue #32）。
         logger.error("mem_ingest 写入失败（事务已回滚）: %s", e)
-        return _to_json({
+        health = check_db_health()
+        payload = {
             "stored": False,
             "error": "写入事务失败，已回滚，无残留节点",
             "hint": str(e),
-        })
+            "db_healthy": health.get("ok"),
+        }
+        if not health.get("ok"):
+            payload["db_health_error"] = health.get("error", "")
+            payload["recovery_hint"] = health_hint(health)
+            logger.error("写入失败后健康探测不通过：%s", health.get("error"))
+        return _to_json(payload)
 
     return _build_ingest_result(node_id, domain_out, conflict, linked_kb_ids, secret_hint)
 
