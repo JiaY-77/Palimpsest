@@ -42,7 +42,7 @@ Palimpsest 是一个 **本地优先的嵌入式长期记忆系统**，将 **语�
 - ✂️ **省 token 设计** —— 检索默认只返回 **150 字摘要 + 元数据**，而非全文；完整内容按需二次拉取
 - 🗂️ **记忆分层（`tier`）** —— 检索侧的轻量视图，不迁数据、不改存储：默认只取**事实层**（`memory` / `correction` / `decision` / `plan` / `task` 等），把日志层（`record` / `event` / `git_commit`，约占活跃节点四成）从默认检索与注入池中摘出；`tier="logs"` 只取日志层，`tier=""` 显式回到全量（历史追溯通道）。同一套分层视图同步覆盖 `mem_review` 的 `recent_ingests` 与 `mem_stats` 的 `tiers` 分节。层清单由 `TIER_FACTS` / `TIER_LOGS` 配置，未登记的 type 保守归事实层
 - 🔐 **可选 API Key 鉴权** —— 默认关闭（localhost 本机直连）；设置 `PALIMPSEST_API_KEY` 后 REST 层要求 Bearer / X-API-Key 头，适合局域网受信部署
-- 🎯 **三接口、一核心** —— MCP（stdio）、FastAPI REST、完整 CLI 三套接入共用同一套底层工具，行为永不割裂
+- 🎯 **三接口、一核心** —— MCP（stdio 与 streamable-http）、FastAPI REST、完整 CLI 三套接入共用同一套底层工具，行为永不割裂；REST 在 `/mcp` 同时暴露 MCP 端点，可与 MCP 客户端**共进程**运行，避免跨进程争抢同一个库
 - 🧠 **Hermes 双插件换脑** —— 把 Hermes 的记忆层整体换成 Palimpsest：Memory Provider（语义召回 + 自动沉淀）+ Context Engine（压缩前图谱提炼），一行命令激活，记忆跨会话不丢
 
 ---
@@ -209,7 +209,7 @@ python scripts/palimpsest_cli.py startup-check
 # REST 服务 (:8090)
 python -m uvicorn main:app --host 127.0.0.1 --port 8090
 
-# MCP 服务（stdio —— 接入任意 MCP 客户端）
+# MCP 服务（stdio —— 独立进程；与 REST 同时跑会争抢同一个库，推荐改用 REST 的 /mcp，见下）
 python mcp_server.py
 
 # CLI（示例）
@@ -222,16 +222,31 @@ python scripts/dashboard.py
 python scripts/build_kb_index.py
 ```
 
-> **单进程写入约束（重要）**：库文件由 triviumdb 以**独占写模式**打开——第二个写连接（同进程或跨进程）会在
-> 构造 `TriviumDB` 时直接失败并报 `Database locked`；节点 ID 由应用层按「当前已提交最大 id + 1」分配。
+> **单进程写入约束（重要）**：库文件由 triviumdb 以**独占写模式**打开——第二个连接（哪怕只是 `read_only`）也会在
+> 构造 `TriviumDB` 时失败并报 `Database locked: already opened with an incompatible access mode`。
 > 因此：
 > - REST 服务**禁止多 worker / 多实例**并发写同一库（不要用 `uvicorn --workers N`，保持上面这条单进程命令）；
-> - MCP 服务、CLI、dashboard 与 REST 同时指向同一个 `DB_PATH` 时，写操作互斥失败——需要并行写请各自指向不同 `DB_PATH`；
-> - 该约束是 fail-fast 的：不会静默产生重复 ID 或损坏数据，而是把冲突的写请求直接报错。
+> - **一个库只应有一个进程访问**。若同时需要 REST 与 MCP，请让 MCP 接入 REST 的 `/mcp`（见下），不要再单独跑 `mcp_server.py`；
+> - ⚠️ 并发写入失败**会污染文件组**（残留 `.tmp` / `.wal` → generation 校验失败 → 库从可读写退化为读不动，
+>   且不会自愈），因此务必配置定期整组冷备份（见「备份与恢复」）。
 
 Windows 下 `scripts/start_rest.vbs` 可以隐藏窗口启动 REST 服务（如开机自启），日志写入 `scripts/start_rest.log`。
 
-**MCP 客户端接入**（通用 MCP servers 配置）：
+**MCP 客户端接入（推荐：HTTP，与 REST 共进程）**
+
+REST 服务在 `/mcp` 同时暴露 streamable-http 传输的 MCP 端点，MCP 客户端直接接入即可，无需另起 `mcp_server.py`：
+
+```json
+{
+  "mcpServers": {
+    "palimpsest": {
+      "url": "http://127.0.0.1:8090/mcp/"
+    }
+  }
+}
+```
+
+> `mcp_server.py` 的 stdio 方式仍然可用，适合「只用 MCP、不跑 REST」的场景：
 
 ```json
 {
@@ -244,6 +259,17 @@ Windows 下 `scripts/start_rest.vbs` 可以隐藏窗口启动 REST 服务（如�
   }
 }
 ```
+
+**备份与恢复**
+
+```bash
+# 整文件组冷备份 + 回读校验（默认保留最近 7 份，落在 <数据目录>/backups/）
+python scripts/backup_db.py --keep 7
+```
+
+> 备份必须**整组**（`.db` / `.vec` / `.gidx` / `.pidx` / `.flush_ok` / `.pld.*` / `.wal`）：
+> 这些文件属于同一个 generation，只拷其中一部分得到的快照会「读得动、写不动」，无法用于恢复。
+> 脚本会在拷贝后**回读校验**，不通过即报错退出。
 
 ---
 

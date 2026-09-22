@@ -55,22 +55,37 @@ from mcp_tools import (
 from mcp_tools import (
     skill_search as _mcp_skill_search,
 )
+from mcp_tools import mcp as _mcp_server
 
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    """应用生命周期：启动时跑一次自检，退出时无需清理（store 由进程回收）。
+    """应用生命周期：启动自检 + 托管 MCP-over-HTTP 会话管理器。
 
     自检是独立协程（与 store 懒加载解耦）：首次请求才建连库，进程启动只做
     只读自检；阻塞文件 IO 经 to_thread 下放，不占用事件循环。
+
+    MCP-over-HTTP（/mcp）让 MCP 客户端复用本进程的 store，避免第二个进程
+    并发打开同一个 TriviumDB —— TriviumDB 对库文件是严格排他的，跨进程并发
+    会导致写入失败，并在文件组留下残留进而污染整库。见 issue #32。
     """
-    await _startup_self_check()
-    yield
+    async with _mcp_server.session_manager.run():
+        await _startup_self_check()
+        yield
 
 
 app = FastAPI(title="Palimpsest", lifespan=_lifespan)
+
+# MCP-over-HTTP：把 MCP 工具挂到同一进程（/mcp，streamable-http 传输）。
+# 这是「单写者」约束的落点：REST 与 MCP 共用本进程的 store，杜绝两个进程
+# 并发打开同一个 TriviumDB（严格排他会让写入方失败并污染文件组，见 issue #32）。
+# MCP 客户端接入方式：url = http://127.0.0.1:8090/mcp
+# FastMCP 默认把 streamable-http 端点放在 /mcp，挂到 /mcp 会变成 /mcp/mcp；
+# 置为 "/" 后挂载路径即对外路径。
+_mcp_server.settings.streamable_http_path = "/"
+app.mount("/mcp", _mcp_server.streamable_http_app())
 
 # API Key 鉴权开关：PALIMPSEST_API_KEY 默认空 = 不启用（localhost 本机直连）。
 # 设置后除 / 健康检查外所有请求须带 Bearer 或 X-API-Key，否则 401。
