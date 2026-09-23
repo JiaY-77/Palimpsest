@@ -8,6 +8,8 @@
 
 ### 修复
 
+- **库被其他进程占用时 fail-fast（不再静默降级）**：`TriviumStore._acquire()` 遇到 triviumdb 的连接级排他错误时，改抛带库路径与处理指引的 `DatabaseBusyError`；`_init_indexes()` 不再把它当作「索引创建失败」静默吞掉——此前正因如此，「偶发写失败 → 文件组残留 → 库从可读写变读不动」会被伪装成一切正常。CLI / 脚本经既有顶层兜底输出明确指引，REST 侧新增 `503` 处理器（`detail` = 记忆库被其他进程占用）
+
 - **Ollama 端点默认值改用 IPv4 字面量**：`OLLAMA_BASE_URL` / `OLLAMA_EMBEDDING_BASE_URL` 的默认值由 `http://localhost:11434` 改为 `http://127.0.0.1:11434`（含 `.env.example` 与两份 README 配置表）。部分系统把 `localhost` 优先解析为 IPv6 回环 `[::1]`，而 Ollama 默认只监听 IPv4，导致每个请求都要先经历一次连接超时再回落——实测单次 embedding 由数十毫秒退化为约 2 秒，检索与写入吞吐随之下降约两个数量级
 
 ## [2.3.0] - 2026-09-19

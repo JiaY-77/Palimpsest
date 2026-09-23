@@ -24,6 +24,36 @@ class EmbeddingUnavailableError(Exception):
     """
 
 
+class DatabaseBusyError(RuntimeError):
+    """记忆库被其他进程占用，无法打开。
+
+    继承 `RuntimeError` 是**有意为之**：triviumdb 的锁错误本身以 `RuntimeError`
+    抛出，既有调用方与测试（如 tests/test_concurrency.py 的写者互斥用例）都按
+    `RuntimeError` 捕获。继承它可让「新增精确类型」与「既有契约」两全——新代码
+    用 `except DatabaseBusyError` 精确定位，老代码的 `except RuntimeError` 照旧生效。
+
+    TriviumDB 对库文件是**连接级排他**的：只要有一个连接持着库，第二个连接
+    连打开都会失败（报 `Database locked / already opened`）。Palimpsest 的常规
+    模式是「每操作开-关库」，所以其他入口有时能抢到空闲窗口、有时不能——故障
+    表现为**间歇性**；一旦静默吞掉，就退化成「偶发写失败 → 文件组残留 →
+    generation 校验不过 → 库从可读写变读不动」，且会自我复制。
+
+    抛出本异常即 fail-fast：把「不知为何失败」变成「明确告知被占用 + 怎么处理」。
+    异常消息含库路径与处理指引。
+    """
+
+
+# triviumdb 的锁错误以 RuntimeError 抛出，措辞见下（中英双版）。用**消息标记**
+# 识别而非异常类型，避免把其它 RuntimeError 误判成「库被占用」。
+_DB_LOCK_MARKERS = ("database locked", "already opened", "数据库已锁定")
+
+
+def _is_db_locked_error(exc: BaseException) -> bool:
+    """判断异常是否为 triviumdb 的「库被其他进程占用」错误。"""
+    msg = str(exc).lower()
+    return any(m in msg for m in _DB_LOCK_MARKERS)
+
+
 # 图谱扩散参数来自 Config（性能优化）：每节点最多扩散最强 N 条边；弱边阈值。
 
 # 出厂通用区块（domain 分组概念：图谱分区块防跨域污染）。
@@ -146,7 +176,9 @@ class TriviumStore:
           - Composite（create_composite_index）：('type','domain') —— 组合过滤
           - Bitmap（create_bitmap_index）：status —— 枚举值过滤（active/outdated）
 
-        所有 create_*_index 幂等（已存在静默成功）；失败静默降级，不影响启动。
+        所有 create_*_index 幂等（已存在静默成功）；**索引本身**创建失败静默降级，
+        不影响启动。但「库被其他进程占用」**不降级**——那属于环境冲突而非索引
+        问题，静默吞掉它会把冲突伪装成「一切正常」，正是库退化的起点。
         """
         db = None
         try:
@@ -156,6 +188,8 @@ class TriviumStore:
             db.create_ordered_index("importance")
             db.create_composite_index(("type", "domain"))
             db.create_bitmap_index("status")
+        except DatabaseBusyError:
+            raise  # 库被占用 → fail-fast，不伪装成「索引降级」
         except Exception as e:  # noqa: BLE001 —— 索引创建失败静默降级不影响启动
             logger.warning(f"初始化字段索引失败（静默降级）: {e}")
         finally:
@@ -168,8 +202,22 @@ class TriviumStore:
 
         triviumdb 自带 `py.typed` 与 `triviumdb.pyi`，mypy 可直接解析其类型，
         无需 `type: ignore` 抑制。
+
+        库被其他进程占用时（连接级排他）fail-fast 抛 `DatabaseBusyError`，
+        附带库路径与处理指引，而不是把底层 RuntimeError 原样抛给上层。
         """
-        return triviumdb.TriviumDB(self.db_path, dim=self.dim)
+        try:
+            return triviumdb.TriviumDB(self.db_path, dim=self.dim)
+        except Exception as e:
+            if _is_db_locked_error(e):
+                raise DatabaseBusyError(
+                    f"记忆库被其他进程占用，无法打开：{self.db_path}\n"
+                    f"底层错误：{e}\n"
+                    f"处理：同一时刻只允许一个进程访问该库。请先停止占用它的进程"
+                    f"（常见为 Palimpsest REST 服务 / dashboard / 另一个 CLI 调用），"
+                    f"或改为访问已运行的 REST 服务（http://127.0.0.1:8090，含 /mcp）。"
+                ) from e
+            raise
 
     def embed_text(self, text: str) -> list[float]:
         """生成文本向量，按 EMBEDDING_PROVIDER 分发（默认本地 ollama，隐私优先）。"""

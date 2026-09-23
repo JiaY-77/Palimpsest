@@ -32,7 +32,7 @@ from config import Config
 from core.fts_index import sync_node
 from core.reporting import generate_report
 from core.startup_check import run_startup_check
-from core.trivium_store import EmbeddingUnavailableError, TriviumStore
+from core.trivium_store import DatabaseBusyError, EmbeddingUnavailableError, TriviumStore
 from core.version import get_version
 from mcp_tools import (
     graph_neighbors as _mcp_graph_neighbors,
@@ -102,6 +102,23 @@ async def _embedding_unavailable_handler(request, exc: EmbeddingUnavailableError
         content={
             "detail": "embedding 服务不可用",
             "hint": "embedding 服务不可用，检查 Ollama 是否启动或 EMBEDDING_* 配置",
+        },
+    )
+
+
+@app.exception_handler(DatabaseBusyError)
+async def _database_busy_handler(request, exc: DatabaseBusyError):
+    """库被其他进程占用 → 503 fail-fast，明确告知冲突而不是含糊报错。
+
+    与 EmbeddingUnavailableError 的处理同构：异常消息本身含库路径与处理指引，
+    经 `hint` 原样回给调用方，便于直接定位是谁在抢库。
+    """
+    logger.warning("记忆库被其他进程占用: %s", exc)
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": "记忆库被其他进程占用",
+            "hint": str(exc),
         },
     )
 
