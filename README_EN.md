@@ -230,7 +230,7 @@ python scripts/palimpsest_cli.py startup-check
 # REST API (:8090)
 python -m uvicorn main:app --host 127.0.0.1 --port 8090
 
-# MCP server (stdio — add to any MCP client)
+# MCP server (stdio — standalone process; competes for the same DB if REST is also running. Prefer REST's /mcp, see below)
 python mcp_server.py
 
 # CLI (example)
@@ -245,7 +245,28 @@ python scripts/build_kb_index.py
 
 On Windows, `scripts/start_rest.vbs` launches the REST service in a hidden window (e.g. at login) and logs to `scripts/start_rest.log`.
 
-**MCP client integration** (generic MCP servers config):
+> **Single-process write constraint (important)**: the database file is opened by triviumdb in **exclusive mode** — a second connection (even a `read_only` one) fails at `TriviumDB` construction with `Database locked: already opened with an incompatible access mode`. Therefore:
+> - the REST service must stay **single-process** (do not use `uvicorn --workers N`, do not start a second instance);
+> - **only one process should access a database at a time**. If you need both REST and MCP, point the MCP client at REST's `/mcp` (see below) instead of running `mcp_server.py` separately;
+> - ⚠️ a failed concurrent write **corrupts the file group** (leftover `.tmp` / `.wal` → generation check fails → the database degrades from read-write to unreadable, and it does **not** self-heal), so configure periodic full-group cold backups (see "Backup & restore").
+>
+> The conflict is **loud**, not silent: when the database is occupied, the CLI and scripts raise `DatabaseBusyError` — the message includes the database path and next steps — and the REST API returns `503` (`detail` = database occupied by another process).
+
+**MCP client integration** (recommended: HTTP, sharing the REST process):
+
+REST also exposes a streamable-http MCP endpoint at `/mcp`, so an MCP client can attach directly — no separate `mcp_server.py` needed:
+
+```json
+{
+  "mcpServers": {
+    "palimpsest": {
+      "url": "http://127.0.0.1:8090/mcp/"
+    }
+  }
+}
+```
+
+> The `mcp_server.py` stdio mode still works and suits the "MCP only, no REST" case:
 
 ```json
 {

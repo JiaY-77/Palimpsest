@@ -229,6 +229,9 @@ python scripts/build_kb_index.py
 > - **一个库只应有一个进程访问**。若同时需要 REST 与 MCP，请让 MCP 接入 REST 的 `/mcp`（见下），不要再单独跑 `mcp_server.py`；
 > - ⚠️ 并发写入失败**会污染文件组**（残留 `.tmp` / `.wal` → generation 校验失败 → 库从可读写退化为读不动，
 >   且不会自愈），因此务必配置定期整组冷备份（见「备份与恢复」）。
+>
+> 冲突是**响亮**的，不是静默的：库被占用时，CLI / 脚本会抛 `DatabaseBusyError`（消息含库路径与处理指引），
+> REST 侧返回 `503`（`detail` = 记忆库被其他进程占用）。不会再出现「不知为何失败」的静默降级。
 
 Windows 下 `scripts/start_rest.vbs` 可以隐藏窗口启动 REST 服务（如开机自启），日志写入 `scripts/start_rest.log`。
 
