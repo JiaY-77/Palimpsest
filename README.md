@@ -501,6 +501,7 @@ python scripts/palimpsest_cli.py consolidate --apply # 合并
 | `POST` | `/mem/hybrid-search` | FTS5 + 向量混合检索 |
 | `POST` | `/mem/ingest` | 写入新记忆（含冲突检测 + 敏感扫描） |
 | `POST` | `/mem/link` | 创建图边 |
+| `POST` | `/mem/recent` | 最近记忆列表（按 created_at 倒序） |
 | `POST` | `/mem/stats` | 库级盘点统计 |
 | `POST` | `/graph/neighbors` | 某节点的图谱邻居 |
 | `POST` | `/graph/communities` | Leiden 社区发现 |

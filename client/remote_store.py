@@ -98,12 +98,21 @@ class RemoteStore:
             raise
 
     def get_edges(self, node_id: int) -> list:
-        """取某节点邻边——经 ``POST /graph/neighbors``。"""
+        """取某节点邻边——经 ``POST /graph/neighbors``。
+
+        REST 返回结构为 ``{"node_id":…, "relations":[…]}"``（键名 ``relations``，
+        非 ``neighbors``/``edges``）——按实际响应解析。
+        """
         data = self._req(
             "POST", "/graph/neighbors", json={"node_id": node_id, "depth": 1}
         )
         if isinstance(data, dict):
-            return data.get("neighbors", data.get("edges", [])) or []
+            return (
+                data.get("relations")
+                or data.get("neighbors")
+                or data.get("edges")
+                or []
+            )
         return data or []
 
     def iter_payloads(self) -> Iterator[tuple[int, dict[str, Any]]]:
