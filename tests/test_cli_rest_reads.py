@@ -54,9 +54,6 @@ def test_migrated_commands_use_rest():
     funcs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
 
     for name in _MIGRATED:
-        # cmd_stats 尚未迁移（需服务端端点），跳过
-        if name == "cmd_stats":
-            continue
         assert name in funcs, f"{name} 不存在"
         body_src = ast.unparse(funcs[name])
         assert "_rest_call" in body_src, f"{name} 未走 REST"
@@ -76,8 +73,6 @@ def test_cli_module_code_has_no_new_triviumstore_in_migrated_paths():
     # 未迁移命令（consolidate / review / promote / doctor 等）仍可持有；
     # 迁移过的读命令不得持有
     for name in _MIGRATED:
-        if name == "cmd_stats":
-            continue
         assert name not in holders, f"{name} 不应再持有 TriviumStore()"
 
 
@@ -226,6 +221,63 @@ def test_cmd_kb_scopes_to_kb(fake_httpx):
     call = fake_httpx.calls[0]
     assert call["path"] == "/mem/search"
     assert call["json"]["scope"] == "kb"
+
+
+def test_cmd_stats_goes_through_rest(fake_httpx):
+    """stats 走 REST 端点，不做本地开库。"""
+    from scripts.palimpsest_cli import cmd_stats
+
+    class A:
+        section = None
+
+    cmd_stats(A())
+    assert fake_httpx.calls[0]["path"] == "/mem/stats"
+
+
+def test_cmd_stats_section_filter_is_client_side(fake_httpx, capsys):
+    """--section 筛选在客户端做（服务端端点不接受该参数）。"""
+    import scripts.palimpsest_cli as cli
+
+    # 让假客户端返回一份完整 stats
+    payload = json.dumps({
+        "totals": {"total_nodes": 10, "by_domain": {"hermes": 5}},
+        "kinds": {"memory": 3},
+        "importance": {"high": 1},
+    })
+
+    class _Resp:
+        status_code = 200
+        text = payload
+        content = payload.encode()
+
+        def json(self):
+            return json.loads(payload)
+
+    class _C:
+        def __init__(self, *a, **kw):
+            pass
+
+        def request(self, *a, **kw):
+            return _Resp()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *e):
+            return False
+
+    import httpx
+    orig = httpx.Client
+    httpx.Client = _C
+    try:
+        args = type("A", (), {"section": ["totals"]})()
+        cli.cmd_stats(args)
+    finally:
+        httpx.Client = orig
+
+    out = json.loads(capsys.readouterr().out)
+    assert "totals" in out
+    assert "kinds" not in out  # 未请求的分节被筛掉
 
 
 # ---- 3. POST /mem/recent 端点 ----
