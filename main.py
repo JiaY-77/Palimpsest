@@ -51,6 +51,9 @@ from mcp_tools import (
     mem_link as _mcp_mem_link,
 )
 from mcp_tools import (
+    mem_recent as _mcp_mem_recent,
+)
+from mcp_tools import (
     mem_search as _mcp_mem_search,
 )
 from mcp_tools import (
@@ -203,6 +206,7 @@ async def root():
             "/mem/hybrid-search",
             "/mem/ingest",
             "/mem/link",
+            "/mem/recent",
             "/graph/neighbors",
             "/graph/communities",
             "/mem/stats",
@@ -436,6 +440,11 @@ class GraphNeighborsRequest(BaseModel):
     block: str = ""
 
 
+class MemRecentRequest(BaseModel):
+    domain: str = ""
+    limit: int = 10
+
+
 class GraphCommunitiesRequest(BaseModel):
     min_community_size: int = 2
     top_k: int = 20
@@ -517,6 +526,15 @@ async def graph_communities(req: GraphCommunitiesRequest):
         min_community_size=req.min_community_size,
         top_k=req.top_k, with_summary=req.with_summary,
     ))
+
+
+@app.post("/mem/recent")
+async def mem_recent(req: MemRecentRequest):
+    """最近记忆列表（只读）：按 created_at 倒序，时间戳缺失时按 id 倒序兜底。
+
+    核心逻辑见 mcp_tools.memory.mem_recent（复用同一实现，不复制）。
+    """
+    return _as_json(_mcp_mem_recent(domain=req.domain, limit=req.limit))
 
 
 @app.post("/mem/stats")

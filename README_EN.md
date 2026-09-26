@@ -506,6 +506,7 @@ Node ownership is expressed by the `payload.domain` field. Specify a block at wr
 | `POST` | `/mem/hybrid-search` | FTS5 + vector hybrid retrieval |
 | `POST` | `/mem/ingest` | Write a new memory (conflict detection + secret scan) |
 | `POST` | `/mem/link` | Create a graph edge |
+| `POST` | `/mem/recent` | Most recent memories (ordered by created_at) |
 | `POST` | `/mem/stats` | Store-wide statistics |
 | `POST` | `/graph/neighbors` | Graph neighbors of a node |
 | `POST` | `/graph/communities` | Leiden community detection |

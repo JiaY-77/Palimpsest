@@ -27,6 +27,7 @@ Palimpsest CLI —— 本地 CLI 薄封装（2026-08-25）。
 """
 import argparse
 import json
+import os
 import subprocess
 import sys
 
@@ -40,6 +41,15 @@ try:
         from _common import PROJECT_ROOT as _PROJECT_ROOT
 
     # 复用 mcp_tools 的工具函数（config 已基于项目根解析绝对路径，与 cwd 无关）
+    #
+    # 注意：读命令（search / hybrid-search / recent / graph / kb / stats / ingest / link）
+    # 已改走 REST（见下方 _rest_call），不再 import 对应的 mcp_tools 函数 —— 那些函数
+    # 内部用 mcp_tools._common.store，会在本进程开库、与 REST 争抢同一份库文件。
+    #
+    # mcp_tools 本身**也不在此处 import**：它的 _common 模块级就有
+    # `store = TriviumStore()`，仅 import 就会初始化库（实测会创建 data/ 目录）。
+    # 仍有本地需求的符号（kb_index / mem_review）改为在各自命令内**惰性 import**，
+    # 这样读命令跑完不会碰库。
     from core.consolidator import consolidate
     from core.doctor import render_text as doctor_render
     from core.doctor import run_doctor
@@ -47,17 +57,6 @@ try:
     from core.fts_index import search_fts
     from core.startup_check import run_startup_check
     from core.trivium_store import TriviumStore, is_valid_block
-    from mcp_tools import (
-        graph_neighbors,
-        kb_index,
-        kb_search,
-        mem_hybrid_search,
-        mem_ingest,
-        mem_link,
-        mem_recent,
-        mem_review,
-        mem_search,
-    )
 except ImportError as _import_err:
     _hint = (
         "\n"
@@ -91,58 +90,128 @@ def _validate_block(block: str) -> str:
     return block
 
 
+# ---------------------------------------------------------------------------
+# REST 优先的读路径
+# ---------------------------------------------------------------------------
+# 背景：本 CLI 原先把 mcp_tools 的工具函数当薄封装直接调用，但那些函数内部用
+# mcp_tools._common.store —— 一个 TriviumStore 实例。也就是说，CLI 每跑一次读命令，
+# 都会在本进程里打开一次记忆库，与常驻的 REST 服务争抢同一份库文件。
+#
+# triviumdb 对库文件是连接级排他的：谁先开谁持有，另一个只能等窗口
+# （见 core/trivium_store.py 的说明）。Palimpsest 又是「每操作开-关库」，
+# 于是这种争抢时而成时而不成——偶发的写入失败被静默吞掉，正是历史上库损坏的成因。
+#
+# 因此：凡是 REST 已有端点的读命令，一律走 HTTP，不再在本进程开库。
+# REST 端点内部复用的正是同一套 _mem_search_impl / 检索逻辑，所以结果逐字段一致，
+# 既守住了本文件开头「不复制逻辑、避免漂移」的设计，又不再制造第二个写者。
+#
+# 未覆盖的命令（consolidate / reindex / fts-* / task-archive 等）仍走原路径，
+# 等 REST 补上业务端点后再逐个迁移。
+
+_REST_TIMEOUT = 30.0
+
+
+def _rest_call(method: str, path: str, body: dict | None = None) -> str:
+    """调用 REST 并返回其 JSON 文本。
+
+    失败时返回一条 JSON 错误对象（而不是抛栈），与其它命令的输出形态保持一致，
+    便于调用方统一解析。
+    """
+    import httpx
+
+    base = (os.getenv("PALIMPSEST_BASE_URL") or "http://127.0.0.1:8090").rstrip("/")
+    try:
+        with httpx.Client(base_url=base, timeout=_REST_TIMEOUT) as client:
+            resp = client.request(method, path, json=body)
+    except Exception as exc:  # noqa: BLE001 —— 统一转成可读错误，不向上抛栈
+        return json.dumps({
+            "error": "Palimpsest REST 不可达",
+            "target": f"{base}{path}",
+            "hint": str(exc),
+            "action": "请先启动 REST 服务：python -m uvicorn main:app --port 8090",
+        }, ensure_ascii=False)
+    if resp.status_code >= 400:
+        return json.dumps({
+            "error": f"REST 返回 {resp.status_code}",
+            "target": f"{base}{path}",
+            "body": resp.text[:500],
+        }, ensure_ascii=False)
+    return resp.text
+
+
 def cmd_search(args):
     _validate_block(args.block)
-    print(mem_search(
-        query=args.query, scope=args.scope, domain=args.domain,
-        top_k=args.top_k, include_neighbors=args.neighbors, block=args.block,
-        tier=args.tier,
-    ))
+    body = {
+        "query": args.query, "scope": args.scope, "domain": args.domain,
+        "top_k": args.top_k, "include_neighbors": args.neighbors,
+        "block": args.block, "tier": args.tier,
+    }
+    print(_rest_call("POST", "/mem/search", body))
 
 
 def cmd_hybrid_search(args):
-    print(mem_hybrid_search(
-        query=args.query, scope=args.scope, domain=args.domain,
-        top_k=args.top_k, mode=args.mode, fts_limit=args.fts_limit,
-        tier=args.tier,
-    ))
+    body = {
+        "query": args.query, "scope": args.scope, "domain": args.domain,
+        "top_k": args.top_k, "mode": args.mode, "fts_limit": args.fts_limit,
+        "tier": args.tier,
+    }
+    print(_rest_call("POST", "/mem/hybrid-search", body))
 
 
 def cmd_ingest(args):
-    result = mem_ingest(
-        content=args.content, domain=args.domain,
-        importance=args.importance, type=args.type,
-    )
+    result = _rest_call("POST", "/mem/ingest", {
+        "content": args.content, "domain": args.domain,
+        "importance": args.importance, "type": args.type,
+    })
     print(result)
-    data = json.loads(result)
+    try:
+        data = json.loads(result)
+    except json.JSONDecodeError:
+        sys.exit(1)
     if not data.get("stored"):
         sys.exit(1)
 
 
 def cmd_link(args):
-    print(mem_link(
-        source_id=args.source, target_id=args.target,
-        relation=args.relation, bidirectional=not args.one_way,
-    ))
+    print(_rest_call("POST", "/mem/link", {
+        "source_id": args.source, "target_id": args.target,
+        "relation": args.relation, "bidirectional": not args.one_way,
+    }))
 
 
 def cmd_index(args):
+    # 惰性 import：mcp_tools._common 模块级会初始化库，只有本命令才需要它
+    from mcp_tools import kb_index
+
     print(kb_index())
 
 
 def cmd_graph(args):
     _validate_block(args.block)
-    print(graph_neighbors(
-        node_id=args.id, relation=args.relation, depth=args.depth,
-        limit=args.limit, min_weight=args.min_weight, block=args.block,
-    ))
+    body = {
+        "node_id": args.id, "relation": args.relation, "depth": args.depth,
+        "limit": args.limit, "min_weight": args.min_weight,
+        "block": args.block,
+    }
+    print(_rest_call("POST", "/graph/neighbors", body))
 
 
 def cmd_recent(args):
-    print(mem_recent(domain=args.domain, limit=args.limit))
+    print(_rest_call("POST", "/mem/recent", {
+        "domain": args.domain, "limit": args.limit,
+    }))
+
+
+def cmd_kb(args):
+    print(_rest_call("POST", "/mem/search", {
+        "query": args.query, "scope": "kb", "top_k": args.top_k,
+    }))
 
 
 def cmd_review(args):
+    # 惰性 import：mcp_tools._common 模块级会初始化库，只有本命令才需要它
+    from mcp_tools import mem_review
+
     raw = mem_review(days=args.days, domain=args.domain, tier=args.tier)
     try:
         data = json.loads(raw)
@@ -159,10 +228,6 @@ def cmd_review(args):
         print(json.dumps(data, ensure_ascii=False, indent=2))
     except (json.JSONDecodeError, KeyError):
         print(raw)
-
-
-def cmd_kb(args):
-    print(kb_search(query=args.query, top_k=args.top_k))
 
 
 def cmd_consolidate(args):

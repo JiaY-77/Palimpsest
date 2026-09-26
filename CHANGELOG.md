@@ -9,6 +9,8 @@
 ### 新增
 
 - **存储协议与客户端实现（`protocols.Store` / `client.RemoteStore` / `server.LocalStore`）**：引入依赖倒置点，为「一份数据、一个写者、多条接入方式」铺路。`protocols.Store` 只定义接口；`server.LocalStore` 是服务端对 `TriviumStore` 的包装（REST 进程专用），`client.RemoteStore` 内部走 REST HTTP（CLI / dashboard / 脚本用）。`core/` 从此只依赖协议，不再感知具体实现，也避免与 REST 形成循环依赖。`RemoteStore` 放在 `client/`（不是 `core/`）是架构纪律
+- **CLI 读命令改走 REST（不再自己开库）**：`search` / `hybrid-search` / `recent` / `graph` / `kb` / `stats` / `ingest` / `link` 原先直接调用 `mcp_tools` 的工具函数，而那些函数内部使用 `mcp_tools._common.store` —— 一个模块级 `TriviumStore`。结果是 CLI 每跑一次读命令就在本进程打开一次记忆库，与常驻 REST 争抢同一份库文件；triviumdb 对库文件是连接级排他的，偶发抢不到窗口的失败正是「库偶尔坏」的成因。现在这些命令一律经 REST（`PALIMPSEST_BASE_URL` 可覆盖，默认 `http://127.0.0.1:8090`）；REST 端点内部复用的仍是同一套检索实现，故结果逐字段一致。`mcp_tools` 同时改为命令内**惰性 import** —— 它的 `_common` 在模块级就执行 `store = TriviumStore()`，仅 import 便会建出 `data/` 目录
+- **`POST /mem/recent` 端点**：CLI `recent` 此前无对应端点，新增之（复用 `mcp_tools.memory.mem_recent`，不复制逻辑）
 
 ### 文档
 
