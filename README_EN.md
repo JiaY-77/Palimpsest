@@ -227,11 +227,8 @@ python scripts/palimpsest_cli.py startup-check
 > `EMBEDDING_API_KEY` in `.env`.
 
 ```bash
-# REST API (:8090)
+# REST API (:8090) — the single writer; every integration goes through it
 python -m uvicorn main:app --host 127.0.0.1 --port 8090
-
-# MCP server (stdio — standalone process; competes for the same DB if REST is also running. Prefer REST's /mcp, see below)
-python mcp_server.py
 
 # CLI (example)
 python scripts/palimpsest_cli.py search "what changed in the architecture?"
@@ -242,6 +239,12 @@ python scripts/dashboard.py
 # Index your knowledge base (Obsidian .md files under KNOWLEDGE_DIR)
 python scripts/build_kb_index.py
 ```
+
+> **Which integration to use (in priority order)**
+>
+> 1. **REST's `/mcp` — preferred.** Point your MCP client at `http://127.0.0.1:8090/mcp/`; it shares the REST process, so the "one process per database" rule holds by construction.
+> 2. **CLI / dashboard / scripts — also preferred.** All of them go through REST; the dashboard is a pure client.
+> 3. **stdio `mcp_server.py` — escape hatch, not a peer option.** Only for a pure-MCP setup with **no REST running**. ⚠️ Running it alongside REST means two processes competing for the same database, which breaks the single-writer rule. **Do not put it in a default config.** Start it with `python mcp_server.py` only when you are certain REST is not running.
 
 On Windows, `scripts/start_rest.vbs` launches the REST service in a hidden window (e.g. at login) and logs to `scripts/start_rest.log`.
 
@@ -266,7 +269,16 @@ REST also exposes a streamable-http MCP endpoint at `/mcp`, so an MCP client can
 }
 ```
 
-> The `mcp_server.py` stdio mode still works and suits the "MCP only, no REST" case:
+> **stdio mode (`mcp_server.py`) — an escape hatch, not a peer option.**
+>
+> It is only for a "**MCP only, no REST at all**" setup. It opens the same database
+> independently of REST, so running both means competing for one file group — which can
+> corrupt it. **Do not** use it where REST is already running, and do not put it into a
+> default config.
+>
+> Why it is kept: if the REST service ever fails, it is a **manual recovery path that
+> does not depend on REST** — the point of an escape hatch is that you don't use it
+> day-to-day, but it is there when you need it. For daily use, take the HTTP option above.
 
 ```json
 {
