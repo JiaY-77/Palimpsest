@@ -206,11 +206,8 @@ python scripts/palimpsest_cli.py startup-check
 > 若使用云端，请确认 `.env` 已配置 `EMBEDDING_API_KEY`。
 
 ```bash
-# REST 服务 (:8090)
+# REST 服务 (:8090) —— 唯一写者，所有接入方式都经它
 python -m uvicorn main:app --host 127.0.0.1 --port 8090
-
-# MCP 服务（stdio —— 独立进程；与 REST 同时跑会争抢同一个库，推荐改用 REST 的 /mcp，见下）
-python mcp_server.py
 
 # CLI（示例）
 python scripts/palimpsest_cli.py search "架构最近发生了什么变化？"
@@ -221,6 +218,15 @@ python scripts/dashboard.py
 # 索引知识库（KNOWLEDGE_DIR 下的 Obsidian .md 文件）
 python scripts/build_kb_index.py
 ```
+
+> **接入方式优先级（请按此选择）**
+>
+> 1. **REST 的 `/mcp`（首选）** —— MCP 客户端接入 `http://127.0.0.1:8090/mcp/`，
+>    与 REST **共用同一个进程**，天然满足「一个库一个进程」。
+> 2. **CLI / dashboard / 各脚本（同样首选）** —— 一律经 REST 访问；dashboard 已是纯客户端。
+> 3. **stdio `mcp_server.py`（逃生梯，非首选）** —— 仅用于**不跑 REST** 的纯 MCP 场景。
+>    ⚠️ 它与 REST **同时运行会争抢同一个库**，且会破坏「唯一写者」约束。**不要放进默认配置**。
+>    仅当确定不跑 REST 时，才用 `python mcp_server.py` 启动它。
 
 > **单进程写入约束（重要）**：库文件由 triviumdb 以**独占写模式**打开——第二个连接（哪怕只是 `read_only`）也会在
 > 构造 `TriviumDB` 时失败并报 `Database locked: already opened with an incompatible access mode`。
@@ -249,7 +255,14 @@ REST 服务在 `/mcp` 同时暴露 streamable-http 传输的 MCP 端点，MCP �
 }
 ```
 
-> `mcp_server.py` 的 stdio 方式仍然可用，适合「只用 MCP、不跑 REST」的场景：
+> **stdio 方式（`mcp_server.py`）——逃生梯，不是并列选项**。
+>
+> 仅适用于「**完全不跑 REST**、只想用 MCP」的场景。它与 REST 各自独立打开
+> 同一个库，同时运行会争抢并可能损坏文件组，因此**不要**在 REST 已在跑的
+> 环境里使用，也不要写进默认配置。
+>
+> 之所以保留它：万一 REST 服务出问题，它是一条**独立于 REST 的手动救援通道**
+> ——逃生梯的意义在于「平时不用，要用时在」。若你需要的是日常接入，请用上面的 HTTP 方式。
 
 ```json
 {

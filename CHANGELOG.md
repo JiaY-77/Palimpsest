@@ -10,6 +10,10 @@
 
 - **存储协议与客户端实现（`protocols.Store` / `client.RemoteStore` / `server.LocalStore`）**：引入依赖倒置点，为「一份数据、一个写者、多条接入方式」铺路。`protocols.Store` 只定义接口；`server.LocalStore` 是服务端对 `TriviumStore` 的包装（REST 进程专用），`client.RemoteStore` 内部走 REST HTTP（CLI / dashboard / 脚本用）。`core/` 从此只依赖协议，不再感知具体实现，也避免与 REST 形成循环依赖。`RemoteStore` 放在 `client/`（不是 `core/`）是架构纪律
 
+### 文档
+
+- **明确 MCP 接入优先级（HTTP 优先，stdio 为逃生梯）**：两份 README 的「启动」一节原先把 `python mcp_server.py` 与 REST / CLI 平铺为并列选项，容易被误解为常规用法。现改为显式三层优先级：① REST 的 `/mcp`（首选，与 REST 共用进程）② CLI / dashboard / 脚本（同样经 REST）③ stdio `mcp_server.py`（**仅限完全不跑 REST 的场景**，⚠️ 与 REST 同跑会争抢同一库）。stdio 代码予以保留，定位为「REST 出问题时的独立救援通道」，而非并列入口
+
 ### 变更
 
 - **dashboard 改为纯客户端（不再自己打开数据库）**：`scripts/dashboard.py` 原先在模块级 `TriviumStore()` 常驻并直接全表遍历，等于在 REST 之外多出一个写者——与 REST 争库，正是「库老是坏」的成因之一。现所有数据一律经主 REST 服务获取（`PALIMPSEST_BASE_URL` 可覆盖，默认 `http://127.0.0.1:8090`）；对外 `/api/*` 接口与 `dashboard.html` 保持不变。REST 不可达时返回 `502` 并附排查指引；合并功能因 REST 尚无对应业务端点，显式返回 `501` 说明原因（不再静默返回空）。注意：`/api/mem/search` 由本地 FTS 全文检索改为 REST 语义检索，排序语义随之变化
