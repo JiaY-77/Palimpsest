@@ -243,18 +243,25 @@ def cmd_consolidate(args):
 
 
 def cmd_stats(args):
-    """库级盘点统计（只读）：--section 可独立开关分节，缺省全给。"""
-    from core.stats import compute_stats
-    from core.trivium_store import TriviumStore
+    """库级盘点统计（只读）：--section 可独立开关分节，缺省全给。
 
-    store = TriviumStore()
-    result = compute_stats(store)
+    走 REST（``POST /mem/stats``）而非本地开库：本命令原先 new 一个
+    TriviumStore 直接算统计，等于在 REST 之外多开一个库连接，与常驻服务
+    争抢同一份库文件。统计口径不变——``--section`` 的筛选是纯展示逻辑，
+    放在客户端做即可，不必为此在服务端重复实现。
+    """
+    raw = _rest_call("POST", "/mem/stats")
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError:
+        print(raw)
+        return
     if args.section:
         wanted = set(args.section)
         picked = {}
         # "domains" 别名 = totals 里的按 domain 分布（单独列出该分节）
         if "domains" in wanted:
-            picked["by_domain"] = result["totals"].get("by_domain", {})
+            picked["by_domain"] = result.get("totals", {}).get("by_domain", {})
         for key in result:
             if key == "elapsed_ms" or key not in wanted:
                 continue
