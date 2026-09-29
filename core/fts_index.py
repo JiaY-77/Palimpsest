@@ -8,6 +8,7 @@ FTS5 全文搜索索引（trigram 分词器，支持中文任意子串匹配）�
 
 import logging
 import os
+import pathlib
 import re
 import sqlite3
 
@@ -15,20 +16,46 @@ from config import Config
 
 logger = logging.getLogger(__name__)
 
+# 写锁等待上限：别的连接短时间占着索引时，等一会而不是立刻报 database is locked。
+_BUSY_TIMEOUT_MS = 5000
+
+# 进程内「建表已执行」标记（按索引文件路径区分）：避免每次连接都跑一遍
+# DDL + commit。**必须按路径记**——同一进程可能切换 DB_PATH（测试用临时库、
+# 多库工具），用单个布尔量会让第二个库跳过建表、检索静默返回空。
+_SCHEMA_READY_PATHS: set[str] = set()
+
 
 def _db_path() -> str:
     return os.path.join(os.path.dirname(Config.DB_PATH), "fts.db")
 
 
 def _connect() -> sqlite3.Connection:
+    """写连接：可建文件、设 busy_timeout。建表不在这里做，见 `_ensure_schema`。"""
     conn = sqlite3.connect(_db_path())
-    conn.execute(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS mem_fts USING fts5("
-        "content, node_id UNINDEXED, source_path UNINDEXED, "
-        "tokenize='trigram')"
-    )
-    conn.commit()
+    conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
     return conn
+
+
+def _ensure_schema(conn: sqlite3.Connection) -> None:
+    """建 mem_fts 虚表，同一索引文件在本进程内只执行一次（只在写入口调用）。
+
+    执行抛错时复位标记，让下一次写入口重试建表；DDL 自带
+    `IF NOT EXISTS`，重复执行本身也是安全的。
+    """
+    path = _db_path()
+    if path in _SCHEMA_READY_PATHS:
+        return
+    try:
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS mem_fts USING fts5("
+            "content, node_id UNINDEXED, source_path UNINDEXED, "
+            "tokenize='trigram')"
+        )
+        conn.commit()
+    except Exception:
+        _SCHEMA_READY_PATHS.discard(path)  # 复位标记：建表没成功，下次写入口重来
+        raise
+    _SCHEMA_READY_PATHS.add(path)
 
 
 def index_node(node_id: int, content: str, source_path: str = "") -> None:
@@ -37,6 +64,7 @@ def index_node(node_id: int, content: str, source_path: str = "") -> None:
         return
     conn = _connect()
     try:
+        _ensure_schema(conn)
         conn.execute("DELETE FROM mem_fts WHERE node_id = ?", (int(node_id),))
         conn.execute(
             "INSERT INTO mem_fts(content, node_id, source_path) VALUES(?, ?, ?)",
@@ -51,6 +79,7 @@ def remove_node(node_id: int) -> None:
     """从索引中移除节点"""
     conn = _connect()
     try:
+        _ensure_schema(conn)
         conn.execute("DELETE FROM mem_fts WHERE node_id = ?", (int(node_id),))
         conn.commit()
     finally:
@@ -122,8 +151,17 @@ def search_fts(query: str, limit: int = 10) -> list[dict]:
     query = (query or "").strip()
     if not query:
         return []
-    conn = _connect()
+    path = _db_path()
+    # 只读连接（mode=ro）：检索不建表、不创建 fts.db、不拿写锁。
+    # 索引文件不存在 → 直接空结果，绝不让「搜一下」把索引文件建出来。
+    if not os.path.exists(path):
+        return []
+    conn = None
     try:
+        conn = sqlite3.connect(
+            pathlib.Path(os.path.abspath(path)).as_uri() + "?mode=ro", uri=True
+        )
+        conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
         if len(query) > 8 and '"' not in query:
             fts_query = build_fts_query(query)
             if fts_query:
@@ -154,10 +192,13 @@ def search_fts(query: str, limit: int = 10) -> list[dict]:
                 (pattern, int(limit)),
             ).fetchall()
         return [{"node_id": r[0], "content": (r[1] or "")[:120]} for r in rows]
-    except Exception:  # noqa: BLE001 —— 全文检索失败返回空列表查询侧天然降级
+    except Exception as e:  # noqa: BLE001 —— 全文检索失败返回空列表查询侧天然降级
+        # 契约：不抛异常，只降级成空结果；debug 级别带上异常类型便于排查。
+        logger.debug("FTS 检索失败，返回空列表：%s", type(e).__name__)
         return []
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def rebuild(store) -> int:
@@ -167,6 +208,7 @@ def rebuild(store) -> int:
     """
     conn = _connect()
     try:
+        _ensure_schema(conn)
         conn.execute("DELETE FROM mem_fts")
         conn.commit()
         count = 0

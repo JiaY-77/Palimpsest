@@ -2,6 +2,7 @@
 
 import contextlib
 import logging
+import threading
 import time
 from typing import Any
 
@@ -9,9 +10,66 @@ import triviumdb
 
 from config import Config
 from core.secret_scan import SecretScanError, scan_secret_classified
-from core.utils import _to_float
+
+# 「库被占用」的标记表与判定函数统一放 core/utils.py（db_health 共用同一份）；
+# _DB_LOCK_MARKERS / _is_db_locked_error 再导出，保持既有导入方与测试可用。
+from core.utils import _DB_LOCK_MARKERS, _is_db_locked_error, _to_float  # noqa: F401
 
 logger = logging.getLogger(__name__)
+
+
+# 进程内 DB 访问串行锁
+# --------------------
+# triviumdb 是**连接级排他**的：只要有一个连接持着库，第二个连接连打开都会失败
+# （报 `Database locked / already opened`）。而 Palimpsest 的模式是「每操作开-关库」。
+#
+# 此前 REST 端点是 `async def` + 阻塞同步代码，被事件循环**顺带串行化**，这个冲突
+# 被掩盖了。端点改同步 def（FastAPI 丢线程池）后请求真并发，并发 open 会失败——
+# 而检索类失败路径「吞掉 + 返回空列表」，表现为**静默返回空结果**（实测 4 并发
+# 100 次检索：命中 44、静默空结果 56）。
+#
+# 这把锁让同进程内的 DB 访问**排队而不是失败**：慢的那部分（embedding HTTP）在锁外，
+# 仍然并发；只有真正碰库的窗口串行。RLock 而非 Lock：同一线程嵌套取连接时不至于
+# 自锁死（嵌套取连接仍会因连接级排他失败，与改动前一致，不是本次引入的）。
+_DB_ACCESS_LOCK = threading.RLock()
+
+
+class _LockedDB:
+    """持有进程级 DB 访问锁的连接代理：连接 close 时释放锁。
+
+    为什么用代理而不是锁在方法里：既有代码有三类连接用法——`with self._acquire()
+    as db:`、显式 `db.close()`、生成器（`iter_payloads` 等）在 `finally` 里 close——
+    锁必须**跟着连接的整个生命周期**，才能在三条路径上都不泄漏。代理让所有这些
+    调用点一行都不用改。
+    """
+
+    __slots__ = ("_release_lock", "_wrapped")
+
+    def __init__(self, wrapped, release_lock):
+        self._wrapped = wrapped
+        self._release_lock = release_lock
+
+    def __getattr__(self, item):
+        return getattr(self._wrapped, item)
+
+    def close(self) -> None:
+        try:
+            self._wrapped.close()
+        finally:
+            lock, self._release_lock = self._release_lock, None
+            if lock is not None:
+                lock.release()
+
+    def __enter__(self) -> "_LockedDB":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    def __del__(self):  # 兜底：生成器被提前丢弃、close 未被调用时不至于永久占锁
+        with contextlib.suppress(Exception):
+            self.close()
+
 
 
 class EmbeddingUnavailableError(Exception):
@@ -43,22 +101,17 @@ class DatabaseBusyError(RuntimeError):
     """
 
 
-# triviumdb 的锁错误以 RuntimeError 抛出，措辞见下（中英双版）。用**消息标记**
-# 识别而非异常类型，避免把其它 RuntimeError 误判成「库被占用」。
-_DB_LOCK_MARKERS = ("database locked", "already opened", "数据库已锁定")
-
-
-def _is_db_locked_error(exc: BaseException) -> bool:
-    """判断异常是否为 triviumdb 的「库被其他进程占用」错误。"""
-    msg = str(exc).lower()
-    return any(m in msg for m in _DB_LOCK_MARKERS)
-
-
 # 图谱扩散参数来自 Config（性能优化）：每节点最多扩散最强 N 条边；弱边阈值。
 
 # 出厂通用区块（domain 分组概念：图谱分区块防跨域污染）。
 # novel = 小说创作设定库（本地小说 vault 设定语料）。
 DEFAULT_BLOCKS = ("task", "kb", "hermes", "novel", "general")
+
+# 命中计数缓冲回写阈值/周期：检索返回热路径只做内存累加，缓冲累计
+# _HIT_FLUSH_THRESHOLD 次命中、或距上次回写超过 _HIT_FLUSH_INTERVAL 秒
+# 才批量合并回写一次（见 TriviumStore.flush_hit_counts）。
+_HIT_FLUSH_THRESHOLD = 50
+_HIT_FLUSH_INTERVAL = 30.0
 
 
 def is_valid_block(block: str) -> bool:
@@ -166,6 +219,15 @@ class TriviumStore:
             self.dim = Config.OLLAMA_EMBEDDING_DIM
         # 性能优化：常用字段索引建一次即可，不再随每次 insert_node 重建
         self._init_indexes()
+        # 命中计数内存缓冲（检索返回热路径零写库）：
+        #   _hit_buffer        {node_id: [累计次数, 最近命中时间戳]}
+        #   _hit_pending_total 缓冲内待回写的命中总数（达阈值/超时触发回写）
+        #   _hit_last_flush    上次回写时刻（周期触发用）
+        #   _hit_lock          缓冲读改写互斥（并发检索不丢计数）
+        self._hit_buffer: dict[int, list] = {}
+        self._hit_pending_total: int = 0
+        self._hit_last_flush: float = time.time()
+        self._hit_lock = threading.Lock()
 
     def _init_indexes(self) -> None:
         """一次性创建常用 payload 字段索引（Hash / Ordered / Composite / Bitmap）。
@@ -197,18 +259,21 @@ class TriviumStore:
                 with contextlib.suppress(Exception):
                     db.close()
 
-    def _acquire(self):
+    def _acquire(self) -> Any:
         """获取数据库连接（仅存在于 with 块内部）。
 
         triviumdb 自带 `py.typed` 与 `triviumdb.pyi`，mypy 可直接解析其类型，
-        无需 `type: ignore` 抑制。
+        无需 `type: ignore` 抑制。返回 `_LockedDB` 代理（见其 docstring）：连接
+        持有期间锁住进程内 DB 访问，连接 close 时释放。
 
         库被其他进程占用时（连接级排他）fail-fast 抛 `DatabaseBusyError`，
         附带库路径与处理指引，而不是把底层 RuntimeError 原样抛给上层。
         """
+        _DB_ACCESS_LOCK.acquire()
         try:
-            return triviumdb.TriviumDB(self.db_path, dim=self.dim)
+            db = triviumdb.TriviumDB(self.db_path, dim=self.dim)
         except Exception as e:
+            _DB_ACCESS_LOCK.release()
             if _is_db_locked_error(e):
                 raise DatabaseBusyError(
                     f"记忆库被其他进程占用，无法打开：{self.db_path}\n"
@@ -218,6 +283,7 @@ class TriviumStore:
                     f"或改为访问已运行的 REST 服务（http://127.0.0.1:8090，含 /mcp）。"
                 ) from e
             raise
+        return _LockedDB(db, _DB_ACCESS_LOCK)
 
     def embed_text(self, text: str) -> list[float]:
         """生成文本向量，按 EMBEDDING_PROVIDER 分发（默认本地 ollama，隐私优先）。"""
@@ -496,14 +562,19 @@ class TriviumStore:
         return top_results
 
     def _bump_hit_counts(self, top_results: list) -> None:
-        """命中计数回写（best-effort，记忆生命周期 promote 的数据源）。
+        """命中计数累加进内存缓冲（best-effort，记忆生命周期 promote 的数据源）。
 
-        对 search_similar 最终返回的命中节点做 hit_count+1，供 promote 高频
-        记忆升级识别。设计约束：
+        对 search_similar 最终返回的命中节点 hit_count+1，供 promote 高频记忆
+        升级识别——但**只记内存缓冲、绝不碰数据库**：检索返回热路径上不再开写
+        事务（原版每次检索一次 read-modify-write，并发命中同一节点会丢计数、
+        写锁竞争放大延迟），实际回写由 flush_hit_counts 批量合并完成。设计约束：
           - 只对【最终返回】的命中节点计数（top_results），不含中途召回后丢弃的；
-          - 不改变检索返回内容/排序/行为（payload 以库内最新读回为准增量写，不回写返回值）；
-          - 写库失败（锁冲突/节点被删等）吞掉并 warning，绝不抛出影响检索结果；
-          - 单连接一次写完所有命中，避免 N+1 次开/关连接。
+          - 不改变检索返回内容/排序/行为（本方法纯内存，返回值原样不动）；
+          - 缓冲读改写全程持 _hit_lock，并发检索不丢计数；
+          - 回写失败由 flush_hit_counts 吞掉并 warning，绝不抛出影响检索。
+          - hit_count 是 best-effort 指标：进程退出时未达阈值/未超时的缓冲会
+            丢弃（最多 _HIT_FLUSH_THRESHOLD 次命中 / _HIT_FLUSH_INTERVAL 秒），
+            长驻的 REST 进程由周期触发兜底落库。
         """
         if not top_results:
             return
@@ -511,28 +582,89 @@ class TriviumStore:
         if not ids:
             return
         now = time.time()
-        db = None
-        try:
-            db = self._acquire()
+        with self._hit_lock:
             for nid in ids:
-                node = db.get(nid)
-                if not node:
-                    continue
-                payload = dict(node.payload or {})
-                cur = payload.get("hit_count")
-                try:
-                    cur = int(cur) if cur is not None else 0
-                except (TypeError, ValueError):
-                    cur = 0
-                payload["hit_count"] = cur + 1
-                payload["last_hit_at"] = now
-                db.update_payload(id=nid, payload=payload)
-        except Exception as e:  # noqa: BLE001 — 写失败不影响检索，吞掉仅记录
-            logger.warning("命中计数回写失败（不影响检索）: %s", e)
-        finally:
-            if db is not None:
-                with contextlib.suppress(Exception):
-                    db.close()
+                entry = self._hit_buffer.get(nid)
+                if entry is None:
+                    self._hit_buffer[nid] = [1, now]
+                else:
+                    entry[0] += 1
+                    entry[1] = now
+                self._hit_pending_total += 1
+        self._maybe_flush_hit_counts()
+
+    def _maybe_flush_hit_counts(self) -> None:
+        """缓冲达到阈值或超时则触发一次合并回写（由 _bump_hit_counts 尾部调用）。
+
+        触发条件（满足其一即回写）：
+          - 缓冲待回写总数 >= _HIT_FLUSH_THRESHOLD（50 次命中）；
+          - 距上次回写 >= _HIT_FLUSH_INTERVAL（30 秒）——低频命中也能定时落库。
+        决策在 _hit_lock 内读取；回写本体 flush_hit_counts 自行加锁，此处**不持锁**
+        调用（threading.Lock 非重入，持锁再进会死锁）。
+        """
+        with self._hit_lock:
+            due = (
+                self._hit_pending_total >= _HIT_FLUSH_THRESHOLD
+                or time.time() - self._hit_last_flush >= _HIT_FLUSH_INTERVAL
+            )
+        if not due:
+            return
+        self.flush_hit_counts()
+
+    def flush_hit_counts(self) -> int:
+        """把内存缓冲的命中计数按**合并语义**批量回写数据库，返回成功累加的计数总和。
+
+        合并语义：读节点现有 payload，`hit_count = 原值 + 缓冲计数`、
+        `last_hit_at = 缓冲时间戳`，再整包写回——对 hit_count 是加法，不会覆盖
+        外部并发写入的其他字段/计数。契约（沿用原 _bump_hit_counts 的 best-effort）：
+          - 单连接一次写完所有缓冲节点，避免 N+1 次开/关连接；
+          - 全程持 _hit_lock：并发 flush 串行化，同一节点不会被重复累加；
+            代价是回写期间 _bump_hit_counts 短暂阻塞——每 50 次命中才写一次，可接受；
+          - 任何写失败（锁冲突/节点被删等）吞掉并 warning，绝不抛出影响检索；
+          - 写成功（或节点已删无处可写）的条目从缓冲移除并扣减
+            _hit_pending_total，最后刷新 _hit_last_flush。
+        """
+        with self._hit_lock:
+            if not self._hit_buffer:
+                self._hit_last_flush = time.time()
+                return 0
+            # 快照待回写条目（持锁期间缓冲不会被并发改写）
+            snapshot = {nid: (int(e[0]), float(e[1])) for nid, e in self._hit_buffer.items()}
+            written = 0
+            handled: list[int] = []
+            db = None
+            try:
+                db = self._acquire()
+                for nid, (cnt, ts) in snapshot.items():
+                    node = db.get(nid)
+                    if not node:
+                        # 节点已被删除：无处可写，按已处理出缓冲，避免永久残留
+                        handled.append(nid)
+                        continue
+                    payload = dict(node.payload or {})
+                    cur = payload.get("hit_count")
+                    try:
+                        cur = int(cur) if cur is not None else 0
+                    except (TypeError, ValueError):
+                        cur = 0
+                    payload["hit_count"] = cur + cnt
+                    payload["last_hit_at"] = ts
+                    db.update_payload(id=nid, payload=payload)
+                    handled.append(nid)
+                    written += cnt
+            except Exception as e:  # noqa: BLE001 — 写失败不影响检索，吞掉仅记录
+                logger.warning("命中计数回写失败（不影响检索）: %s", e)
+            finally:
+                if db is not None:
+                    with contextlib.suppress(Exception):
+                        db.close()
+            # 成功/已删条目出缓冲并扣减待回写总数；中途失败的节点留在缓冲待下次重试
+            for nid in handled:
+                snap_cnt = snapshot[nid][0]
+                if self._hit_buffer.pop(nid, None) is not None:
+                    self._hit_pending_total = max(0, self._hit_pending_total - snap_cnt)
+            self._hit_last_flush = time.time()
+            return written
 
     def get_edges(self, node_id: int) -> list:
         """获取节点的出边列表（Edge 对象，含 label/target_id/weight）"""

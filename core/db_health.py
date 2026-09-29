@@ -17,6 +17,8 @@ from __future__ import annotations
 import logging
 import os
 
+from core.utils import _is_db_locked_error
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,9 +52,8 @@ def check_db_health(db_path: str | None = None, dim: int | None = None) -> dict:
         result["error"] = msg
         # 区分两类失败：库被别的进程占用（busy，非损坏）vs 文件组本身损坏。
         # 前者重试即可，后者必须走备份恢复 —— 混在一起会误导运维。
-        low = msg.lower()
-        result["busy"] = ("locked" in low or "已锁定" in msg
-                          or "incompatible access mode" in low)
+        # 判定统一走 core/utils 的标记表（与 trivium_store 同一份），不再各写一份。
+        result["busy"] = _is_db_locked_error(exc)
     return result
 
 
