@@ -146,3 +146,31 @@ def test_search_similar_without_filter_still_works(http, rs):
 
     assert out, out
     assert http["calls"][0][0] == "POST" and http["calls"][0][1] == "/mem/search"
+
+
+# ---- iter_payloads：必须要求完整 payload，缺了不许静默退回摘要 ----
+
+def test_iter_payloads_requests_full_payload(http, rs):
+    http["responses"][("GET", "/export")] = _Resp(200, {
+        "memories": [{"id": 3, "content": "x", "payload": {"content": "x",
+                                                           "domain": "hero"}}],
+        "total_nodes": 1, "page": 1, "page_size": 500, "total_pages": 1,
+    })
+
+    pairs = list(rs.iter_payloads())
+
+    method, path, kwargs = http["calls"][0]
+    assert (method, path) == ("GET", "/export"), http["calls"][0]
+    assert kwargs["params"]["include_payload"] == "true", kwargs["params"]
+    assert pairs == [(3, {"content": "x", "domain": "hero"})], pairs
+
+
+def test_iter_payloads_fails_loud_when_payload_missing(http, rs):
+    """服务端忽略 include_payload 时必须报错，不能静默退回残缺摘要。"""
+    http["responses"][("GET", "/export")] = _Resp(200, {
+        "memories": [{"id": 3, "content": "x"}],
+        "total_nodes": 1, "page": 1, "page_size": 500, "total_pages": 1,
+    })
+
+    with pytest.raises(RemoteStoreError, match="payload"):
+        list(rs.iter_payloads())
