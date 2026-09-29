@@ -555,3 +555,57 @@ def test_secret_scan_error_type_and_message():
     msg = str(exc)
     assert "敏感信息" in msg, msg
     assert "openai_key" in msg and "bearer" in msg, msg
+
+
+# ---------------------------------------------------------------------------
+# 5. 边权重 0.0 必须原样保留（不能用 `or 1.0` 兜底）
+# ---------------------------------------------------------------------------
+def test_zero_weight_edge_keeps_zero_weight_in_collect():
+    """weight=0.0 的边在 _collect_neighbors 里必须保持 0.0（不能变成 1.0）。"""
+    items = [{"id": 1, "score": 0.8}]
+    edges = {1: [_Edge(50, "related", 0.0)]}
+    nodes = {50: {"payload": {"type": "memory", "content": "零权边邻居"}}}
+
+    out = _collect(items, 5, edges, nodes)
+
+    assert len(out) == 1, out
+    assert out[0]["weight"] == 0.0, f"0.0 权重被吞成 {out[0]['weight']}"
+    assert out[0]["score"] == 0.0, f"score 应按 0.0 权重算：{out[0]}"
+
+
+def test_zero_weight_edge_filtered_by_min_weight_in_bfs():
+    """weight=0.0 的边在 min_weight > 0 时必须被 BFS 过滤掉。"""
+    from mcp_tools import graph as graph_mod
+
+    original = graph_mod.store
+    fake = _GraphStore(
+        edges={1: [_Edge(50, "related", 0.0), _Edge(60, "related", 0.9)]},
+        nodes={},
+    )
+    graph_mod.store = fake
+    try:
+        relations = graph_mod._bfs_neighbors(1, 1, 0.5, "", "")
+    finally:
+        graph_mod.store = original
+
+    targets = {r["target_id"] for r in relations}
+    assert 50 not in targets, f"weight=0.0 的边未被 min_weight 过滤：{relations}"
+    assert 60 in targets, relations
+
+
+def test_missing_weight_attribute_defaults_to_one():
+    """边没有 weight 属性时仍按 1.0（默认值语义不能丢）。"""
+    items = [{"id": 1, "score": 1.0}]
+
+    class _NoWeightEdge:
+        def __init__(self):
+            self.target_id = 70
+            self.label = "related"
+
+    edges = {1: [_NoWeightEdge()]}
+    nodes = {70: {"payload": {"type": "memory", "content": "无权重属性邻居"}}}
+
+    out = _collect(items, 5, edges, nodes)
+
+    assert len(out) == 1, out
+    assert out[0]["weight"] == 1.0, out

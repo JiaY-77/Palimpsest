@@ -61,7 +61,9 @@ def _collect_neighbors(items: list, neighbor_limit: int = 5) -> list:
             if payload.get("status") == "outdated":
                 continue
             label = (getattr(edge, "label", "") or "").upper() or "LINKED"
-            weight = round(_to_float(getattr(edge, "weight", 1.0) or 1.0, 1.0), 6)
+            # 权重 0.0 是合法值，必须原样保留（不能用 or 兜底，否则 0.0 会被吞成 1.0）
+            _w = getattr(edge, "weight", None)
+            weight = round(_to_float(1.0 if _w is None else _w, 1.0), 6)
             strength = round(via_score * weight, 4)
             prev = best.get(nb)
             if prev is None or strength > prev["score"]:
@@ -109,7 +111,9 @@ def _bfs_neighbors(node_id: int, depth: int, min_w: float, rel: str,
             label = getattr(edge, "label", "") or ""
             if rel and label.lower() != rel:
                 continue
-            w = _to_float(getattr(edge, "weight", 1.0) or 1.0, 1.0)
+            # 权重 0.0 是合法值，必须原样保留（不能用 or 兜底，否则 0.0 会被吞成 1.0）
+            _w = getattr(edge, "weight", None)
+            w = _to_float(1.0 if _w is None else _w, 1.0)
             if w < min_w:
                 continue
             tid = edge.target_id
