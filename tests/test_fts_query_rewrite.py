@@ -4,8 +4,6 @@ FTS 长查询 3-gram OR 改写测试
 覆盖 build_fts_query 纯函数单测 + search_fts 长/短查询集成测试。
 """
 
-import sqlite3
-
 import pytest
 
 from core.fts_index import build_fts_query, index_node, search_fts
@@ -60,23 +58,13 @@ def fts_env(monkeypatch, tmp_path):
     """指向临时 fts.db 并索引若干中文节点。
 
     Config.DB_PATH 在 import 时定型，monkeypatch 环境变量无效；
-    直接 patch core.fts_index._connect 让 search_fts 走临时库。
+    直接 patch core.fts_index._db_path，让写入口（index_node，负责建表）
+    与只读检索（search_fts，只读连接）都落在同一个临时库上。
     """
     import core.fts_index as fts_mod
 
     db_path = str(tmp_path / "fts.db")
-
-    def make_conn():
-        conn = sqlite3.connect(db_path)
-        conn.execute(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS mem_fts USING fts5("
-            "content, node_id UNINDEXED, source_path UNINDEXED, "
-            "tokenize='trigram')"
-        )
-        conn.commit()
-        return conn
-
-    monkeypatch.setattr(fts_mod, "_connect", make_conn)
+    monkeypatch.setattr(fts_mod, "_db_path", lambda: db_path)
 
     docs = [
         (1, "之前压测用的那些脚本都放在哪了"),

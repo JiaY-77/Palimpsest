@@ -97,7 +97,7 @@ def test_promote_apply_and_idempotent(iso_store):
 
 
 def test_hit_tracking_via_search(iso_store):
-    """真实检索路径：search_similar 命中节点 hit_count 增 1。"""
+    """真实检索路径：命中计数先进内存缓冲，flush 后才落库（+1）。"""
     s = iso_store
     content = "命中追踪护栏唯一标记词promoteunique"
     nid = s.insert_node({"type": "memory", "content": content,
@@ -107,6 +107,13 @@ def test_hit_tracking_via_search(iso_store):
 
     results = s.search_similar(s.embed_text(content), top_k=5, expand_depth=1)
     assert any(r.get("id") == nid for r in results), f"应命中插入节点: {results}"
+
+    # 检索返回热路径不写库：返回后库里不应出现 hit_count
+    assert s.get_node(nid)["payload"].get("hit_count") is None, (
+        "search_similar 仍在返回路径上写库"
+    )
+
+    s.flush_hit_counts()
 
     payload = s.get_node(nid)["payload"]
     assert payload["hit_count"] == 1, payload
