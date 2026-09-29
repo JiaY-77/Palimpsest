@@ -190,7 +190,7 @@ async def _startup_self_check():
 
 # ---- API 端点 ----
 @app.get("/")
-async def root():
+def root():
     return {
         "service": "Palimpsest",
         "version": get_version(),
@@ -215,7 +215,7 @@ async def root():
 
 
 @app.get("/export")
-async def export_memories(page: int = 1, page_size: int = 100):
+def export_memories(page: int = 1, page_size: int = 100):
     """导出记忆为精简摘要（分页：默认第一页 100 条，page_size 上限 500）。"""
     if page_size > 500:
         page_size = 500
@@ -257,7 +257,7 @@ async def export_memories(page: int = 1, page_size: int = 100):
 
 
 @app.get("/summary")
-async def summary():
+def summary():
     """生成一份人类可读的记忆摘要"""
     events = []
     characters = []
@@ -298,7 +298,7 @@ async def report_endpoint():
 
 
 @app.get("/memory/{node_id}")
-async def get_memory(node_id: int):
+def get_memory(node_id: int):
     """获取指定 ID 的记忆节点 payload（剥掉内部字段 secret_hint / linked_from / linked_kb_ids / superseded）"""
     node = _get_store().get_node(node_id)
     if not node:
@@ -312,7 +312,7 @@ async def get_memory(node_id: int):
 
 
 @app.delete("/memory/{node_id}")
-async def delete_memory(node_id: int):
+def delete_memory(node_id: int):
     """删除指定 ID 的记忆节点"""
     try:
         _get_store().delete_node(node_id)
@@ -335,7 +335,7 @@ def _sync_fts_after_update(node_id: int) -> None:
 
 
 @app.put("/memory/{node_id}")
-async def update_memory_payload(node_id: int, payload: dict):
+def update_memory_payload(node_id: int, payload: dict):
     """更新指定 ID 的记忆 payload（部分更新合并语义：只改传入字段，其余保留）"""
     try:
         _get_store().update_payload(node_id, payload)
@@ -347,7 +347,7 @@ async def update_memory_payload(node_id: int, payload: dict):
 
 
 @app.patch("/memory/{node_id}")
-async def patch_memory_payload(node_id: int, payload: dict):
+def patch_memory_payload(node_id: int, payload: dict):
     """PATCH：部分更新指定 ID 的记忆 payload（与 PUT 同逻辑，但语义上更精确）"""
     try:
         _get_store().update_payload(node_id, payload)
@@ -359,7 +359,7 @@ async def patch_memory_payload(node_id: int, payload: dict):
 
 
 @app.patch("/memory/{node_id}/vector")
-async def update_memory_vector(node_id: int, vector: list[float]):
+def update_memory_vector(node_id: int, vector: list[float]):
     """更新指定 ID 的记忆向量（维度必须匹配）"""
     try:
         if len(vector) != _get_store().dim:
@@ -459,7 +459,7 @@ def _as_json(text: str):
 
 
 @app.post("/mem/search")
-async def mem_search(req: MemSearchRequest):
+def mem_search(req: MemSearchRequest):
     return _as_json(_mcp_mem_search(
         req.query, scope=req.scope, domain=req.domain,
         domain_bias=req.domain_bias, top_k=req.top_k,
@@ -470,12 +470,12 @@ async def mem_search(req: MemSearchRequest):
 
 
 @app.post("/skill/search")
-async def skill_search(req: SkillSearchRequest):
+def skill_search(req: SkillSearchRequest):
     return _as_json(_mcp_skill_search(req.query, top_k=req.top_k))
 
 
 @app.post("/mem/hybrid-search")
-async def mem_hybrid_search(req: MemHybridSearchRequest):
+def mem_hybrid_search(req: MemHybridSearchRequest):
     return _as_json(_mcp_mem_hybrid_search(
         req.query, scope=req.scope, domain=req.domain,
         domain_bias=req.domain_bias, top_k=req.top_k, mode=req.mode,
@@ -486,7 +486,7 @@ async def mem_hybrid_search(req: MemHybridSearchRequest):
 
 
 @app.post("/mem/ingest")
-async def mem_ingest(req: MemIngestRequest):
+def mem_ingest(req: MemIngestRequest):
     result = _mcp_mem_ingest(
         req.content, type=req.type, importance=req.importance,
         domain=req.domain, source=req.source,
@@ -505,7 +505,7 @@ async def mem_ingest(req: MemIngestRequest):
 
 
 @app.post("/mem/link")
-async def mem_link(req: MemLinkRequest):
+def mem_link(req: MemLinkRequest):
     return _as_json(_mcp_mem_link(
         req.source_id, req.target_id, relation=req.relation,
         weight=req.weight, bidirectional=req.bidirectional,
@@ -513,7 +513,7 @@ async def mem_link(req: MemLinkRequest):
 
 
 @app.post("/graph/neighbors")
-async def graph_neighbors(req: GraphNeighborsRequest):
+def graph_neighbors(req: GraphNeighborsRequest):
     return _as_json(_mcp_graph_neighbors(
         req.node_id, relation=req.relation, depth=req.depth,
         limit=req.limit, min_weight=req.min_weight, block=req.block,
@@ -521,7 +521,7 @@ async def graph_neighbors(req: GraphNeighborsRequest):
 
 
 @app.post("/graph/communities")
-async def graph_communities(req: GraphCommunitiesRequest):
+def graph_communities(req: GraphCommunitiesRequest):
     return _as_json(_mcp_mem_communities(
         min_community_size=req.min_community_size,
         top_k=req.top_k, with_summary=req.with_summary,
@@ -529,7 +529,7 @@ async def graph_communities(req: GraphCommunitiesRequest):
 
 
 @app.post("/mem/recent")
-async def mem_recent(req: MemRecentRequest):
+def mem_recent(req: MemRecentRequest):
     """最近记忆列表（只读）：按 created_at 倒序，时间戳缺失时按 id 倒序兜底。
 
     核心逻辑见 mcp_tools.memory.mem_recent（复用同一实现，不复制）。
@@ -538,7 +538,7 @@ async def mem_recent(req: MemRecentRequest):
 
 
 @app.post("/mem/stats")
-async def mem_stats():
+def mem_stats():
     """库级盘点统计（只读）：返回 totals / kinds / importance / time / graph 分节。
 
     核心逻辑见 core/stats.py compute_stats（单次全遍历，不修改任何节点）。
