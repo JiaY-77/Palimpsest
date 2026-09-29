@@ -39,6 +39,14 @@ class RemoteStoreError(RuntimeError):
     """
 
 
+class RemoteStoreNotFoundError(RemoteStoreError):
+    """目标资源不存在（REST 返回 404）。
+
+    单独成类而不是让调用方从消息串里抠状态码：404 是「可能正常」的语义
+    （如 ``get_node`` 查不存在的 id 返回 ``None``），必须可被精确捕获。
+    """
+
+
 class RemoteStore:
     """``protocols.Store`` 的 HTTP 实现。
 
@@ -67,7 +75,9 @@ class RemoteStore:
     # ---- 内部 ----
 
     def _req(self, method: str, path: str, **kwargs: Any) -> Any:
-        """发一个请求并返回解析后的 JSON；失败抛 ``RemoteStoreError``。"""
+        """发一个请求并返回解析后的 JSON；失败抛 ``RemoteStoreError``
+        （404 单独抛 ``RemoteStoreNotFoundError``，是其子类）。
+        """
         try:
             resp = self._client.request(method, path, **kwargs)
         except httpx.HTTPError as exc:
@@ -77,6 +87,12 @@ class RemoteStore:
                 f"处理：确认 REST 服务在运行（uvicorn main:app --port 8090），"
                 f"或设置 PALIMPSEST_BASE_URL 指向已运行的实例。"
             ) from exc
+        # 404 必须先于 >=400 分支判定，否则会被统一吞掉、调用方无法精确捕获
+        if resp.status_code == 404:
+            raise RemoteStoreNotFoundError(
+                f"REST 返回 404：{method} {self.base_url}{path}\n"
+                f"响应：{resp.text[:500]}"
+            )
         if resp.status_code >= 400:
             raise RemoteStoreError(
                 f"REST 返回 {resp.status_code}：{method} {self.base_url}{path}\n"
@@ -92,10 +108,8 @@ class RemoteStore:
         """取单个节点。REST ``GET /memory/{id}`` 返回 404 时返回 ``None``。"""
         try:
             return self._req("GET", f"/memory/{node_id}")
-        except RemoteStoreError as exc:
-            if "返回 404" in str(exc):
-                return None
-            raise
+        except RemoteStoreNotFoundError:
+            return None
 
     def get_edges(self, node_id: int) -> list:
         """取某节点邻边——经 ``POST /graph/neighbors``。
@@ -168,20 +182,21 @@ class RemoteStore:
         return {}
 
     def recent_ids(self, limit: int = 20) -> list[int]:
-        """最近节点 id —— 由 ``GET /export`` 首页（按 id 倒序）取前 limit 个。
+        """最近节点 id —— 经 ``POST /mem/recent``（body ``{"limit": limit}``）。
 
-        服务端没有专门的 /recent 端点，此处用 export 首页近似；
-        若将来服务端补了 narrow 端点，改走它更好。
+        服务端 ``mcp_tools.memory.mem_recent`` 按 ``created_at`` 倒序（时间戳缺失
+        时按 id 倒序兜底）返回 ``{"results": [{id, type, content, ...}, ...],
+        "total": N}``，``results`` 已截到 limit——按实际响应解析，只抽 id。
+        不走 ``GET /export``：export 内部按 importance 降序，是「最重要前 N」
+        而非「最近 N」，语义不符。
         """
-        data = self._req("GET", "/export", params={"page": 1, "page_size": limit})
+        data = self._req("POST", "/mem/recent", json={"limit": limit})
         items = []
         if isinstance(data, dict):
-            items = data.get("memories", data.get("items", [])) or []
+            items = data.get("results") or []
         elif isinstance(data, list):
             items = data
-        ids = [int(it["id"]) for it in items if isinstance(it, dict) and "id" in it]
-        ids.sort(reverse=True)
-        return ids[:limit]
+        return [int(it["id"]) for it in items if isinstance(it, dict) and "id" in it]
 
     # ---- 写 ----
 
@@ -208,11 +223,12 @@ class RemoteStore:
         self._req("PUT", f"/memory/{node_id}", json=new_payload)
 
     def update_vector(self, node_id: int, new_vector: list[float]) -> None:
-        """整体替换向量 —— 经 ``PUT /memory/{id}/vector``。
+        """整体替换向量 —— 经 ``PATCH /memory/{id}/vector``。
 
-        注意：REST 端点路径需在服务端确认；若不存在会抛 RemoteStoreError。
+        服务端形参是顶层 ``vector: list[float]``（FastAPI 直接把 body 解析成
+        数组），故 body 直接是向量数组，不能再包 ``{"vector": ...}``。
         """
-        self._req("PUT", f"/memory/{node_id}/vector", json={"vector": new_vector})
+        self._req("PATCH", f"/memory/{node_id}/vector", json=new_vector)
 
     def delete_node(self, node_id: int) -> None:
         """删除节点 —— 经 ``DELETE /memory/{id}``。"""
@@ -251,10 +267,15 @@ class RemoteStore:
     ) -> Iterable:
         """语义检索 —— 经 ``POST /mem/search``。
 
-        ``payload_filter`` 用于把类型过滤下推到检索层。REST 的 search 端点
-        接受 ``scope`` 等参数；若需要按类型精确过滤，应扩展该端点
-        （服务端检索层原生支持 payload_filter）。
+        ``payload_filter`` 服务端**尚不支持**：``main.MemSearchRequest`` 与
+        ``mcp_tools.memory.mem_search`` 都没有该字段（即便塞进 body 也会被
+        FastAPI 模型静默丢弃），故收到非空过滤时直接抛 ``NotImplementedError``——
+        静默忽略会让调用方以为过滤生效了。
         """
+        if payload_filter:
+            raise NotImplementedError(
+                "RemoteStore.search_similar 暂不支持 payload_filter 下推，请先补服务端支持或改用 LocalStore"
+            )
         body: dict[str, Any] = {"query": query, "top_k": top_k}
         if domain:
             body["domain"] = domain

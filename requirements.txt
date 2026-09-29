@@ -1,4 +1,5 @@
 fastapi==0.136.1
+httpx==0.28.1
 # mcp 锁 1.29.0：mcp_server.py 使用 from mcp.server.fastmcp import FastMCP，
 # mcp 2.x 移除了顶层 fastmcp，故不得升级到 2.x
 mcp==1.29.0
