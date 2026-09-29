@@ -314,6 +314,8 @@ def cmd_reindex(store, *, only=None, skip=None, batch=64,
         })
 
     _interrupted = False
+    _failed_break = False  # 因异常 break（区别于正常跑完 / Ctrl+C 中断）
+    last_done_id = 0  # 最后一个**成功写入**的节点 ID，异常/中断时以它为准落盘
 
     def _on_sigint(signum, frame):
         nonlocal _interrupted
@@ -339,11 +341,13 @@ def cmd_reindex(store, *, only=None, skip=None, batch=64,
             new_vec = store.embed_text(text)
         except Exception as e:  # noqa: BLE001 —— 嵌入不可用快速失败停止避免半成品重嵌
             failed += 1
+            _failed_break = True
             print(f"\n[失败] ID={nid}: {e}", file=sys.stderr)
             break  # embedding 不可用，快速失败停止
 
         if len(new_vec) != store.dim:
             failed += 1
+            _failed_break = True
             print(
                 f"\n[失败] ID={nid}: 向量维度 {len(new_vec)} != 配置 {store.dim}",
                 file=sys.stderr,
@@ -373,11 +377,13 @@ def cmd_reindex(store, *, only=None, skip=None, batch=64,
                 signal.signal(signal.SIGINT, old_handler)
                 return 3
             failed += 1
+            _failed_break = True
             print(f"\n[失败] ID={nid}: {e}", file=sys.stderr)
             break  # 写入异常，停止避免半成品
 
         reindexed += 1
         sample_new_vec = new_vec
+        last_done_id = nid  # 该节点已成功写入，断点进度推进到这里
 
         if reindexed % progress_interval == 0:
             print(f"  进度: {reindexed} / {len(all_nodes)}", flush=True)
@@ -385,11 +391,13 @@ def cmd_reindex(store, *, only=None, skip=None, batch=64,
 
     signal.signal(signal.SIGINT, old_handler)
 
-    # 最终进度
-    _save_progress(
-        max(nid for nid, _p, _v in all_nodes) if all_nodes and not _interrupted else 0,
-        reindexed,
-    )
+    # 最终进度：正常跑完写全库最大 nid（原语义）；异常 break / Ctrl+C 中断
+    # 只写最后成功写入的节点，否则下次 --resume 会把未处理的节点全跳过
+    if _interrupted or _failed_break:
+        final_done_id = last_done_id
+    else:
+        final_done_id = max((nid for nid, _p, _v in all_nodes), default=0)
+    _save_progress(final_done_id, reindexed)
 
     # 6) 结束报告——四类计数：重嵌 / 跳过（缺 content）/ 修复空向量 / 失败
     elapsed = time.perf_counter() - t0
