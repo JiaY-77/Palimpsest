@@ -572,3 +572,76 @@ def test_script_entrypoint_runs_as_file():
     )
     assert proc.returncode == 0, proc.stderr
     assert "全库向量重嵌入" in proc.stdout
+
+
+# ================================================================
+# 异常中断：状态文件必须记「最后成功写入的节点」
+# ================================================================
+
+def test_reindex_failure_records_last_successful_id(iso_db, monkeypatch):
+    """embedding 中途失败时，状态文件不得写全库最大 id。
+
+    回归：异常 break 时 ``_interrupted`` 仍为 False，终态会写
+    ``max(all_nodes)`` → 下次 ``--resume`` 把「未完成」当「已完成」，
+    跳过全部节点、静默丢数据。
+    """
+    from conftest import _fake_embed
+
+    from core.trivium_store import TriviumStore
+    from scripts.reindex import cmd_reindex
+
+    s, _db = iso_db
+    node_map = _insert_nodes(s, ["memory", "record", "task", "plan"])
+    all_ids = sorted(nid for ids in node_map.values() for nid in ids)
+
+    # 改内容，让「已重嵌」可由向量变化观测到（同内容重嵌向量不变）
+    updates = {}
+    for nid, payload, _v in _collect_nodes(s):
+        if nid in all_ids:
+            updates[nid] = {**payload, "content": "中断测试新内容" + str(nid)}
+    _update_payloads(s, updates)
+    old_vectors = _read_vectors(s, all_ids)
+
+    calls = {"n": 0}
+
+    def _fail_after_first_node(text):
+        calls["n"] += 1
+        # 第 1 次是维度探针，第 2 次是第一个节点（成功），第 3 次抛异常
+        if calls["n"] >= 3:
+            raise RuntimeError("模拟 embedding 中断")
+        return _fake_embed(text)
+
+    monkeypatch.setattr(TriviumStore, "embed_text", staticmethod(_fail_after_first_node))
+    s.embed_text = _fail_after_first_node
+    try:
+        code = cmd_reindex(s, yes=True, batch=100)
+        # 退出码 1 = 部分失败；4 保留给「一条都没重嵌成功」
+        assert code == 1, f"部分失败应返回 1（4 仅当一条都没成功）：{code}"
+
+        new_vectors = _read_vectors(s, all_ids)
+        written = [nid for nid in all_ids
+                   if new_vectors[nid] != old_vectors[nid]]
+        assert written, "应至少成功写入一个节点（探针之后的第一个节点）"
+        assert len(written) < len(all_ids), f"本测试需要「部分完成」：{written}"
+
+        import scripts.reindex as ri
+        with open(ri.db_state_file(s), encoding="utf-8") as f:
+            state = json.load(f)
+        assert state["max_done_id"] == max(written), (
+            f"状态文件 max_done_id={state['max_done_id']}，"
+            f"应为最后成功写入的 {max(written)}（全库最大 id={max(all_ids)}）"
+        )
+        assert state["max_done_id"] != max(all_ids), (
+            "把未完成当成了已完成 —— resume 会跳过全部节点"
+        )
+    finally:
+        monkeypatch.setattr(TriviumStore, "embed_text", staticmethod(_fake_embed))
+        s.embed_text = _fake_embed
+
+    # 续跑必须真的重嵌剩下的节点（而不是被状态文件跳过）
+    assert cmd_reindex(s, yes=True, batch=100) == 0
+    resumed = _read_vectors(s, all_ids)
+    for nid in all_ids:
+        assert resumed[nid] != old_vectors[nid], (
+            f"ID={nid} 在续跑后仍未被重嵌 —— 断点把未完成的节点跳过了"
+        )

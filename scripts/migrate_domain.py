@@ -41,7 +41,10 @@ def run(apply: bool = False) -> dict:
     already = 0
     no_cn = 0
     preview: list[dict] = []
-    for nid, payload in store.iter_payloads():
+    # 先把迭代器完全消费掉再写库：triviumdb 的迭代器在耗尽前不释放连接，
+    # 循环体内再开写连接会报 Database locked（--apply 第一个节点就会炸）
+    nodes = list(store.iter_payloads())
+    for nid, payload in nodes:
         if payload.get("domain"):
             already += 1
             continue
