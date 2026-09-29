@@ -149,6 +149,21 @@ def _assert_store_contract(s, impl: str) -> None:
     assert updated["content"] == content, f"{impl}: 部分更新冲掉了 content：{updated}"
     assert updated.get("domain") == "contract", f"{impl}: 部分更新冲掉了 domain"
 
+    # 全量遍历必须拿到**完整** payload：远程实现曾只拿到 5 个摘要字段，
+    # domain / created_at 恒空，凡经它跑 consolidate / stats / review 都是错的却不报错
+    from_iter = [pl for nid_, pl in s.iter_payloads() if nid_ == nid]
+    assert from_iter, f"{impl}: iter_payloads 未包含刚写入的节点"
+    payload_iter = from_iter[0]
+    assert payload_iter.get("content") == content, (
+        f"{impl}: iter_payloads 的 payload 残缺：{payload_iter}"
+    )
+    assert payload_iter.get("domain") == "contract", (
+        f"{impl}: iter_payloads 丢了 domain（残缺摘要）：{payload_iter}"
+    )
+    assert "importance" in payload_iter, (
+        f"{impl}: iter_payloads 的 payload 残缺：{payload_iter}"
+    )
+
     # 向量整体替换：远程实现曾用 PUT + {"vector": [...]}，在任何服务端版本都不可用
     s.update_vector(nid, [0.25] * 1024)
 

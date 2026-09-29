@@ -132,7 +132,11 @@ class RemoteStore:
     def iter_payloads(self) -> Iterator[tuple[int, dict[str, Any]]]:
         """遍历全部节点 ``(node_id, payload)``。
 
-        经 ``GET /export`` 分页拉取，避免一次性载入全库。
+        经 ``GET /export`` 分页拉取，避免一次性载入全库；
+        ``include_payload=true`` 要求服务端附带完整 payload——没有它，
+        ``domain`` / ``created_at`` 这类字段会恒为空，凡经 REST 走
+        consolidate / compute_stats / mem_review 的结果都是错的却不报错。
+        服务端漏了这个字段属于契约违约，这里显式抛错而不是退回残缺摘要。
 
         注意：确有全量遍历需求时才用；日常统计请优先 ``count_by_type`` /
         ``recent_ids``，它们各自只走一个端点。
@@ -141,7 +145,9 @@ class RemoteStore:
         page_size = 500
         while True:
             data = self._req(
-                "GET", "/export", params={"page": page, "page_size": page_size}
+                "GET", "/export",
+                params={"page": page, "page_size": page_size,
+                        "include_payload": "true"},
             )
             items = []
             if isinstance(data, dict):
@@ -151,10 +157,19 @@ class RemoteStore:
             if not items:
                 return
             for item in items:
-                nid = item.get("id") if isinstance(item, dict) else None
-                payload = item.get("payload", item) if isinstance(item, dict) else {}
-                if nid is not None:
-                    yield int(nid), payload
+                if not isinstance(item, dict):
+                    raise RemoteStoreError(
+                        f"/export 返回了非对象条目：{item!r}"
+                    )
+                nid = item.get("id")
+                if nid is None:
+                    continue
+                if "payload" not in item:
+                    raise RemoteStoreError(
+                        "GET /export 未返回 payload 字段（include_payload=true 被忽略）"
+                        "——契约违约：残缺摘要会让 domain/created_at 静默变空。"
+                    )
+                yield int(nid), item["payload"]
             if len(items) < page_size:
                 return
             page += 1

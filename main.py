@@ -215,8 +215,14 @@ def root():
 
 
 @app.get("/export")
-def export_memories(page: int = 1, page_size: int = 100):
-    """导出记忆为精简摘要（分页：默认第一页 100 条，page_size 上限 500）。"""
+def export_memories(page: int = 1, page_size: int = 100,
+                    include_payload: bool = False):
+    """导出记忆为精简摘要（分页：默认第一页 100 条，page_size 上限 500）。
+
+    ``include_payload=true`` 时每条附带完整 payload —— 供需要 ``(id, payload)``
+    全量遍历的调用方（如 RemoteStore.iter_payloads 走 REST 复现本地语义）。
+    默认关闭：摘要页面的响应体不该为 dashboard 之类只看摘要的调用方膨胀。
+    """
     if page_size > 500:
         page_size = 500
     if page_size < 1:
@@ -226,15 +232,16 @@ def export_memories(page: int = 1, page_size: int = 100):
 
     nodes = []
     for nid, payload in _get_store().iter_payloads():
-        nodes.append(
-            {
-                "id": nid,
-                "type": payload.get("type", ""),
-                "content": payload.get("content", ""),
-                "importance": payload.get("importance", 0),
-                "status": payload.get("status", ""),
-            }
-        )
+        item = {
+            "id": nid,
+            "type": payload.get("type", ""),
+            "content": payload.get("content", ""),
+            "importance": payload.get("importance", 0),
+            "status": payload.get("status", ""),
+        }
+        if include_payload:
+            item["payload"] = payload
+        nodes.append(item)
 
     # 按重要性降序排列（importance 可能为脏字符串，用 _to_float 兜底防排序类型错误）
     from core.utils import _to_float
