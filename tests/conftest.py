@@ -70,15 +70,23 @@ def fake_embedder():
       Ollama——CI 无 Ollama 环境必须全绿（此前只 patch mcp_tools 全局 store
       单例，自建实例仍真连 127.0.0.1:11434，CI 上 ConnectionRefused）。
     - 全局 store 单例也替换（保留原行为）。
-    真实 embedding 由 startup-check / 生产环境验证。session 级别不恢复。
+    - **teardown 恢复类属性**：类属性替换的爆炸半径是整个进程，session 结束后
+      必须还原——否则 session teardown 阶段的其它 fixture / 收集期插件再触碰
+      TriviumStore.embed_text 时拿到的是 fake，跨 session 静默串味。
+    真实 embedding 由 startup-check / 生产环境验证。
     """
     from core.trivium_store import TriviumStore
+
+    original_embed_text = TriviumStore.embed_text
 
     # staticmethod：class 属性赋值会触发描述符绑定（实例调用自动传 self），
     # 直接赋模块函数会让 _fake_embed 收到 (self, text) 两个参数而 TypeError
     TriviumStore.embed_text = staticmethod(_fake_embed)
     store.embed_text = _fake_embed
-    yield
+    try:
+        yield
+    finally:
+        TriviumStore.embed_text = original_embed_text
 
 
 @pytest.fixture(scope="session", autouse=True)

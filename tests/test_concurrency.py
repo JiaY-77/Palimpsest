@@ -127,17 +127,31 @@ def test_cross_process_writer_lock(base):
 
 
 def test_cross_process_reader_shared(base):
-    """多个进程可同时以 read_only 打开（读锁可共享）。"""
-    r1 = subprocess.Popen([sys.executable, _LOCK_CHILD, "--reader", base],
+    """多个进程可同时以 read_only 打开（读锁可共享）。
+
+    r1 与 r2 两个子进程都必须被校验：只断言 r2 成功、然后把 r1 直接
+    terminate 掉，等于「r1 启动即失败也照样绿」——断言落在错误的对象上。
+    这里等 r1 真的打印 OPEN_READ（子进程 -u 无缓冲）再起 r2，保证重叠窗口
+    真实存在，并校验两者的退出码与输出。
+    """
+    r1 = subprocess.Popen([sys.executable, "-u", _LOCK_CHILD, "--reader", base],
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
-        r2 = subprocess.Popen([sys.executable, _LOCK_CHILD, "--reader", base],
+        line1 = r1.stdout.readline()
+        assert "OPEN_READ" in line1, f"r1 未能打开只读：{line1!r}"
+
+        r2 = subprocess.Popen([sys.executable, "-u", _LOCK_CHILD, "--reader", base],
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        out2, _ = r2.communicate(timeout=60)
+        out2, err2 = r2.communicate(timeout=60)
+        assert r2.returncode == 0, err2
         assert "OPEN_READ" in out2, out2
-        r2.wait(timeout=60)
+
+        out1_rest, err1 = r1.communicate(timeout=60)
+        assert r1.returncode == 0, err1
+        assert "OPEN_READ" in line1 + out1_rest, (line1, out1_rest)
     finally:
-        r1.terminate()
+        if r1.poll() is None:
+            r1.kill()
         try:
             r1.communicate(timeout=10)
         except subprocess.TimeoutExpired:

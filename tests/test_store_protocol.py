@@ -75,3 +75,92 @@ def test_local_store_signature_matches_protocol():
             f"{name} 签名与协议不一致："
             f"协议={list(proto_sig.parameters)} 实现={list(impl_sig.parameters)}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 行为契约：同一组断言同时跑 LocalStore 与 RemoteStore
+# ---------------------------------------------------------------------------
+#
+# 结构检查（上面几条）只能证明「方法名在」；真正的偏离都是**行为**上的：
+# update_vector 用错 HTTP 方法、recent_ids 走按 importance 排序的端点、
+# 404 靠错误消息字符串判定……这些只有把同一个断言对两个实现各跑一遍才能钉住。
+#
+# 已知差异（不在同组断言内，另行跟踪）：
+#   * search_similar：协议声明首参是 query 字符串，TriviumStore 期望的是 embedding
+#     向量（LocalStore 原样下传），远程实现则把 query 交给服务端重算向量——
+#     语义未对齐，故不做同组断言；
+#   * get_edges：本地实现返回 Edge 对象，远程实现返回序列化后的字典。
+
+
+@pytest.fixture
+def protocol_stores(monkeypatch):
+    """LocalStore 与 RemoteStore 指向同一份库、同一份实现。
+
+    RemoteStore 走**真实 ASGI 应用**（进程内、不起服务、不走网络）：用
+    ``starlette.testclient.TestClient`` 替换 ``httpx.Client``——它本身就是
+    ``httpx.Client`` 子类，因此 RemoteStore 的代码一行不改。不进入它的上下文
+    管理器，避免触发应用启动自检（那会真去探 embedding 服务）。
+
+    ``/memory/{id}`` 这类原生端点读 ``main._store``，``/mem/*`` 读
+    ``mcp_tools.store``；两者指向同一实例，两条入口才是同一份数据。
+    """
+    import httpx
+    from starlette.testclient import TestClient
+
+    import main as main_mod
+    from client.remote_store import RemoteStore
+    from mcp_tools import store as shared_store
+    from server.local_store import LocalStore
+
+    monkeypatch.setattr(main_mod, "_store", shared_store)
+    monkeypatch.setattr(
+        httpx, "Client", lambda *args, **kwargs: TestClient(main_mod.app)
+    )
+
+    remote = RemoteStore(base_url="http://testserver")
+    try:
+        yield LocalStore(shared_store), remote
+    finally:
+        remote.close()
+
+
+def _assert_store_contract(s, impl: str) -> None:
+    """行为契约本体：两种实现都必须逐条满足。"""
+    from conftest import _fake_embed
+
+    content = f"存储契约测试节点（{impl}）"
+    nid = s.insert_node(
+        {"type": "memory", "content": content, "importance": 0.5,
+         "domain": "contract", "source": "pytest"},
+        _fake_embed(content),
+    )
+    assert isinstance(nid, int), f"{impl}: insert_node 应返回节点 id，得到 {nid!r}"
+
+    node = s.get_node(nid)
+    assert node is not None, f"{impl}: 刚写入的节点读不到"
+    payload = node["payload"]
+    assert payload["content"] == content, f"{impl}: content 不一致：{payload}"
+    assert payload.get("domain") == "contract", f"{impl}: domain 丢失：{payload}"
+
+    # 部分更新必须是**合并**语义：未提到的字段保留
+    s.update_payload(nid, {"importance": 0.9})
+    updated = s.get_node(nid)["payload"]
+    assert updated["importance"] == 0.9, f"{impl}: importance 未更新：{updated}"
+    assert updated["content"] == content, f"{impl}: 部分更新冲掉了 content：{updated}"
+    assert updated.get("domain") == "contract", f"{impl}: 部分更新冲掉了 domain"
+
+    # 向量整体替换：远程实现曾用 PUT + {"vector": [...]}，在任何服务端版本都不可用
+    s.update_vector(nid, [0.25] * 1024)
+
+    # 最近列表必须包含刚写入的节点（远程实现曾走按 importance 排序的 /export）
+    assert nid in s.recent_ids(20), f"{impl}: recent_ids 未包含刚写入的节点"
+
+    # 删除后读取必须表现为「不存在」（远程实现曾用错误消息子串判 404）
+    s.delete_node(nid)
+    assert s.get_node(nid) is None, f"{impl}: 删除后仍能读到节点"
+
+
+@pytest.mark.parametrize("impl", ["local", "remote"])
+def test_store_contract_roundtrip(protocol_stores, impl):
+    local, remote = protocol_stores
+    _assert_store_contract(local if impl == "local" else remote, impl)

@@ -124,8 +124,14 @@ class _RecordingStore:
         return self.similar
 
     def update_payload(self, node_id, new_payload):
+        """**合并**语义：与真实现 TriviumStore.update_payload 的浅合并一致。
+
+        替换语义（`self.nodes[node_id] = dict(new_payload)`）会让「只传部分字段」
+        的调用在测试里看起来正确，真实路径却保留其它字段——fake 与真契约不一致，
+        测试通过不代表真实路径正确。
+        """
         self.updated.append((node_id, dict(new_payload)))
-        self.nodes[node_id] = dict(new_payload)
+        self.nodes.setdefault(node_id, {}).update(new_payload or {})
 
     def create_edge(self, source_id, target_id, relation_type, content="", weight=0.9):
         self.edges.append((source_id, target_id, relation_type))
@@ -609,3 +615,25 @@ def test_missing_weight_attribute_defaults_to_one():
 
     assert len(out) == 1, out
     assert out[0]["weight"] == 1.0, out
+
+
+def test_recording_store_update_payload_merges_like_real_store():
+    """fake 的 update_payload 必须与真实现同语义：只改传入字段，其余保留。
+
+    真实现 TriviumStore.update_payload 是**浅合并**（未提到的键原样保留）。
+    fake 若用替换语义，「只传部分字段」的调用在测试里看起来正确、真实路径
+    却保留其它字段——fake 与真契约不一致，测试通过不代表真实路径正确。
+    """
+    store = _RecordingStore(
+        nodes={1: {"type": "record", "domain": "hero", "status": "active",
+                   "content": "原文"}},
+        similar=[],
+    )
+
+    store.update_payload(1, {"status": "outdated"})
+
+    node = store.get_node(1)["payload"]
+    assert node["status"] == "outdated", node
+    assert node["content"] == "原文", f"未提到的字段被冲掉了：{node}"
+    assert node["domain"] == "hero", node
+    assert node["type"] == "record", node
