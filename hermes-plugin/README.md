@@ -54,6 +54,7 @@ hermes config set context.engine palimpsest-graph
 | `PALIMPSEST_PREFETCH_NEIGHBORS` | `false` | 注入是否附带图谱邻居（默认关，记忆域图近无边） |
 | `PALIMPSEST_PREFETCH_MIN_SCORE` | `0.3` | 注入最低相关度门槛 |
 | `PALIMPSEST_PREFETCH_TIER` | `facts` | 注入只取事实层（`facts`/`logs`/空串=不过滤） |
+| `PALIMPSEST_PREFETCH_SCOPE` | `memory` | 注入召回范围（`memory`/`all`/`kb`；`all` 含知识库切片） |
 | `PALIMPSEST_AUTO_INGEST` | `true` | 是否自动沉淀；`false` 时仅保留 4 个手动工具 |
 | `PALIMPSEST_GRAPH_TOPICS` | `3` | 压缩前图谱提炼的主题数（1-5） |
 
@@ -69,7 +70,8 @@ hermes palimpsest test     # 端到端自检：search + ingest 连通性
 ## 行为细节
 
 - **fail-open**：Palimpsest 不可达/超时/报错时，召回与压缩增强自动降级为空，绝不阻塞会话。
-- **自动沉淀克制**：不是每轮都写库——只有命中强信号（纠正/偏好/决策/规则）才写入，避免低价值轮次污染记忆库。
+- **自动沉淀克制**：不是每轮都写库——只有命中「明确指令」信号（记住/纠正/偏好/规则）才写入日志层（logs），避免低价值轮次污染事实层记忆库。
+- **分层归属**：自动抓取的对话片段写 `record`（logs 层）；会话末提炼的要点写 `memory`（facts 层，会回到后续上下文）。
 - **trivial 过滤**：`好的` / `嗯` / `继续` 等寒暄输入跳过召回，省 HTTP 往返。
 - **cron/flush 跳过**：cron 与 flush 会话不初始化记忆层（防污染）。
 - **4 个模型工具**：`palimpsest_search` / `palimpsest_ingest` / `palimpsest_link` / `palimpsest_graph`，agent 可主动调用。
