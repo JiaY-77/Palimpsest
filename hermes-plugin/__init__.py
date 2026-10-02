@@ -4,8 +4,8 @@
 
 能力：
   - prefetch(): 每轮自动召回 Palimpsest 语义记忆（含图谱邻居）注入上下文
-  - sync_turn(): 检测重要信号（纠正/偏好/决策/规则）自动沉淀，避免垃圾写入
-  - on_session_end(): 会话末提炼要点（含强信号的消息）
+  - sync_turn(): 检测「明确指令」信号（纠正/偏好/规则）自动沉淀到 logs 层
+  - on_session_end(): 会话末提炼要点写入 facts 层
   - on_pre_compress(): 压缩前抽取要点，贡献给压缩 prompt（不写入）
   - 4 个工具: palimpsest_search / palimpsest_ingest / palimpsest_link /
     palimpsest_graph —— 模型可主动检索/写入/建边
@@ -17,6 +17,7 @@
   PALIMPSEST_PREFETCH_NEIGHBORS   默认 false（图邻居不入注入；true 打开）
   PALIMPSEST_PREFETCH_MIN_SCORE   默认 0.3（注入最低相关度门槛）
   PALIMPSEST_PREFETCH_TIER        默认 facts（只注入事实层；空串=不过滤）
+  PALIMPSEST_PREFETCH_SCOPE       默认 memory（只召回记忆；all=含知识库切片）
   PALIMPSEST_AUTO_INGEST    默认 true；false 关闭自动沉淀（只用工具）
 """
 
@@ -33,13 +34,28 @@ from agent.memory_provider import MemoryProvider, RecallStatus, is_trivial_promp
 
 logger = logging.getLogger(__name__)
 
-# 强信号：命中即触发 sync_turn 自动沉淀 / on_session_end 提炼 / on_pre_compress 抽取。
+# 强信号：命中即触发 on_session_end 提炼 / on_pre_compress 抽取。
 # 保守锚定中文语料：纠正、偏好、决策、规则、启动类动词。
+# 注意：此正则偏「宽」——它的产出是「会话要点」（人工可读的提炼），不是
+# 逐条自动落库的事实，所以容忍一定噪音。sync_turn 的自动落库另用
+# _EXPLICIT_INSTRUCTION_RE（见下），两者刻意解耦。
 _IMPORTANT_RE = re.compile(
     r"(记住|记好|以后|从今|别忘|不要忘|我的偏好|我更喜欢|我习惯|"
     r"不对|不是|错了|纠正|更正|改成|改为|"
     r"批准|决定|拍板|定案|方案|规则|规矩|红线|"
     r"开始做|启动|立项|安排|计划|下一步|优先)"
+)
+
+# sync_turn 自动落库专用：只认「对助手的明确指令 / 长期偏好 / 纠正」，
+# 不认「操作动词」。原因：`启动|安排|计划|方案|优先|决定|立项` 这类词在
+# 命令输出、构建日志、后台进程通知里高频出现，宽正则会把噪音写进库；
+# 而 sync_turn 是「关键词命中即把用户原话落库」，误触发直接污染检索池。
+# 剔除操作词后，命中即可解释为「用户在下指令」，事后可审计。
+_EXPLICIT_INSTRUCTION_RE = re.compile(
+    r"(记住|记好|以后|从今|别忘|不要忘|别再|"
+    r"我的偏好|我更喜欢|我习惯|我一般|我通常|"
+    r"不对|不是这样|错了|纠正|更正|改成|改为|"
+    r"规则|规矩|红线)"
 )
 
 
@@ -207,6 +223,10 @@ class PalimpsestMemoryProvider(MemoryProvider):
         self._min_score = float(os.environ.get("PALIMPSEST_PREFETCH_MIN_SCORE", "0.3"))
         # 记忆分层：默认只注入事实层，日志层（record/event/git_commit）不进上下文。
         self._tier = os.environ.get("PALIMPSEST_PREFETCH_TIER", "facts")
+        # 召回范围：默认 memory（只召回记忆节点）。修 #46——旧默认 all 会让 kb_chunk
+        # 混进注入池并挤占 top_k 名额（kb_chunk 的 domain 恒为 "kb"，domain 过滤对它
+        # 无效，只有 scope=memory 能挡住）。需要把知识库切片一并注入时显式设为 all。
+        self._scope = os.environ.get("PALIMPSEST_PREFETCH_SCOPE", "memory")
         self._auto_ingest = (
             os.environ.get("PALIMPSEST_AUTO_INGEST", "true").lower() != "false"
         )
@@ -259,7 +279,7 @@ class PalimpsestMemoryProvider(MemoryProvider):
         if len((query or "").strip()) < 4:
             return ""
         resp = _http_post(f"{self._base_url}/mem/search", {
-            "query": query, "scope": "all", "domain": self._domain,
+            "query": query, "scope": self._scope, "domain": self._domain,
             "top_k": self._top_k, "include_neighbors": self._include_neighbors,
             "tier": self._tier,
         })
@@ -285,26 +305,45 @@ class PalimpsestMemoryProvider(MemoryProvider):
         session_id: str = "",
         messages: list[dict[str, Any]] | None = None,
     ) -> None:
-        """每轮沉淀：只在命中强信号时写入，避免库被低价值轮次污染。"""
+        """每轮沉淀：只在命中「明确指令」强信号时写入，避免库被低价值轮次污染。
+
+        落库层归属：写入 ``type="record"``（logs 层），不是 facts 层。理由——这里抓到
+        的是用户原话片段，属未经加工的对话记录，本就不是事实；facts 层留给人工/工具
+        显式写入与提炼后的结论（见 ``on_session_end``）。与 #12 的分层意图一致。
+
+        可审计性：命中词与命中位置写进 payload，事后可从节点内容解释它为何入库；
+        同时落库正文带 300 字截断标记，避免「触发了但正文看不到证据」。
+        """
         if not self._enabled or not self._auto_ingest:
             return
         if is_trivial_prompt(user_content) or not user_content:
             return
-        if not _IMPORTANT_RE.search(user_content):
+        m = _EXPLICIT_INSTRUCTION_RE.search(user_content)
+        if not m:
             return
         importance = (
             0.7
-            if any(k in user_content for k in ("不对", "不是", "错了", "纠正", "更正"))
+            if any(k in user_content for k in ("不对", "不是这样", "错了", "纠正", "更正"))
             else 0.6
         )
+        truncated = user_content[:300]
+        note = "…[截断]" if len(user_content) > 300 else ""
         _http_post(f"{self._base_url}/mem/ingest", {
-            "content": f"[对话沉淀] 用户: {user_content[:300]}",
-            "type": "memory", "importance": importance,
+            "content": f"[对话沉淀] 用户: {truncated}{note}",
+            "type": "record", "importance": importance,
             "domain": self._domain, "source": "hermes-sync_turn",
+            "matched_keyword": m.group(0), "match_pos": m.start(),
         })
 
     def on_session_end(self, messages: list[dict[str, Any]]) -> None:
-        """会话结束：把含强信号的消息提炼成一条要点。"""
+        """会话结束：把含强信号的消息提炼成一条要点。
+
+        落库层归属：写入 ``type="memory"``（facts 层）。理由是这里产出的是**提炼后的
+        结论**（多轮消息压缩成要点行），不是逐轮原始片段——它应当回到后续上下文，
+        而非像 sync_turn 的原始对话片段那样沉进 logs 层。
+        修 #47：旧实现写 ``type="record"``（logs 层），而 prefetch 默认 ``tier="facts"``，
+        导致会话要点默认只写不读、静默失效。
+        """
         if not self._enabled or not self._auto_ingest:
             return
         points = _extract_points(messages, limit=8, per_message_chars=150)
@@ -315,7 +354,7 @@ class PalimpsestMemoryProvider(MemoryProvider):
             logger.info("Palimpsest: 跳过近似重复的会话要点")
             return
         _http_post(f"{self._base_url}/mem/ingest", {
-            "content": content, "type": "record", "importance": 0.55,
+            "content": content, "type": "memory", "importance": 0.55,
             "domain": self._domain, "source": "hermes-session_end",
         })
 

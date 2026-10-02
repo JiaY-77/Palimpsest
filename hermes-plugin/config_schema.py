@@ -65,11 +65,17 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             description="只注入该分层的记忆：facts（默认）/ logs / 空串 = 不过滤",
         ),
         ProviderField(
+            key="prefetch_scope",
+            label="召回范围",
+            default="memory",
+            description="召回范围：memory（默认，只召回记忆）/ all（含知识库切片）/ kb",
+        ),
+        ProviderField(
             key="auto_ingest",
             label="自动沉淀",
             default="true",
             kind="bool",
-            description="命中强信号（纠正/偏好/决策/规则）时自动写入 Palimpsest",
+            description="命中明确指令（纠正/偏好/规则）时自动写入 Palimpsest（logs 层）",
         ),
     ),
 )

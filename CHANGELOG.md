@@ -22,6 +22,12 @@
 
 ### 修复
 
+- **Hermes 插件：修正写入层归属与召回范围（三处同根因）**：插件 v1.0.0 的写入层归属与读取过滤和分层设计不一致，三处一并修正。
+  1. `sync_turn` 自动沉淀从前写 `type=memory`（facts 层），且用一套含 `启动`/`安排`/`计划`/`方案`/`优先` 等操作动词的宽关键词表匹配——安装日志、构建输出、后台进程通知都会被误判为“重要信号”而落库。现：改用独立的「明确指令」正则（只认记住/纠正/偏好/规则类），并写入 `type=record`（logs 层）——自动抓到的是未经加工的用户原话，本就不是事实。落库 payload 同时记录 `matched_keyword` / `match_pos`，并在正文超 300 字时加截断标记，使每条自动写入都可事后审计。
+  2. `on_session_end` 从前写 `type=record`（logs 层），而 `prefetch` 默认 `tier="facts"`——会话要点只写不读，静默失效。现：改写 `type=memory`（facts 层），与读取侧对齐（提炼后的结论本就该回到上下文）。
+  3. `prefetch` 从前用 `scope="all"`，导致 `kb_chunk` 混入注入池并挤占 `top_k` 名额（`kb_chunk` 的 `domain` 恒为 `"kb"`，对 `domain` 过滤免疫，只有 `scope` 能挡住）。现：新增 `PALIMPSEST_PREFETCH_SCOPE` 配置项，默认 `memory`（只召回记忆节点）；需要把知识库切片一并注入时显式设为 `all`。
+  三处遵循同一原则：**自动抓取的对话片段 → logs 层；提炼后的结论 → facts 层；知识库切片由 `scope` 隔离**。
+
 - **库被其他进程占用时 fail-fast（不再静默降级）**：`TriviumStore._acquire()` 遇到 triviumdb 的连接级排他错误时，改抛带库路径与处理指引的 `DatabaseBusyError`；`_init_indexes()` 不再把它当作「索引创建失败」静默吞掉——此前正因如此，「偶发写失败 → 文件组残留 → 库从可读写变读不动」会被伪装成一切正常。CLI / 脚本经既有顶层兜底输出明确指引，REST 侧新增 `503` 处理器（`detail` = 记忆库被其他进程占用）
 
 - **Ollama 端点默认值改用 IPv4 字面量**：`OLLAMA_BASE_URL` / `OLLAMA_EMBEDDING_BASE_URL` 的默认值由 `http://localhost:11434` 改为 `http://127.0.0.1:11434`（含 `.env.example` 与两份 README 配置表）。部分系统把 `localhost` 优先解析为 IPv6 回环 `[::1]`，而 Ollama 默认只监听 IPv4，导致每个请求都要先经历一次连接超时再回落——实测单次 embedding 由数十毫秒退化为约 2 秒，检索与写入吞吐随之下降约两个数量级
