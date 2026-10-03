@@ -4,7 +4,7 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
-## [Unreleased]
+## [2.4.0] - 2026-10-03
 
 ### 新增
 
@@ -31,6 +31,16 @@
 - **库被其他进程占用时 fail-fast（不再静默降级）**：`TriviumStore._acquire()` 遇到 triviumdb 的连接级排他错误时，改抛带库路径与处理指引的 `DatabaseBusyError`；`_init_indexes()` 不再把它当作「索引创建失败」静默吞掉——此前正因如此，「偶发写失败 → 文件组残留 → 库从可读写变读不动」会被伪装成一切正常。CLI / 脚本经既有顶层兜底输出明确指引，REST 侧新增 `503` 处理器（`detail` = 记忆库被其他进程占用）
 
 - **Ollama 端点默认值改用 IPv4 字面量**：`OLLAMA_BASE_URL` / `OLLAMA_EMBEDDING_BASE_URL` 的默认值由 `http://localhost:11434` 改为 `http://127.0.0.1:11434`（含 `.env.example` 与两份 README 配置表）。部分系统把 `localhost` 优先解析为 IPv6 回环 `[::1]`，而 Ollama 默认只监听 IPv4，导致每个请求都要先经历一次连接超时再回落——实测单次 embedding 由数十毫秒退化为约 2 秒，检索与写入吞吐随之下降约两个数量级
+
+- **FTS 索引与主库同步（三处同根因）**：store 层的写方法此前不负责同步自己的派生状态——FTS5 全文索引（独立于主库的 SQLite 文件）的清理责任被推给每个调用方，而调用方会漏。三处一并修正：
+  1. `TriviumStore.delete_node` 只删主库节点、不清 FTS，`scripts/build_*_index.py` 三个调用点从未清理（仅靠全量 `fts_rebuild` 掩盖）。现：`delete_node` 内部同步清理 FTS。
+  2. `consolidate` 经事务写入合并节点（只带向量），调用方未补索引——合并出的记忆**能被语义检索命中、却对全文检索不可见**。现：`consolidate()` 公开入口统一为新合并节点补 FTS，所有调用方自动获得。
+  3. 改 `content` 后 FTS 仍指向旧文本。现：新增 `TriviumStore.update_content`，改内容时同步 FTS 并置 `vector_stale` 标记——**不**内联重算向量（重嵌是网络调用，不该塞进写路径；重嵌仍走显式 `POST /memory/{id}/reembed`）。
+  FTS 失败一律非致命（仅告警，可 `fts-rebuild` 兜底），与既有 REST 端点行为一致。
+
+### 测试
+
+- **补齐写路径与共存的回归测试**：新增 `tests/test_fts_write_consistency.py`（delete / merge / content-update 三条路径的 FTS 终态一致）与 `tests/test_multi_writer_cli_rest.py`（dry-run 只读不写、`consolidate(dry_run=True)` 不新增节点、库被占用时抛带指引的 `DatabaseBusyError`、以及 #52 的漂移本身——改 content 后向量仍为旧值）。锁的**时序**不做断言（triviumdb 开窗行为非确定），只断言无论谁赢得竞态都必须成立的性质，避免 flaky。
 
 ## [2.3.0] - 2026-09-19
 
@@ -314,7 +324,8 @@
 
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
-[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.3.0...HEAD
+[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.4.0...HEAD
+[2.4.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.4.0
 [2.3.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.3.0
 [2.2.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.2.0
 [2.1.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.1.0
