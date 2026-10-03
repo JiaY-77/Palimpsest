@@ -206,6 +206,7 @@ def root():
             "/mem/hybrid-search",
             "/mem/ingest",
             "/mem/link",
+            "/mem/edge",
             "/mem/recent",
             "/graph/neighbors",
             "/graph/communities",
@@ -438,6 +439,13 @@ class MemLinkRequest(BaseModel):
     bidirectional: bool = True
 
 
+class MemEdgeDeleteRequest(BaseModel):
+    """删除一条边（issue #51）。"""
+    source_id: int
+    target_id: int
+    relation: str = "RELATED_TO"
+
+
 class GraphNeighborsRequest(BaseModel):
     node_id: int
     relation: str = ""
@@ -517,6 +525,20 @@ def mem_link(req: MemLinkRequest):
         req.source_id, req.target_id, relation=req.relation,
         weight=req.weight, bidirectional=req.bidirectional,
     ))
+
+
+@app.delete("/mem/edge")
+def delete_mem_edge(req: MemEdgeDeleteRequest):
+    """删除一条边（issue #51）。
+
+    建边早有 /mem/link，删边一直没有公开途径——冲突检测误标产生的 REVISED_BY
+    边只能停机直连库手删。幂等：边不存在时 deleted=False，不报错。
+    用 DELETE + body（与 issue 建议一致）；FastAPI 允许 DELETE 带 body。
+    """
+    label = (req.relation or "").strip().upper() or "RELATED_TO"
+    deleted = _get_store().delete_edge(req.source_id, req.target_id, label)
+    return {"deleted": deleted, "source_id": req.source_id,
+            "target_id": req.target_id, "relation": label}
 
 
 @app.post("/graph/neighbors")

@@ -12,6 +12,7 @@
 
 import logging
 
+from config import Config
 from core.trivium_store import node_domain
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,12 @@ def resolve_conflict(store, embedding, node_id, tx=None, db=None,
     # 历史留痕类型完全跳过冲突检测
     if new_type not in ("memory", "task", "plan"):
         return {"outdated_ids": outdated_ids, "related_ids": related_ids}
+    # 第 0b 层：按 type 显式豁免（CONFLICT_SKIP_TYPES，issue #50）。
+    # task 这类「累积关系」不是「同一事实被取代」：连续写入相似措辞的独立任务时，
+    # 旧任务会被误标 outdated 并从默认检索中消失。默认空集 = 行为完全不变。
+    if new_type in Config.CONFLICT_SKIP_TYPES:
+        return {"outdated_ids": outdated_ids, "related_ids": related_ids}
+
 
     if tx is not None:
         similar = _similar_hits(db, embedding)

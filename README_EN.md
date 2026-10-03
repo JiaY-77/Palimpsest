@@ -334,6 +334,7 @@ All configuration is read from environment variables (a `.env` file is loaded au
 | `TIER_LOGS` | `record,event,git_commit` | Memory types that belong to the logs tier (comma-separated); kept out of the default retrieval and injection pool | When retrieval/injection filters by tier |
 | `DEFAULT_TIER` | `facts` | Default tier for retrieval and injection; `logs` returns only the logs tier, empty string disables filtering (full history channel) | Whenever `tier` is not given explicitly |
 | `MEM_INGEST_MAX_LENGTH` | `50000` | Max characters of a single memory `content`; longer writes are rejected | On `mem_ingest` writes |
+| `CONFLICT_SKIP_TYPES` | *(empty)* | Types exempt from conflict detection (comma-separated): listed types are never marked `outdated` nor linked with `REVISED_BY`. Empty (default) keeps behaviour unchanged. For `task`-like accumulating records that are not "the same fact superseded" | Conflict detection on `mem_ingest` writes |
 | `KNOWLEDGE_DIR` | *(optional)* | Root of the knowledge base (Obsidian `.md` files) to index | With `kb_index` / `build_kb_index.py` |
 
 ---
@@ -426,7 +427,7 @@ A complete example with generic directory names (`notes/` / `reference/` / `arch
 
 ## Usage
 
-### MCP tools (16) — `mcp_tools/*`
+### MCP tools (17) — `mcp_tools/*`
 
 | Tool | Description |
 |---|---|
@@ -446,6 +447,7 @@ A complete example with generic directory names (`notes/` / `reference/` / `arch
 | `skill_search` | Semantic search over indexed Hermes skills (`skill_chunk` nodes) — returns name / description / category / source_path |
 | `graph_neighbors` | BFS over the knowledge graph from a node (relation filter, depth 1–3, weak-edge filter) |
 | `mem_link` | Manually create graph edges (`RELATED_TO` / `CAUSES` / `REFERS_TO`; bidirectional by default) |
+| `mem_unlink` | Delete a graph edge (idempotent: returns `deleted=false` when absent; cleans up stray `REVISED_BY` edges) |
 
 ### CLI — `scripts/palimpsest_cli.py`
 
@@ -506,6 +508,7 @@ Node ownership is expressed by the `payload.domain` field. Specify a block at wr
 | `POST` | `/mem/hybrid-search` | FTS5 + vector hybrid retrieval |
 | `POST` | `/mem/ingest` | Write a new memory (conflict detection + secret scan) |
 | `POST` | `/mem/link` | Create a graph edge |
+| `DELETE` | `/mem/edge` | Delete a graph edge (body: `source_id` / `target_id` / `relation`; idempotent) |
 | `POST` | `/mem/recent` | Most recent memories (ordered by created_at) |
 | `POST` | `/mem/stats` | Store-wide statistics |
 | `POST` | `/graph/neighbors` | Graph neighbors of a node |
@@ -607,7 +610,7 @@ Palimpsest/
 │   ├── task_archive.py           #   task auto-archiving
 │   ├── utils.py
 │   └── version.py                #   version from git tag (falls back to dev)
-├── mcp_tools/                    # 16 MCP tools (shared across MCP/REST/CLI)
+├── mcp_tools/                    # 17 MCP tools (shared across MCP/REST/CLI)
 │   ├── __init__.py
 │   ├── _common.py                #   shared store / mcp / serialization helpers
 │   ├── memory.py                 #   mem_* tools
