@@ -16,7 +16,6 @@ These tests pin both halves:
 from __future__ import annotations
 
 import importlib.util
-import json
 import sys
 import types
 from unittest.mock import patch
