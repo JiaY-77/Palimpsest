@@ -90,18 +90,19 @@ class TestDeleteNodeClearsFts:
             store.delete_node(nid)
             assert not _fts_has(nid), "delete_node must clear the FTS entry"
 
-    def test_delete_node_is_idempotent_for_fts(self):
-        """Deleting a node whose FTS entry is already gone must not raise."""
+    def test_delete_node_tolerates_missing_fts_entry(self):
+        """Deleting a node with no FTS entry must not raise on the FTS path.
+
+        ``remove_node`` is idempotent; a node that was never indexed (or whose
+        entry was already swept by fts-rebuild) must still delete cleanly.
+        """
         with _isolated_store() as store:
-            content = "自动化测试重复删除不报错"
+            content = "自动化测试无FTS条目也能正常删除"
             nid = store.insert_node({"type": "memory", "content": content},
                                     _fake_embed(content))
+            # deliberately do NOT sync FTS: the delete must still succeed
             store.delete_node(nid)
-            # second delete of a vanished node keeps existing semantics
-            # (triviumdb raises on missing node); the FTS cleanup path must
-            # not add a new failure mode on top.
-            with pytest.raises(Exception):
-                store.delete_node(nid)
+            assert store.get_node(nid) is None
 
 
 # ---------------------------------------------------------------------------
