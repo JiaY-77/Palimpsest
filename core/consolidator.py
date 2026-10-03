@@ -3,6 +3,7 @@
 import contextlib
 import logging
 
+from core.fts_index import sync_node
 from core.secret_scan import SecretScanError, scan_secret_classified
 from core.trivium_store import TriviumStore, node_domain
 
@@ -253,6 +254,21 @@ def consolidate(
 
     # ---- 执行合并 ----
     merged, merged_ids = _apply_merge(store, will_merge)
+
+    # 合并产生的新节点由事务写入（只带向量，不带 FTS）——此处补 FTS 全文索引，
+    # 否则合并出的记忆可被语义检索命中、却对全文检索不可见（审计发现的漏点）。
+    # 在公开入口 consolidate() 统一补，所有调用方（MCP 工具 / CLI）自动获得，
+    # 不必各自记得。FTS 失败仅告警：可 fts-rebuild 兜底。
+    for info in merged_ids:
+        new_id = info.get("new_id")
+        if new_id is None:
+            continue
+        node = store.get_node(new_id)
+        content = ((node or {}).get("payload") or {}).get("content", "")
+        try:
+            sync_node(new_id, content)
+        except Exception as e:  # noqa: BLE001 —— FTS 同步失败仅告警不阻断合并
+            logger.warning("合并节点 FTS 同步失败 node=%s: %s", new_id, e)
 
     return {
         "candidates": candidates,
