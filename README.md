@@ -498,6 +498,7 @@ python scripts/palimpsest_cli.py consolidate --apply # 合并
 | `PUT` | `/memory/{id}` | 更新节点 payload（**合并语义**：只改传入字段，其余保留；自动同步 FTS） |
 | `PATCH` | `/memory/{id}` | 部分更新节点 payload（与 PUT 同合并语义，REST 语义更精确） |
 | `PATCH` | `/memory/{id}/vector` | 更新节点的向量（维度需一致） |
+| `POST` | `/memory/{id}/reembed` | 按当前 content 重算并写回向量（改 content 后语义漂移的补救入口，服务端自己生成向量） |
 | `POST` | `/mem/search` | 统一检索 |
 | `POST` | `/skill/search` | 技能语义检索 |
 | `POST` | `/mem/hybrid-search` | FTS5 + 向量混合检索 |

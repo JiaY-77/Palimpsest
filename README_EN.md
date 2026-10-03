@@ -503,6 +503,7 @@ Node ownership is expressed by the `payload.domain` field. Specify a block at wr
 | `PUT` | `/memory/{id}` | Update a node's payload (**merge semantics**: only supplied fields change, the rest are kept; FTS synced) |
 | `PATCH` | `/memory/{id}` | Partial update of a node (same merge semantics, REST-precise) |
 | `PATCH` | `/memory/{id}/vector` | Update a node's vector (dimension must match) |
+| `POST` | `/memory/{id}/reembed` | Recompute and store the vector from the node's current `content` (server-side remedy for semantic drift after an edit) |
 | `POST` | `/mem/search` | Unified retrieval |
 | `POST` | `/skill/search` | Semantic search over indexed skills |
 | `POST` | `/mem/hybrid-search` | FTS5 + vector hybrid retrieval |

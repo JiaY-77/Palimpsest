@@ -232,7 +232,8 @@ def cmd_review(args):
 
 def cmd_consolidate(args):
     from core.trivium_store import TriviumStore
-    store = TriviumStore()
+    # issue #53：dry-run 只读打开，不再推进 generation、不与 REST 争写锁。
+    store = TriviumStore(read_only=not args.apply)
     result = consolidate(
         store,
         dry_run=not args.apply,
@@ -398,7 +399,7 @@ def cmd_task_archive(args):
     from core.task_archive import archive_tasks
     from mcp_tools._common import KNOWLEDGE_DIR
 
-    store = TriviumStore()
+    store = TriviumStore(read_only=not args.apply)  # issue #53：dry-run 只读
     kb_dir = args.knowledge_dir or KNOWLEDGE_DIR
     result = archive_tasks(store, dry_run=not args.apply, knowledge_dir=kb_dir)
     print(json.dumps(result, ensure_ascii=False, indent=2))

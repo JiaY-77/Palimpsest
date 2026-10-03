@@ -209,8 +209,12 @@ def _filter_candidates_by_block(scored: list[tuple[float, dict]], block: str) ->
 class TriviumStore:
     """封装 TriviumDB 操作，提供记忆存储和检索接口"""
 
-    def __init__(self) -> None:
+    def __init__(self, read_only: bool = False) -> None:
         self.db_path = Config.DB_PATH
+        # issue #53：预览/扫描类操作（dry-run）此前也以 read_write 打开库并推进
+        # generation，无法与 REST 并发。read_only=True 时所有连接走只读模式，
+        # 不再写库、不再抢写锁。默认 False 保持既有行为不变。
+        self.read_only = read_only
         # embedding 维度从配置读取（按 provider 选择：ollama 本地 / openai 兼容云端）
         self.provider = getattr(Config, "EMBEDDING_PROVIDER", "ollama") or "ollama"
         if self.provider == "openai":
@@ -218,7 +222,9 @@ class TriviumStore:
         else:
             self.dim = Config.OLLAMA_EMBEDDING_DIM
         # 性能优化：常用字段索引建一次即可，不再随每次 insert_node 重建
-        self._init_indexes()
+        # issue #53：只读实例不建索引（索引创建是写操作，只读连接会失败）。
+        if not read_only:
+            self._init_indexes()
         # 命中计数内存缓冲（检索返回热路径零写库）：
         #   _hit_buffer        {node_id: [累计次数, 最近命中时间戳]}
         #   _hit_pending_total 缓冲内待回写的命中总数（达阈值/超时触发回写）
@@ -271,7 +277,10 @@ class TriviumStore:
         """
         _DB_ACCESS_LOCK.acquire()
         try:
-            db = triviumdb.TriviumDB(self.db_path, dim=self.dim)
+            db = triviumdb.TriviumDB(
+                self.db_path, dim=self.dim,
+                access_mode="read_only" if self.read_only else "read_write",
+            )
         except Exception as e:
             _DB_ACCESS_LOCK.release()
             if _is_db_locked_error(e):
@@ -733,6 +742,26 @@ class TriviumStore:
         with self._acquire() as db:
             db.update_vector(vector=new_vector, id=node_id)  # 改为关键字参数
         logger.info(f"已更新节点 ID={node_id} 的向量")
+
+    def reembed_node(self, node_id: int) -> bool:
+        """按当前 content 重算并写回该节点的向量（issue #52）。
+
+        PUT/PATCH 改 content 只会浅合并 payload 并同步 FTS，向量不重算——
+        语义检索与冲突检测会继续按旧文本执行，且完全静默。此前唯一的补救是
+        调用方自己在外部生成向量再打 PATCH /memory/{id}/vector。
+
+        这里把该流程收进服务端：读当前 content → embed_text → update_vector。
+        返回 False 表示节点不存在；embedding 不可用时由 embed_text 抛
+        EmbeddingUnavailableError，由调用方决定如何上报。
+        """
+        node = self.get_node(node_id)
+        if not node:
+            return False
+        content = (node.get("payload") or {}).get("content", "")
+        vector = self.embed_text(content)
+        self.update_vector(node_id, vector)
+        logger.info(f"已重算节点 ID={node_id} 的向量")
+        return True
 
     def _get_all_node_ids(self) -> list[int]:
         """获取数据库中所有节点的 ID 列表（供内部使用）"""
