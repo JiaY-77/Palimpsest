@@ -201,6 +201,7 @@ def root():
             "/report",
             "/memory/{node_id}",
             "/memory/{node_id}/vector",
+            "/memory/{node_id}/reembed",
             "/mem/search",
             "/skill/search",
             "/mem/hybrid-search",
@@ -348,7 +349,15 @@ def update_memory_payload(node_id: int, payload: dict):
     try:
         _get_store().update_payload(node_id, payload)
         _sync_fts_after_update(node_id)
-        return {"status": "ok", "message": f"节点 {node_id} payload 已更新"}
+        result = {"status": "ok", "message": f"节点 {node_id} payload 已更新"}
+        # issue #52：改 content 不会自动重算向量（避免在写路径里塞网络调用），
+        # 但必须让调用方知道——否则语义检索静默按旧文本漂移。
+        if "content" in payload:
+            result["warning"] = (
+                "content 已更新，但向量未重算——语义检索与冲突检测仍按旧文本执行。"
+                f"如需同步，调用 POST /memory/{node_id}/reembed。"
+            )
+        return result
     except Exception as e:
         logger.info("更新节点 payload 失败 node=%s: %s", node_id, e)
         raise HTTPException(status_code=404, detail="更新失败：节点不存在或数据格式错误") from e
@@ -360,10 +369,38 @@ def patch_memory_payload(node_id: int, payload: dict):
     try:
         _get_store().update_payload(node_id, payload)
         _sync_fts_after_update(node_id)
-        return {"status": "ok", "message": f"节点 {node_id} payload 已更新"}
+        result = {"status": "ok", "message": f"节点 {node_id} payload 已更新"}
+        if "content" in payload:
+            result["warning"] = (
+                "content 已更新，但向量未重算——语义检索与冲突检测仍按旧文本执行。"
+                f"如需同步，调用 POST /memory/{node_id}/reembed。"
+            )
+        return result
     except Exception as e:
         logger.info("更新节点 payload 失败 node=%s: %s", node_id, e)
         raise HTTPException(status_code=404, detail="更新失败：节点不存在或数据格式错误") from e
+
+
+@app.post("/memory/{node_id}/reembed")
+def reembed_memory(node_id: int):
+    """按当前 content 重算并写回该节点的向量（issue #52）。
+
+    改 content 后语义漂移的补救入口：服务端自己生成向量，调用方不必在
+    外部两步走（POST ollama embeddings → PATCH /memory/{id}/vector）。
+    显式端点而非 PUT/PATCH 自动重算——重嵌要花算力且是网络调用，不该在
+    写路径里静默执行（会阻塞、超时、503）。
+    """
+    try:
+        ok = _get_store().reembed_node(node_id)
+    except EmbeddingUnavailableError:
+        raise
+    except Exception as e:
+        logger.info("重算节点向量失败 node=%s: %s", node_id, e)
+        raise HTTPException(status_code=404, detail="重算失败：节点不存在或数据格式错误") from e
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"节点 {node_id} 不存在")
+    return {"status": "ok", "message": f"节点 {node_id} 向量已按当前 content 重算"}
+
 
 
 @app.patch("/memory/{node_id}/vector")
