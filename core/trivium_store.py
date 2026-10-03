@@ -9,6 +9,7 @@ from typing import Any
 import triviumdb
 
 from config import Config
+from core.fts_index import remove_node, sync_node
 from core.secret_scan import SecretScanError, scan_secret_classified
 
 # 「库被占用」的标记表与判定函数统一放 core/utils.py（db_health 共用同一份）；
@@ -717,10 +718,21 @@ class TriviumStore:
         return True
 
     def delete_node(self, node_id: int) -> None:
-        """删除节点（同时删除所有关联边）"""
+        """删除节点（同时删除所有关联边），并同步清理 FTS 全文索引。
+
+        FTS 是独立于主库的全文索引文件（core/fts_index.py），删除节点时若
+        不同步清理，索引会残留幽灵条目（全文检索命已删节点）。此处让 store
+        自己负责清理，避免调用方遗漏（此前 build_*_index.py 三个脚本就漏了）。
+        清理失败不阻断主删除——FTS 可 fts-rebuild 兜底，与 REST 端点既有行为一致。
+        """
         with self._acquire() as db:
             db.delete(node_id)
         logger.info(f"已删除节点 ID={node_id}")
+        # 同步清理 FTS 全文索引（失败不阻断主删除，FTS 可 fts-rebuild 兜底）
+        try:
+            remove_node(node_id)
+        except Exception as e:  # noqa: BLE001 —— FTS 清理失败仅告警不抛出
+            logger.warning("FTS 索引清理失败 node=%s: %s", node_id, e)
 
     def update_payload(self, node_id: int, new_payload: dict[str, Any]) -> None:
         """更新节点的 payload 元数据（合并语义，不覆盖未涉及的字段）。
@@ -736,6 +748,25 @@ class TriviumStore:
             merged = {**(node.payload or {}), **(new_payload or {})}
             db.update_payload(id=node_id, payload=merged)
         logger.info(f"已更新节点 ID={node_id} 的 payload")
+
+    def update_content(self, node_id: int, content: str) -> None:
+        """更新节点内容并同步派生状态（语义化写路径）。
+
+        与 update_payload 的区别：**改 content 会连带影响派生状态**——
+        FTS 全文索引必须同步（否则全文检索仍命中旧文本），向量也与新内容
+        不一致。把这条「content 变更 → 同步 FTS」的知识收进 store，而不是
+        让每个调用方各写一遍（此前 PUT/PATCH 端点各写、consolidate 漏写）。
+
+        向量**不在此处重算**（重嵌是网络调用，塞进写路径会超时/阻塞，见
+        issue #52 的取舍）；只打 vector_stale 标记，重嵌仍走显式
+        reembed_node。FTS 同步失败仅告警——可 fts-rebuild 兜底。
+        """
+        self.update_payload(node_id, {"content": content, "vector_stale": True})
+        try:
+            sync_node(node_id, content)
+        except Exception as e:  # noqa: BLE001 —— FTS 同步失败仅告警不阻断主更新
+            logger.warning("FTS 索引同步失败 node=%s: %s", node_id, e)
+        logger.info(f"已更新节点 ID={node_id} 的内容（向量标记为 stale）")
 
     def update_vector(self, node_id: int, new_vector: list[float]) -> None:
         """更新节点的向量（维度必须一致）"""
