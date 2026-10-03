@@ -252,6 +252,29 @@ def mem_link(source_id: int, target_id: int, relation: str = "RELATED_TO",
 
 
 @mcp.tool()
+def mem_unlink(source_id: int, target_id: int, relation: str = "RELATED_TO") -> str:
+    """
+    删除边（issue #51）：删除 source_id → target_id 之间 relation 类型的关联边。
+
+    建边（mem_link）一直可用，但此前没有任何删除途径——冲突检测自动产生的
+    REVISED_BY 误标边只能停机直连库手写 db.unlink 清理。本工具把底层
+    triviumdb 的 unlink(src, dst, label) 接出来。
+
+    幂等：边不存在时返回 deleted=False 而非报错。relation 大小写不敏感
+    （统一转大写后匹配）。
+    返回 JSON：{"deleted", "source_id", "target_id", "relation"}。
+    """
+    label = (relation or "").strip().upper() or "RELATED_TO"
+    deleted = store.delete_edge(source_id, target_id, label)
+    return _to_json({
+        "deleted": deleted,
+        "source_id": source_id,
+        "target_id": target_id,
+        "relation": label,
+    })
+
+
+@mcp.tool()
 def mem_communities(min_community_size: int = 2, top_k: int = 20,
                     with_summary: bool = True) -> str:
     """

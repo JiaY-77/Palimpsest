@@ -684,6 +684,29 @@ class TriviumStore:
                 }
             return None
 
+    def delete_edge(self, source_id: int, target_id: int,
+                    relation_type: str = "RELATED_TO") -> bool:
+        """删除一条边（issue #51）。
+
+        此前建边只能通过 create_edge / mem_link，却没有任何删除途径：冲突检测
+        自动产生的 REVISED_BY 误标边只能停机直连库手写 db.unlink 清理。底层
+        triviumdb 早就提供 unlink(src, dst, label)，这里做薄封装把它接出来。
+
+        返回 True 表示确实删除了一条边，False 表示该边不存在（幂等，不抛异常）。
+        """
+        label = (relation_type or "").strip()
+        with self._acquire() as db:
+            edges = db.get_edges(source_id) or []
+            if not any(
+                getattr(e, "target_id", None) == target_id
+                and getattr(e, "label", None) == label
+                for e in edges
+            ):
+                return False
+            db.unlink(source_id, target_id, label)
+        logger.info("已删除边 %s -[%s]-> %s", source_id, label, target_id)
+        return True
+
     def delete_node(self, node_id: int) -> None:
         """删除节点（同时删除所有关联边）"""
         with self._acquire() as db:

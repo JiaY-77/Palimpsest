@@ -329,6 +329,7 @@ python scripts/backup_db.py --keep 7
 | `TIER_LOGS` | `record,event,git_commit` | 归入日志层的记忆 type（逗号分隔），默认不进检索与注入池 | 检索与注入按 tier 过滤时 |
 | `DEFAULT_TIER` | `facts` | 检索与注入的默认分层；`logs` 只回日志层，空串 = 不过滤（全量历史通道） | 未显式指定 `tier` 时 |
 | `MEM_INGEST_MAX_LENGTH` | `50000` | 单条记忆 content 最大字符数，超长拒绝写入 | `mem_ingest` 写入时 |
+| `CONFLICT_SKIP_TYPES` | *（空）* | 跳过冲突检测的 type（逗号分隔），列出的 type 不再被标 `outdated` / 建 `REVISED_BY` 边；默认空 = 行为不变。用于 `task` 这类「累积关系」而非「同一事实被取代」的场景 | `mem_ingest` 写入时的冲突检测 |
 | `KNOWLEDGE_DIR` | *（可选）* | 知识库根目录（待索引的 Obsidian `.md` 文件） | 使用 `kb_index` / `build_kb_index.py` 时 |
 
 ---
@@ -421,7 +422,7 @@ python scripts/build_kb_index.py --rules rules.json
 
 ## 使用
 
-### MCP 工具（16 个）— `mcp_tools/*`
+### MCP 工具（17 个）— `mcp_tools/*`
 
 | 工具 | 说明 |
 |---|---|
@@ -441,6 +442,7 @@ python scripts/build_kb_index.py --rules rules.json
 | `skill_search` | 技能语义检索：检索 Hermes 技能（`skill_chunk` 节点），返回 name / description / category / source_path |
 | `graph_neighbors` | 从某节点出发对知识图谱做 BFS（关系过滤、深度 1–3、弱边过滤） |
 | `mem_link` | 手动创建图边（`RELATED_TO` / `CAUSES` / `REFERS_TO`；默认双向） |
+| `mem_unlink` | 删除图边（幂等：边不存在返回 `deleted=false`；用于清理误标产生的 `REVISED_BY` 边） |
 
 ### CLI 命令 — `scripts/palimpsest_cli.py`
 
@@ -501,6 +503,7 @@ python scripts/palimpsest_cli.py consolidate --apply # 合并
 | `POST` | `/mem/hybrid-search` | FTS5 + 向量混合检索 |
 | `POST` | `/mem/ingest` | 写入新记忆（含冲突检测 + 敏感扫描） |
 | `POST` | `/mem/link` | 创建图边 |
+| `DELETE` | `/mem/edge` | 删除图边（body：`source_id` / `target_id` / `relation`；幂等） |
 | `POST` | `/mem/recent` | 最近记忆列表（按 created_at 倒序） |
 | `POST` | `/mem/stats` | 库级盘点统计 |
 | `POST` | `/graph/neighbors` | 某节点的图谱邻居 |
@@ -602,12 +605,12 @@ Palimpsest/
 │   ├── task_archive.py           #   完成任务自动归档
 │   ├── utils.py
 │   └── version.py                #   版本号来自 git tag（兜底 dev）
-├── mcp_tools/                    # 16 个 MCP 工具（MCP/REST/CLI 共用）
+├── mcp_tools/                    # 17 个 MCP 工具（MCP/REST/CLI 共用）
 │   ├── __init__.py
 │   ├── _common.py                #   共享 store / mcp / 序列化助手
 │   ├── memory.py                 #   mem_* 工具
 │   ├── kb.py                     #   kb_index / kb_search
-│   ├── graph.py                  #   graph_neighbors / mem_link / mem_communities
+│   ├── graph.py                  #   graph_neighbors / mem_link / mem_unlink / mem_communities
 │   ├── consolidate_tool.py       #   mem_consolidate
 │   └── stats_tool.py             #   mem_stats
 ├── scripts/                      # 运维工具

@@ -89,6 +89,17 @@ class Config:
     # Reciprocal Rank Fusion 标准 k 值：单侧命中也算贡献
     RRF_K = float(os.getenv("RRF_K", "60.0"))
 
+    # ---- 冲突检测：按 type 豁免（issue #50）----
+    # 冲突检测默认把 memory/task/plan 中相似度 >0.75 的旧节点标为 outdated。
+    # task 是累积关系而非「同一事实被取代」——连续写入两条独立任务时，
+    # 旧任务会被误标并从默认检索（include_outdated=False）中消失。
+    # 逗号分隔的 type 列表，列在这里的 type 完全跳过冲突检测（不标 outdated、
+    # 不建 REVISED_BY 边）。默认空 = 行为完全不变（向后兼容）。
+    #   例：CONFLICT_SKIP_TYPES=task
+    CONFLICT_SKIP_TYPES = frozenset(
+        t.strip() for t in os.getenv("CONFLICT_SKIP_TYPES", "").split(",") if t.strip()
+    )
+
     # 语义主序的图扩散深度：0 = 纯语义排序（默认；实测 R@5 0.7542）
     # 1 = 原行为（图邻居参与语义主序，实测 R@5 0.5000；可一键回退）
     RETRIEVAL_EXPAND_DEPTH = int(os.getenv("RETRIEVAL_EXPAND_DEPTH", "0"))
