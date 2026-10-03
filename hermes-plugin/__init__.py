@@ -146,6 +146,7 @@ SEARCH_SCHEMA = {
             "top_k": {"type": "integer", "description": "返回条数（默认 5）"},
             "include_neighbors": {"type": "boolean", "description": "是否附带图谱邻居（默认 false）"},
             "tier": {"type": "string", "description": "记忆分层：facts(默认，只回事实层) / logs(只回日志层) / 空串(不过滤)"},
+            "domain": {"type": "string", "description": "域（默认 hermes）"},
         },
         "required": ["query"],
     },
