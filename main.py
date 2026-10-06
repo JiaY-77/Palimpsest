@@ -88,7 +88,35 @@ app = FastAPI(title="Palimpsest", lifespan=_lifespan)
 # FastMCP 默认把 streamable-http 端点放在 /mcp，挂到 /mcp 会变成 /mcp/mcp；
 # 置为 "/" 后挂载路径即对外路径。
 _mcp_server.settings.streamable_http_path = "/"
+
+
+class _NormalizeMcpPath:
+    """把 `/mcp`（无尾斜杠）规范化为 `/mcp/`。
+
+    Starlette 的 Mount 在收到不带尾斜杠的路径时会返回 307 重定向到带斜杠版本；
+    多数 MCP 客户端（含 Hermes）不跟随重定向，于是按文档接入方式
+    （url = http://127.0.0.1:8090/mcp）连接会直接失败。这里在路由匹配前
+    就地改写 path，使两种写法都能直达 MCP 子应用。
+
+    作为 ASGI 中间件加在 `app` 上（`app.add_middleware`），不替换 `app`
+    对象本身——否则其后的 `@app.exception_handler` 等装饰器会全部失效。
+    """
+
+    def __init__(self, app, prefix="/mcp"):
+        self.app = app
+        self.prefix = prefix
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope.get("path") == self.prefix:
+            scope = dict(scope)
+            scope["path"] = self.prefix + "/"
+            scope["raw_path"] = (self.prefix + "/").encode()
+        await self.app(scope, receive, send)
+
+
 app.mount("/mcp", _mcp_server.streamable_http_app())
+# 见 _NormalizeMcpPath 文档字符串：消除 307，兼容无尾斜杠接入。
+app.add_middleware(_NormalizeMcpPath, prefix="/mcp")
 
 # API Key 鉴权开关：PALIMPSEST_API_KEY 默认空 = 不启用（localhost 本机直连）。
 # 设置后除 / 健康检查外所有请求须带 Bearer 或 X-API-Key，否则 401。
