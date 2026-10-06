@@ -4,6 +4,13 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
+## [2.4.1] - 2026-10-06
+
+### 修复
+
+- **MCP 端点 `/mcp` 无尾斜杠时返回 307，导致按文档接入的客户端连不上**：`/mcp`（不带尾斜杠）由 Starlette 的 `Mount` 307 重定向到 `/mcp/`，而多数 MCP 客户端（含 Hermes）不跟随重定向——于是按注释与 README 给出的接入方式（`url = http://127.0.0.1:8090/mcp`）连接会直接失败，表现为 503。新增 `_NormalizeMcpPath` ASGI 中间件，在路由匹配前把裸 `/mcp` 就地改写为 `/mcp/`，两种写法均直达 MCP 子应用、不再产生重定向。中间件经 `app.add_middleware(...)` 挂载而非包装 `app` 对象——后者会使其后的 `@app.exception_handler` / `@app.get` 注册全部静默失效。
+  `tests/test_mcp_path_normalization.py` 锁定该契约（`/mcp` 与 `/mcp/` 均须 200；断言刻意使用 `follow_redirects=False`，否则测试客户端会自动跟随 307 导致回归「假过」）。
+
 ## [2.4.0] - 2026-10-03
 
 ### 新增
@@ -324,7 +331,8 @@
 
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
-[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.4.0...HEAD
+[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.4.1...HEAD
+[2.4.1]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.4.1
 [2.4.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.4.0
 [2.3.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.3.0
 [2.2.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.2.0
