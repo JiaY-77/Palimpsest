@@ -60,6 +60,7 @@ def rs(http):
 
 # ---- update_vector：PATCH + 顶层 list body ----
 
+
 def test_update_vector_uses_patch_with_top_level_list(http, rs):
     http["responses"][("PATCH", "/memory/7/vector")] = _Resp(204)
 
@@ -67,17 +68,14 @@ def test_update_vector_uses_patch_with_top_level_list(http, rs):
 
     method, path, kwargs = http["calls"][0]
     assert (method, path) == ("PATCH", "/memory/7/vector"), http["calls"][0]
-    assert kwargs["json"] == [0.1, 0.2, 0.3], (
-        f"body 必须是顶层向量数组（服务端形参是 list[float]）：{kwargs['json']}"
-    )
+    assert kwargs["json"] == [0.1, 0.2, 0.3], f"body 必须是顶层向量数组（服务端形参是 list[float]）：{kwargs['json']}"
 
 
 # ---- recent_ids：走真正的 recent 端点并保留响应顺序 ----
 
+
 def test_recent_ids_uses_recent_endpoint(http, rs):
-    http["responses"][("POST", "/mem/recent")] = _Resp(
-        200, {"results": [{"id": 9}, {"id": 5}, {"id": 7}], "total": 3}
-    )
+    http["responses"][("POST", "/mem/recent")] = _Resp(200, {"results": [{"id": 9}, {"id": 5}, {"id": 7}], "total": 3})
 
     ids = rs.recent_ids(limit=3)
 
@@ -98,6 +96,7 @@ def test_recent_ids_does_not_use_export(http, rs):
 
 
 # ---- get_node：404 精确分类 ----
+
 
 def test_get_node_returns_none_on_404(http, rs):
     http["responses"][("GET", "/memory/404")] = _Resp(404, text="not found")
@@ -132,6 +131,7 @@ def test_404_detection_uses_status_code_not_message_matching():
 
 # ---- search_similar：payload_filter 不得静默忽略 ----
 
+
 def test_search_similar_rejects_payload_filter_fail_loud(http, rs):
     with pytest.raises(NotImplementedError):
         rs.search_similar([0.1, 0.2], payload_filter={"type": "skill_chunk"})
@@ -150,12 +150,18 @@ def test_search_similar_without_filter_still_works(http, rs):
 
 # ---- iter_payloads：必须要求完整 payload，缺了不许静默退回摘要 ----
 
+
 def test_iter_payloads_requests_full_payload(http, rs):
-    http["responses"][("GET", "/export")] = _Resp(200, {
-        "memories": [{"id": 3, "content": "x", "payload": {"content": "x",
-                                                           "domain": "hero"}}],
-        "total_nodes": 1, "page": 1, "page_size": 500, "total_pages": 1,
-    })
+    http["responses"][("GET", "/export")] = _Resp(
+        200,
+        {
+            "memories": [{"id": 3, "content": "x", "payload": {"content": "x", "domain": "hero"}}],
+            "total_nodes": 1,
+            "page": 1,
+            "page_size": 500,
+            "total_pages": 1,
+        },
+    )
 
     pairs = list(rs.iter_payloads())
 
@@ -167,10 +173,16 @@ def test_iter_payloads_requests_full_payload(http, rs):
 
 def test_iter_payloads_fails_loud_when_payload_missing(http, rs):
     """服务端忽略 include_payload 时必须报错，不能静默退回残缺摘要。"""
-    http["responses"][("GET", "/export")] = _Resp(200, {
-        "memories": [{"id": 3, "content": "x"}],
-        "total_nodes": 1, "page": 1, "page_size": 500, "total_pages": 1,
-    })
+    http["responses"][("GET", "/export")] = _Resp(
+        200,
+        {
+            "memories": [{"id": 3, "content": "x"}],
+            "total_nodes": 1,
+            "page": 1,
+            "page_size": 500,
+            "total_pages": 1,
+        },
+    )
 
     with pytest.raises(RemoteStoreError, match="payload"):
         list(rs.iter_payloads())

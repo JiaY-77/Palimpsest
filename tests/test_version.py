@@ -11,6 +11,7 @@ refs/tags / packed-refs）、提交（写 index）、切分支（改写 HEAD 内
 隔离保证：tmp_path 假仓库，monkeypatch _GIT_DIR / subprocess.check_output /
 _cache，不依赖真实 git 仓库、不 sleep、不联网。
 """
+
 import os
 import subprocess
 

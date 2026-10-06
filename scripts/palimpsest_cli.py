@@ -25,6 +25,7 @@ Palimpsest CLI —— 本地 CLI 薄封装（2026-08-25）。
   - importance 分级 / 记忆内容撰写 / 建边决策 = 用户负责；
     CLI 只做机械执行与结果回传。
 """
+
 import argparse
 import json
 import os
@@ -124,45 +125,65 @@ def _rest_call(method: str, path: str, body: dict | None = None) -> str:
         with httpx.Client(base_url=base, timeout=_REST_TIMEOUT) as client:
             resp = client.request(method, path, json=body)
     except Exception as exc:  # noqa: BLE001 —— 统一转成可读错误，不向上抛栈
-        return json.dumps({
-            "error": "Palimpsest REST 不可达",
-            "target": f"{base}{path}",
-            "hint": str(exc),
-            "action": "请先启动 REST 服务：python -m uvicorn main:app --port 8090",
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "error": "Palimpsest REST 不可达",
+                "target": f"{base}{path}",
+                "hint": str(exc),
+                "action": "请先启动 REST 服务：python -m uvicorn main:app --port 8090",
+            },
+            ensure_ascii=False,
+        )
     if resp.status_code >= 400:
-        return json.dumps({
-            "error": f"REST 返回 {resp.status_code}",
-            "target": f"{base}{path}",
-            "body": resp.text[:500],
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "error": f"REST 返回 {resp.status_code}",
+                "target": f"{base}{path}",
+                "body": resp.text[:500],
+            },
+            ensure_ascii=False,
+        )
     return resp.text
 
 
 def cmd_search(args):
     _validate_block(args.block)
     body = {
-        "query": args.query, "scope": args.scope, "domain": args.domain,
-        "top_k": args.top_k, "include_neighbors": args.neighbors,
-        "block": args.block, "tier": args.tier,
+        "query": args.query,
+        "scope": args.scope,
+        "domain": args.domain,
+        "top_k": args.top_k,
+        "include_neighbors": args.neighbors,
+        "block": args.block,
+        "tier": args.tier,
     }
     print(_rest_call("POST", "/mem/search", body))
 
 
 def cmd_hybrid_search(args):
     body = {
-        "query": args.query, "scope": args.scope, "domain": args.domain,
-        "top_k": args.top_k, "mode": args.mode, "fts_limit": args.fts_limit,
+        "query": args.query,
+        "scope": args.scope,
+        "domain": args.domain,
+        "top_k": args.top_k,
+        "mode": args.mode,
+        "fts_limit": args.fts_limit,
         "tier": args.tier,
     }
     print(_rest_call("POST", "/mem/hybrid-search", body))
 
 
 def cmd_ingest(args):
-    result = _rest_call("POST", "/mem/ingest", {
-        "content": args.content, "domain": args.domain,
-        "importance": args.importance, "type": args.type,
-    })
+    result = _rest_call(
+        "POST",
+        "/mem/ingest",
+        {
+            "content": args.content,
+            "domain": args.domain,
+            "importance": args.importance,
+            "type": args.type,
+        },
+    )
     print(result)
     try:
         data = json.loads(result)
@@ -173,10 +194,18 @@ def cmd_ingest(args):
 
 
 def cmd_link(args):
-    print(_rest_call("POST", "/mem/link", {
-        "source_id": args.source, "target_id": args.target,
-        "relation": args.relation, "bidirectional": not args.one_way,
-    }))
+    print(
+        _rest_call(
+            "POST",
+            "/mem/link",
+            {
+                "source_id": args.source,
+                "target_id": args.target,
+                "relation": args.relation,
+                "bidirectional": not args.one_way,
+            },
+        )
+    )
 
 
 def cmd_index(args):
@@ -189,23 +218,41 @@ def cmd_index(args):
 def cmd_graph(args):
     _validate_block(args.block)
     body = {
-        "node_id": args.id, "relation": args.relation, "depth": args.depth,
-        "limit": args.limit, "min_weight": args.min_weight,
+        "node_id": args.id,
+        "relation": args.relation,
+        "depth": args.depth,
+        "limit": args.limit,
+        "min_weight": args.min_weight,
         "block": args.block,
     }
     print(_rest_call("POST", "/graph/neighbors", body))
 
 
 def cmd_recent(args):
-    print(_rest_call("POST", "/mem/recent", {
-        "domain": args.domain, "limit": args.limit,
-    }))
+    print(
+        _rest_call(
+            "POST",
+            "/mem/recent",
+            {
+                "domain": args.domain,
+                "limit": args.limit,
+            },
+        )
+    )
 
 
 def cmd_kb(args):
-    print(_rest_call("POST", "/mem/search", {
-        "query": args.query, "scope": "kb", "top_k": args.top_k,
-    }))
+    print(
+        _rest_call(
+            "POST",
+            "/mem/search",
+            {
+                "query": args.query,
+                "scope": "kb",
+                "top_k": args.top_k,
+            },
+        )
+    )
 
 
 def cmd_review(args):
@@ -217,6 +264,7 @@ def cmd_review(args):
         data = json.loads(raw)
         # 统计 decision 节点数
         from core.trivium_store import TriviumStore
+
         _store = TriviumStore()
         decision_count = 0
         for _nid, payload in _store.iter_payloads():
@@ -232,6 +280,7 @@ def cmd_review(args):
 
 def cmd_consolidate(args):
     from core.trivium_store import TriviumStore
+
     # issue #53：dry-run 只读打开，不再推进 generation、不与 REST 争写锁。
     store = TriviumStore(read_only=not args.apply)
     result = consolidate(
@@ -294,8 +343,11 @@ def cmd_ingest_git(args):
     # 运行 git log 获取最近 N 天的 commit
     fmt = "%H|%ad|%s"
     cmd = [
-        "git", "-C", repo, "log",
-        f'--since={since} days ago',
+        "git",
+        "-C",
+        repo,
+        "log",
+        f"--since={since} days ago",
         f"--pretty=format:{fmt}",
         "--date=short",
     ]
@@ -313,11 +365,13 @@ def cmd_ingest_git(args):
             continue
         parts = line.split("|", 2)
         if len(parts) == 3:
-            commits.append({
-                "commit_hash": parts[0],
-                "commit_time": parts[1],
-                "subject": parts[2],
-            })
+            commits.append(
+                {
+                    "commit_hash": parts[0],
+                    "commit_time": parts[1],
+                    "subject": parts[2],
+                }
+            )
 
     # 幂等检查：遍历库中已有节点，收集已有的 commit_hash
     store = TriviumStore()
@@ -417,8 +471,13 @@ def cmd_reindex(args):
     only = [s.strip() for s in args.only.split(",") if s.strip()] or None
     skip = [s.strip() for s in args.skip.split(",") if s.strip()] or None
     code = _cmd_reindex(
-        store, only=only, skip=skip, batch=args.batch,
-        restart=args.restart, dry_run=args.dry_run, yes=args.yes,
+        store,
+        only=only,
+        skip=skip,
+        batch=args.batch,
+        restart=args.restart,
+        dry_run=args.dry_run,
+        yes=args.yes,
     )
     sys.exit(code)
 
@@ -437,8 +496,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--domain", default="")
     sp.add_argument("--top-k", type=int, default=5)
     sp.add_argument("--neighbors", action="store_true", help="返回图关联区")
-    sp.add_argument("--block", default="", help="图谱扩散只走同区块边（内置：task/kb/hermes/general；可传自定义 domain）")
-    sp.add_argument("--tier", default="facts", help="记忆分层：facts(默认，只回事实层) | logs(只回日志层) | ''(不过滤，改动前行为)")
+    sp.add_argument(
+        "--block", default="", help="图谱扩散只走同区块边（内置：task/kb/hermes/general；可传自定义 domain）"
+    )
+    sp.add_argument(
+        "--tier", default="facts", help="记忆分层：facts(默认，只回事实层) | logs(只回日志层) | ''(不过滤，改动前行为)"
+    )
     sp.set_defaults(fn=cmd_search)
 
     sp = sub.add_parser("hybrid-search", help="混合检索（FTS5 精确 + 语义向量：RRF 融合 / 级联）")
@@ -446,9 +509,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--scope", default="all", choices=["all", "memory", "kb"])
     sp.add_argument("--domain", default="")
     sp.add_argument("--top-k", type=int, default=5)
-    sp.add_argument("--mode", default="rrf", choices=["rrf", "cascade"], help="rrf=倒数排名融合；cascade=FTS 粗筛→向量精排")
+    sp.add_argument(
+        "--mode", default="rrf", choices=["rrf", "cascade"], help="rrf=倒数排名融合；cascade=FTS 粗筛→向量精排"
+    )
     sp.add_argument("--fts-limit", type=int, default=50, help="FTS 侧候选量（粗筛/桶大小）")
-    sp.add_argument("--tier", default="facts", help="记忆分层：facts(默认，只回事实层) | logs(只回日志层) | ''(不过滤，改动前行为)")
+    sp.add_argument(
+        "--tier", default="facts", help="记忆分层：facts(默认，只回事实层) | logs(只回日志层) | ''(不过滤，改动前行为)"
+    )
     sp.set_defaults(fn=cmd_hybrid_search)
 
     sp = sub.add_parser("ingest", help="写入记忆（内容/分级由用户定）")
@@ -474,7 +541,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--relation", default="")
     sp.add_argument("--min-weight", type=float, default=0.0, help="精馏：只保留 weight 不低于此值的边")
     sp.add_argument("--limit", type=int, default=20)
-    sp.add_argument("--block", default="", help="只沿 target 节点 domain 匹配区块的边扩散（内置：task/kb/hermes/general；可传自定义 domain）")
+    sp.add_argument(
+        "--block",
+        default="",
+        help="只沿 target 节点 domain 匹配区块的边扩散（内置：task/kb/hermes/general；可传自定义 domain）",
+    )
     sp.set_defaults(fn=cmd_graph)
 
     sp = sub.add_parser("recent", help="最近记忆列表")
@@ -485,7 +556,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("review", help="复盘盘点（近 N 天记忆 + 治理候选）")
     sp.add_argument("--days", type=int, default=7)
     sp.add_argument("--domain", default="")
-    sp.add_argument("--tier", default="facts", help="记忆分层（仅作用于 recent_ingests）：facts(默认，只回事实层) | logs(只回日志层) | ''(不过滤，改动前行为)")
+    sp.add_argument(
+        "--tier",
+        default="facts",
+        help="记忆分层（仅作用于 recent_ingests）：facts(默认，只回事实层) | logs(只回日志层) | ''(不过滤，改动前行为)",
+    )
     sp.set_defaults(fn=cmd_review)
 
     sp = sub.add_parser("kb", help="知识库语义检索")
@@ -500,9 +575,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(fn=cmd_consolidate)
 
     sp = sub.add_parser("stats", help="库级盘点统计（totals/kinds/importance/time/graph/domains，只读）")
-    sp.add_argument("--section", nargs="+",
-                    choices=["totals", "kinds", "importance", "time", "graph", "domains"],
-                    help="只输出指定分节（可多个）；缺省全给（domains=totals 的按 domain 分布）")
+    sp.add_argument(
+        "--section",
+        nargs="+",
+        choices=["totals", "kinds", "importance", "time", "graph", "domains"],
+        help="只输出指定分节（可多个）；缺省全给（domains=totals 的按 domain 分布）",
+    )
     sp.set_defaults(fn=cmd_stats)
 
     sp = sub.add_parser("promote", help="高频记忆自动升级（默认 dry-run 预览，--apply 才升权打标）")
@@ -528,8 +606,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(fn=cmd_startup_check)
 
     sp = sub.add_parser("doctor", help="部署体检（7 项全面检查，每项失败给具体修复命令）")
-    sp.add_argument("--json", dest="json_output", action="store_true",
-                    help="输出机器可读 JSON（默认人类可读）")
+    sp.add_argument("--json", dest="json_output", action="store_true", help="输出机器可读 JSON（默认人类可读）")
     sp.set_defaults(fn=cmd_doctor)
 
     sp = sub.add_parser("task-archive", help="已完成任务节点自动归档到知识库（05_任务归档/），默认 dry-run 预览")
@@ -538,7 +615,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(fn=cmd_task_archive)
 
     sp = sub.add_parser("reindex", help="全库向量重嵌入（换 embedding 模型后使用）")
-    sp.add_argument("--check", action="store_true", help="体检模式：只读检查 provider / 模型 / 维度 / 节点分布，不写数据")
+    sp.add_argument(
+        "--check", action="store_true", help="体检模式：只读检查 provider / 模型 / 维度 / 节点分布，不写数据"
+    )
     sp.add_argument("--dry-run", action="store_true", help="试运行：只报告将要重嵌哪些节点，不实际写入")
     sp.add_argument("--restart", action="store_true", help="忽略断点进度，从头重嵌所有节点")
     sp.add_argument("--resume", action="store_true", default=False, help="断点续跑（跳过已完成节点，默认行为）")

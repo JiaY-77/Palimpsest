@@ -52,11 +52,7 @@ _fake_mp.is_trivial_prompt = _fake_is_trivial_prompt  # type: ignore[attr-define
 sys.modules.setdefault("agent", _fake_agent)
 sys.modules.setdefault("agent.memory_provider", _fake_mp)
 
-_PLUGIN_PATH = (
-    __import__("pathlib").Path(__file__).resolve().parent.parent
-    / "hermes-plugin"
-    / "__init__.py"
-)
+_PLUGIN_PATH = __import__("pathlib").Path(__file__).resolve().parent.parent / "hermes-plugin" / "__init__.py"
 
 _spec = importlib.util.spec_from_file_location("palimpsest_plugin_tier", _PLUGIN_PATH)
 _mod = importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]

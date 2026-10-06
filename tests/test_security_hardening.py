@@ -69,14 +69,10 @@ def test_auth_enabled_requires_key(monkeypatch):
     assert resp.json()["detail"] == "未授权：缺少或无效的 API Key"
 
     # Authorization: Bearer 正确 → 200
-    assert client.get(
-        "/export", headers={"Authorization": "Bearer secret123"}
-    ).status_code == 200
+    assert client.get("/export", headers={"Authorization": "Bearer secret123"}).status_code == 200
 
     # X-API-Key 正确 → 200
-    assert client.get(
-        "/export", headers={"X-API-Key": "secret123"}
-    ).status_code == 200
+    assert client.get("/export", headers={"X-API-Key": "secret123"}).status_code == 200
 
     # 错误 key → 401
     resp = client.get("/export", headers={"Authorization": "Bearer wrong"})
@@ -178,17 +174,19 @@ def test_get_memory_strips_internal_fields(db_path):
     content = "剥内字段护栏：含内部标记的记忆内容"
     emb = store.embed_text(content)
     nid = store.insert_node(
-        {"type": "memory", "content": content,
-         "importance": 0.6, "domain": "hero"},
+        {"type": "memory", "content": content, "importance": 0.6, "domain": "hero"},
         emb,
     )
     sync_node(nid, content)
-    store.update_payload(nid, {
-        "secret_hint": ["phone"],
-        "linked_from": [1, 2],
-        "linked_kb_ids": [3],
-        "superseded": True,
-    })
+    store.update_payload(
+        nid,
+        {
+            "secret_hint": ["phone"],
+            "linked_from": [1, 2],
+            "linked_kb_ids": [3],
+            "superseded": True,
+        },
+    )
 
     client = TestClient(app)
     resp = client.get(f"/memory/{nid}")

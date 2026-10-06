@@ -219,8 +219,7 @@ def _detect_retired(md_files: list, knowledge_dir: str) -> tuple:
     return retired_rels, active_files
 
 
-def _determine_pending(full: bool, active_files: list, existing: dict,
-                       knowledge_dir: str) -> tuple:
+def _determine_pending(full: bool, active_files: list, existing: dict, knowledge_dir: str) -> tuple:
     """确定待重建文件列表（v1.0）。
 
     全量模式：所有 active 文件强制重建；
@@ -240,16 +239,14 @@ def _determine_pending(full: bool, active_files: list, existing: dict,
         entry = existing.get(rel)
         if entry is None:
             pending.append(fp)  # 新文件（索引里没有）
-        elif entry["mtime"] is None \
-                or abs(entry["mtime"] - cur_mtime) > MTIME_TOLERANCE:
+        elif entry["mtime"] is None or abs(entry["mtime"] - cur_mtime) > MTIME_TOLERANCE:
             pending.append(fp)  # 老数据无 mtime（未知）或 mtime 变化
         else:
             skipped += 1  # mtime 未变，跳过
     return pending, skipped
 
 
-def _cleanup_orphans_and_retired(store, existing: dict, known_paths: set,
-                                 retired_rels: set) -> int:
+def _cleanup_orphans_and_retired(store, existing: dict, known_paths: set, retired_rels: set) -> int:
     """孤儿与退役文档旧块清理。
 
     孤儿：existing 中有但磁盘上已不存在的源文件旧块删除；
@@ -275,14 +272,12 @@ def _cleanup_orphans_and_retired(store, existing: dict, known_paths: set,
             retired_ids.extend(entry["ids"])
     if retired_ids:
         deleted_old += _delete_nodes(store, retired_ids)
-        print(f"[清理] 退役文档旧 kb_chunk 节点 {len(retired_ids)} 个已删除: "
-              f"{sorted(retired_rels)}")
+        print(f"[清理] 退役文档旧 kb_chunk 节点 {len(retired_ids)} 个已删除: {sorted(retired_rels)}")
 
     return deleted_old
 
 
-def _rebuild_file(store, fp: str, knowledge_dir: str, existing: dict,
-                  rules: IndexRules) -> tuple:
+def _rebuild_file(store, fp: str, knowledge_dir: str, existing: dict, rules: IndexRules) -> tuple:
     """切片 -> upsert 入库单个文件（v1.0：保持旧节点 id）。
 
     读取失败返回 (None, 0)（由调用方计入跳过）；成功返回
@@ -343,8 +338,9 @@ def _rebuild_file(store, fp: str, knowledge_dir: str, existing: dict,
     return {"file": rel, "chunks": len(chunks), "char_lens": char_lens}, deleted_old
 
 
-def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False,
-          rules: IndexRules | str | None = None) -> dict:
+def build(
+    knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False, rules: IndexRules | str | None = None
+) -> dict:
     """
     构建知识库向量索引（v1.0 upsert 策略）。
     full=True：全量模式——所有 active 文件强制 upsert 重建（不删除旧节点，保持 id），
@@ -392,14 +388,12 @@ def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False,
         known_paths.add(os.path.relpath(fp, knowledge_dir).replace("\\", "/"))
     known_paths |= retired_rels  # 退役文档仍在磁盘上（不算孤儿）
 
-    deleted_old += _cleanup_orphans_and_retired(store, existing, known_paths,
-                                                retired_rels)
+    deleted_old += _cleanup_orphans_and_retired(store, existing, known_paths, retired_rels)
 
     # ---- 切片 -> upsert 入库（v1.0：保持旧节点 id） ----
     rebuilt = 0
     for fp in pending:
-        stats_entry, delta = _rebuild_file(store, fp, knowledge_dir, existing,
-                                           rules_obj)
+        stats_entry, delta = _rebuild_file(store, fp, knowledge_dir, existing, rules_obj)
         if stats_entry is None:
             skipped += 1
             continue
@@ -407,8 +401,7 @@ def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False,
         total_chunks += stats_entry["chunks"]
         deleted_old += delta
         rebuilt += 1
-        print(f"  {stats_entry['file']}: {stats_entry['chunks']} 块 "
-              f"{stats_entry['char_lens']}")
+        print(f"  {stats_entry['file']}: {stats_entry['chunks']} 块 {stats_entry['char_lens']}")
 
     elapsed = round(time.time() - t0, 2)
     mode = "full" if full else "incremental"
@@ -425,17 +418,18 @@ def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False,
 
     print(f"\n=== 知识库索引构建完成（{'全量' if full else '增量'}模式）v1.0 upsert ===")
     print(f"总块数: {total_chunks} | 新增/重建: {rebuilt} 篇 | 跳过: {skipped} 篇 | 耗时: {elapsed} 秒")
-    print(f"[域统计] domain=kb（知识块）: {domain_counts.get(KB_DOMAIN, 0)} 块 | "
-          f"其他: {domain_counts.get('other', 0)} 块")
-    print(f"[规则] 来源: {rules_obj.source} | kind_map {len(rules_obj.kind_map)} 条 | "
-          f"默认 kind: {rules_obj.default_kind}")
+    print(
+        f"[域统计] domain=kb（知识块）: {domain_counts.get(KB_DOMAIN, 0)} 块 | 其他: {domain_counts.get('other', 0)} 块"
+    )
+    print(
+        f"[规则] 来源: {rules_obj.source} | kind_map {len(rules_obj.kind_map)} 条 | 默认 kind: {rules_obj.default_kind}"
+    )
     for w in rules_obj.warnings:
         print(f"[警告] {w}")
     if unmatched_paths:
         # 未匹配路径必须可见：不静默归并到某个 kind（旧实现把「不知道」兜底成
         # character，误判时全程无声）
-        print(f"[未匹配] {len(unmatched_paths)} 个文件未命中任何 kind_map 规则"
-              f"（kind={rules_obj.default_kind}）:")
+        print(f"[未匹配] {len(unmatched_paths)} 个文件未命中任何 kind_map 规则（kind={rules_obj.default_kind}）:")
         for rel in unmatched_paths[:10]:
             print(f"  {rel}")
         if len(unmatched_paths) > 10:
@@ -466,10 +460,10 @@ def build(knowledge_dir: str = KNOWLEDGE_DIR, store=None, full: bool = False,
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="知识库向量索引构建（默认增量，--full 全量）")
-    parser.add_argument("--full", action="store_true",
-                        help="全量重建：所有 active 文件强制 upsert 重建（保持节点 id）")
-    parser.add_argument("--rules", default=None,
-                        help="索引规则 JSON 文件路径（不传则使用知识库根 .palimpsest-index.json 或内置默认）")
+    parser.add_argument("--full", action="store_true", help="全量重建：所有 active 文件强制 upsert 重建（保持节点 id）")
+    parser.add_argument(
+        "--rules", default=None, help="索引规则 JSON 文件路径（不传则使用知识库根 .palimpsest-index.json 或内置默认）"
+    )
     args = parser.parse_args()
     rules_arg = None
     if args.rules:

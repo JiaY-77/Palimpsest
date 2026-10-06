@@ -20,6 +20,7 @@ Palimpsest 一次性迁移：character_name → domain（消除记忆领域二�
   venv/Scripts/python.exe scripts/migrate_domain.py            # dry-run 预览
   venv/Scripts/python.exe scripts/migrate_domain.py --apply    # 真正执行
 """
+
 import argparse
 import sys
 
@@ -75,7 +76,8 @@ def main() -> None:
         description="Palimpsest 一次性迁移：无 domain 但有 character_name 的节点复制 domain 写回",
     )
     parser.add_argument(
-        "--apply", action="store_true",
+        "--apply",
+        action="store_true",
         help="真正执行写回（默认 dry-run 只预览统计，不写任何数据）",
     )
     args = parser.parse_args()

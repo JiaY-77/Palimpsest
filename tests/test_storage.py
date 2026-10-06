@@ -12,6 +12,7 @@ TriviumDB 0.8.3 特性测试 —— 存储层（P2）
 隔离保证：%TEMP%/tdb_ftest/ 独立临时库；
 子进程脚本带 __main__ 守卫 + 进程计数守卫（压测工具管理铁律）。
 """
+
 import os
 import subprocess
 import sys
@@ -60,8 +61,13 @@ def test_storage_info_metadata(tdb):
 def test_validate_graph_integrity(tdb):
     res = tdb.validate_graph()
     assert res["valid"] is True
-    for k in ("dangling_edges", "duplicate_edges", "degree_index_mismatches",
-              "incoming_index_mismatches", "label_index_mismatches"):
+    for k in (
+        "dangling_edges",
+        "duplicate_edges",
+        "degree_index_mismatches",
+        "incoming_index_mismatches",
+        "label_index_mismatches",
+    ):
         assert k in res
         assert res[k] == 0, res  # 未破坏的图应无任何不一致
 
@@ -78,8 +84,7 @@ def test_validate_graph_detects_unreachable_after_ok(tdb):
 def test_repair_graph_indexes_idempotent(tdb):
     first = tdb.repair_graph_indexes()
     assert isinstance(first, dict)
-    assert set(first.keys()) >= {"rebuilt_indexes", "removed_dangling_edges",
-                                 "removed_duplicate_edges"}
+    assert set(first.keys()) >= {"rebuilt_indexes", "removed_dangling_edges", "removed_duplicate_edges"}
     second = tdb.repair_graph_indexes()
     assert second["removed_dangling_edges"] == 0
     # 修复后图仍有效
@@ -110,7 +115,9 @@ def test_hard_kill_recovery(_dir):
             os.remove(os.path.join(_dir, f))
     r = subprocess.run(
         [sys.executable, _HARDKILL_CHILD, "--child-hardkill", path, "100"],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
     assert r.returncode == 23  # 硬杀码（见子脚本）
     db = triviumdb.TriviumDB(path, dim=8, auto_build_quiver=False)
@@ -129,7 +136,9 @@ def test_hard_kill_then_clean_close_double(_dir):
             os.remove(os.path.join(_dir, f))
     r = subprocess.run(
         [sys.executable, _HARDKILL_CHILD, "--child-hardkill", path, "100"],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
     assert r.returncode == 23
     db = triviumdb.TriviumDB(path, dim=8, auto_build_quiver=False)

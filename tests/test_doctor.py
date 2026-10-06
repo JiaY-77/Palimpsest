@@ -39,6 +39,7 @@ def iso_db(tmp_path, monkeypatch):
 # embedding 正常（fake embedder 自动生效）
 # ================================================================
 
+
 def test_doctor_all_pass(iso_db, monkeypatch):
     """fake embedder 正常：全部检查项通过，退出码 0。
 
@@ -51,6 +52,7 @@ def test_doctor_all_pass(iso_db, monkeypatch):
     def _fake_check_embedding():
         from core.startup_check import _all_zero
         from core.trivium_store import TriviumStore
+
         emb = TriviumStore().embed_text("ping")
         if _all_zero(emb):
             raise RuntimeError("Embedding 返回全零向量")
@@ -74,6 +76,7 @@ def test_doctor_all_pass(iso_db, monkeypatch):
 # ================================================================
 # embedding 不可用
 # ================================================================
+
 
 def test_doctor_embedding_unavailable(iso_db, monkeypatch):
     """Embedding 不可用时：doctor 不崩，其余项照常返回，退出码 1。"""
@@ -102,8 +105,7 @@ def test_doctor_embedding_unavailable(iso_db, monkeypatch):
     dim_check = next(c for c in result["checks"] if c["name"] == "向量维度一致性")
     assert dim_check["ok"]
 
-    other = [c for c in result["checks"]
-             if c["name"] not in ("Embedding 服务可用", "向量维度一致性")]
+    other = [c for c in result["checks"] if c["name"] not in ("Embedding 服务可用", "向量维度一致性")]
     assert all(c["ok"] for c in other)
 
     text = render_text(result)
@@ -114,6 +116,7 @@ def test_doctor_embedding_unavailable(iso_db, monkeypatch):
 # ================================================================
 # 维度不一致
 # ================================================================
+
 
 def test_doctor_dimension_mismatch(iso_db, monkeypatch):
     """实测 512 维 vs 库 1024 维：维度检查失败并给出新建库步骤。"""
@@ -127,7 +130,7 @@ def test_doctor_dimension_mismatch(iso_db, monkeypatch):
         if text:
             padded = " " + text + " "
             for i in range(len(padded) - 1):
-                gram = padded[i:i + 2]
+                gram = padded[i : i + 2]
                 h = int(hashlib.md5(gram.encode("utf-8")).hexdigest()[:4], 16)
                 vec[h % 512] += 1.0
             norm = math.sqrt(sum(v * v for v in vec))
@@ -141,8 +144,7 @@ def test_doctor_dimension_mismatch(iso_db, monkeypatch):
 
     try:
         result = run_doctor()
-        dim_check = next(
-            c for c in result["checks"] if c["name"] == "向量维度一致性")
+        dim_check = next(c for c in result["checks"] if c["name"] == "向量维度一致性")
         assert not dim_check["ok"]
         assert "512" in dim_check["detail"]
         assert "1024" in dim_check["detail"]
@@ -155,14 +157,15 @@ def test_doctor_dimension_mismatch(iso_db, monkeypatch):
         assert "\u274c" in text
     finally:
         from tests.conftest import _fake_embed
-        monkeypatch.setattr(
-            TriviumStore, "embed_text", staticmethod(_fake_embed))
+
+        monkeypatch.setattr(TriviumStore, "embed_text", staticmethod(_fake_embed))
         s.embed_text = _fake_embed
 
 
 # ================================================================
 # CLI 层
 # ================================================================
+
 
 def test_doctor_cli_subprocess():
     """通过 subprocess 调用 doctor 子命令（无 Ollama 环境下不真连）。"""
@@ -174,6 +177,7 @@ def test_doctor_cli_subprocess():
         errors="replace",
     )
     import json
+
     data = json.loads(result.stdout)
     assert "ok" in data
     assert "checks" in data
@@ -202,6 +206,7 @@ def test_doctor_cli_human_text(iso_db):
 # ================================================================
 # _check_key_files: data 目录自动创建
 # ================================================================
+
 
 @pytest.fixture()
 def _fake_project_root(tmp_path):
@@ -245,6 +250,7 @@ def test_key_files_data_already_exists(_fake_project_root):
 # ⑦ domain 字段迁移状态
 # ================================================================
 
+
 def test_legacy_domain_mirror_flags_node_without_domain():
     """只有 character_name 没有 domain 的节点 → 该项失败并给出迁移命令。
 
@@ -254,11 +260,14 @@ def test_legacy_domain_mirror_flags_node_without_domain():
     from core.doctor import _check_legacy_domain_mirror
 
     emb = store.embed_text("legacy domain mirror probe")
-    nid = store.insert_node({
-        "type": "memory",
-        "character_name": "legacy_only",
-        "content": "只有 character_name 没有 domain 的历史节点（doctor ⑦ 用例）",
-    }, emb)
+    nid = store.insert_node(
+        {
+            "type": "memory",
+            "character_name": "legacy_only",
+            "content": "只有 character_name 没有 domain 的历史节点（doctor ⑦ 用例）",
+        },
+        emb,
+    )
     try:
         ok, detail, fix = _check_legacy_domain_mirror()
         assert ok is False
@@ -277,12 +286,15 @@ def test_legacy_domain_mirror_ignores_official_domain_node():
     from core.doctor import _check_legacy_domain_mirror
 
     emb = store.embed_text("official domain probe")
-    nid = store.insert_node({
-        "type": "memory",
-        "domain": "hermes",
-        "character_name": "hermes",
-        "content": "domain 与 character_name 镜像一致的正式节点（doctor ⑦ 用例）",
-    }, emb)
+    nid = store.insert_node(
+        {
+            "type": "memory",
+            "domain": "hermes",
+            "character_name": "hermes",
+            "content": "domain 与 character_name 镜像一致的正式节点（doctor ⑦ 用例）",
+        },
+        emb,
+    )
     try:
         ok, detail, _fix = _check_legacy_domain_mirror()
         assert ok is True, detail

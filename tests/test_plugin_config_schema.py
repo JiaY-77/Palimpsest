@@ -35,6 +35,7 @@ _cfg_schema_mod = types.ModuleType("plugins.memory.config_schema")
 
 STORAGE_FLAT_JSON = "flat_json"
 
+
 @dataclasses.dataclass(frozen=True)
 class ProviderField:
     key: str
@@ -77,9 +78,7 @@ sys.modules.setdefault("plugins.memory.config_schema", _cfg_schema_mod)
 _REPO = Path(__file__).resolve().parent.parent
 _CONFIG_SCHEMA_PATH = _REPO / "hermes-plugin" / "config_schema.py"
 
-_spec = importlib.util.spec_from_file_location(
-    "hermes_config_schema", _CONFIG_SCHEMA_PATH
-)
+_spec = importlib.util.spec_from_file_location("hermes_config_schema", _CONFIG_SCHEMA_PATH)
 _mod = importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]
 _spec.loader.exec_module(_mod)  # type: ignore[union-attr]
 
@@ -125,17 +124,15 @@ class TestConfigSchemaContract:
 
     def test_field_default_is_str(self):
         for f in CONFIG_SCHEMA.fields:
-            assert isinstance(f.default, str), (
-                f"field {f.key!r} default must be str, got {type(f.default)}"
-            )
+            assert isinstance(f.default, str), f"field {f.key!r} default must be str, got {type(f.default)}"
 
     def test_at_least_one_inline_field(self):
         assert any(f.inline for f in CONFIG_SCHEMA.fields), "no inline=True field found"
 
     def test_docs_url_points_to_palimpsest_repo(self):
-        assert CONFIG_SCHEMA.docs_url.startswith(
-            "https://github.com/"
-        ), f"docs_url unexpected: {CONFIG_SCHEMA.docs_url}"
+        assert CONFIG_SCHEMA.docs_url.startswith("https://github.com/"), (
+            f"docs_url unexpected: {CONFIG_SCHEMA.docs_url}"
+        )
         assert "Palimpsest" in CONFIG_SCHEMA.docs_url
 
     def test_every_field_key_appears_in_init_source(self):
@@ -146,6 +143,4 @@ class TestConfigSchemaContract:
         """
         src_lower = _INIT_SRC.lower()
         for f in CONFIG_SCHEMA.fields:
-            assert f.key.lower() in src_lower, (
-                f"field key {f.key!r} not found in hermes-plugin/__init__.py"
-            )
+            assert f.key.lower() in src_lower, f"field key {f.key!r} not found in hermes-plugin/__init__.py"

@@ -13,6 +13,7 @@ outdated 检索语义测试（v4.0，2026-09-05 产品决策）
   - content 用彼此词面差异大的句子：共享短前缀的 content 会互相高相似，
     干扰 test_consolidate_dryrun 的候选断言。
 """
+
 import json
 import uuid
 
@@ -52,8 +53,7 @@ def test_mem_search_default_hides_outdated():
     assert new_id in ids, f"新版应出现在常规检索: {ids}"
     assert old_id not in ids, f"outdated 旧版不应出现在常规检索: {ids}"
 
-    incl = _get(mem_search(text, scope="memory", domain=ns, top_k=20,
-                           include_outdated=True))
+    incl = _get(mem_search(text, scope="memory", domain=ns, top_k=20, include_outdated=True))
     ids2 = [it["id"] for it in incl["results"]]
     assert new_id in ids2, f"include_outdated 应含新版: {ids2}"
     assert old_id in ids2, f"include_outdated 应含旧版(可追溯): {ids2}"
@@ -67,8 +67,7 @@ def test_mem_search_include_outdated_false_explicit():
     text = "石砌的钟楼整点敲响悠长的铜钟声"
     old_id, new_id = _ingest_pair(store, mem_ingest, text, ns)
 
-    data = _get(mem_search(text, scope="memory", domain=ns, top_k=20,
-                           include_outdated=False))
+    data = _get(mem_search(text, scope="memory", domain=ns, top_k=20, include_outdated=False))
     ids = [it["id"] for it in data["results"]]
     assert new_id in ids
     assert old_id not in ids
@@ -101,14 +100,12 @@ def test_mem_hybrid_search_rrf_hides_outdated():
     text = "深秋的银杏叶铺满湿漉漉的青石路"
     old_id, new_id = _ingest_pair(store, mem_ingest, text, ns)
 
-    default = _get(mem_hybrid_search(text, scope="memory", domain=ns, top_k=20,
-                                     mode="rrf"))
+    default = _get(mem_hybrid_search(text, scope="memory", domain=ns, top_k=20, mode="rrf"))
     ids = [it["id"] for it in default["results"]]
     assert new_id in ids, f"混合(rrf)检索应含新版: {ids}"
     assert old_id not in ids, f"outdated 旧版不应出现在混合(rrf)检索: {ids}"
 
-    incl = _get(mem_hybrid_search(text, scope="memory", domain=ns, top_k=20,
-                                  mode="rrf", include_outdated=True))
+    incl = _get(mem_hybrid_search(text, scope="memory", domain=ns, top_k=20, mode="rrf", include_outdated=True))
     ids2 = [it["id"] for it in incl["results"]]
     assert old_id in ids2, f"include_outdated 混合(rrf)应含旧版: {ids2}"
     assert new_id in ids2
@@ -122,14 +119,12 @@ def test_mem_hybrid_search_cascade_hides_outdated():
     text = "雪松的枝头挂满昨夜落下的新雪"
     old_id, new_id = _ingest_pair(store, mem_ingest, text, ns)
 
-    default = _get(mem_hybrid_search(text, scope="memory", domain=ns, top_k=20,
-                                     mode="cascade"))
+    default = _get(mem_hybrid_search(text, scope="memory", domain=ns, top_k=20, mode="cascade"))
     ids = [it["id"] for it in default["results"]]
     assert new_id in ids, f"混合(cascade)检索应含新版: {ids}"
     assert old_id not in ids, f"outdated 旧版不应出现在混合(cascade)检索: {ids}"
 
-    incl = _get(mem_hybrid_search(text, scope="memory", domain=ns, top_k=20,
-                                  mode="cascade", include_outdated=True))
+    incl = _get(mem_hybrid_search(text, scope="memory", domain=ns, top_k=20, mode="cascade", include_outdated=True))
     ids2 = [it["id"] for it in incl["results"]]
     assert old_id in ids2, f"include_outdated 混合(cascade)应含旧版: {ids2}"
     assert new_id in ids2
@@ -150,8 +145,7 @@ def test_graph_neighbors_filter_outdated():
     # a --RELATED_TO--> old_c（outdated 邻居）
     _get(mem_link(a_id, old_c, relation="RELATED_TO"))
 
-    data = _get(mem_search(a_text, scope="memory", domain=ns, top_k=5,
-                           include_neighbors=True))
+    data = _get(mem_search(a_text, scope="memory", domain=ns, top_k=5, include_neighbors=True))
     sem_ids = [it["id"] for it in data["results"]]
     assert a_id in sem_ids, f"检索应命中 a: {sem_ids}"
 
@@ -169,8 +163,7 @@ def test_kb_chunk_outdated_also_filtered():
     ns = _ns()
     text = f"知识库切片检索词{ns}"
     emb = store.embed_text(text)
-    nid = store.insert_node(
-        {"type": "kb_chunk", "content": text, "domain": "kb"}, emb)
+    nid = store.insert_node({"type": "kb_chunk", "content": text, "domain": "kb"}, emb)
     store.update_payload(nid, {"status": "outdated"})
     # insert_node 直写不走 FTS 同步：手动补索引，避免破坏 test_fts_check 一致性
     index_node(nid, text)

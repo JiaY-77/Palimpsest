@@ -41,11 +41,7 @@ sys.modules.setdefault("agent.memory_provider", _fake_mp)
 # Load the plugin module by file path (avoids package-name conflicts).
 # ---------------------------------------------------------------------------
 
-_PLUGIN_PATH = (
-    __import__("pathlib").Path(__file__).resolve().parent.parent
-    / "hermes-plugin"
-    / "__init__.py"
-)
+_PLUGIN_PATH = __import__("pathlib").Path(__file__).resolve().parent.parent / "hermes-plugin" / "__init__.py"
 
 _spec = importlib.util.spec_from_file_location("palimpsest_plugin", _PLUGIN_PATH)
 _mod = importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]

@@ -68,16 +68,17 @@ def find_promote_candidates(
                     continue
             except (TypeError, ValueError):
                 pass
-        candidates.append({
-            "id": nid,
-            "content": (payload.get("content") or "")[:60],
-            "type": payload.get("type", ""),
-            "domain": (payload.get("domain", "")
-                       or payload.get("character_name", "") or ""),
-            "importance": round(imp, 2),
-            "hit_count": hit_count,
-            "suggested_action": "升权打标（importance +0.1，供人工 review 升级知识库）",
-        })
+        candidates.append(
+            {
+                "id": nid,
+                "content": (payload.get("content") or "")[:60],
+                "type": payload.get("type", ""),
+                "domain": (payload.get("domain", "") or payload.get("character_name", "") or ""),
+                "importance": round(imp, 2),
+                "hit_count": hit_count,
+                "suggested_action": "升权打标（importance +0.1，供人工 review 升级知识库）",
+            }
+        )
     candidates.sort(key=lambda c: c["hit_count"], reverse=True)
     return candidates
 
@@ -146,12 +147,14 @@ def promote(
         payload["promoted_at"] = now
         payload["promoted_hit_base"] = hit_count
         store.update_payload(nid, payload)
-        promoted_list.append({
-            "id": nid,
-            "old_importance": round(old_imp, 2),
-            "new_importance": new_imp,
-            "hit_count": hit_count,
-        })
+        promoted_list.append(
+            {
+                "id": nid,
+                "old_importance": round(old_imp, 2),
+                "new_importance": new_imp,
+                "hit_count": hit_count,
+            }
+        )
 
     return {
         "dry_run": False,

@@ -30,11 +30,11 @@ from scripts.retrieval_probe import (  # noqa: E402
 # evaluate_probe 纯函数单测
 # ---------------------------------------------------------------------------
 
+
 class TestEvaluateProbe:
     """注入假 top1 结果，验证各 expect 条件的判定逻辑。"""
 
-    def _make_top1(self, type_="memory", source_path="", title="", summary="",
-                   score=0.9, node_id=1):
+    def _make_top1(self, type_="memory", source_path="", title="", summary="", score=0.9, node_id=1):
         return {
             "id": node_id,
             "type": type_,
@@ -53,98 +53,89 @@ class TestEvaluateProbe:
     # ---- expect_source_contains ----
 
     def test_source_contains_hit(self):
-        probe = {"name": "t", "query": "q", "scope": "all",
-                 "expect_source_contains": "0.8.6"}
+        probe = {"name": "t", "query": "q", "scope": "all", "expect_source_contains": "0.8.6"}
         top1 = self._make_top1(source_path="03_技术学习/TriviumDB 0.8.6 压测报告.md")
         assert evaluate_probe(probe, top1) is True
 
     def test_source_contains_miss(self):
-        probe = {"name": "t", "query": "q", "scope": "all",
-                 "expect_source_contains": "0.8.6"}
+        probe = {"name": "t", "query": "q", "scope": "all", "expect_source_contains": "0.8.6"}
         top1 = self._make_top1(source_path="some/other/file.md")
         assert evaluate_probe(probe, top1) is False
 
     # ---- expect_type ----
 
     def test_type_hit(self):
-        probe = {"name": "t", "query": "q", "scope": "all",
-                 "expect_type": "novel_chunk"}
+        probe = {"name": "t", "query": "q", "scope": "all", "expect_type": "novel_chunk"}
         top1 = self._make_top1(type_="novel_chunk")
         assert evaluate_probe(probe, top1) is True
 
     def test_type_miss(self):
-        probe = {"name": "t", "query": "q", "scope": "all",
-                 "expect_type": "novel_chunk"}
+        probe = {"name": "t", "query": "q", "scope": "all", "expect_type": "novel_chunk"}
         top1 = self._make_top1(type_="memory")
         assert evaluate_probe(probe, top1) is False
 
     # ---- expect_type_any ----
 
     def test_type_any_hit(self):
-        probe = {"name": "t", "query": "q", "scope": "memory",
-                 "expect_type_any": ["memory", "correction"]}
+        probe = {"name": "t", "query": "q", "scope": "memory", "expect_type_any": ["memory", "correction"]}
         top1 = self._make_top1(type_="correction")
         assert evaluate_probe(probe, top1) is True
 
     def test_type_any_miss(self):
-        probe = {"name": "t", "query": "q", "scope": "memory",
-                 "expect_type_any": ["memory", "correction"]}
+        probe = {"name": "t", "query": "q", "scope": "memory", "expect_type_any": ["memory", "correction"]}
         top1 = self._make_top1(type_="kb_chunk")
         assert evaluate_probe(probe, top1) is False
 
     # ---- expect_text_contains ----
 
     def test_text_contains_hit_in_summary(self):
-        probe = {"name": "t", "query": "q", "scope": "all",
-                 "expect_text_contains": "凌无咎"}
+        probe = {"name": "t", "query": "q", "scope": "all", "expect_text_contains": "凌无咎"}
         top1 = self._make_top1(summary="凌无咎与某人关系密切")
         assert evaluate_probe(probe, top1) is True
 
     def test_text_contains_hit_in_title(self):
-        probe = {"name": "t", "query": "q", "scope": "all",
-                 "expect_text_contains": "凌无咎"}
+        probe = {"name": "t", "query": "q", "scope": "all", "expect_text_contains": "凌无咎"}
         top1 = self._make_top1(title="凌无咎人物志", summary="无关内容")
         assert evaluate_probe(probe, top1) is True
 
     def test_text_contains_miss(self):
-        probe = {"name": "t", "query": "q", "scope": "all",
-                 "expect_text_contains": "凌无咎"}
+        probe = {"name": "t", "query": "q", "scope": "all", "expect_text_contains": "凌无咎"}
         top1 = self._make_top1(summary="完全无关的内容", title="另一个标题")
         assert evaluate_probe(probe, top1) is False
 
     # ---- 组合条件 ----
 
     def test_combined_conditions_hit(self):
-        probe = {"name": "t", "query": "q", "scope": "all",
-                 "expect_type": "novel_chunk",
-                 "expect_text_contains": "凌无咎"}
-        top1 = self._make_top1(type_="novel_chunk",
-                               summary="凌无咎与谁的关系")
+        probe = {
+            "name": "t",
+            "query": "q",
+            "scope": "all",
+            "expect_type": "novel_chunk",
+            "expect_text_contains": "凌无咎",
+        }
+        top1 = self._make_top1(type_="novel_chunk", summary="凌无咎与谁的关系")
         assert evaluate_probe(probe, top1) is True
 
     def test_combined_conditions_partial_miss(self):
         """type 对但 text 不含 → 未命中"""
-        probe = {"name": "t", "query": "q", "scope": "all",
-                 "expect_type": "novel_chunk",
-                 "expect_text_contains": "凌无咎"}
-        top1 = self._make_top1(type_="novel_chunk",
-                               summary="完全不同的内容")
+        probe = {
+            "name": "t",
+            "query": "q",
+            "scope": "all",
+            "expect_type": "novel_chunk",
+            "expect_text_contains": "凌无咎",
+        }
+        top1 = self._make_top1(type_="novel_chunk", summary="完全不同的内容")
         assert evaluate_probe(probe, top1) is False
 
     def test_combined_source_and_type(self):
-        probe = {"name": "t", "query": "q", "scope": "all",
-                 "expect_source_contains": "融合",
-                 "expect_type": "kb_chunk"}
-        top1 = self._make_top1(type_="kb_chunk",
-                               source_path="03_技术学习/记忆服务融合方案.md")
+        probe = {"name": "t", "query": "q", "scope": "all", "expect_source_contains": "融合", "expect_type": "kb_chunk"}
+        top1 = self._make_top1(type_="kb_chunk", source_path="03_技术学习/记忆服务融合方案.md")
         assert evaluate_probe(probe, top1) is True
 
     def test_combined_source_and_type_type_miss(self):
-        probe = {"name": "t", "query": "q", "scope": "all",
-                 "expect_source_contains": "融合",
-                 "expect_type": "kb_chunk"}
-        top1 = self._make_top1(type_="memory",
-                               source_path="03_技术学习/记忆服务融合方案.md")
+        probe = {"name": "t", "query": "q", "scope": "all", "expect_source_contains": "融合", "expect_type": "kb_chunk"}
+        top1 = self._make_top1(type_="memory", source_path="03_技术学习/记忆服务融合方案.md")
         assert evaluate_probe(probe, top1) is False
 
     # ---- 无约束条件 ----
@@ -161,24 +152,22 @@ class TestEvaluateProbe:
         assert evaluate_probe(probe, None) is False
 
     def test_top1_none_with_expect_miss(self):
-        probe = {"name": "t", "query": "q", "scope": "all",
-                 "expect_type": "memory"}
+        probe = {"name": "t", "query": "q", "scope": "all", "expect_type": "memory"}
         assert evaluate_probe(probe, None) is False
 
     # ---- meta 字段缺失 ----
 
     def test_meta_missing_source_path(self):
         """meta 无 source_path 时 expect_source_contains 应 miss"""
-        probe = {"name": "t", "query": "q", "scope": "all",
-                 "expect_source_contains": "foo"}
-        top1 = {"id": 1, "type": "memory", "score": 0.5,
-                "summary": "x", "meta": {"type": "memory"}}
+        probe = {"name": "t", "query": "q", "scope": "all", "expect_source_contains": "foo"}
+        top1 = {"id": 1, "type": "memory", "score": 0.5, "summary": "x", "meta": {"type": "memory"}}
         assert evaluate_probe(probe, top1) is False
 
 
 # ---------------------------------------------------------------------------
 # DEFAULT_PROBES 结构验证
 # ---------------------------------------------------------------------------
+
 
 class TestDefaultProbes:
     def test_all_have_required_fields(self):
@@ -195,15 +184,18 @@ class TestDefaultProbes:
 # build_json 结构验证
 # ---------------------------------------------------------------------------
 
+
 class TestBuildJson:
     def test_structure(self):
         results = [
-            {"name": "a", "query": "q", "hit": True,
-             "top1": {"id": 1, "type": "memory", "score": 0.9,
-                       "summary": "s", "meta": {"type": "memory"}},
-             "latency_ms": 100.0},
-            {"name": "b", "query": "q2", "hit": False,
-             "top1": None, "latency_ms": 50.0},
+            {
+                "name": "a",
+                "query": "q",
+                "hit": True,
+                "top1": {"id": 1, "type": "memory", "score": 0.9, "summary": "s", "meta": {"type": "memory"}},
+                "latency_ms": 100.0,
+            },
+            {"name": "b", "query": "q2", "hit": False, "top1": None, "latency_ms": 50.0},
         ]
         out = build_json(results)
         assert "probes" in out
@@ -229,6 +221,7 @@ class TestBuildJson:
 # ---------------------------------------------------------------------------
 # --probe-file 错误处理（退出码 2）
 # ---------------------------------------------------------------------------
+
 
 class TestProbeFileErrors:
     def test_file_not_found(self, tmp_path):
@@ -277,21 +270,25 @@ class TestProbeFileErrors:
 # run_one_probe monkeypatch（不连 Ollama）
 # ---------------------------------------------------------------------------
 
+
 class TestRunOneProbe:
     def test_hit(self, monkeypatch):
         fake_result = {
-            "results": [{
-                "id": 1, "type": "memory", "score": 0.9,
-                "summary": "凌无咎与某人",
-                "meta": {"type": "memory", "source_path": "", "title": ""},
-            }]
+            "results": [
+                {
+                    "id": 1,
+                    "type": "memory",
+                    "score": 0.9,
+                    "summary": "凌无咎与某人",
+                    "meta": {"type": "memory", "source_path": "", "title": ""},
+                }
+            ]
         }
         monkeypatch.setattr(
             "scripts.retrieval_probe.mem_search",
             lambda query, scope, top_k: json.dumps(fake_result),
         )
-        probe = {"name": "t", "query": "凌无咎", "scope": "memory",
-                 "expect_type": "memory"}
+        probe = {"name": "t", "query": "凌无咎", "scope": "memory", "expect_type": "memory"}
         r = run_one_probe(probe, top_k=1)
         assert r["hit"] is True
         assert r["top1"]["id"] == 1
@@ -303,8 +300,7 @@ class TestRunOneProbe:
             "scripts.retrieval_probe.mem_search",
             lambda query, scope, top_k: json.dumps(empty),
         )
-        probe = {"name": "t", "query": "q", "scope": "all",
-                 "expect_type": "memory"}
+        probe = {"name": "t", "query": "q", "scope": "all", "expect_type": "memory"}
         r = run_one_probe(probe, top_k=1)
         assert r["hit"] is False
         assert r["top1"] is None

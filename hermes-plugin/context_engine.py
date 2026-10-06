@@ -39,14 +39,11 @@ class PalimpsestContextEngine(ContextCompressor):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self._base_url = os.environ.get(
-            "PALIMPSEST_BASE_URL", "http://127.0.0.1:8090"
-        ).rstrip("/")
+        self._base_url = os.environ.get("PALIMPSEST_BASE_URL", "http://127.0.0.1:8090").rstrip("/")
         self._domain = os.environ.get("PALIMPSEST_DOMAIN", "hermes")
         self._max_topics = max(1, min(int(os.environ.get("PALIMPSEST_GRAPH_TOPICS", "3")), 5))
         # 图谱增强总耗时预算（秒）：后端不可达时整体 fail-open，不让压缩链路白等
-        self._graph_timeout_budget = float(
-            os.environ.get("PALIMPSEST_GRAPH_TIMEOUT", "8.0"))
+        self._graph_timeout_budget = float(os.environ.get("PALIMPSEST_GRAPH_TIMEOUT", "8.0"))
         self._graph_enhance_errors = 0
 
     @property
@@ -57,9 +54,7 @@ class PalimpsestContextEngine(ContextCompressor):
 
     def _http_post(self, url: str, payload: dict, timeout: float = 4.0) -> dict:
         data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            url, data=data, headers={"Content-Type": "application/json"}
-        )
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
@@ -115,22 +110,26 @@ class PalimpsestContextEngine(ContextCompressor):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-            resp = self._http_post(f"{self._base_url}/mem/search", {
-                "query": topic, "scope": "all", "domain": self._domain,
-                "top_k": 2, "include_neighbors": True,
-            }, timeout=min(4.0, remaining))
+            resp = self._http_post(
+                f"{self._base_url}/mem/search",
+                {
+                    "query": topic,
+                    "scope": "all",
+                    "domain": self._domain,
+                    "top_k": 2,
+                    "include_neighbors": True,
+                },
+                timeout=min(4.0, remaining),
+            )
             if "error" in resp or not resp.get("results"):
                 continue
             top = resp["results"][0]
             lines.append(
-                f"- 主题「{topic[:50]}」→ 关键记忆({top.get('score', 0):.2f}): "
-                f"{str(top.get('summary', ''))[:120]}"
+                f"- 主题「{topic[:50]}」→ 关键记忆({top.get('score', 0):.2f}): {str(top.get('summary', ''))[:120]}"
             )
             neighbors = resp.get("neighbors") or []
             for nb in neighbors[:3]:
-                lines.append(
-                    f"  · 图谱关联: {nb.get('relation', 'LINKED')} → {str(nb.get('title', ''))[:80]}"
-                )
+                lines.append(f"  · 图谱关联: {nb.get('relation', 'LINKED')} → {str(nb.get('title', ''))[:80]}")
             added += 1
             if added >= self._max_topics:
                 break
@@ -150,9 +149,7 @@ class PalimpsestContextEngine(ContextCompressor):
         try:
             enhancement = self._graph_enhancement(messages, focus_topic)
             if enhancement:
-                memory_context = (
-                    (memory_context + "\n\n") if memory_context else ""
-                ) + enhancement
+                memory_context = ((memory_context + "\n\n") if memory_context else "") + enhancement
         except Exception as exc:  # noqa: BLE001 — fail-open，不阻塞压缩
             self._graph_enhance_errors += 1
             logger.warning("Palimpsest graph enhancement failed (fail-open): %s", exc)

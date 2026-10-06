@@ -38,6 +38,7 @@ def iso_db(tmp_path, monkeypatch):
 
 # ---- 辅助 ----
 
+
 def _insert_nodes(s, types: list[str]):
     """向隔离库插入测试节点，返回 {type: [node_id, ...]} 映射。"""
     result: dict[str, list[int]] = {}
@@ -56,8 +57,7 @@ def _read_vectors(s, node_ids: list[int]) -> dict[int, list[float]]:
 
 def _collect_nodes(s) -> list[tuple[int, dict, list]]:
     """收集所有节点 (id, payload, vec)，完全消费生成器释放 DB 连接。"""
-    return [(nid, node.get("payload") or {}, node.get("vector"))
-            for nid, node in s.iter_nodes()]
+    return [(nid, node.get("payload") or {}, node.get("vector")) for nid, node in s.iter_nodes()]
 
 
 def _update_payloads(s, updates: dict[int, dict]):
@@ -68,6 +68,7 @@ def _update_payloads(s, updates: dict[int, dict]):
 # ================================================================
 # 维度一致 → 重嵌后向量改变、节点总数不变、payload 与边未被改动
 # ================================================================
+
 
 def test_reindex_dim_match_updates_vectors(iso_db):
     """维度一致时：向量被更新，节点数不变，payload 不动。"""
@@ -88,6 +89,7 @@ def test_reindex_dim_match_updates_vectors(iso_db):
     _update_payloads(s, updates)
 
     from scripts.reindex import cmd_reindex
+
     code = cmd_reindex(s, yes=True, batch=100)
     assert code == 0
 
@@ -104,14 +106,14 @@ def test_reindex_dim_match_updates_vectors(iso_db):
         payload = s.get_node(nid)["payload"]
         assert payload["content"] == f"重嵌后内容 {payload.get('type', '')}"
     edges = s.get_edges(all_ids[0])
-    assert any(e.target_id == all_ids[1] and e.label == "RELATED_TO"
-               for e in edges)
+    assert any(e.target_id == all_ids[1] and e.label == "RELATED_TO" for e in edges)
 
 
 # ================================================================
 # 维度不一致 → 退出码 2 且库未被修改
 # （校验对象 = 库的实际维度，不是 config 维度）
 # ================================================================
+
 
 def test_reindex_dim_mismatch_no_writes(iso_db, monkeypatch):
     """实测维度 512 != 库实际维度 1024：退出码 2，库中向量逐条不变。"""
@@ -126,7 +128,7 @@ def test_reindex_dim_mismatch_no_writes(iso_db, monkeypatch):
         if text:
             padded = " " + text + " "
             for i in range(len(padded) - 1):
-                gram = padded[i:i + 2]
+                gram = padded[i : i + 2]
                 h = int(hashlib.md5(gram.encode("utf-8")).hexdigest()[:4], 16)
                 vec[h % 512] += 1.0
             norm = math.sqrt(sum(v * v for v in vec))
@@ -135,11 +137,13 @@ def test_reindex_dim_mismatch_no_writes(iso_db, monkeypatch):
         return vec
 
     from core.trivium_store import TriviumStore
+
     monkeypatch.setattr(TriviumStore, "embed_text", staticmethod(_dim512_embed))
     s.embed_text = _dim512_embed
 
     try:
         from scripts.reindex import _check_dims, _get_db_dim, cmd_reindex
+
         # 库实际维度应为 1024（iso_db 建库时 config dim）
         db_dim, err = _get_db_dim(s)
         assert err is None and db_dim == 1024
@@ -159,8 +163,8 @@ def test_reindex_dim_mismatch_no_writes(iso_db, monkeypatch):
             assert new_vectors[nid] == old_vectors[nid], f"ID={nid} 向量被意外修改"
     finally:
         from tests.conftest import _fake_embed
-        monkeypatch.setattr(
-            TriviumStore, "embed_text", staticmethod(_fake_embed))
+
+        monkeypatch.setattr(TriviumStore, "embed_text", staticmethod(_fake_embed))
         s.embed_text = _fake_embed
 
 
@@ -187,11 +191,14 @@ def test_reindex_db_real_dim_2560_probe_1024(iso_db, monkeypatch, tmp_path):
     s, _ = iso_db
     monkeypatch.setattr(s, "db_path", str(dim2560_db))
     from core.trivium_store import TriviumStore
-    monkeypatch.setattr(TriviumStore, "embed_text", staticmethod(
-        __import__("tests.conftest", fromlist=["_fake_embed"])._fake_embed))
+
+    monkeypatch.setattr(
+        TriviumStore, "embed_text", staticmethod(__import__("tests.conftest", fromlist=["_fake_embed"])._fake_embed)
+    )
     s.embed_text = __import__("tests.conftest", fromlist=["_fake_embed"])._fake_embed
 
     from scripts.reindex import _check_dims, _get_db_dim, cmd_reindex
+
     db_dim, err = _get_db_dim(s)
     assert err is None and db_dim == 2560
 
@@ -213,6 +220,7 @@ def test_reindex_db_real_dim_2560_probe_1024(iso_db, monkeypatch, tmp_path):
 
 def _all_ids(db_path):
     import triviumdb
+
     d = triviumdb.TriviumDB(str(db_path))
     try:
         return d.all_node_ids()
@@ -223,6 +231,7 @@ def _all_ids(db_path):
 # ================================================================
 # embedding 抛异常 → 退出码非 0、已完成计数正确、库仍可正常打开
 # ================================================================
+
 
 def test_reindex_embedding_failure(iso_db, monkeypatch):
     """embedding 异常时：退出码非 0，库仍可正常打开。"""
@@ -241,11 +250,13 @@ def test_reindex_embedding_failure(iso_db, monkeypatch):
         return [0.1] * 1024
 
     from core.trivium_store import TriviumStore
+
     monkeypatch.setattr(TriviumStore, "embed_text", staticmethod(_fail_after_2))
     s.embed_text = _fail_after_2
 
     try:
         from scripts.reindex import cmd_reindex
+
         code = cmd_reindex(s, yes=True, batch=100)
         assert code == 4  # embedding 服务不可用 → 退出码 4（与维度不匹配 2 区分）
 
@@ -257,14 +268,15 @@ def test_reindex_embedding_failure(iso_db, monkeypatch):
             assert new_vectors[nid] == old_vectors[nid], f"ID={nid} 不应被写"
     finally:
         from tests.conftest import _fake_embed
-        monkeypatch.setattr(
-            TriviumStore, "embed_text", staticmethod(_fake_embed))
+
+        monkeypatch.setattr(TriviumStore, "embed_text", staticmethod(_fake_embed))
         s.embed_text = _fake_embed
 
 
 # ================================================================
 # --only / --skip 过滤正确
 # ================================================================
+
 
 def test_reindex_only_filter(iso_db):
     """--only 只重嵌指定类型，跳过其他。"""
@@ -280,6 +292,7 @@ def test_reindex_only_filter(iso_db):
     _update_payloads(s, updates)
 
     from scripts.reindex import cmd_reindex
+
     code = cmd_reindex(s, only=["memory", "task"], yes=True, batch=100)
     assert code == 0
 
@@ -304,6 +317,7 @@ def test_reindex_skip_filter(iso_db):
     _update_payloads(s, updates)
 
     from scripts.reindex import cmd_reindex
+
     code = cmd_reindex(s, skip=["kb_chunk"], yes=True, batch=100)
     assert code == 0
 
@@ -319,6 +333,7 @@ def test_reindex_skip_filter(iso_db):
 # --dry-run 不写库
 # ================================================================
 
+
 def test_reindex_dry_run(iso_db):
     """--dry-run 不修改库中任何向量。"""
     s, _db = iso_db
@@ -333,6 +348,7 @@ def test_reindex_dry_run(iso_db):
     _update_payloads(s, updates)
 
     from scripts.reindex import cmd_reindex
+
     code = cmd_reindex(s, dry_run=True, batch=100)
     assert code == 0
 
@@ -344,6 +360,7 @@ def test_reindex_dry_run(iso_db):
 # ================================================================
 # --resume 跳过已完成节点
 # ================================================================
+
 
 def test_reindex_resume(iso_db, tmp_path, monkeypatch):
     """--resume 跳过已完成节点（state 中 max_done_id 以下的跳过）。"""
@@ -360,6 +377,7 @@ def test_reindex_resume(iso_db, tmp_path, monkeypatch):
     old_vectors = _read_vectors(s, all_ids)
 
     import scripts.reindex as ri
+
     state_file = ri.db_state_file(s)
     state = {
         "provider": s.provider,
@@ -376,6 +394,7 @@ def test_reindex_resume(iso_db, tmp_path, monkeypatch):
         json.dump(state, f, ensure_ascii=False, indent=2)
 
     from scripts.reindex import cmd_reindex
+
     code = cmd_reindex(s, yes=True, batch=100)
     assert code == 0
 
@@ -392,6 +411,7 @@ def test_reindex_resume(iso_db, tmp_path, monkeypatch):
 # --restart 从头重嵌
 # ================================================================
 
+
 def test_reindex_restart(iso_db):
     """--restart 忽略 state，从头重嵌所有节点。"""
     s, _db = iso_db
@@ -407,6 +427,7 @@ def test_reindex_restart(iso_db):
     old_vectors = _read_vectors(s, all_ids)
 
     import scripts.reindex as ri
+
     state = {
         "provider": s.provider,
         "model": "test",
@@ -421,6 +442,7 @@ def test_reindex_restart(iso_db):
         json.dump(state, f, ensure_ascii=False, indent=2)
 
     from scripts.reindex import cmd_reindex
+
     code = cmd_reindex(s, restart=True, yes=True, batch=100)
     assert code == 0
 
@@ -433,6 +455,7 @@ def test_reindex_restart(iso_db):
 # --check 模式（只读）
 # ================================================================
 
+
 def test_check_readonly(iso_db):
     """--check 不修改库中任何数据。"""
     s, _db = iso_db
@@ -441,6 +464,7 @@ def test_check_readonly(iso_db):
     old_vectors = _read_vectors(s, all_ids)
 
     from scripts.reindex import cmd_check
+
     code = cmd_check(s)
     assert code == 0
 
@@ -453,10 +477,12 @@ def test_check_readonly(iso_db):
 # 库为空时正常工作
 # ================================================================
 
+
 def test_reindex_empty_db(iso_db):
     """空库重嵌入应正常退出。"""
     s, _db = iso_db
     from scripts.reindex import cmd_reindex
+
     code = cmd_reindex(s, yes=True, batch=100)
     assert code == 0
 
@@ -465,17 +491,16 @@ def test_reindex_empty_db(iso_db):
 # 缺 content 的节点被跳过（计入跳过，不中断整轮）
 # ================================================================
 
+
 def test_reindex_skips_nodes_without_content(iso_db, capsys):
     """缺失/空 content 的节点应被跳过并按 type 计入结束报告。"""
     s, _db = iso_db
-    s.insert_node(
-        {"type": "memory", "content": "有内容"}, s.embed_text("有内容"))
-    nid2 = s.insert_node(
-        {"type": "inspiration", "content": ""}, s.embed_text(""))  # 空 content
-    nid3 = s.insert_node({"type": "record", "content": ""},
-                         s.embed_text(""))  # 空 content
+    s.insert_node({"type": "memory", "content": "有内容"}, s.embed_text("有内容"))
+    nid2 = s.insert_node({"type": "inspiration", "content": ""}, s.embed_text(""))  # 空 content
+    nid3 = s.insert_node({"type": "record", "content": ""}, s.embed_text(""))  # 空 content
 
     from scripts.reindex import _text_for_embed, cmd_reindex
+
     assert _text_for_embed(s.get_node(nid2)["payload"]) == ""
     assert _text_for_embed(s.get_node(nid3)["payload"]) == ""
 
@@ -496,14 +521,15 @@ def test_reindex_skips_nodes_without_content(iso_db, capsys):
 # 修复空向量计数
 # ================================================================
 
+
 def test_reindex_counts_fixed_empty_vectors(iso_db, capsys):
     """旧向量全零的节点重嵌后非零 → 计入「修复空向量」。"""
     s, _db = iso_db
     # 人为插入全零向量节点
-    nid = s.insert_node(
-        {"type": "memory", "content": "空向量节点"}, [0.0] * s.dim)
+    nid = s.insert_node({"type": "memory", "content": "空向量节点"}, [0.0] * s.dim)
 
     from scripts.reindex import cmd_reindex
+
     code = cmd_reindex(s, yes=True, batch=100)
     assert code == 0
 
@@ -519,9 +545,11 @@ def test_reindex_counts_fixed_empty_vectors(iso_db, capsys):
 # apply_filter 辅助函数
 # ================================================================
 
+
 def test_apply_filter():
     """过滤函数正确性。"""
     from scripts.reindex import _apply_filter
+
     only = {"memory", "record"}
     skip = {"kb_chunk"}
 
@@ -541,9 +569,11 @@ def test_apply_filter():
 # _text_for_embed 只用 content（回归）
 # ================================================================
 
+
 def test_text_for_embed_uses_only_content():
     """_text_for_embed 只用 payload['content']，不用 label。"""
     from scripts.reindex import _text_for_embed
+
     assert _text_for_embed({"content": "abc", "label": "xyz"}) == "abc"
     assert _text_for_embed({"label": "xyz"}) == ""
     assert _text_for_embed({"content": 123}) == ""
@@ -553,6 +583,7 @@ def test_text_for_embed_uses_only_content():
 # ================================================================
 # 脚本入口可直接运行（回归：脚本自己文档里写的调用方式必须能跑）
 # ================================================================
+
 
 def test_script_entrypoint_runs_as_file():
     """`python scripts/reindex.py --check`（脚本方式，非 -m 包方式）必须能完成 import。
@@ -568,7 +599,10 @@ def test_script_entrypoint_runs_as_file():
     repo_root = Path(__file__).resolve().parent.parent
     proc = subprocess.run(
         [sys.executable, str(repo_root / "scripts" / "reindex.py"), "--help"],
-        cwd=str(repo_root), capture_output=True, text=True, timeout=180,
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        timeout=180,
     )
     assert proc.returncode == 0, proc.stderr
     assert "全库向量重嵌入" in proc.stdout
@@ -577,6 +611,7 @@ def test_script_entrypoint_runs_as_file():
 # ================================================================
 # 异常中断：状态文件必须记「最后成功写入的节点」
 # ================================================================
+
 
 def test_reindex_failure_records_last_successful_id(iso_db, monkeypatch):
     """embedding 中途失败时，状态文件不得写全库最大 id。
@@ -619,21 +654,19 @@ def test_reindex_failure_records_last_successful_id(iso_db, monkeypatch):
         assert code == 1, f"部分失败应返回 1（4 仅当一条都没成功）：{code}"
 
         new_vectors = _read_vectors(s, all_ids)
-        written = [nid for nid in all_ids
-                   if new_vectors[nid] != old_vectors[nid]]
+        written = [nid for nid in all_ids if new_vectors[nid] != old_vectors[nid]]
         assert written, "应至少成功写入一个节点（探针之后的第一个节点）"
         assert len(written) < len(all_ids), f"本测试需要「部分完成」：{written}"
 
         import scripts.reindex as ri
+
         with open(ri.db_state_file(s), encoding="utf-8") as f:
             state = json.load(f)
         assert state["max_done_id"] == max(written), (
             f"状态文件 max_done_id={state['max_done_id']}，"
             f"应为最后成功写入的 {max(written)}（全库最大 id={max(all_ids)}）"
         )
-        assert state["max_done_id"] != max(all_ids), (
-            "把未完成当成了已完成 —— resume 会跳过全部节点"
-        )
+        assert state["max_done_id"] != max(all_ids), "把未完成当成了已完成 —— resume 会跳过全部节点"
     finally:
         monkeypatch.setattr(TriviumStore, "embed_text", staticmethod(_fake_embed))
         s.embed_text = _fake_embed
@@ -642,6 +675,4 @@ def test_reindex_failure_records_last_successful_id(iso_db, monkeypatch):
     assert cmd_reindex(s, yes=True, batch=100) == 0
     resumed = _read_vectors(s, all_ids)
     for nid in all_ids:
-        assert resumed[nid] != old_vectors[nid], (
-            f"ID={nid} 在续跑后仍未被重嵌 —— 断点把未完成的节点跳过了"
-        )
+        assert resumed[nid] != old_vectors[nid], f"ID={nid} 在续跑后仍未被重嵌 —— 断点把未完成的节点跳过了"

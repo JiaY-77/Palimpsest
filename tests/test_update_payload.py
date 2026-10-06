@@ -13,6 +13,7 @@ embedding 相关测试用 monkeypatch 模拟失败，不依赖真实 Ollama。
 def _store():
     """复用 conftest 建立的、指向临时库的全局 store。"""
     from mcp_tools import store
+
     return store
 
 

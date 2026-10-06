@@ -28,12 +28,15 @@ def _fake_db_raising(msg: str):
     return _Boom
 
 
-@pytest.mark.parametrize("msg", [
-    "RuntimeError: database locked",
-    "RuntimeError: already opened",
-    "RuntimeError: 数据库已锁定",
-    "RuntimeError: incompatible access mode",
-])
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "RuntimeError: database locked",
+        "RuntimeError: already opened",
+        "RuntimeError: 数据库已锁定",
+        "RuntimeError: incompatible access mode",
+    ],
+)
 def test_busy_phrasings_are_detected(tmp_path, monkeypatch, msg):
     """四种「被占用」措辞都必须判为 busy。"""
     db_file = tmp_path / "busy.db"
@@ -53,10 +56,9 @@ def test_corruption_is_not_reported_as_busy(tmp_path, monkeypatch):
     db_file.write_bytes(b"")
 
     monkeypatch.setattr(
-        triviumdb, "TriviumDB",
-        _fake_db_raising(
-            "拒绝不完整的 .tdb/.vec generation：.flush_ok 缺失或不匹配"
-        ),
+        triviumdb,
+        "TriviumDB",
+        _fake_db_raising("拒绝不完整的 .tdb/.vec generation：.flush_ok 缺失或不匹配"),
     )
     health = db_health.check_db_health(str(db_file))
 
@@ -70,10 +72,7 @@ def test_marker_table_single_source_of_truth():
     from core import utils
 
     markers = set(utils._DB_LOCK_MARKERS)
-    assert markers == set(trivium_store._DB_LOCK_MARKERS), (
-        "db_health / trivium_store 共用的标记表被复制成两份"
-    )
-    for phrase in ("database locked", "already opened", "数据库已锁定",
-                   "incompatible access mode"):
+    assert markers == set(trivium_store._DB_LOCK_MARKERS), "db_health / trivium_store 共用的标记表被复制成两份"
+    for phrase in ("database locked", "already opened", "数据库已锁定", "incompatible access mode"):
         assert phrase in markers, f"标记表缺 {phrase!r}: {sorted(markers)}"
     assert trivium_store._is_db_locked_error is utils._is_db_locked_error

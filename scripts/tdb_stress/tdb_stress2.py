@@ -7,6 +7,7 @@ D. 真实 id 段 8 万边 + expand_depth=3 检索
 E. 硬杀精确对比（杀前 count vs 恢复 count）
 F. compact + 全量核对
 """
+
 import json
 import os
 import random
@@ -40,8 +41,12 @@ def open_db():
 
 def long_payload(i):
     """模拟知识 chunk 的大文本 payload"""
-    return {"type": "kb_chunk", "text": f"知识块 {i}：压测文本。" + "这是一段模拟知识内容的文字，用于测试大 payload 的写入与检索性能。" * 50,
-            "importance": 0.6, "status": "active"}
+    return {
+        "type": "kb_chunk",
+        "text": f"知识块 {i}：压测文本。" + "这是一段模拟知识内容的文字，用于测试大 payload 的写入与检索性能。" * 50,
+        "importance": 0.6,
+        "status": "active",
+    }
 
 
 def main():
@@ -55,8 +60,9 @@ def main():
     # 准备基础库：10000 节点（1..10000）
     db = open_db()
     rng = random.Random(1)
-    db.batch_insert([rvec(rng) for _ in range(10000)],
-                    [{"text": f"base-{i}", "phase": "base", "n": i} for i in range(10000)])
+    db.batch_insert(
+        [rvec(rng) for _ in range(10000)], [{"text": f"base-{i}", "phase": "base", "n": i} for i in range(10000)]
+    )
     report["base_count"] = db.node_count()
     db.close()
 
@@ -71,8 +77,9 @@ def main():
         while time.time() - t0 < 30:
             try:
                 if role == "writer":
-                    db.insert_with_id(1_000_000 + wid * 100_000 + stats["writes"],
-                                      rvec(rng2), {"text": f"mixw-{wid}", "phase": "mix"})
+                    db.insert_with_id(
+                        1_000_000 + wid * 100_000 + stats["writes"], rvec(rng2), {"text": f"mixw-{wid}", "phase": "mix"}
+                    )
                     with lock:
                         stats["writes"] += 1
                 elif role == "reader":
@@ -103,9 +110,13 @@ def main():
         t.join()
     report["stages"]["A_mixed_16t_30s"] = {
         "secs": round(time.time() - t0, 3),
-        "writes": stats["writes"], "reads": stats["reads"], "links": stats["links"],
-        "err_count": len(stats["errs"]), "errs": stats["errs"][:20],
-        "count_after": db.node_count()}
+        "writes": stats["writes"],
+        "reads": stats["reads"],
+        "links": stats["links"],
+        "err_count": len(stats["errs"]),
+        "errs": stats["errs"][:20],
+        "count_after": db.node_count(),
+    }
     db.close()
 
     # ---- B. 同 id 并发 upsert（1000 个 id，8 线程各 300 次） ----
@@ -130,8 +141,12 @@ def main():
     for t in threads:
         t.join()
     report["stages"]["B_upsert_8x300"] = {
-        "secs": round(time.time() - t0, 3), "err_count": len(errs_b), "errs": errs_b[:20],
-        "count_after": db.node_count(), "count_expected": 101000 + report["base_count"]}
+        "secs": round(time.time() - t0, 3),
+        "err_count": len(errs_b),
+        "errs": errs_b[:20],
+        "count_after": db.node_count(),
+        "count_expected": 101000 + report["base_count"],
+    }
     # 抽查 50 个被 upsert 的 id 是否可读
     bad = 0
     for nid in ids[:50]:
@@ -197,8 +212,13 @@ def main():
         report["stages"]["D_expand3_300"] = {
             "secs": round(time.time() - t0, 3),
             "rate_per_sec": round(300 / (time.time() - t0), 2) if (time.time() - t0) else 0,
-            "lat_ms": {"p50": round(lat[len(lat)//2], 2), "p95": round(lat[int(len(lat)*0.95)], 2), "max": round(lat[-1], 2)},
-            "errs": errs_d2[:20]}
+            "lat_ms": {
+                "p50": round(lat[len(lat) // 2], 2),
+                "p95": round(lat[int(len(lat) * 0.95)], 2),
+                "max": round(lat[-1], 2),
+            },
+            "errs": errs_d2[:20],
+        }
     except Exception as e:  # noqa: BLE001 —— 扩展检索阶段异常记 fatal
         report["stages"]["D_expand3_300"] = {"fatal": f"{type(e).__name__}: {e}"}
 
@@ -210,16 +230,21 @@ def main():
         proc = subprocess.Popen(
             [sys.executable, os.path.abspath(__file__), "--child-hardkill", "8"],
             cwd=os.path.dirname(os.path.abspath(__file__)),
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         time.sleep(4.0)
         proc.kill()
         proc.wait(timeout=10)
         db = open_db()
         count_after = db.node_count()
         report["stages"]["E_hardkill"] = {
-            "count_before": count_before, "count_after_kill_reopen": count_after,
-            "delta": count_after - count_before, "child_retcode": proc.returncode,
-            "reopen_ok": True}
+            "count_before": count_before,
+            "count_after_kill_reopen": count_after,
+            "delta": count_after - count_before,
+            "child_retcode": proc.returncode,
+            "reopen_ok": True,
+        }
         db.close()
     except Exception as e:  # noqa: BLE001 —— 硬杀阶段异常记 fatal F 核对仍执行
         report["stages"]["E_hardkill"] = {"fatal": f"{type(e).__name__}: {e}"}
@@ -252,17 +277,23 @@ def main():
         except Exception as e:  # noqa: BLE001 —— compact 后检索异常记入报告其余核对继续
             search_ok = f"ERR {type(e).__name__}: {e}"
         report["stages"]["F_compact_verify"] = {
-            "before": before, "after": after, "consistent": before == after,
+            "before": before,
+            "after": after,
+            "consistent": before == after,
             "secs": round(time.time() - t0, 3),
-            "all_ids": len(ids_all), "unique_ids": uniq, "dup_ids": len(ids_all) - uniq,
-            "sample_bad": bad, "search_ok": search_ok,
-            "est_memory_mb": round(db.estimated_memory() / (1024*1024), 2)}
+            "all_ids": len(ids_all),
+            "unique_ids": uniq,
+            "dup_ids": len(ids_all) - uniq,
+            "sample_bad": bad,
+            "search_ok": search_ok,
+            "est_memory_mb": round(db.estimated_memory() / (1024 * 1024), 2),
+        }
         db.close()
     except Exception as e:  # noqa: BLE001 —— compact 核对阶段异常记 fatal
         report["stages"]["F_compact_verify"] = {"fatal": f"{type(e).__name__}: {e}"}
 
     with contextlib.suppress(Exception):
-        report["db_size_mb"] = round(os.path.getsize(DB) / (1024*1024), 2)
+        report["db_size_mb"] = round(os.path.getsize(DB) / (1024 * 1024), 2)
 
     with open(REPORT, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2, default=str)
@@ -279,7 +310,9 @@ def main():
                 if key in v:
                     extra += f"  {key}={v[key]}"
             print(f"[OK]   {k}  耗时={v.get('secs', '?')}s{extra}")
-    print(f"最终节点数: {report['stages']['F_compact_verify'].get('after', '?')}  库大小: {report.get('db_size_mb', '?')} MB")
+    print(
+        f"最终节点数: {report['stages']['F_compact_verify'].get('after', '?')}  库大小: {report.get('db_size_mb', '?')} MB"
+    )
     print(f"报告: {REPORT}")
 
 

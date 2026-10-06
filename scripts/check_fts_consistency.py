@@ -29,6 +29,7 @@ try:
     from _common import SCRIPT_DIR as _SCRIPT_DIR
 except ImportError:
     import os as _os
+
     _scripts_dir = _os.path.dirname(_os.path.abspath(__file__))
     if _scripts_dir not in sys.path:
         sys.path.insert(0, _scripts_dir)
@@ -74,10 +75,7 @@ def check(store=None) -> dict:
         for nid in sorted(main_ids - fts_ids)
         if main_content.get(nid)  # 空 content 节点无需索引（index_node 跳过），不算缺失
     ]
-    stale_in_fts = [
-        {"node_id": nid}
-        for nid in sorted(fts_ids - main_ids)
-    ]
+    stale_in_fts = [{"node_id": nid} for nid in sorted(fts_ids - main_ids)]
 
     # 内容级对账：主库有非空 content 且 FTS 中也有该节点，但 content 不一致
     content_drift = []
@@ -85,11 +83,13 @@ def check(store=None) -> dict:
         mc = main_content.get(nid, "")
         fc = fts_mapping.get(nid, "")
         if mc and mc != fc:
-            content_drift.append({
-                "node_id": nid,
-                "main_content": mc[:80],
-                "fts_content": fc[:80],
-            })
+            content_drift.append(
+                {
+                    "node_id": nid,
+                    "main_content": mc[:80],
+                    "fts_content": fc[:80],
+                }
+            )
 
     consistent = not missing_in_fts and not stale_in_fts and not content_drift
 
@@ -106,7 +106,8 @@ def check(store=None) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description="FTS 索引与主库一致性巡检")
     parser.add_argument(
-        "--repair", action="store_true",
+        "--repair",
+        action="store_true",
         help="发现不一致时调用 core.fts_index.rebuild(store) 全量重建后重新检查",
     )
     args = parser.parse_args()
@@ -116,6 +117,7 @@ def main() -> None:
 
     if args.repair and not result["consistent"]:
         from core.fts_index import rebuild
+
         count = rebuild(store)
         print(f"[repair] 已全量重建 FTS 索引（{count} 节点），重新检查…")
         result = check(store)

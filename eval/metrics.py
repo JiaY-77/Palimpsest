@@ -57,9 +57,7 @@ def ndcg_at_k(
     return dcg_val / idcg_val
 
 
-def auc_separability(
-    pos: Sequence[float | None], neg: Sequence[float | None]
-) -> float | None:
+def auc_separability(pos: Sequence[float | None], neg: Sequence[float | None]) -> float | None:
     """AUC 可分离度：P(随机正样本分数 > 随机负样本分数)，并列记 0.5。
 
     0.5 = 完全无法区分正负样本，1.0 = 完全可分（正样本分数全部高于负样本）。

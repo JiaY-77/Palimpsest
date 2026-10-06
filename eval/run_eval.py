@@ -108,8 +108,9 @@ from metrics import auc_separability, mrr_at_k, ndcg_at_k, recall_at_k  # noqa: 
 ALL_MODES = ("fts", "vec", "rrf", "cascade")
 
 
-def _run_fts(query: str, top_k: int, _store: TriviumStore,
-             tier: str = DEFAULT_TIER) -> tuple[list[int], list[float | None]]:
+def _run_fts(
+    query: str, top_k: int, _store: TriviumStore, tier: str = DEFAULT_TIER
+) -> tuple[list[int], list[float | None]]:
     """FTS 模式：与其余模式同口径 —— 过 tier、过 outdated（历史通道见 tier=""）。
 
     先按「召回口径」拉宽候选（limit 放大 3 倍），再逐条套用与 _mem_search_impl
@@ -135,38 +136,53 @@ def _run_fts(query: str, top_k: int, _store: TriviumStore,
     return ids, [None] * len(ids)
 
 
-def _run_vec(query: str, top_k: int, _store: TriviumStore,
-             tier: str = DEFAULT_TIER) -> tuple[list[int], list[float]]:
+def _run_vec(query: str, top_k: int, _store: TriviumStore, tier: str = DEFAULT_TIER) -> tuple[list[int], list[float]]:
     """向量模式：与 fts/rrf/cascade 同口径 —— 走 _mem_search_impl 过滤链。
 
     改动前直调 store.search_similar，绕过了 tier 过滤与 outdated 语义，导致同一条
     查询在不同模式间口径不一致（向量模式会把日志层/被取代版本算进结果）。
     现改为复用 _mem_search_impl，保证四模式共享同一套 scope/tier/outdated 语义。
     """
-    result = _mem_search_impl(query, scope="all", domain="", domain_bias="",
-                              top_k=top_k, include_outdated=False,
-                              tier=tier)
+    result = _mem_search_impl(
+        query, scope="all", domain="", domain_bias="", top_k=top_k, include_outdated=False, tier=tier
+    )
     items = result.get("results", [])
     ids = [r.get("id") for r in items if r.get("id") is not None]
-    scores = [r.get("score") for r in items[:len(ids)]]
+    scores = [r.get("score") for r in items[: len(ids)]]
     return ids, scores
 
 
-def _run_rrf(query: str, top_k: int, store: TriviumStore,
-             tier: str = DEFAULT_TIER) -> tuple[list[int], list[float]]:
-    results = _hybrid_rrf(query, scope="all", domain="", domain_bias="",
-                          top_k=top_k, fts_limit=top_k * 3, block="",
-                          include_outdated=False, tier=tier)
+def _run_rrf(query: str, top_k: int, store: TriviumStore, tier: str = DEFAULT_TIER) -> tuple[list[int], list[float]]:
+    results = _hybrid_rrf(
+        query,
+        scope="all",
+        domain="",
+        domain_bias="",
+        top_k=top_k,
+        fts_limit=top_k * 3,
+        block="",
+        include_outdated=False,
+        tier=tier,
+    )
     ids = [r.get("id") for r in results if r.get("id") is not None][:top_k]
     scores = [r.get("score") for r in results[:top_k]]
     return ids, scores
 
 
-def _run_cascade(query: str, top_k: int, store: TriviumStore,
-                 tier: str = DEFAULT_TIER) -> tuple[list[int], list[float]]:
-    results = _hybrid_cascade(query, scope="all", domain="", domain_bias="",
-                              top_k=top_k, fts_limit=top_k * 3, block="",
-                              include_outdated=False, tier=tier)
+def _run_cascade(
+    query: str, top_k: int, store: TriviumStore, tier: str = DEFAULT_TIER
+) -> tuple[list[int], list[float]]:
+    results = _hybrid_cascade(
+        query,
+        scope="all",
+        domain="",
+        domain_bias="",
+        top_k=top_k,
+        fts_limit=top_k * 3,
+        block="",
+        include_outdated=False,
+        tier=tier,
+    )
     ids = [r.get("id") for r in results if r.get("id") is not None][:top_k]
     scores = [r.get("score") for r in results[:top_k]]
     return ids, scores
@@ -280,8 +296,7 @@ def _generate_report(
     sep = "|---|" + "|".join(["---"] * len(modes)) + "|"
     lines.append(header)
     lines.append(sep)
-    for metric in ["recall@1", "recall@3", "recall@5", "recall@10",
-                    "mrr@10", "ndcg@5"]:
+    for metric in ["recall@1", "recall@3", "recall@5", "recall@10", "mrr@10", "ndcg@5"]:
         row = f"| {metric} | "
         row += " | ".join(f"{_avg(agg[m][metric]):.4f}" for m in modes)
         row += " |"
@@ -305,16 +320,13 @@ def _generate_report(
             layer = "other"
         for mode in modes:
             ranked = mode_results.get(mode, {}).get("ids", [])
-            layer_agg[layer][mode]["recall@5"].append(
-                recall_at_k(ranked, gold_ids, 5))
-            layer_agg[layer][mode]["mrr@10"].append(
-                mrr_at_k(ranked, gold_ids, 10))
+            layer_agg[layer][mode]["recall@5"].append(recall_at_k(ranked, gold_ids, 5))
+            layer_agg[layer][mode]["mrr@10"].append(mrr_at_k(ranked, gold_ids, 10))
 
     lines.append("## 分层细分（Recall@5 / MRR@10）")
     lines.append("")
     for layer_name in ["hermes", "kb", "novel", "other"]:
-        has_data = any(
-            layer_agg[layer_name][m]["recall@5"] for m in modes)
+        has_data = any(layer_agg[layer_name][m]["recall@5"] for m in modes)
         if not has_data:
             continue
         lines.append(f"### {layer_name}")
@@ -325,8 +337,7 @@ def _generate_report(
         lines.append(sep)
         for metric in ["recall@5", "mrr@10"]:
             row = f"| {metric} | "
-            row += " | ".join(
-                f"{_avg(layer_agg[layer_name][m][metric]):.4f}" for m in modes)
+            row += " | ".join(f"{_avg(layer_agg[layer_name][m][metric]):.4f}" for m in modes)
             row += " |"
             lines.append(row)
         lines.append("")
@@ -349,17 +360,14 @@ def _generate_report(
         gold_sp = source_map.get(gold_id, "")
         if not gold_sp:
             continue
-        partial = {nid for nid, sp in source_map.items()
-                   if sp == gold_sp and nid not in gold_ids}
+        partial = {nid for nid, sp in source_map.items() if sp == gold_sp and nid not in gold_ids}
         for mode in modes:
             ranked = mode_results.get(mode, {}).get("ids", [])
             doc_hit = _doc_hit(ranked, gold_id, gold_sp, source_map, 5)
             kb_doc_agg[mode]["doc_recall@5"].append(doc_hit)
-            kb_doc_agg[mode]["ndcg@5_partial"].append(
-                ndcg_at_k(ranked, gold_ids, 5, partial=partial))
+            kb_doc_agg[mode]["ndcg@5_partial"].append(ndcg_at_k(ranked, gold_ids, 5, partial=partial))
 
-    has_kb_doc = any(
-        kb_doc_agg[m]["doc_recall@5"] for m in modes)
+    has_kb_doc = any(kb_doc_agg[m]["doc_recall@5"] for m in modes)
     if has_kb_doc:
         lines.append("## KB 文档级指标（kb_chunk 题）")
         lines.append("")
@@ -369,8 +377,7 @@ def _generate_report(
         lines.append(sep)
         for metric in ["doc_recall@5", "ndcg@5_partial"]:
             row = f"| {metric} | "
-            row += " | ".join(
-                f"{_avg(kb_doc_agg[m][metric]):.4f}" for m in modes)
+            row += " | ".join(f"{_avg(kb_doc_agg[m][metric]):.4f}" for m in modes)
             row += " |"
             lines.append(row)
         lines.append("*doc_recall@5: top-5 中命中同一 source_path 的任一节点（二值 0/1，非比例）*")
@@ -412,7 +419,7 @@ def _generate_report(
         scored.sort()
         mid = len(scored) // 2
         if len(scored) % 2 == 0:
-            return f"{(scored[mid-1] + scored[mid]) / 2:.4f}"
+            return f"{(scored[mid - 1] + scored[mid]) / 2:.4f}"
         return f"{scored[mid]:.4f}"
 
     row = "| 负样本 top1 分数中位数 | "
@@ -424,10 +431,7 @@ def _generate_report(
     row += " |"
     lines.append(row)
 
-    mode_auc = {
-        m: auc_separability(pos_top1_scores[m], neg_top1_scores[m])
-        for m in modes
-    }
+    mode_auc = {m: auc_separability(pos_top1_scores[m], neg_top1_scores[m]) for m in modes}
 
     def _auc_cell(auc: float | None) -> str:
         return "N/A" if auc is None else f"{auc:.4f}"
@@ -454,9 +458,13 @@ def _generate_report(
     row += " |"
     lines.append(row)
     lines.append("*负样本有返回结果比例: 无正确答案的查询中，该模式仍返回了检索结果的比例（越高说明误召回风险越大）*")
-    lines.append("*正/负 top1 可分离度 (AUC): P(随机正样本分数 > 随机负样本分数)，并列记 0.5；0.5 = 完全无法区分，1.0 = 完美可分。重叠度 (1-AUC) 越高，正负样本分数越重叠，越容易误召回。*")
+    lines.append(
+        "*正/负 top1 可分离度 (AUC): P(随机正样本分数 > 随机负样本分数)，并列记 0.5；0.5 = 完全无法区分，1.0 = 完美可分。重叠度 (1-AUC) 越高，正负样本分数越重叠，越容易误召回。*"
+    )
     lines.append("*分数可比性: 分数仅在同一个模式内可比（同一打分函数），跨模式分数不可比。*")
-    lines.append("*FTS 列显示 N/A: fts 模式只按 FTS5 rank 排序，不输出可比分数，因此其分数中位数与可分离度列恒为 N/A，无法与其他模式比较。*")
+    lines.append(
+        "*FTS 列显示 N/A: fts 模式只按 FTS5 rank 排序，不输出可比分数，因此其分数中位数与可分离度列恒为 N/A，无法与其他模式比较。*"
+    )
     lines.append("")
 
     # ── Error cases (top 10) ─────────────────────────────────────────────
@@ -478,13 +486,15 @@ def _generate_report(
                     break
             ranks[mode] = found_rank
         worst_avg = sum(r if r is not None else 999 for r in ranks.values())
-        errors.append({
-            "qid": qid,
-            "query": item["query"],
-            "gold_ids": item["gold_ids"],
-            "ranks": ranks,
-            "worst_avg": worst_avg,
-        })
+        errors.append(
+            {
+                "qid": qid,
+                "query": item["query"],
+                "gold_ids": item["gold_ids"],
+                "ranks": ranks,
+                "worst_avg": worst_avg,
+            }
+        )
 
     errors.sort(key=lambda e: e["worst_avg"], reverse=True)
     top_errors = errors[:10]
@@ -501,8 +511,7 @@ def _generate_report(
             for m in modes:
                 r = err["ranks"][m]
                 rank_strs.append(str(r) if r is not None else "miss")
-            row = (f"| {err['qid']} | {err['query'][:30]} | "
-                   f"{err['gold_ids']} | " + " | ".join(rank_strs) + " |")
+            row = f"| {err['qid']} | {err['query'][:30]} | {err['gold_ids']} | " + " | ".join(rank_strs) + " |"
             lines.append(row)
     lines.append("")
 
@@ -511,17 +520,18 @@ def _generate_report(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run retrieval evaluation")
-    parser.add_argument("--modes", type=str, default="fts,vec,rrf,cascade",
-                        help="Comma-separated modes to evaluate")
-    parser.add_argument("--limit", type=int, default=0,
-                        help="Only evaluate first N questions (0=all)")
-    parser.add_argument("--top-k", type=int, default=10,
-                        help="Number of results to retrieve per query")
-    parser.add_argument("--eval-set", type=str, default=None,
-                        help="Path to eval set JSON (default: eval/eval_set.json)")
-    parser.add_argument("--tier", type=str, default=DEFAULT_TIER,
-                        help="Memory tier for retrieval (facts|logs|''=no filter); "
-                             "all modes share this口径")
+    parser.add_argument("--modes", type=str, default="fts,vec,rrf,cascade", help="Comma-separated modes to evaluate")
+    parser.add_argument("--limit", type=int, default=0, help="Only evaluate first N questions (0=all)")
+    parser.add_argument("--top-k", type=int, default=10, help="Number of results to retrieve per query")
+    parser.add_argument(
+        "--eval-set", type=str, default=None, help="Path to eval set JSON (default: eval/eval_set.json)"
+    )
+    parser.add_argument(
+        "--tier",
+        type=str,
+        default=DEFAULT_TIER,
+        help="Memory tier for retrieval (facts|logs|''=no filter); all modes share this口径",
+    )
     args = parser.parse_args()
 
     modes = [m.strip() for m in args.modes.split(",") if m.strip()]
@@ -547,7 +557,7 @@ def main() -> int:
 
     items = eval_set["items"]
     if args.limit > 0:
-        items = items[:args.limit]
+        items = items[: args.limit]
     print(f"[run_eval] Evaluating {len(items)} items with modes: {modes}")
 
     # ── Initialize store ─────────────────────────────────────────────────
@@ -564,15 +574,13 @@ def main() -> int:
         kind = item.get("kind", "semantic")
 
         if kind == "negative":
-            print(f"  [{idx+1}/{len(items)}] {qid} (negative)")
+            print(f"  [{idx + 1}/{len(items)}] {qid} (negative)")
 
         mode_results: dict[str, dict] = {}
 
         for mode in modes:
             try:
-                ranked_ids, ranked_scores = _MODE_FNS[mode](
-                    query, args.top_k, store, args.tier
-                )
+                ranked_ids, ranked_scores = _MODE_FNS[mode](query, args.top_k, store, args.tier)
                 mode_results[mode] = {"ids": ranked_ids, "scores": ranked_scores}
             except Exception as e:  # noqa: BLE001 —— 单模式跑分失败记空结果继续评测其余模式
                 print(f"  [ERROR] {qid}/{mode}: {e}")
@@ -595,8 +603,7 @@ def main() -> int:
     print(f"[run_eval] Results written to: {results_path}")
 
     # ── Write report ─────────────────────────────────────────────────────
-    report = _generate_report(results_data, eval_set, modes,
-                              sha256_before, sha256_after, source_map)
+    report = _generate_report(results_data, eval_set, modes, sha256_before, sha256_after, source_map)
     report_path = _EVAL_DIR / f"report_{ts}.md"
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report)

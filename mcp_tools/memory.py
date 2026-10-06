@@ -41,8 +41,7 @@ DEFAULT_TIER = Config.DEFAULT_TIER
 
 
 @mcp.tool()
-def mem_retrieve(query: str, domain: str = "", top_k: int = 5,
-                 include_outdated: bool = False) -> str:
+def mem_retrieve(query: str, domain: str = "", top_k: int = 5, include_outdated: bool = False) -> str:
     """
     语义检索记忆：返回 150 字摘要 + meta（绝不返回全文，省 token 的关键设计）。
     全文请用 mem_get_full 按 id 单独取。
@@ -51,9 +50,12 @@ def mem_retrieve(query: str, domain: str = "", top_k: int = 5,
     """
     emb = store.embed_text(query)
     # v1.1 拉宽召回：与 mem_search 一致，top_k*3 召回再过滤，避免 kb_chunk 挤占名额导致记忆条数凑不满
-    results = store.search_similar(emb, top_k=max(top_k * 3, 30),
-                                    expand_depth=getattr(Config, "RETRIEVAL_EXPAND_DEPTH", 0),
-                                    include_outdated=include_outdated)
+    results = store.search_similar(
+        emb,
+        top_k=max(top_k * 3, 30),
+        expand_depth=getattr(Config, "RETRIEVAL_EXPAND_DEPTH", 0),
+        include_outdated=include_outdated,
+    )
     items = []
     for r in results:
         payload = r.get("payload", {}) or {}
@@ -66,17 +68,19 @@ def mem_retrieve(query: str, domain: str = "", top_k: int = 5,
         # 排除知识库块：kb_chunk 只供 kb_search / mem_search(scope=kb) 检索，不混入记忆
         if payload.get("type") == "kb_chunk":
             continue
-        items.append({
-            "id": r.get("id"),
-            "score": round(_to_float(r.get("score"), 0.0), 4),
-            "summary": _shorten(payload.get("content", ""), 150),
-            "meta": {
-                "type": payload.get("type", ""),
-                "importance": payload.get("importance", 0.5),
-                "status": payload.get("status", ""),
-                "domain": node_domain(payload),
-            },
-        })
+        items.append(
+            {
+                "id": r.get("id"),
+                "score": round(_to_float(r.get("score"), 0.0), 4),
+                "summary": _shorten(payload.get("content", ""), 150),
+                "meta": {
+                    "type": payload.get("type", ""),
+                    "importance": payload.get("importance", 0.5),
+                    "status": payload.get("status", ""),
+                    "domain": node_domain(payload),
+                },
+            }
+        )
         if len(items) >= top_k:
             break
     if not items:
@@ -90,12 +94,14 @@ def mem_get_full(node_id: int) -> str:
     node = store.get_node(node_id)
     if not node:
         return _to_json({"found": False, "node_id": node_id})
-    return _to_json({
-        "found": True,
-        "id": node.get("id"),
-        "payload": node.get("payload", {}),
-        "num_edges": node.get("num_edges", 0),
-    })
+    return _to_json(
+        {
+            "found": True,
+            "id": node.get("id"),
+            "payload": node.get("payload", {}),
+            "num_edges": node.get("num_edges", 0),
+        }
+    )
 
 
 def _find_linked_kb_ids(emb: list[float]) -> list[int]:
@@ -137,8 +143,7 @@ def _insert_with_conflict(store, node_data: dict, emb: list[float]) -> tuple[int
                 # insert_node_tx 已把 created_at 透传进 payload（事务模式下新节点不可
                 # 读回，避免 tx.update_payload 整包覆盖）；此处仅做冲突检测标脏。
                 node_id = store.insert_node_tx(tx, node_data, emb, next_id=next_id)
-                conflict = resolve_conflict(store, emb, node_id, tx=tx, db=db,
-                                            new_payload=node_data)
+                conflict = resolve_conflict(store, emb, node_id, tx=tx, db=db, new_payload=node_data)
         with contextlib.suppress(Exception):
             db.close()
         db = None
@@ -149,8 +154,7 @@ def _insert_with_conflict(store, node_data: dict, emb: list[float]) -> tuple[int
                 db.close()
 
 
-def _post_ingest_side_effects(store, node_id: int, content: str,
-                              now: float) -> tuple[list, str]:
+def _post_ingest_side_effects(store, node_id: int, content: str, now: float) -> tuple[list, str]:
     """事务提交后的收尾，返回 (secret_hint, domain)。
 
     - FTS 全文索引同步（混合检索依赖；失败仅 warning，主写入已提交，可 fts-rebuild 兜底）
@@ -170,8 +174,7 @@ def _post_ingest_side_effects(store, node_id: int, content: str,
     return secret_hint, node_domain(payload)
 
 
-def _build_ingest_result(node_id, domain_out: str, conflict: dict,
-                         linked_kb_ids: list[int], secret_hint: list) -> str:
+def _build_ingest_result(node_id, domain_out: str, conflict: dict, linked_kb_ids: list[int], secret_hint: list) -> str:
     """组装 mem_ingest 的返回 JSON（含 outdated 修订链提示）。"""
     outdated_ids = conflict["outdated_ids"]
     related_ids = conflict["related_ids"]
@@ -179,24 +182,24 @@ def _build_ingest_result(node_id, domain_out: str, conflict: dict,
     suggestion = ""
     if outdated_ids:
         ids = ", ".join(str(i) for i in outdated_ids)
-        suggestion = (f"旧记忆 id={ids} 已标记 outdated（REVISED_BY 链），"
-                      "若涉及固定记忆（MEMORY.md）请同步更新")
-    return _to_json({
-        "stored": True,
-        "node_id": node_id,
-        "domain": domain_out,
-        "conflict_found": bool(outdated_ids),
-        "outdated_ids": outdated_ids,
-        "related_ids": related_ids,
-        "linked_kb_ids": linked_kb_ids,
-        "secret_hint": secret_hint,
-        "suggestion": suggestion,
-    })
+        suggestion = f"旧记忆 id={ids} 已标记 outdated（REVISED_BY 链），若涉及固定记忆（MEMORY.md）请同步更新"
+    return _to_json(
+        {
+            "stored": True,
+            "node_id": node_id,
+            "domain": domain_out,
+            "conflict_found": bool(outdated_ids),
+            "outdated_ids": outdated_ids,
+            "related_ids": related_ids,
+            "linked_kb_ids": linked_kb_ids,
+            "secret_hint": secret_hint,
+            "suggestion": suggestion,
+        }
+    )
 
 
 @mcp.tool()
-def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
-               domain: str = "", source: str = "") -> str:
+def mem_ingest(content: str, type: str = "memory", importance: float = 0.5, domain: str = "", source: str = "") -> str:
     """
     写入新记忆；自动冲突检测：与库中 score > 0.4 的相似旧记忆标记为 outdated，
     并建立 新记忆 --REVISED_BY--> 旧记忆 的修订链。
@@ -207,12 +210,15 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5,
     # ---- 入口校验：空内容 / 超长内容 拒绝写入（在嵌入与扫描前拦截）----
     content_stripped = (content or "").strip()
     if not content_stripped:
-        return _to_json({"stored": False, "node_id": None,
-                         "error": "内容不能为空"})
+        return _to_json({"stored": False, "node_id": None, "error": "内容不能为空"})
     if len(content_stripped) > Config.MEM_INGEST_MAX_LENGTH:
-        return _to_json({"stored": False, "node_id": None,
-                         "error": f"内容超长：{len(content_stripped)} 字符，"
-                                  f"上限 {Config.MEM_INGEST_MAX_LENGTH} 字符"})
+        return _to_json(
+            {
+                "stored": False,
+                "node_id": None,
+                "error": f"内容超长：{len(content_stripped)} 字符，上限 {Config.MEM_INGEST_MAX_LENGTH} 字符",
+            }
+        )
     emb = store.embed_text(content)
 
     # ---- v1.1 知识关联检测：只读查询，留在事务外做 ----
@@ -284,8 +290,7 @@ def mem_recent(domain: str = "", limit: int = 10) -> str:
     domain_ok = bool(re.fullmatch(r"[a-z0-9_-]+", domain_val or ""))
     if domain_val and not domain_ok:
         logger.warning("mem_recent domain 非法，退化为 iter_payloads: %r", domain_val)
-        raw = [(nid, pl) for nid, pl in store.iter_payloads()
-               if node_domain(pl) == domain_val]
+        raw = [(nid, pl) for nid, pl in store.iter_payloads() if node_domain(pl) == domain_val]
     else:
         db = None
         try:
@@ -313,8 +318,7 @@ def mem_recent(domain: str = "", limit: int = 10) -> str:
                     db.close()
                 db = None
             logger.warning(f"mem_recent TQL 失败，退化为 iter_payloads: {e}")
-            raw = [(nid, pl) for nid, pl in store.iter_payloads()
-                   if not domain_val or node_domain(pl) == domain_val]
+            raw = [(nid, pl) for nid, pl in store.iter_payloads() if not domain_val or node_domain(pl) == domain_val]
         finally:
             # 0.7.6 的 with 退出不释放锁，必须显式 close；0.8.2+ 兼容（close 幂等）
             if db is not None:
@@ -367,15 +371,17 @@ def mem_review(days: int = 7, domain: str = "", tier: str = DEFAULT_TIER) -> str
     for nid, payload in store.iter_payloads():
         if domain_val and node_domain(payload) != domain_val:
             continue
-        items.append({
-            "id": nid,
-            "type": payload.get("type", ""),
-            "content": _shorten(payload.get("content", ""), 100),
-            "importance": _to_float(payload.get("importance"), 0.5),
-            "status": payload.get("status", ""),
-            "domain": node_domain(payload),
-            "created_at": payload.get("created_at"),
-        })
+        items.append(
+            {
+                "id": nid,
+                "type": payload.get("type", ""),
+                "content": _shorten(payload.get("content", ""), 100),
+                "importance": _to_float(payload.get("importance"), 0.5),
+                "status": payload.get("status", ""),
+                "domain": node_domain(payload),
+                "created_at": payload.get("created_at"),
+            }
+        )
 
     total = len(items)
     active = sum(1 for x in items if x["status"] != "outdated")
@@ -390,8 +396,7 @@ def mem_review(days: int = 7, domain: str = "", tier: str = DEFAULT_TIER) -> str
     # recent_ingests：窗口内 type=memory，created_at 倒序；tier 视图过滤
     # （_tier_matches 语义与检索一致：facts=默认/ logs=日志层/ ""=不过滤）
     recent = [
-        {k: x[k] for k in ("id", "type", "content", "importance", "status",
-                           "domain", "created_at")}
+        {k: x[k] for k in ("id", "type", "content", "importance", "status", "domain", "created_at")}
         for x in items
         if x["type"] == "memory"
         and _tier_matches(x["type"], tier)
@@ -403,8 +408,7 @@ def mem_review(days: int = 7, domain: str = "", tier: str = DEFAULT_TIER) -> str
 
     # high_value_candidates：importance>=0.6 + active
     high_value = [
-        {k: x[k] for k in ("id", "type", "content", "importance", "status",
-                           "domain", "created_at")}
+        {k: x[k] for k in ("id", "type", "content", "importance", "status", "domain", "created_at")}
         for x in items
         if x["status"] != "outdated" and _imp(x) >= 0.6
     ]
@@ -412,31 +416,34 @@ def mem_review(days: int = 7, domain: str = "", tier: str = DEFAULT_TIER) -> str
 
     # stale_outdated：status=outdated（保持遍历序，与旧实现一致）
     stale = [
-        {k: x[k] for k in ("id", "type", "content", "importance", "status",
-                           "domain", "created_at")}
+        {k: x[k] for k in ("id", "type", "content", "importance", "status", "domain", "created_at")}
         for x in items
         if x["status"] == "outdated"
     ]
 
     # low_value_candidates：importance<=0.4 + active + 非 kb_chunk（保持遍历序）
     low_value = [
-        {k: x[k] for k in ("id", "type", "content", "importance", "status",
-                           "domain", "created_at")}
+        {k: x[k] for k in ("id", "type", "content", "importance", "status", "domain", "created_at")}
         for x in items
         if x["status"] != "outdated" and x["type"] != "kb_chunk" and _imp(x) <= 0.4
     ]
 
-    return _to_json({
-        "review_window_days": days,
-        "stats": {
-            "total": total, "active": active, "outdated": outdated,
-            "memory": memory_nodes, "kb_chunk": kb_chunks,
-        },
-        "recent_ingests": recent[:30],
-        "high_value_candidates": high_value[:20],
-        "stale_outdated": stale[:20],
-        "low_value_candidates": low_value[:20],
-    })
+    return _to_json(
+        {
+            "review_window_days": days,
+            "stats": {
+                "total": total,
+                "active": active,
+                "outdated": outdated,
+                "memory": memory_nodes,
+                "kb_chunk": kb_chunks,
+            },
+            "recent_ingests": recent[:30],
+            "high_value_candidates": high_value[:20],
+            "stale_outdated": stale[:20],
+            "low_value_candidates": low_value[:20],
+        }
+    )
 
 
 # ---- 版本历史查询（REVISED_BY 修订链）----
@@ -457,8 +464,7 @@ def _parse_version_content(content: str) -> tuple:
 
 
 @mcp.tool()
-def mem_version_history(domain: str = "hermes", full_content: bool = False,
-                        offset: int = 0, limit: int = 20) -> str:
+def mem_version_history(domain: str = "hermes", full_content: bool = False, offset: int = 0, limit: int = 20) -> str:
     """
     版本历史查询：沿 REVISED_BY 修订链（新版本 → 旧版本）返回版本演进摘要，
     用于查 SOUL 版本日志等历史事件链。
@@ -470,8 +476,7 @@ def mem_version_history(domain: str = "hermes", full_content: bool = False,
     # 1. 找 domain 下最新的事件节点（created_at 最大，缺失时按 id 最大兜底）
     candidates = []
     for nid, payload in store.iter_payloads():
-        if (payload.get("type") != "event"
-                or node_domain(payload) != (domain or "").strip().lower()):
+        if payload.get("type") != "event" or node_domain(payload) != (domain or "").strip().lower():
             continue
         try:
             ts = float(payload.get("created_at") or 0)
@@ -479,8 +484,7 @@ def mem_version_history(domain: str = "hermes", full_content: bool = False,
             ts = 0
         candidates.append((ts, nid))
     if not candidates:
-        return _to_json({"found": False, "start_id": None,
-                         "chain_length": 0, "versions": []})
+        return _to_json({"found": False, "start_id": None, "chain_length": 0, "versions": []})
     candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
     start_id = candidates[0][1]
 
@@ -503,7 +507,7 @@ def mem_version_history(domain: str = "hermes", full_content: bool = False,
 
     # 3. 组装版本摘要 + 分页
     versions = []
-    for node in chain[offset:offset + limit]:
+    for node in chain[offset : offset + limit]:
         payload = node.get("payload", {}) or {}
         content = payload.get("content", "")
         date, version, title = _parse_version_content(content)
@@ -518,12 +522,14 @@ def mem_version_history(domain: str = "hermes", full_content: bool = False,
             item["content"] = content
         versions.append(item)
 
-    return _to_json({
-        "found": True,
-        "start_id": start_id,
-        "chain_length": len(chain),
-        "versions": versions,
-    })
+    return _to_json(
+        {
+            "found": True,
+            "start_id": start_id,
+            "chain_length": len(chain),
+            "versions": versions,
+        }
+    )
 
 
 # ---- 记忆分层（tier）：检索侧视图，不改存储、不迁数据 ----
@@ -543,12 +549,19 @@ def _tier_matches(ptype: str, tier: str) -> bool:
     return (ptype or "") not in TIER_LOGS
 
 
-def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
-                     domain_bias: str = "", top_k: int = 5,
-                     include_neighbors: bool = False,
-                     neighbor_limit: int = 5, block: str = "",
-                     include_outdated: bool = False,
-                     domain_boost: str = "", tier: str = DEFAULT_TIER) -> dict:
+def _mem_search_impl(
+    query: str,
+    scope: str = "all",
+    domain: str = "",
+    domain_bias: str = "",
+    top_k: int = 5,
+    include_neighbors: bool = False,
+    neighbor_limit: int = 5,
+    block: str = "",
+    include_outdated: bool = False,
+    domain_boost: str = "",
+    tier: str = DEFAULT_TIER,
+) -> dict:
     """
     mem_search 的核心实现（返回 dict，供 mem_search 工具复用）。
     v2.0 统一语义层：
@@ -571,10 +584,13 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
         return {"results": [], "scope": scope, "hint": "查询内容不能为空"}
     emb = store.embed_text(query)
     # 一次向量检索，拉宽召回再按 scope 过滤截断，保证过滤后仍有足够结果
-    results = store.search_similar(emb, top_k=max(top_k * 3, 30),
-                                    expand_depth=getattr(Config, "RETRIEVAL_EXPAND_DEPTH", 0),
-                                    block=block,
-                                    include_outdated=include_outdated)
+    results = store.search_similar(
+        emb,
+        top_k=max(top_k * 3, 30),
+        expand_depth=getattr(Config, "RETRIEVAL_EXPAND_DEPTH", 0),
+        block=block,
+        include_outdated=include_outdated,
+    )
     items = []
     for r in results:
         payload = r.get("payload", {}) or {}
@@ -614,13 +630,15 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
         if is_kb:
             meta["source_path"] = payload.get("source_path", "")
             meta["title"] = payload.get("title", "")
-        items.append({
-            "id": r.get("id"),
-            "type": ptype,
-            "score": round(score, 4),
-            "summary": _shorten(payload.get("content", ""), 150),
-            "meta": meta,
-        })
+        items.append(
+            {
+                "id": r.get("id"),
+                "type": ptype,
+                "score": round(score, 4),
+                "summary": _shorten(payload.get("content", ""), 150),
+                "meta": meta,
+            }
+        )
     # bias 后按最终 score 降序排序再截断（bias 需影响排序，不能按原始顺序收集后 break）
     items.sort(key=lambda x: x["score"], reverse=True)
     top_items = items[:top_k]
@@ -636,12 +654,19 @@ def _mem_search_impl(query: str, scope: str = "all", domain: str = "",
 
 
 @mcp.tool()
-def mem_search(query: str, scope: str = "all", domain: str = "",
-               domain_bias: str = "", top_k: int = 5,
-               include_neighbors: bool = False,
-               neighbor_limit: int = 5, block: str = "",
-               include_outdated: bool = False,
-               domain_boost: str = "", tier: str = DEFAULT_TIER) -> str:
+def mem_search(
+    query: str,
+    scope: str = "all",
+    domain: str = "",
+    domain_bias: str = "",
+    top_k: int = 5,
+    include_neighbors: bool = False,
+    neighbor_limit: int = 5,
+    block: str = "",
+    include_outdated: bool = False,
+    domain_boost: str = "",
+    tier: str = DEFAULT_TIER,
+) -> str:
     """
     统一检索入口：记忆 + 知识库混合检索。
     scope 取值：memory（只查记忆节点，排除 kb_chunk）/ kb（只查知识库块）/ all（都查）。
@@ -667,12 +692,21 @@ def mem_search(query: str, scope: str = "all", domain: str = "",
         tier=""（空串）不过滤，等价于改动前行为（显式历史通道）。
         kb_chunk / novel_chunk 不入本体系，走 scope 隔离；未登记 type 一律归 facts。
     """
-    return _to_json(_mem_search_impl(
-        query, scope=scope, domain=domain, domain_bias=domain_bias, top_k=top_k,
-        include_neighbors=include_neighbors, neighbor_limit=neighbor_limit,
-        block=block, include_outdated=include_outdated,
-        domain_boost=domain_boost, tier=tier,
-    ))
+    return _to_json(
+        _mem_search_impl(
+            query,
+            scope=scope,
+            domain=domain,
+            domain_bias=domain_bias,
+            top_k=top_k,
+            include_neighbors=include_neighbors,
+            neighbor_limit=neighbor_limit,
+            block=block,
+            include_outdated=include_outdated,
+            domain_boost=domain_boost,
+            tier=tier,
+        )
+    )
 
 
 # ---- 混合检索（FTS5 精确 + 语义向量 的 RRF 融合 / 级联策略）----
@@ -680,22 +714,35 @@ def mem_search(query: str, scope: str = "all", domain: str = "",
 # RRF 标准 k（见 Config.RRF_K）：单侧命中也算贡献；每项 meta 标出 fts_hit / sem_hit 来源。
 
 
-def _sem_candidate_items(query: str, scope: str, domain: str,
-                         domain_bias: str, top_k: int, block: str,
-                         include_outdated: bool = False,
-                         tier: str = DEFAULT_TIER) -> list:
+def _sem_candidate_items(
+    query: str,
+    scope: str,
+    domain: str,
+    domain_bias: str,
+    top_k: int,
+    block: str,
+    include_outdated: bool = False,
+    tier: str = DEFAULT_TIER,
+) -> list:
     """语义候选：复用 _mem_search_impl 宽松召回（top_k*3），按 score 降序排名。"""
-    sem = _mem_search_impl(query, scope, domain, domain_bias,
-                           top_k=max(top_k * 3, 30), include_neighbors=False,
-                           block=block, include_outdated=include_outdated,
-                           tier=tier)
+    sem = _mem_search_impl(
+        query,
+        scope,
+        domain,
+        domain_bias,
+        top_k=max(top_k * 3, 30),
+        include_neighbors=False,
+        block=block,
+        include_outdated=include_outdated,
+        tier=tier,
+    )
     items = sem.get("results", [])
     return sorted(items, key=lambda it: it.get("score", 0.0), reverse=True)
 
 
-def _fts_only_item(node_id: int, scope: str, domain: str, block: str,
-                   include_outdated: bool = False,
-                   tier: str = DEFAULT_TIER):
+def _fts_only_item(
+    node_id: int, scope: str, domain: str, block: str, include_outdated: bool = False, tier: str = DEFAULT_TIER
+):
     """FTS 命中但语义未命中的节点：按 payload 补全 mem_search 同构条目。
 
     复用 _mem_search_impl 的 scope/domain/block/tier 过滤语义，
@@ -739,9 +786,9 @@ def _fts_only_item(node_id: int, scope: str, domain: str, block: str,
     }
 
 
-def _rrf_fuse(sem_ids: list, fts_ids: list, top_k: int,
-              k: float = 60.0, w_sem: float = 1.0,
-              w_fts: float = 1.0) -> list:
+def _rrf_fuse(
+    sem_ids: list, fts_ids: list, top_k: int, k: float = 60.0, w_sem: float = 1.0, w_fts: float = 1.0
+) -> list:
     """纯 RRF 融合打分（不碰库，供单测与 _hybrid_rrf 复用）。
 
     sem_ids：语义侧排名（按 rank 顺序的 node_id 列表）；fts_ids：FTS 侧排名
@@ -765,21 +812,30 @@ def _rrf_fuse(sem_ids: list, fts_ids: list, top_k: int,
             continue
         rrf[nid] = rrf.get(nid, 0.0) + w_fts / (k + rank)
         fts_hit.add(nid)
-    return [(nid, score, nid in fts_hit, nid in sem_hit)
-            for nid, score in sorted(rrf.items(), key=lambda kv: kv[1],
-                                     reverse=True)][:top_k]
+    return [
+        (nid, score, nid in fts_hit, nid in sem_hit)
+        for nid, score in sorted(rrf.items(), key=lambda kv: kv[1], reverse=True)
+    ][:top_k]
 
 
-def _hybrid_rrf(query: str, scope: str, domain: str, domain_bias: str,
-                top_k: int, fts_limit: int, block: str,
-                include_outdated: bool = False,
-                tier: str = DEFAULT_TIER) -> list:
+def _hybrid_rrf(
+    query: str,
+    scope: str,
+    domain: str,
+    domain_bias: str,
+    top_k: int,
+    fts_limit: int,
+    block: str,
+    include_outdated: bool = False,
+    tier: str = DEFAULT_TIER,
+) -> list:
     """RRF 融合：语义排名 + FTS 排名的 reciprocal rank 求和（k=60）。
 
     两个排名都是 0-based；单侧命中也计入 rrf；按 rrf 降序取 top_k。
     """
-    sem_items = _sem_candidate_items(query, scope, domain, domain_bias, top_k, block,
-                                     include_outdated=include_outdated, tier=tier)
+    sem_items = _sem_candidate_items(
+        query, scope, domain, domain_bias, top_k, block, include_outdated=include_outdated, tier=tier
+    )
     fts = search_fts(query, limit=fts_limit)
 
     ranked = _rrf_fuse(
@@ -797,8 +853,7 @@ def _hybrid_rrf(query: str, scope: str, domain: str, domain_bias: str,
     for nid, score, fts_hit_flag, sem_hit_flag in ranked:
         item = by_id.get(nid)
         if item is None:
-            item = _fts_only_item(nid, scope, domain, block,
-                                  include_outdated=include_outdated, tier=tier)
+            item = _fts_only_item(nid, scope, domain, block, include_outdated=include_outdated, tier=tier)
             if item is None:
                 continue
         item = dict(item)
@@ -813,24 +868,32 @@ def _hybrid_rrf(query: str, scope: str, domain: str, domain_bias: str,
     return merged
 
 
-def _hybrid_cascade(query: str, scope: str, domain: str, domain_bias: str,
-                    top_k: int, fts_limit: int, block: str,
-                    include_outdated: bool = False,
-                    tier: str = DEFAULT_TIER) -> list:
+def _hybrid_cascade(
+    query: str,
+    scope: str,
+    domain: str,
+    domain_bias: str,
+    top_k: int,
+    fts_limit: int,
+    block: str,
+    include_outdated: bool = False,
+    tier: str = DEFAULT_TIER,
+) -> list:
     """级联：FTS 粗筛候选集 → 向量精排（只留交集）→ 不足 top_k 从剩余语义补足。
 
     候选集为空时退化为纯语义结果；兜底条目 fts_hit=False 如实标记未过 FTS 粗筛。
     """
     fts = search_fts(query, limit=fts_limit)
     fts_ids = {r.get("node_id") for r in fts if r.get("node_id") is not None}
-    sem_items = _sem_candidate_items(query, scope, domain, domain_bias, top_k, block,
-                                     include_outdated=include_outdated, tier=tier)
+    sem_items = _sem_candidate_items(
+        query, scope, domain, domain_bias, top_k, block, include_outdated=include_outdated, tier=tier
+    )
 
     in_candidate = [it for it in sem_items if it.get("id") in fts_ids]
     rest = [it for it in sem_items if it.get("id") not in fts_ids]
     picked = in_candidate[:top_k]
     if len(picked) < top_k:
-        picked = picked + rest[:top_k - len(picked)]
+        picked = picked + rest[: top_k - len(picked)]
 
     items = []
     for it in picked:
@@ -844,12 +907,20 @@ def _hybrid_cascade(query: str, scope: str, domain: str, domain_bias: str,
     return items
 
 
-def _hybrid_search_impl(query: str, scope: str = "all", domain: str = "",
-                        domain_bias: str = "", top_k: int = 5, mode: str = "rrf",
-                        fts_limit: int = 50, include_neighbors: bool = False,
-                        neighbor_limit: int = 5, block: str = "",
-                        include_outdated: bool = False,
-                        tier: str = DEFAULT_TIER) -> dict:
+def _hybrid_search_impl(
+    query: str,
+    scope: str = "all",
+    domain: str = "",
+    domain_bias: str = "",
+    top_k: int = 5,
+    mode: str = "rrf",
+    fts_limit: int = 50,
+    include_neighbors: bool = False,
+    neighbor_limit: int = 5,
+    block: str = "",
+    include_outdated: bool = False,
+    tier: str = DEFAULT_TIER,
+) -> dict:
     """
     mem_hybrid_search 的核心实现（返回 dict，供 mem_hybrid_search 工具复用）。
     混合检索增强：
@@ -875,13 +946,13 @@ def _hybrid_search_impl(query: str, scope: str = "all", domain: str = "",
     fts_limit = max(1, int(fts_limit or 0))
     try:
         if mode == "cascade":
-            items = _hybrid_cascade(query, scope, domain, domain_bias,
-                                    top_k, fts_limit, block,
-                                    include_outdated=include_outdated, tier=tier)
+            items = _hybrid_cascade(
+                query, scope, domain, domain_bias, top_k, fts_limit, block, include_outdated=include_outdated, tier=tier
+            )
         else:
-            items = _hybrid_rrf(query, scope, domain, domain_bias,
-                                top_k, fts_limit, block,
-                                include_outdated=include_outdated, tier=tier)
+            items = _hybrid_rrf(
+                query, scope, domain, domain_bias, top_k, fts_limit, block, include_outdated=include_outdated, tier=tier
+            )
         result = {"results": items, "scope": scope, "mode": mode}
         if domain_bias:
             result["bias"] = domain_bias
@@ -895,12 +966,20 @@ def _hybrid_search_impl(query: str, scope: str = "all", domain: str = "",
 
 
 @mcp.tool()
-def mem_hybrid_search(query: str, scope: str = "all", domain: str = "",
-                      domain_bias: str = "", top_k: int = 5, mode: str = "rrf",
-                      fts_limit: int = 50, include_neighbors: bool = False,
-                      neighbor_limit: int = 5, block: str = "",
-                      include_outdated: bool = False,
-                      tier: str = DEFAULT_TIER) -> str:
+def mem_hybrid_search(
+    query: str,
+    scope: str = "all",
+    domain: str = "",
+    domain_bias: str = "",
+    top_k: int = 5,
+    mode: str = "rrf",
+    fts_limit: int = 50,
+    include_neighbors: bool = False,
+    neighbor_limit: int = 5,
+    block: str = "",
+    include_outdated: bool = False,
+    tier: str = DEFAULT_TIER,
+) -> str:
     """
     混合检索：FTS5 精确检索 + 语义向量检索的融合排序。
     mode 取值："rrf"（默认，Reciprocal Rank Fusion，k=60，单侧命中也算）/
@@ -914,7 +993,19 @@ def mem_hybrid_search(query: str, scope: str = "all", domain: str = "",
     v5.0 记忆分层（tier）：同 mem_search——"facts"（默认）只回事实层 / "logs" 只回日志层 /
         ""（空串）不过滤（等价改动前行为）。语义侧与 FTS-only 侧同时受约束。
     """
-    return _to_json(_hybrid_search_impl(
-        query, scope, domain, domain_bias, top_k, mode, fts_limit,
-        include_neighbors, neighbor_limit, block, include_outdated, tier,
-    ))
+    return _to_json(
+        _hybrid_search_impl(
+            query,
+            scope,
+            domain,
+            domain_bias,
+            top_k,
+            mode,
+            fts_limit,
+            include_neighbors,
+            neighbor_limit,
+            block,
+            include_outdated,
+            tier,
+        )
+    )

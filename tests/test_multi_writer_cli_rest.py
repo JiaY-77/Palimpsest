@@ -69,15 +69,13 @@ class TestDryRunNeverWrites:
         import pytest
 
         with _isolated_store() as seed:
-            nid = seed.insert_node({"type": "memory", "content": "seed"},
-                                   _fake_embed("seed"))
+            nid = seed.insert_node({"type": "memory", "content": "seed"}, _fake_embed("seed"))
             # a second store on the SAME path (Config.DB_PATH is the iso db here)
             ro = TriviumStore(read_only=True)
             assert ro.read_only is True
             assert ro.get_node(nid) is not None  # reads work
             with pytest.raises(RuntimeError):
-                ro.insert_node({"type": "memory", "content": "nope"},
-                               _fake_embed("nope"))
+                ro.insert_node({"type": "memory", "content": "nope"}, _fake_embed("nope"))
 
     def test_dry_run_consolidate_does_not_add_nodes(self):
         """consolidate(dry_run=True) must leave the node set unchanged."""
@@ -87,12 +85,11 @@ class TestDryRunNeverWrites:
             a = "自动化测试dry运行预览不得写入节点内容A"
             b = "自动化测试dry运行预览不得写入节点内容B"
             for c in (a, b):
-                store.insert_node({"type": "memory", "content": c,
-                                   "importance": 0.3, "status": "active"},
-                                  _fake_embed(c))
+                store.insert_node(
+                    {"type": "memory", "content": c, "importance": 0.3, "status": "active"}, _fake_embed(c)
+                )
             before = {nid for nid, _ in store.iter_payloads()}
-            res = consolidate(store, dry_run=True, sim_threshold=0.70,
-                              max_importance=0.9)
+            res = consolidate(store, dry_run=True, sim_threshold=0.70, max_importance=0.9)
             assert res["dry_run"] is True
             after = {nid for nid, _ in store.iter_payloads()}
             assert before == after, "dry-run preview must not create nodes"
@@ -115,25 +112,20 @@ class TestLockConflictIsReadable:
         from core.trivium_store import DatabaseBusyError
 
         with _isolated_store() as holder:
-            holder.insert_node({"type": "memory", "content": "held"},
-                               _fake_embed("held"))
+            holder.insert_node({"type": "memory", "content": "held"}, _fake_embed("held"))
             held = holder._acquire()
             try:
                 # a second store on the same path must fail fast, with guidance
                 try:
                     other = TriviumStore()
-                    other.insert_node({"type": "memory", "content": "x"},
-                                      _fake_embed("x"))
+                    other.insert_node({"type": "memory", "content": "x"}, _fake_embed("x"))
                     opened = True
                 except DatabaseBusyError as e:
                     opened = False
                     msg = str(e)
                     assert Config.DB_PATH in msg, "error must name the DB path"
                     assert "占用" in msg or "busy" in msg.lower()
-                assert not opened, (
-                    "a held connection must make the conflicting open fail "
-                    "fast with a guided error"
-                )
+                assert not opened, "a held connection must make the conflicting open fail fast with a guided error"
             finally:
                 held.close()
 
@@ -155,8 +147,7 @@ class TestContentChangeDriftsSemanticRanking:
         with _isolated_store() as store:
             old = "苹果香蕉橘子水果篮子的原始描述"
             new = "螺丝刀扳手钳子工具箱的全新描述"
-            nid = store.insert_node({"type": "memory", "content": old},
-                                    _fake_embed(old))
+            nid = store.insert_node({"type": "memory", "content": old}, _fake_embed(old))
             old_vec = store.get_node(nid)["vector"]
 
             # change content via the shallow-merge path (no vector touch)
@@ -174,11 +165,11 @@ class TestContentChangeDriftsSemanticRanking:
         with _isolated_store() as store:
             old = "苹果香蕉橘子水果篮子的原始描述"
             new = "螺丝刀扳手钳子工具箱的全新描述"
-            nid = store.insert_node({"type": "memory", "content": old},
-                                    _fake_embed(old))
+            nid = store.insert_node({"type": "memory", "content": old}, _fake_embed(old))
             store.update_payload(nid, {"content": new})
             assert store.reembed_node(nid) is True
             after = store.get_node(nid)["vector"]
             expected = _fake_embed(new)
-            assert all(abs(a - b) < 1e-5 for a, b in zip(after, expected, strict=True)), \
+            assert all(abs(a - b) < 1e-5 for a, b in zip(after, expected, strict=True)), (
                 "reembed must move the vector onto the new text"
+            )

@@ -90,6 +90,7 @@ New capabilities are exposed as MCP tools so that MCP, REST, and the CLI pick th
    ```python
    from mcp_tools._common import mcp
 
+
    @mcp.tool()
    def my_new_tool(query: str, top_k: int = 5) -> dict:
        """One-line English description of what the tool does."""

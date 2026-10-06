@@ -39,15 +39,19 @@ def _load_edges():
         with open(EDGES_FILE, encoding="utf-8") as f:
             return json.load(f)["edges"]
     if os.path.exists(EXAMPLE_FILE):
-        print(f"未找到 {os.path.basename(EDGES_FILE)}，使用示例数据；"
-              f"请复制 {os.path.basename(EXAMPLE_FILE)} 为 {os.path.basename(EDGES_FILE)} 并填入你的知识库路径")
+        print(
+            f"未找到 {os.path.basename(EDGES_FILE)}，使用示例数据；"
+            f"请复制 {os.path.basename(EXAMPLE_FILE)} 为 {os.path.basename(EDGES_FILE)} 并填入你的知识库路径"
+        )
         with open(EXAMPLE_FILE, encoding="utf-8") as f:
             return json.load(f)["edges"]
-    print(f"错误：{os.path.basename(EDGES_FILE)} 与 {os.path.basename(EXAMPLE_FILE)} 均不存在。",
-          file=sys.stderr)
-    print(f"请复制 {os.path.basename(EXAMPLE_FILE)} 为 {os.path.basename(EDGES_FILE)} 并填入你的知识库路径。",
-          file=sys.stderr)
+    print(f"错误：{os.path.basename(EDGES_FILE)} 与 {os.path.basename(EXAMPLE_FILE)} 均不存在。", file=sys.stderr)
+    print(
+        f"请复制 {os.path.basename(EXAMPLE_FILE)} 为 {os.path.basename(EDGES_FILE)} 并填入你的知识库路径。",
+        file=sys.stderr,
+    )
     sys.exit(1)
+
 
 # 无向语义关系：与 mcp_server.mem_link 双向建边协议保持一致
 BIDIRECTIONAL_RELATIONS = {"RELATED_TO", "CAUSES", "REFERS_TO"}
@@ -91,8 +95,7 @@ def _edge_exists(store, src: int, dst: int, label: str) -> bool:
 
 def main():
     parser = argparse.ArgumentParser(description="图谱边持久化（source_path 定位，幂等建边）")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="只报告会建哪些边，不实际建边")
+    parser.add_argument("--dry-run", action="store_true", help="只报告会建哪些边，不实际建边")
     args = parser.parse_args()
 
     edges = _load_edges()
@@ -130,17 +133,21 @@ def main():
 
         # 主边 + 反向边均先查存在再建（幂等）
         main_needed = not _edge_exists(store, src_id, dst_id, rel)
-        reverse_needed = (rel in BIDIRECTIONAL_RELATIONS
-                          and not _edge_exists(store, dst_id, src_id, rel))
+        reverse_needed = rel in BIDIRECTIONAL_RELATIONS and not _edge_exists(store, dst_id, src_id, rel)
         if not main_needed and not reverse_needed:
             existed += 1
             print(f"[{i}] 已存在: {spec['source']} -> {spec['target']}（{rel}，{src_id}↔{dst_id}）")
             continue
 
-        plan = " + ".join(filter(None, [
-            f"主边 {src_id}→{dst_id}" if main_needed else "",
-            f"反向边 {dst_id}→{src_id}" if reverse_needed else "",
-        ]))
+        plan = " + ".join(
+            filter(
+                None,
+                [
+                    f"主边 {src_id}→{dst_id}" if main_needed else "",
+                    f"反向边 {dst_id}→{src_id}" if reverse_needed else "",
+                ],
+            )
+        )
         if args.dry_run:
             created += 1
             print(f"[{i}] [DRY-RUN 将建] {spec['source']} -> {spec['target']}（{rel} weight={weight}：{plan}）")

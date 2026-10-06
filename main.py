@@ -172,7 +172,7 @@ async def _api_key_middleware(request: Request, call_next):
 
     auth = request.headers.get("authorization", "")
     if auth.startswith("Bearer "):
-        provided = auth[len("Bearer "):].strip()
+        provided = auth[len("Bearer ") :].strip()
     else:
         provided = request.headers.get("x-api-key", "").strip()
 
@@ -245,8 +245,7 @@ def root():
 
 
 @app.get("/export")
-def export_memories(page: int = 1, page_size: int = 100,
-                    include_payload: bool = False):
+def export_memories(page: int = 1, page_size: int = 100, include_payload: bool = False):
     """导出记忆为精简摘要（分页：默认第一页 100 条，page_size 上限 500）。
 
     ``include_payload=true`` 时每条附带完整 payload —— 供需要 ``(id, payload)``
@@ -275,6 +274,7 @@ def export_memories(page: int = 1, page_size: int = 100,
 
     # 按重要性降序排列（importance 可能为脏字符串，用 _to_float 兜底防排序类型错误）
     from core.utils import _to_float
+
     nodes.sort(key=lambda n: _to_float(n.get("importance", 0), 0.0), reverse=True)
 
     total_nodes = len(nodes)
@@ -333,7 +333,6 @@ async def report_endpoint():
     return await generate_report(_get_store())
 
 
-
 @app.get("/memory/{node_id}")
 def get_memory(node_id: int):
     """获取指定 ID 的记忆节点 payload（剥掉内部字段 secret_hint / linked_from / linked_kb_ids / superseded）"""
@@ -342,8 +341,7 @@ def get_memory(node_id: int):
         raise HTTPException(status_code=404, detail=f"节点 {node_id} 不存在")
     payload = node.get("payload", {})
     stripped = {
-        k: v for k, v in payload.items()
-        if k not in ("secret_hint", "linked_from", "linked_kb_ids", "superseded")
+        k: v for k, v in payload.items() if k not in ("secret_hint", "linked_from", "linked_kb_ids", "superseded")
     }
     return {"id": node_id, "payload": stripped}
 
@@ -430,7 +428,6 @@ def reembed_memory(node_id: int):
     return {"status": "ok", "message": f"节点 {node_id} 向量已按当前 content 重算"}
 
 
-
 @app.patch("/memory/{node_id}/vector")
 def update_memory_vector(node_id: int, vector: list[float]):
     """更新指定 ID 的记忆向量（维度必须匹配）"""
@@ -457,15 +454,15 @@ def update_memory_vector(node_id: int, vector: list[float]):
 
 class MemSearchRequest(BaseModel):
     query: str
-    scope: str = "all"        # memory | kb | all
+    scope: str = "all"  # memory | kb | all
     domain: str = ""
     domain_bias: str = ""
     top_k: int = 5
     include_neighbors: bool = False
     include_outdated: bool = False
     block: str = ""
-    domain_boost: str = ""    # 加性软加权：对 node_domain == domain_boost 的候选加分
-    tier: str = "facts"       # 记忆分层：facts(默认) | logs | ""(不过滤，改动前行为)
+    domain_boost: str = ""  # 加性软加权：对 node_domain == domain_boost 的候选加分
+    tier: str = "facts"  # 记忆分层：facts(默认) | logs | ""(不过滤，改动前行为)
 
 
 class SkillSearchRequest(BaseModel):
@@ -475,7 +472,7 @@ class SkillSearchRequest(BaseModel):
 
 class MemIngestRequest(BaseModel):
     content: str
-    type: str = "memory"      # memory | plan | record | correction | event | kb_chunk ...
+    type: str = "memory"  # memory | plan | record | correction | event | kb_chunk ...
     importance: float = 0.5
     domain: str = ""
     source: str = ""
@@ -483,17 +480,17 @@ class MemIngestRequest(BaseModel):
 
 class MemHybridSearchRequest(BaseModel):
     query: str
-    scope: str = "all"        # memory | kb | all
+    scope: str = "all"  # memory | kb | all
     domain: str = ""
     domain_bias: str = ""
     top_k: int = 5
-    mode: str = "rrf"         # rrf | cascade
+    mode: str = "rrf"  # rrf | cascade
     fts_limit: int = 50
     include_neighbors: bool = False
     neighbor_limit: int = 5
     include_outdated: bool = False
     block: str = ""
-    tier: str = "facts"       # 记忆分层：facts(默认) | logs | ""(不过滤，改动前行为)
+    tier: str = "facts"  # 记忆分层：facts(默认) | logs | ""(不过滤，改动前行为)
 
 
 class MemLinkRequest(BaseModel):
@@ -506,6 +503,7 @@ class MemLinkRequest(BaseModel):
 
 class MemEdgeDeleteRequest(BaseModel):
     """删除一条边（issue #51）。"""
+
     source_id: int
     target_id: int
     relation: str = "RELATED_TO"
@@ -540,13 +538,20 @@ def _as_json(text: str):
 
 @app.post("/mem/search")
 def mem_search(req: MemSearchRequest):
-    return _as_json(_mcp_mem_search(
-        req.query, scope=req.scope, domain=req.domain,
-        domain_bias=req.domain_bias, top_k=req.top_k,
-        include_neighbors=req.include_neighbors, block=req.block,
-        include_outdated=req.include_outdated,
-        domain_boost=req.domain_boost, tier=req.tier,
-    ))
+    return _as_json(
+        _mcp_mem_search(
+            req.query,
+            scope=req.scope,
+            domain=req.domain,
+            domain_bias=req.domain_bias,
+            top_k=req.top_k,
+            include_neighbors=req.include_neighbors,
+            block=req.block,
+            include_outdated=req.include_outdated,
+            domain_boost=req.domain_boost,
+            tier=req.tier,
+        )
+    )
 
 
 @app.post("/skill/search")
@@ -556,20 +561,32 @@ def skill_search(req: SkillSearchRequest):
 
 @app.post("/mem/hybrid-search")
 def mem_hybrid_search(req: MemHybridSearchRequest):
-    return _as_json(_mcp_mem_hybrid_search(
-        req.query, scope=req.scope, domain=req.domain,
-        domain_bias=req.domain_bias, top_k=req.top_k, mode=req.mode,
-        fts_limit=req.fts_limit, include_neighbors=req.include_neighbors,
-        neighbor_limit=req.neighbor_limit, block=req.block,
-        include_outdated=req.include_outdated, tier=req.tier,
-    ))
+    return _as_json(
+        _mcp_mem_hybrid_search(
+            req.query,
+            scope=req.scope,
+            domain=req.domain,
+            domain_bias=req.domain_bias,
+            top_k=req.top_k,
+            mode=req.mode,
+            fts_limit=req.fts_limit,
+            include_neighbors=req.include_neighbors,
+            neighbor_limit=req.neighbor_limit,
+            block=req.block,
+            include_outdated=req.include_outdated,
+            tier=req.tier,
+        )
+    )
 
 
 @app.post("/mem/ingest")
 def mem_ingest(req: MemIngestRequest):
     result = _mcp_mem_ingest(
-        req.content, type=req.type, importance=req.importance,
-        domain=req.domain, source=req.source,
+        req.content,
+        type=req.type,
+        importance=req.importance,
+        domain=req.domain,
+        source=req.source,
     )
     # 校验类拒绝（空内容 / 超长）：REST 侧映射为 422，返回友好 message；
     # 其余 stored:false（如事务失败/secret 强拒，不携带 node_id 键）仍按 JSON 原样返回，不改语义。
@@ -577,19 +594,22 @@ def mem_ingest(req: MemIngestRequest):
         payload = json.loads(result)
     except Exception:  # noqa: BLE001 —— 解析失败以空字典兜底不影响后续校验
         payload = {}
-    if (not payload.get("stored") and "node_id" in payload
-            and payload.get("node_id") is None):
-        return JSONResponse(status_code=422,
-                            content={"detail": payload.get("error", "内容校验失败")})
+    if not payload.get("stored") and "node_id" in payload and payload.get("node_id") is None:
+        return JSONResponse(status_code=422, content={"detail": payload.get("error", "内容校验失败")})
     return _as_json(result)
 
 
 @app.post("/mem/link")
 def mem_link(req: MemLinkRequest):
-    return _as_json(_mcp_mem_link(
-        req.source_id, req.target_id, relation=req.relation,
-        weight=req.weight, bidirectional=req.bidirectional,
-    ))
+    return _as_json(
+        _mcp_mem_link(
+            req.source_id,
+            req.target_id,
+            relation=req.relation,
+            weight=req.weight,
+            bidirectional=req.bidirectional,
+        )
+    )
 
 
 @app.delete("/mem/edge")
@@ -602,24 +622,32 @@ def delete_mem_edge(req: MemEdgeDeleteRequest):
     """
     label = (req.relation or "").strip().upper() or "RELATED_TO"
     deleted = _get_store().delete_edge(req.source_id, req.target_id, label)
-    return {"deleted": deleted, "source_id": req.source_id,
-            "target_id": req.target_id, "relation": label}
+    return {"deleted": deleted, "source_id": req.source_id, "target_id": req.target_id, "relation": label}
 
 
 @app.post("/graph/neighbors")
 def graph_neighbors(req: GraphNeighborsRequest):
-    return _as_json(_mcp_graph_neighbors(
-        req.node_id, relation=req.relation, depth=req.depth,
-        limit=req.limit, min_weight=req.min_weight, block=req.block,
-    ))
+    return _as_json(
+        _mcp_graph_neighbors(
+            req.node_id,
+            relation=req.relation,
+            depth=req.depth,
+            limit=req.limit,
+            min_weight=req.min_weight,
+            block=req.block,
+        )
+    )
 
 
 @app.post("/graph/communities")
 def graph_communities(req: GraphCommunitiesRequest):
-    return _as_json(_mcp_mem_communities(
-        min_community_size=req.min_community_size,
-        top_k=req.top_k, with_summary=req.with_summary,
-    ))
+    return _as_json(
+        _mcp_mem_communities(
+            min_community_size=req.min_community_size,
+            top_k=req.top_k,
+            with_summary=req.with_summary,
+        )
+    )
 
 
 @app.post("/mem/recent")
@@ -642,5 +670,3 @@ def mem_stats():
     stats = compute_stats(_get_store())
     stats.pop("elapsed_ms", None)
     return stats
-
-

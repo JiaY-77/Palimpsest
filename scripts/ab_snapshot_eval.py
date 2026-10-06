@@ -62,9 +62,16 @@ agg = defaultdict(list)
 lay = {L: defaultdict(list) for L in LAYERS}
 per_q: dict[str, list[int]] = {}
 for it in pos:
-    out = _mem_search_impl(it["query"], scope="all", domain="", domain_bias="",
-                           top_k=10, include_neighbors=False, block="",
-                           include_outdated=False)
+    out = _mem_search_impl(
+        it["query"],
+        scope="all",
+        domain="",
+        domain_bias="",
+        top_k=10,
+        include_neighbors=False,
+        block="",
+        include_outdated=False,
+    )
     ranked = [r["id"] for r in out.get("results", [])]
     per_q[it["qid"]] = ranked
     gold = set(it["gold_ids"])
@@ -88,10 +95,12 @@ row["expand_depth"] = getattr(Config, "RETRIEVAL_EXPAND_DEPTH", None)
 row["db_unchanged"] = sha256(DBP) == PRE
 row["per_q"] = per_q
 
-print(f"[{row['model']}] depth={row['expand_depth']}  "
-      f"R@1 {row['recall@1']:.4f} R@3 {row['recall@3']:.4f} R@5 {row['recall@5']:.4f} "
-      f"R@10 {row['recall@10']:.4f} MRR {row['mrr@10']:.4f} nDCG5 {row['ndcg@5']:.4f} | "
-      + " ".join(f"{L[:3]}:{row['layer_r5'][L]:.3f}" for L in LAYERS))
+print(
+    f"[{row['model']}] depth={row['expand_depth']}  "
+    f"R@1 {row['recall@1']:.4f} R@3 {row['recall@3']:.4f} R@5 {row['recall@5']:.4f} "
+    f"R@10 {row['recall@10']:.4f} MRR {row['mrr@10']:.4f} nDCG5 {row['ndcg@5']:.4f} | "
+    + " ".join(f"{L[:3]}:{row['layer_r5'][L]:.3f}" for L in LAYERS)
+)
 
 Path(OUT).parent.mkdir(parents=True, exist_ok=True)
 Path(OUT).write_text(json.dumps(row, ensure_ascii=False, indent=1), encoding="utf-8")

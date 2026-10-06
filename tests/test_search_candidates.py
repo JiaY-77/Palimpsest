@@ -55,7 +55,10 @@ def _candidate_store(monkeypatch):
 def _run(store, top_k=5):
     """调用 search_similar，返回 (results_by_id, result_ids)。"""
     res = store.search_similar(
-        [0.0] * 4, top_k=top_k, expand_depth=1, apply_decay=False,
+        [0.0] * 4,
+        top_k=top_k,
+        expand_depth=1,
+        apply_decay=False,
     )
     return {r["id"]: r["score"] for r in res}, [r["id"] for r in res]
 
@@ -63,6 +66,7 @@ def _run(store, top_k=5):
 # ---------------------------------------------------------------------------
 # a) status="outdated" 的节点不出现
 # ---------------------------------------------------------------------------
+
 
 def test_outdated_nodes_excluded(_candidate_store):
     hits = [
@@ -83,6 +87,7 @@ def test_outdated_nodes_excluded(_candidate_store):
 # b) 无 status 字段 / status="active" 正常保留
 # ---------------------------------------------------------------------------
 
+
 def test_active_and_missing_status_kept(_candidate_store):
     hits = [
         _FakeHit(1, 0.90, {"type": "memory", "status": "active"}),
@@ -99,6 +104,7 @@ def test_active_and_missing_status_kept(_candidate_store):
 # c) 过滤后候选量仍足够（扩容生效，不因过滤把候选掏空）
 # ---------------------------------------------------------------------------
 
+
 def test_filtering_leaves_enough_candidates(_candidate_store):
     """模拟 24% outdated 比例：100 个候选中 24 个 outdated，top_k=10 仍可填满。"""
     hits = []
@@ -109,8 +115,7 @@ def test_filtering_leaves_enough_candidates(_candidate_store):
     _by_id, order = _run(store, top_k=10)
     # 应返回恰好 10 条，且无 outdated
     assert len(order) == 10, f"应返回 10 条有效候选，实际 {len(order)}"
-    assert all(r not in [4, 8, 12, 16, 20, 24, 28, 32, 36, 40] for r in order), \
-        "不应含 outdated 节点"
+    assert all(r not in [4, 8, 12, 16, 20, 24, 28, 32, 36, 40] for r in order), "不应含 outdated 节点"
 
 
 def test_cand_k_expansion_is_6x(_candidate_store):

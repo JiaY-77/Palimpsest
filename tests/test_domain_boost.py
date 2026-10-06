@@ -31,8 +31,7 @@ def _run(query: str, domain_boost: str = "") -> dict:
     种子节点用 type=event（logs 层），若不隔离会被默认 tier="facts" 过滤掉。
     分层本身的回归在 tests/test_memory_tier.py。
     """
-    out = _mem_search_impl(query, scope="all", top_k=20,
-                           domain_boost=domain_boost, tier="")
+    out = _mem_search_impl(query, scope="all", top_k=20, domain_boost=domain_boost, tier="")
     return {r["id"]: r["score"] for r in out.get("results", [])}
 
 
@@ -42,8 +41,7 @@ def _seed_two_domains(marker: str):
     用 type=event 而非 memory：避免在会话共享临时库留下近重复 memory 对
     （consolidate 的 find_similar_pairs 只扫 type=memory，会误判为合并候选）。"""
     q = f"域加权护栏：{marker} 紫色独角兽在彩虹桥上吃蓝色发光浆果"
-    a_id = _insert({"type": "event", "domain": "alpha", "importance": 0.5},
-                   q + "（注）")
+    a_id = _insert({"type": "event", "domain": "alpha", "importance": 0.5}, q + "（注）")
     b_id = _insert({"type": "event", "domain": "beta", "importance": 0.5}, q)
     return a_id, b_id, q
 
@@ -52,10 +50,10 @@ def _seed_two_domains(marker: str):
 # 1. 默认不改变行为
 # ---------------------------------------------------------------------------
 def test_default_equals_omitted(db_path):
-    a_id = _insert({"type": "memory", "domain": "alpha", "importance": 0.5},
-                   "域加权护栏甲：檀香山火山口附近的红外望远镜观测记录")
-    _insert({"type": "memory", "domain": "beta", "importance": 0.5},
-            "域加权护栏乙：东京湾海底隧道的通风系统设计参数")
+    a_id = _insert(
+        {"type": "memory", "domain": "alpha", "importance": 0.5}, "域加权护栏甲：檀香山火山口附近的红外望远镜观测记录"
+    )
+    _insert({"type": "memory", "domain": "beta", "importance": 0.5}, "域加权护栏乙：东京湾海底隧道的通风系统设计参数")
     q = "檀香山火山口附近的红外望远镜观测记录"
 
     explicit = _mem_search_impl(q, scope="all", top_k=20, domain_boost="", tier="")
@@ -82,13 +80,13 @@ def test_boost_adds_eps_and_reorders(db_path):
     assert order_base.index(b_id) < order_base.index(a_id), order_base
 
     # 放boost后 alpha 恰好 +EPS（放 4 位小数舍入的容差）
-    assert boosted[a_id] == pytest.approx(
-        base[a_id] + Config.DOMAIN_BOOST_EPS, abs=5e-4,
-        rel=1e-6), (base[a_id], boosted[a_id])
+    assert boosted[a_id] == pytest.approx(base[a_id] + Config.DOMAIN_BOOST_EPS, abs=5e-4, rel=1e-6), (
+        base[a_id],
+        boosted[a_id],
+    )
 
     # beta 不被加分
-    assert boosted[b_id] == pytest.approx(base[b_id], abs=5e-4,
-                                          rel=1e-6), (base[b_id], boosted[b_id])
+    assert boosted[b_id] == pytest.approx(base[b_id], abs=5e-4, rel=1e-6), (base[b_id], boosted[b_id])
 
     # 排序确实按新分数：alpha 因加成反超 beta
     assert boosted[a_id] > boosted[b_id], (boosted, a_id, b_id)
@@ -129,8 +127,7 @@ def test_kb_chunk_domain_key(db_path):
 
     kb_content = "域加权护栏知识块：量子点显示器的色彩转换效率研究综述"
     kb_id = _insert({"type": "kb_chunk", "domain": "kb"}, kb_content)
-    mem_id = _insert({"type": "memory", "domain": "alpha", "importance": 0.5},
-                     kb_content + "（记忆副本，非 kb）")
+    mem_id = _insert({"type": "memory", "domain": "alpha", "importance": 0.5}, kb_content + "（记忆副本，非 kb）")
 
     payload = store.get_node(kb_id)["payload"]
     assert payload.get("type") == "kb_chunk"
@@ -140,10 +137,9 @@ def test_kb_chunk_domain_key(db_path):
     boosted = _run(kb_content, "kb")
 
     assert kb_id in base and mem_id in base, base
-    assert boosted[kb_id] == pytest.approx(
-        base[kb_id] + Config.DOMAIN_BOOST_EPS, abs=5e-4,
-        rel=1e-6), (base[kb_id], boosted[kb_id])
+    assert boosted[kb_id] == pytest.approx(base[kb_id] + Config.DOMAIN_BOOST_EPS, abs=5e-4, rel=1e-6), (
+        base[kb_id],
+        boosted[kb_id],
+    )
     # 非 kb 域不被加分
-    assert boosted[mem_id] == pytest.approx(base[mem_id], abs=5e-4,
-                                            rel=1e-6), (base[mem_id],
-                                                        boosted[mem_id])
+    assert boosted[mem_id] == pytest.approx(base[mem_id], abs=5e-4, rel=1e-6), (base[mem_id], boosted[mem_id])

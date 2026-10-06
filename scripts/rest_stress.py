@@ -16,6 +16,7 @@
   - 固定随机种子（42），同样入参可复现；
   - 输出为 JSON 报告：每个场景的 qps / p50 / p95 / p99 / 错误率。
 """
+
 import argparse
 import json
 import random
@@ -47,30 +48,42 @@ S1S = ["需求评审", "代码审查", "压测验证", "文档完善"]
 WHOS = ["助理", "CI 机器人", "评审员", "值班同事"]
 IMPACTS = ["性能提升", "稳定性风险", "需人工复核", "无影响"]
 
+
 def gen_content(i: int, tag: str = "") -> tuple:
     t, tmpl = random.choice(TEMPLATES)
     ts = f"2026-09-{random.randint(1, 5):02d}"
-    ctx = {"place": random.choice(PLACES), "topic": random.choice(TOPICS),
-           "detail": random.choice(DETAILS), "follow": random.choice(FOLLOWS),
-           "ts": ts, "action": random.choice(ACTIONS), "result": random.choice(RESULTS),
-           "note": random.choice(NOTES), "name": random.choice(NAMES), "goal": random.choice(GOALS),
-           "s1": random.choice(S1S), "s2": random.choice(S1S), "s3": random.choice(S1S),
-           "s0": random.choice(S1S), "who": random.choice(WHOS), "what": random.choice(ACTIONS),
-           "impact": random.choice(IMPACTS), "correct": random.choice(DETAILS)}
+    ctx = {
+        "place": random.choice(PLACES),
+        "topic": random.choice(TOPICS),
+        "detail": random.choice(DETAILS),
+        "follow": random.choice(FOLLOWS),
+        "ts": ts,
+        "action": random.choice(ACTIONS),
+        "result": random.choice(RESULTS),
+        "note": random.choice(NOTES),
+        "name": random.choice(NAMES),
+        "goal": random.choice(GOALS),
+        "s1": random.choice(S1S),
+        "s2": random.choice(S1S),
+        "s3": random.choice(S1S),
+        "s0": random.choice(S1S),
+        "who": random.choice(WHOS),
+        "what": random.choice(ACTIONS),
+        "impact": random.choice(IMPACTS),
+        "correct": random.choice(DETAILS),
+    }
     content = tmpl.format(**ctx)
     # 每条带唯一标记，便于召回验证
     marker = f"#{tag or 'seed'}{i:05d}#"
     return marker + " " + content, t
 
-def post(base: str, path: str, payload=None, raw: str | None = None,
-         timeout: float = 30) -> tuple:
+
+def post(base: str, path: str, payload=None, raw: str | None = None, timeout: float = 30) -> tuple:
     """返回 (ok, status, body_str, elapsed)"""
     t0 = time.perf_counter()
     try:
         if raw is not None:
-            r = requests.post(base + path, data=raw,
-                              headers={"Content-Type": "application/json"},
-                              timeout=timeout)
+            r = requests.post(base + path, data=raw, headers={"Content-Type": "application/json"}, timeout=timeout)
         else:
             r = requests.post(base + path, json=payload, timeout=timeout)
         el = time.perf_counter() - t0
@@ -78,6 +91,7 @@ def post(base: str, path: str, payload=None, raw: str | None = None,
     except Exception as e:  # noqa: BLE001 —— 请求异常转为错误结果元组压测照常统计
         el = time.perf_counter() - t0
         return False, -1, f"EXC {type(e).__name__}: {e}", el
+
 
 def get(base: str, path: str, timeout: float = 30) -> tuple:
     t0 = time.perf_counter()
@@ -87,8 +101,8 @@ def get(base: str, path: str, timeout: float = 30) -> tuple:
     except Exception as e:  # noqa: BLE001 —— GET 异常转错误结果元组计入压测统计
         return False, -1, f"EXC {type(e).__name__}: {e}", time.perf_counter() - t0
 
-def run_bench(name: str, fn, jobs: list, workers: int,
-              max_seconds: float = 0) -> dict:
+
+def run_bench(name: str, fn, jobs: list, workers: int, max_seconds: float = 0) -> dict:
     """并发执行 jobs；max_seconds>0 时限流持续打直到时间到（用于混合长压）。"""
     times, errors = [], []
     t_start = time.perf_counter()
@@ -128,14 +142,16 @@ def run_bench(name: str, fn, jobs: list, workers: int,
     elapsed = time.perf_counter() - t_start
     return summarize(name, times, errors, elapsed, n_done)
 
+
 def summarize(name: str, times: list, errors: list, elapsed: float, n_done: int):
     if not times:
-        return {"name": name, "n": 0, "error_count": len(errors), "qps": 0.0,
-                "note": "no samples"}
+        return {"name": name, "n": 0, "error_count": len(errors), "qps": 0.0, "note": "no samples"}
     times_sorted = sorted(times)
+
     def pct(p):
         idx = min(len(times_sorted) - 1, int(p / 100 * len(times_sorted)))
         return round(times_sorted[idx] * 1000, 2)  # ms
+
     return {
         "name": name,
         "n": n_done,
@@ -143,7 +159,9 @@ def summarize(name: str, times: list, errors: list, elapsed: float, n_done: int)
         "error_pct": round(100.0 * len(errors) / n_done, 2),
         "qps": round(n_done / elapsed, 2),
         "min_ms": round(times_sorted[0] * 1000, 2),
-        "p50_ms": pct(50), "p95_ms": pct(95), "p99_ms": pct(99),
+        "p50_ms": pct(50),
+        "p95_ms": pct(95),
+        "p99_ms": pct(99),
         "max_ms": round(times_sorted[-1] * 1000, 2),
         "errors_sample": errors[:5],
     }
@@ -151,8 +169,7 @@ def summarize(name: str, times: list, errors: list, elapsed: float, n_done: int)
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base", default="http://127.0.0.1:8091",
-                    help="目标实例地址（建议指向测试实例，脚本会写入数据）")
+    ap.add_argument("--base", default="http://127.0.0.1:8091", help="目标实例地址（建议指向测试实例，脚本会写入数据）")
     ap.add_argument("--seeds", type=int, default=200)
     ap.add_argument("--out", default="")
     ap.add_argument("--quick", action="store_true")
@@ -175,11 +192,20 @@ def main():
     with ThreadPoolExecutor(max_workers=8) as ex:
         futs = {}
         for i, (content, typ) in enumerate(seeds):
-            futs[ex.submit(post, base, "/mem/ingest",
-                           {"content": content, "type": typ,
-                            "importance": round(random.uniform(0.3, 0.9), 2),
-                            "domain": random.choice(["hermes", "kb", "work", "general"]),
-                            "source": "stress-seed"})] = i
+            futs[
+                ex.submit(
+                    post,
+                    base,
+                    "/mem/ingest",
+                    {
+                        "content": content,
+                        "type": typ,
+                        "importance": round(random.uniform(0.3, 0.9), 2),
+                        "domain": random.choice(["hermes", "kb", "work", "general"]),
+                        "source": "stress-seed",
+                    },
+                )
+            ] = i
         for f in as_completed(list(futs)):
             okf, status, body, el = f.result()
             if okf:
@@ -189,7 +215,7 @@ def main():
                         seed_ids.append(nid)
                 except Exception:  # noqa: S110, BLE001 —— 种子 id 解析失败仅少记一条
                     pass
-    print(f"    seeded {len(seed_ids)}/{args.seeds} in {time.perf_counter()-t0:.1f}s")
+    print(f"    seeded {len(seed_ids)}/{args.seeds} in {time.perf_counter() - t0:.1f}s")
 
     # ---------- 2. 场景 S1 高频检索 ----------
     queries = []
@@ -198,9 +224,12 @@ def main():
         words = [w for w in c.replace("#", " ").split() if len(w) > 1]
         queries.append(random.choice(words) if words else "记忆插件")
     queries = (queries * 3)[: args.seeds]
-    s1 = run_bench("S1 mem_search 高频检索", 
-                   lambda j: post(base, "/mem/search", {"query": queries[j % len(queries)], "scope": "memory", "top_k": 5}),
-                   list(range(min(args.seeds, 100))), workers=10)
+    s1 = run_bench(
+        "S1 mem_search 高频检索",
+        lambda j: post(base, "/mem/search", {"query": queries[j % len(queries)], "scope": "memory", "top_k": 5}),
+        list(range(min(args.seeds, 100))),
+        workers=10,
+    )
     report["scenarios"].append(s1)
     print(f"[S1] {s1}")
 
@@ -209,11 +238,13 @@ def main():
     write_jobs = []
     for i in range(n_write):
         c, typ = gen_content(i + 10000, tag="wr")
-        write_jobs.append({"content": c, "type": typ, "importance": 0.6,
-                           "domain": "hermes", "source": "stress-write"})
-    s2 = run_bench("S2 mem_ingest 写入压测",
-                   lambda j: post(base, "/mem/ingest", write_jobs[j]),
-                   list(range(len(write_jobs))), workers=6)
+        write_jobs.append({"content": c, "type": typ, "importance": 0.6, "domain": "hermes", "source": "stress-write"})
+    s2 = run_bench(
+        "S2 mem_ingest 写入压测",
+        lambda j: post(base, "/mem/ingest", write_jobs[j]),
+        list(range(len(write_jobs))),
+        workers=6,
+    )
     report["scenarios"].append(s2)
     print(f"[S2] {s2}")
 
@@ -223,22 +254,28 @@ def main():
         link_jobs = []
         for i in range(min(len(seed_ids) - 1, 40)):
             link_jobs.append({"source_id": seed_ids[i], "target_id": seed_ids[i + 1], "relation": "RELATED_TO"})
-        s3a = run_bench("S3a mem_link 建边",
-                        lambda j: post(base, "/mem/link", link_jobs[j]),
-                        list(range(len(link_jobs))), workers=4)
+        s3a = run_bench(
+            "S3a mem_link 建边", lambda j: post(base, "/mem/link", link_jobs[j]), list(range(len(link_jobs))), workers=4
+        )
         report["scenarios"].append(s3a)
         print(f"[S3a] {s3a}")
         # 邻居扩散（并发查不同节点）
         nb_jobs = [{"node_id": seed_ids[i % len(seed_ids)], "depth": 1} for i in range(60)]
-        s3b = run_bench("S3b graph/neighbors 邻居扩散",
-                        lambda j: post(base, "/graph/neighbors", nb_jobs[j]),
-                        list(range(len(nb_jobs))), workers=8)
+        s3b = run_bench(
+            "S3b graph/neighbors 邻居扩散",
+            lambda j: post(base, "/graph/neighbors", nb_jobs[j]),
+            list(range(len(nb_jobs))),
+            workers=8,
+        )
         report["scenarios"].append(s3b)
         print(f"[S3b] {s3b}")
         # 社区发现
-        s3c = run_bench("S3c graph/communities",
-                        lambda j: post(base, "/graph/communities", {"min_community_size": 2, "top_k": 5}),
-                        list(range(10)), workers=2)
+        s3c = run_bench(
+            "S3c graph/communities",
+            lambda j: post(base, "/graph/communities", {"min_community_size": 2, "top_k": 5}),
+            list(range(10)),
+            workers=2,
+        )
         report["scenarios"].append(s3c)
         print(f"[S3c] {s3c}")
 
@@ -270,6 +307,7 @@ def main():
     n_workers = 8
     counter = {"i": 0}
     lock = threading.Lock()
+
     def mixed(j):
         with lock:
             counter["i"] += 1
@@ -280,6 +318,7 @@ def main():
         else:
             q = queries[k % len(queries)]
             return post(base, "/mem/hybrid-search", {"query": q, "top_k": 5, "mode": "rrf"})
+
     s5 = run_bench("S5 读写混合 20s", mixed, [], workers=n_workers, max_seconds=20)
     report["scenarios"].append(s5)
     print(f"[S5] {s5}")
@@ -288,18 +327,16 @@ def main():
     correctness = []
     marker = f"#verify{int(time.time())}#"
     unique_word = marker + "量子记忆封装协议验证"
-    okf, status, body, el = post(base, "/mem/ingest",
-                                 {"content": unique_word, "type": "memory", "importance": 0.9})
+    okf, status, body, el = post(base, "/mem/ingest", {"content": unique_word, "type": "memory", "importance": 0.9})
     correctness.append({"case": "ingest_unique", "status": status})
     time.sleep(0.5)
-    okf, status, body, el = post(base, "/mem/search",
-                                 {"query": "量子记忆封装协议", "scope": "memory", "top_k": 3})
+    okf, status, body, el = post(base, "/mem/search", {"query": "量子记忆封装协议", "scope": "memory", "top_k": 3})
     hit = marker in body
-    correctness.append({"case": "search_recall_marker", "hit": hit, "status": status,
-                        "body": body[:150]})
+    correctness.append({"case": "search_recall_marker", "hit": hit, "status": status, "body": body[:150]})
     # 冲突检测：立即重写几乎相同的内容，应被标记 outdated 或提示（不崩即可）
-    _okf2, status2, body2, _el2 = post(base, "/mem/ingest",
-                                     {"content": unique_word, "type": "memory", "importance": 0.9})
+    _okf2, status2, body2, _el2 = post(
+        base, "/mem/ingest", {"content": unique_word, "type": "memory", "importance": 0.9}
+    )
     correctness.append({"case": "duplicate_ingest", "status": status2, "body": body2[:150]})
     report["correctness"] = correctness
     for c in correctness:
@@ -310,8 +347,10 @@ def main():
     report["seed_count"] = len(seed_ids)
     print("\n==== SUMMARY ====")
     for s in report["scenarios"]:
-        print(f"{s['name']}: n={s['n']} qps={s['qps']} err={s['error_count']}({s['error_pct']}%) "
-              f"p50={s['p50_ms']}ms p95={s['p95_ms']}ms p99={s['p99_ms']}ms max={s['max_ms']}ms")
+        print(
+            f"{s['name']}: n={s['n']} qps={s['qps']} err={s['error_count']}({s['error_pct']}%) "
+            f"p50={s['p50_ms']}ms p95={s['p95_ms']}ms p99={s['p99_ms']}ms max={s['max_ms']}ms"
+        )
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)

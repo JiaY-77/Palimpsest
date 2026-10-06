@@ -82,21 +82,30 @@ def patch_llm(monkeypatch):
     monkeypatch.setattr(openai, "OpenAI", _SyncOpenAISentinel)
 
     from config import Config
-    monkeypatch.setattr(Config, "get_llm_config", staticmethod(lambda: {
-        "api_key": "test-key",
-        "base_url": "http://127.0.0.1:1/v1",
-        "model": "test-model",
-    }))
+
+    monkeypatch.setattr(
+        Config,
+        "get_llm_config",
+        staticmethod(
+            lambda: {
+                "api_key": "test-key",
+                "base_url": "http://127.0.0.1:1/v1",
+                "model": "test-model",
+            }
+        ),
+    )
     return rec
 
 
 def test_generate_report_uses_async_client(patch_llm):
     from core.reporting import generate_report
 
-    store = _Store([
-        {"type": "memory", "content": "记忆一"},
-        {"type": "task", "content": "记忆二"},
-    ])
+    store = _Store(
+        [
+            {"type": "memory", "content": "记忆一"},
+            {"type": "task", "content": "记忆二"},
+        ]
+    )
     result = asyncio.run(generate_report(store))
 
     assert result["status"] == "ok", result

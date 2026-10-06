@@ -43,8 +43,7 @@ def iso_store():
 
 def _insert(s: TriviumStore, content: str) -> int:
     return s.insert_node(
-        {"type": "memory", "content": content, "importance": 0.5,
-         "domain": "general"},
+        {"type": "memory", "content": content, "importance": 0.5, "domain": "general"},
         s.embed_text(content),
     )
 
@@ -58,9 +57,7 @@ def test_search_does_not_write_hit_count(iso_store):
     results = s.search_similar(s.embed_text(content), top_k=5, expand_depth=1)
     assert any(r.get("id") == nid for r in results), results
 
-    assert s.get_node(nid)["payload"].get("hit_count") is None, (
-        "search_similar 仍在热路径里写 hit_count"
-    )
+    assert s.get_node(nid)["payload"].get("hit_count") is None, "search_similar 仍在热路径里写 hit_count"
 
 
 def test_flush_persists_accumulated_hits(iso_store):
@@ -129,10 +126,7 @@ def test_concurrent_searches_do_not_lose_counts(iso_store):
         t.join()
 
     assert not errors, errors
-    assert not empty, (
-        f"{len(empty)} 次并发检索静默返回空结果（进程内 DB 访问未串行化）："
-        f"{empty[:1]}"
-    )
+    assert not empty, f"{len(empty)} 次并发检索静默返回空结果（进程内 DB 访问未串行化）：{empty[:1]}"
     s.flush_hit_counts()
     payload = s.get_node(nid)["payload"]
     assert payload["hit_count"] == threads_n * per_thread, payload
@@ -143,8 +137,7 @@ def test_flush_merges_with_existing_count(iso_store):
     s = iso_store
     content = "合并语义唯一标记词mergeunique"
     nid = s.insert_node(
-        {"type": "memory", "content": content, "importance": 0.5,
-         "domain": "general", "hit_count": 7},
+        {"type": "memory", "content": content, "importance": 0.5, "domain": "general", "hit_count": 7},
         s.embed_text(content),
     )
     s.search_similar(s.embed_text(content), top_k=5, expand_depth=1)

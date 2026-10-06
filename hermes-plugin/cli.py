@@ -30,9 +30,7 @@ def _get(url: str) -> dict:
 
 def _post(base: str, path: str, payload: dict) -> dict:
     data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        base + path, data=data, headers={"Content-Type": "application/json"}
-    )
+    req = urllib.request.Request(base + path, data=data, headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             return json.loads(resp.read().decode("utf-8"))
@@ -49,12 +47,13 @@ def cmd_status(args: argparse.Namespace) -> None:
         print("  请先启动 Palimpsest REST 服务（详见仓库 docs/HERMES_INTEGRATION.md），")
         print("  或设置 PALIMPSEST_BASE_URL 指向已运行的实例")
         return
-    print(f"✓ Palimpsest REST {base} 正常：{root.get('service', 'Palimpsest')} "
-          f"v{root.get('version', '?')}")
+    print(f"✓ Palimpsest REST {base} 正常：{root.get('service', 'Palimpsest')} v{root.get('version', '?')}")
     endpoints = root.get("endpoints", [])
     have_semantic = any(e in endpoints for e in ("/mem/search", "/mem/ingest"))
-    print("  语义层端点（/mem/search /mem/ingest /mem/link /graph/neighbors）："
-          + ("✓ 齐备" if have_semantic else "⚠ 缺失——请确认服务版本包含统一语义层端点"))
+    print(
+        "  语义层端点（/mem/search /mem/ingest /mem/link /graph/neighbors）："
+        + ("✓ 齐备" if have_semantic else "⚠ 缺失——请确认服务版本包含统一语义层端点")
+    )
     print(f"  插件配置：PALIMPSEST_BASE_URL={base}（env 覆盖可用）")
 
 
@@ -69,11 +68,17 @@ def cmd_test(args: argparse.Namespace) -> None:
     for item in r.get("results", [])[:2]:
         print(f"    - ({item.get('score', 0):.2f}) {item.get('summary', '')[:80]}")
 
-    r2 = _post(base, "/mem/ingest", {
-        "content": "[CLI 自检] hermes palimpsest test 触发的连通性测试记录，可删除",
-        "type": "record", "importance": 0.3, "domain": "hermes",
-        "source": "hermes-cli-test",
-    })
+    r2 = _post(
+        base,
+        "/mem/ingest",
+        {
+            "content": "[CLI 自检] hermes palimpsest test 触发的连通性测试记录，可删除",
+            "type": "record",
+            "importance": 0.3,
+            "domain": "hermes",
+            "source": "hermes-cli-test",
+        },
+    )
     if "error" in r2:
         print(f"✗ /mem/ingest 失败：{r2['error']}")
         return

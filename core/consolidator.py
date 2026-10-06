@@ -96,10 +96,7 @@ def _merge_one_pair(db, tx, c: dict, next_id: int) -> dict | None:
         low_id = a_id
 
     high_content = high_payload.get("content") or ""
-    merge_content = (
-        high_content
-        + f"\n\n（由 Palimpsest 自动合并自节点 {low_id}，原内容见 REVISED_BY 链）"
-    )
+    merge_content = high_content + f"\n\n（由 Palimpsest 自动合并自节点 {low_id}，原内容见 REVISED_BY 链）"
     merge_importance = max(c["a_imp"], c["b_imp"])
     # domain 统一：合并节点以 node_domain 为准，domain 与
     # character_name 镜像同值（消除二义性）。general 为未分类兜底。
@@ -115,9 +112,7 @@ def _merge_one_pair(db, tx, c: dict, next_id: int) -> dict | None:
         "status": "active",
     }
     # 敏感信息扫描（与 store.insert_node 语义一致）：strong → 拒绝并入
-    scan_text = " ".join(
-        str(v) for v in new_node_data.values() if isinstance(v, str)
-    )
+    scan_text = " ".join(str(v) for v in new_node_data.values() if isinstance(v, str))
     classified = scan_secret_classified(scan_text)
     if classified["strong"]:
         raise SecretScanError(classified["strong"])
@@ -125,8 +120,7 @@ def _merge_one_pair(db, tx, c: dict, next_id: int) -> dict | None:
         new_node_data["secret_hint"] = classified["weak"]
 
     # 用高 importance 方的向量作为合并节点向量
-    high_vec = (a_node.vector
-                if a_imp >= b_imp else b_node.vector)
+    high_vec = a_node.vector if a_imp >= b_imp else b_node.vector
 
     tx.insert_with_id(next_id, high_vec, new_node_data)
     tx.link(next_id, a_id, "REVISED_BY", weight=c["score"])
@@ -240,8 +234,9 @@ def consolidate(
     candidates = find_candidates(store, sim_threshold=sim_threshold)
 
     # 过滤保护规则
-    will_merge, skipped_high_value, skipped_both_important, _skipped_ids = (
-        _filter_candidates(candidates, max_importance))
+    will_merge, skipped_high_value, skipped_both_important, _skipped_ids = _filter_candidates(
+        candidates, max_importance
+    )
 
     if dry_run:
         return {

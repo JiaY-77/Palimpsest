@@ -6,6 +6,7 @@ core.index_rules 单元测试
 match_kind / is_included / chunk_markdown、.yaml 迁移提示、
 以及 novel 脚本加载测试配置后的未匹配不静默归并。
 """
+
 import json
 import sys
 from pathlib import Path
@@ -49,6 +50,7 @@ def _write(tmp_path: Path, name: str, data: dict, root: Path | None = None) -> P
 # ---------------------------------------------------------------------------
 # 1. 无配置 → 内置默认
 # ---------------------------------------------------------------------------
+
 
 def test_load_rules_builtin_default_when_no_config(tmp_path: Path):
     """无配置 → 内置默认。
@@ -94,6 +96,7 @@ def test_kb_builtin_default_heading_and_exclude():
 # 2. 加载优先级：explicit > legacy 文件名 > 库根默认 json
 # ---------------------------------------------------------------------------
 
+
 def test_load_rules_priority_explicit_then_legacy_then_default(tmp_path: Path):
     default = tmp_path / DEFAULT_RULES_FILENAME
     default.write_text(json.dumps({"min_chunk_len": 111}), encoding="utf-8")
@@ -122,6 +125,7 @@ def test_load_rules_priority_explicit_then_legacy_then_default(tmp_path: Path):
 # 3. --rules 指向不存在的文件 → IndexRulesError
 # ---------------------------------------------------------------------------
 
+
 def test_load_rules_missing_explicit_raises(tmp_path: Path):
     with pytest.raises(IndexRulesError):
         load_rules(root=tmp_path, explicit=str(tmp_path / "nope.json"))
@@ -131,6 +135,7 @@ def test_load_rules_missing_explicit_raises(tmp_path: Path):
 # 4. 非法配置 → IndexRulesError
 # ---------------------------------------------------------------------------
 
+
 def test_invalid_chunk_strategy_raises(tmp_path: Path):
     _write(tmp_path, DEFAULT_RULES_FILENAME, {"chunk_strategy": "paragraphs"})
     with pytest.raises(IndexRulesError) as exc:
@@ -139,16 +144,14 @@ def test_invalid_chunk_strategy_raises(tmp_path: Path):
 
 
 def test_max_below_min_raises(tmp_path: Path):
-    _write(tmp_path, DEFAULT_RULES_FILENAME,
-           {"min_chunk_len": 800, "max_chunk_len": 300})
+    _write(tmp_path, DEFAULT_RULES_FILENAME, {"min_chunk_len": 800, "max_chunk_len": 300})
     with pytest.raises(IndexRulesError) as exc:
         load_rules(root=tmp_path)
     assert "min_chunk_len" in str(exc.value)
 
 
 def test_kind_map_entry_missing_kind_raises(tmp_path: Path):
-    _write(tmp_path, DEFAULT_RULES_FILENAME,
-           {"kind_map": [{"dir_prefix": "01_世界观"}]})
+    _write(tmp_path, DEFAULT_RULES_FILENAME, {"kind_map": [{"dir_prefix": "01_世界观"}]})
     with pytest.raises(IndexRulesError) as exc:
         load_rules(root=tmp_path)
     assert "kind" in str(exc.value)
@@ -158,9 +161,9 @@ def test_kind_map_entry_missing_kind_raises(tmp_path: Path):
 # 5. 未知键 → 只产生 warning，不报错
 # ---------------------------------------------------------------------------
 
+
 def test_unknown_key_only_warns(tmp_path: Path):
-    _write(tmp_path, DEFAULT_RULES_FILENAME,
-           {"min_chunk_len": 123, "bogus_key": True})
+    _write(tmp_path, DEFAULT_RULES_FILENAME, {"min_chunk_len": 123, "bogus_key": True})
     rules = load_rules(root=tmp_path)  # 不应抛错
     assert rules.min_chunk_len == 123
     assert any("bogus_key" in w for w in rules.warnings)
@@ -169,6 +172,7 @@ def test_unknown_key_only_warns(tmp_path: Path):
 # ---------------------------------------------------------------------------
 # 6. match_kind：filename / dir_prefix 任意层级 / glob / 全不命中
 # ---------------------------------------------------------------------------
+
 
 def _sample_rules() -> IndexRules:
     return IndexRules(
@@ -216,9 +220,9 @@ def test_match_kind_miss_returns_default_not_business_kind():
 # 7. .palimpsest-index.yaml：不解析 + 迁移提示
 # ---------------------------------------------------------------------------
 
+
 def test_legacy_yaml_not_parsed_and_warns(tmp_path: Path):
-    (tmp_path / LEGACY_RULES_FILENAME).write_text(
-        "kind_map:\n  - kind: setting\n", encoding="utf-8")
+    (tmp_path / LEGACY_RULES_FILENAME).write_text("kind_map:\n  - kind: setting\n", encoding="utf-8")
     rules = load_rules(root=tmp_path)
     # 不解析 yaml：source 回退到 builtin
     assert rules.source == "builtin"
@@ -236,6 +240,7 @@ def test_legacy_yaml_warning_merged_with_json_rules(tmp_path: Path):
 # ---------------------------------------------------------------------------
 # 8. is_included：exclude 目录 / include 白名单 / 默认全包含
 # ---------------------------------------------------------------------------
+
 
 def test_is_included_default_all_included():
     rules = IndexRules()
@@ -266,8 +271,9 @@ def test_is_included_exclude_file_by_basename():
 # 9. chunk_markdown：file 策略 / heading 策略迁移等价性
 # ---------------------------------------------------------------------------
 
+
 def test_chunk_markdown_file_strategy(tmp_path: Path):
-    text = ("---\nid: abc\n---\n# 标题\n正文内容")
+    text = "---\nid: abc\n---\n# 标题\n正文内容"
     rules = IndexRules(chunk_strategy="file")
     blocks = chunk_markdown(text, rules)
     assert len(blocks) == 1
@@ -281,7 +287,8 @@ def test_chunk_markdown_heading_drop_in_kb(tmp_path: Path):
     text = (
         "---\nid: abc\ntags: [x]\n---\n# 标题\n\n## 第一节\n"
         + "内容" * 200
-        + "\n\n### 子节\n" + "细节" * 150
+        + "\n\n### 子节\n"
+        + "细节" * 150
         + "\n\n## 第二节\n短内容。"
     )
     rules = IndexRules(chunk_strategy="heading", min_chunk_len=300, max_chunk_len=800)
@@ -293,10 +300,8 @@ def test_chunk_markdown_respects_rule_lengths(tmp_path: Path):
     line = "短内容行" * 3 + "。"
     lines_text = "\n".join([f"{line}{i}" for i in range(20)])
     text = "## 大节\n" + lines_text
-    loose = IndexRules(chunk_strategy="heading", min_chunk_len=1,
-                       max_chunk_len=5000)
-    tight = IndexRules(chunk_strategy="heading", min_chunk_len=1,
-                       max_chunk_len=20)
+    loose = IndexRules(chunk_strategy="heading", min_chunk_len=1, max_chunk_len=5000)
+    tight = IndexRules(chunk_strategy="heading", min_chunk_len=1, max_chunk_len=20)
     n_loose = len(chunk_markdown(text, loose))
     n_tight = len(chunk_markdown(text, tight))
     # max 越小 → 切出的块越多
@@ -307,11 +312,16 @@ def test_chunk_markdown_respects_rule_lengths(tmp_path: Path):
 # 10. novel 脚本 + --rules 测试配置：未匹配返回 "default"，不静默归并
 # ---------------------------------------------------------------------------
 
+
 def test_novel_script_unmatched_returns_default(tmp_path: Path):
-    config = _write(tmp_path, "novel-rules.json", {
-        "kind_map": [{"kind": "setting", "dir_prefix": "01_世界观"}],
-        "default_kind": "default",
-    })
+    config = _write(
+        tmp_path,
+        "novel-rules.json",
+        {
+            "kind_map": [{"kind": "setting", "dir_prefix": "01_世界观"}],
+            "default_kind": "default",
+        },
+    )
     rules = load_rules(root=tmp_path, explicit=str(config))
     got = build_novel_index._kind_of("02_角色/凌无咎.md", rules)
     assert got == "default"
@@ -323,6 +333,7 @@ def test_novel_script_unmatched_returns_default(tmp_path: Path):
 # ---------------------------------------------------------------------------
 # 11. 内置默认可被调用方覆盖（知识库 / 创作 vault 各自的内置默认）
 # ---------------------------------------------------------------------------
+
 
 def test_load_rules_builtin_override(tmp_path: Path):
     rules = load_rules(root=tmp_path, builtin=KB_BUILTIN_RULES)
@@ -337,6 +348,7 @@ def test_load_rules_builtin_override(tmp_path: Path):
 # ---------------------------------------------------------------------------
 # 12. 端到端：规则文件驱动的扫描 / 归类 / 未匹配统计（不连库）
 # ---------------------------------------------------------------------------
+
 
 def _make_vault(root: Path) -> None:
     """造一个结构与默认约定完全不同的测试库（目录名与个人 vault 无关）。"""

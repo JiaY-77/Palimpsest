@@ -93,8 +93,7 @@ def test_vec_mode_uses_shared_filter_chain():
         if isinstance(node, ast.Call):
             names.add(ast.unparse(node.func))
     assert any("_mem_search_impl" in n for n in names), "vec 模式应复用共享过滤链"
-    assert not any("search_similar" in n for n in names), \
-        "vec 模式不应再直调 search_similar 绕过过滤"
+    assert not any("search_similar" in n for n in names), "vec 模式不应再直调 search_similar 绕过过滤"
 
 
 def test_fts_mode_respects_tier_in_source():
@@ -118,8 +117,7 @@ def test_four_modes_agree_on_tier_filtering(iso):
 
     q = "口径一致性回归：南太平洋深海热液喷口的硫化物烟囱采样"
     _insert(iso, {"type": "memory", "domain": "hermes", "importance": 0.5}, q)
-    log_id = _insert(iso, {"type": "record", "domain": "hermes", "importance": 0.5},
-                     q + "（日志）")
+    log_id = _insert(iso, {"type": "record", "domain": "hermes", "importance": 0.5}, q + "（日志）")
 
     # 前提断言：测试数据本身确实分层正确
     assert _tier_matches("memory", "facts") and not _tier_matches("record", "facts")
@@ -140,8 +138,7 @@ def test_four_modes_agree_on_tier_empty(iso):
 
     q = "口径一致性回归乙：北极圈永冻土甲烷通量的多年连续观测"
     _insert(iso, {"type": "memory", "domain": "hermes", "importance": 0.5}, q)
-    log_id = _insert(iso, {"type": "record", "domain": "hermes", "importance": 0.5},
-                     q + "（记录）")
+    log_id = _insert(iso, {"type": "record", "domain": "hermes", "importance": 0.5}, q + "（记录）")
 
     for mode in ("vec", "rrf", "cascade"):
         ids, _scores = re_mod._MODE_FNS[mode](q, 20, iso, "")

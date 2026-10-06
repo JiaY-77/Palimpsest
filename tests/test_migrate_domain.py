@@ -15,9 +15,7 @@ import sys
 
 # migrate_domain 是「脚本式」导入（内部 `import _common` 依赖 scripts/ 在
 # sys.path 上），因此测试也按脚本方式加载它。
-_SCRIPTS_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"
-)
+_SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts")
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
@@ -50,18 +48,19 @@ def _patch_store(monkeypatch, fake):
 
 
 def test_apply_consumes_iterator_before_writing(monkeypatch):
-    fake = _IterationAwareStore([
-        (1, {"character_name": "hero", "content": "甲"}),
-        (2, {"character_name": "villain", "content": "乙"}),
-        (3, {"domain": "already", "content": "丙"}),
-    ])
+    fake = _IterationAwareStore(
+        [
+            (1, {"character_name": "hero", "content": "甲"}),
+            (2, {"character_name": "villain", "content": "乙"}),
+            (3, {"domain": "already", "content": "丙"}),
+        ]
+    )
     _patch_store(monkeypatch, fake)
 
     result = md.run(apply=True)
 
     assert fake.writes_during_iteration == 0, (
-        f"写库发生在迭代器耗尽前（会 Database locked）："
-        f"{fake.writes_during_iteration} 次"
+        f"写库发生在迭代器耗尽前（会 Database locked）：{fake.writes_during_iteration} 次"
     )
     assert result["migrated"] == 2, result
     assert result["skipped_already_have_domain"] == 1, result
@@ -71,9 +70,11 @@ def test_apply_consumes_iterator_before_writing(monkeypatch):
 
 
 def test_dry_run_does_not_write(monkeypatch):
-    fake = _IterationAwareStore([
-        (1, {"character_name": "hero", "content": "甲"}),
-    ])
+    fake = _IterationAwareStore(
+        [
+            (1, {"character_name": "hero", "content": "甲"}),
+        ]
+    )
     _patch_store(monkeypatch, fake)
 
     result = md.run(apply=False)

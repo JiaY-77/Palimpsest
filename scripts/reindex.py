@@ -17,6 +17,7 @@
   - embedding 服务不可用时明确报错（退出码 4）
   - 异常中断保留进度，可 --resume 续跑（状态文件跟库绑定）
 """
+
 import argparse
 import json
 import os
@@ -88,15 +89,19 @@ def _check_dims(store):
     # 3) 比对：实测 vs 库
     if actual == db_dim:
         return True, actual, f"维度一致: {actual} 维（实测 = 库）"
-    return False, actual, (
-        f"维度不匹配: 当前 provider 实测 {actual} 维，库实际 {db_dim} 维\n"
-        "跨模型向量空间不兼容，混用会互相排斥，无法在现有库上重嵌。\n"
-        "必须新建库，请按以下步骤操作：\n"
-        f"  1. 导出:  python scripts/export_all_data.py\n"
-        f"  2. 重建:  python scripts/rebuild_db.py\n"
-        f"  3. 切换:  修改 .env 中 EMBEDDING_DIM / OLLAMA_EMBEDDING_DIM = {actual}\n"
-        f"  4. 重索引知识库:  python scripts/build_kb_index.py --full\n"
-        f"  5. 如有小说设定:  python scripts/build_novel_index.py --source <vault> --full"
+    return (
+        False,
+        actual,
+        (
+            f"维度不匹配: 当前 provider 实测 {actual} 维，库实际 {db_dim} 维\n"
+            "跨模型向量空间不兼容，混用会互相排斥，无法在现有库上重嵌。\n"
+            "必须新建库，请按以下步骤操作：\n"
+            f"  1. 导出:  python scripts/export_all_data.py\n"
+            f"  2. 重建:  python scripts/rebuild_db.py\n"
+            f"  3. 切换:  修改 .env 中 EMBEDDING_DIM / OLLAMA_EMBEDDING_DIM = {actual}\n"
+            f"  4. 重索引知识库:  python scripts/build_kb_index.py --full\n"
+            f"  5. 如有小说设定:  python scripts/build_novel_index.py --source <vault> --full"
+        ),
     )
 
 
@@ -125,6 +130,7 @@ def _apply_filter(payload_type, only_set, skip_set):
 
 
 # ---- check 模式 ----
+
 
 def cmd_check(store):
     """体检模式：只读输出 provider / 模型 / 维度 / 节点分布。"""
@@ -192,8 +198,8 @@ def cmd_check(store):
 
 # ---- 重嵌入主流程 ----
 
-def cmd_reindex(store, *, only=None, skip=None, batch=64,
-                restart=False, dry_run=False, yes=False):
+
+def cmd_reindex(store, *, only=None, skip=None, batch=64, restart=False, dry_run=False, yes=False):
     """重嵌入库中所有节点的向量。"""
     t0 = time.perf_counter()
 
@@ -205,8 +211,7 @@ def cmd_reindex(store, *, only=None, skip=None, batch=64,
         emsg = str(e).lower()
         if any(kw in emsg for kw in ("lock", "busy", "occupied", "concurrent")):
             print(
-                f"\n错误: 数据库被占用 —— {e}\n"
-                "请先停止占用该库的服务（REST :8090 / MCP），然后重试。",
+                f"\n错误: 数据库被占用 —— {e}\n请先停止占用该库的服务（REST :8090 / MCP），然后重试。",
                 file=sys.stderr,
             )
             return 3
@@ -248,8 +253,7 @@ def cmd_reindex(store, *, only=None, skip=None, batch=64,
         if state_fp == expected_fp:
             max_done_id = state.get("max_done_id", 0)
             done_count = state.get("done_count", 0)
-            print(f"断点续跑: 跳过 ID <= {max_done_id}（已完成 {done_count} 个）"
-                  f" [状态文件: {state_file}]")
+            print(f"断点续跑: 跳过 ID <= {max_done_id}（已完成 {done_count} 个） [状态文件: {state_file}]")
         else:
             print("库指纹（provider / 配置维度 / 库实际维度）不匹配，忽略旧进度从头开始")
             done_count = 0
@@ -297,21 +301,23 @@ def cmd_reindex(store, *, only=None, skip=None, batch=64,
     progress_interval = max(1, batch)
 
     def _save_progress(current_id, current_count):
-        _save_state(state_file, {
-            "provider": store.provider,
-            "model": getattr(
-                Config,
-                "OLLAMA_EMBEDDING_MODEL"
-                if store.provider != "openai" else "EMBEDDING_MODEL",
-                "unknown",
-            ),
-            "dim": store.dim,
-            "db_dim": db_dim,
-            "db_path": os.path.abspath(store.db_path),
-            "max_done_id": current_id,
-            "done_count": current_count,
-            "timestamp": time.time(),
-        })
+        _save_state(
+            state_file,
+            {
+                "provider": store.provider,
+                "model": getattr(
+                    Config,
+                    "OLLAMA_EMBEDDING_MODEL" if store.provider != "openai" else "EMBEDDING_MODEL",
+                    "unknown",
+                ),
+                "dim": store.dim,
+                "db_dim": db_dim,
+                "db_path": os.path.abspath(store.db_path),
+                "max_done_id": current_id,
+                "done_count": current_count,
+                "timestamp": time.time(),
+            },
+        )
 
     _interrupted = False
     _failed_break = False  # 因异常 break（区别于正常跑完 / Ctrl+C 中断）
@@ -355,8 +361,7 @@ def cmd_reindex(store, *, only=None, skip=None, batch=64,
             break
 
         # 空向量修复统计：旧向量全零 + 新向量非零 → 计入修复
-        if old_vec and not any((v or 0.0) != 0.0 for v in old_vec) \
-                and any((v or 0.0) != 0.0 for v in new_vec):
+        if old_vec and not any((v or 0.0) != 0.0 for v in old_vec) and any((v or 0.0) != 0.0 for v in new_vec):
             fixed_empty += 1
 
         # 保存第一条用于结束报告对比
@@ -370,8 +375,7 @@ def cmd_reindex(store, *, only=None, skip=None, batch=64,
             emsg = str(e).lower()
             if any(kw in emsg for kw in ("lock", "busy", "occupied")):
                 print(
-                    f"\n错误: 数据库写入被拒 —— {e}\n"
-                    "请先停止占用该库的服务（REST :8090 / MCP）。",
+                    f"\n错误: 数据库写入被拒 —— {e}\n请先停止占用该库的服务（REST :8090 / MCP）。",
                     file=sys.stderr,
                 )
                 signal.signal(signal.SIGINT, old_handler)
@@ -414,10 +418,7 @@ def cmd_reindex(store, *, only=None, skip=None, batch=64,
     print(f"  耗时:              {elapsed:.1f} 秒")
 
     if _interrupted:
-        print(
-            f"\n⚠ 被中断（Ctrl+C），已完成 {reindexed} 个节点。"
-            "下次运行自动从断点续跑。"
-        )
+        print(f"\n⚠ 被中断（Ctrl+C），已完成 {reindexed} 个节点。下次运行自动从断点续跑。")
 
     # 抽样对比
     if sample_node_id is not None and sample_old_vec is not None:
@@ -425,17 +426,14 @@ def cmd_reindex(store, *, only=None, skip=None, batch=64,
         print(f"  重嵌前: {_vec_summary(sample_old_vec)}")
         print(f"  重嵌后: {_vec_summary(sample_new_vec)}")
         if sample_old_vec and sample_new_vec:
-            changed = any(
-                abs(a - b) > 1e-6
-                for a, b in zip(sample_old_vec, sample_new_vec, strict=False)
-            )
+            changed = any(abs(a - b) > 1e-6 for a, b in zip(sample_old_vec, sample_new_vec, strict=False))
             status = "✓ 已变化" if changed else "⚠ 未变化（使用了相同模型？）"
             print(f"  结果:   {status}")
 
     print(f"\n状态文件: {state_file}")
     if reindexed > 0:
         print("\n建议: 重嵌完成后跑一次检索冒烟验证检索结果")
-        print("  python scripts/palimpsest_cli.py search \"测试\" --top-k 3")
+        print('  python scripts/palimpsest_cli.py search "测试" --top-k 3')
         if failed == 0:
             print("\n完成。")
     else:
@@ -447,6 +445,7 @@ def cmd_reindex(store, *, only=None, skip=None, batch=64,
 
 # ---- 入口 ----
 
+
 def main():
     p = argparse.ArgumentParser(
         prog="reindex",
@@ -454,35 +453,46 @@ def main():
     )
     mode = p.add_mutually_exclusive_group()
     mode.add_argument(
-        "--check", action="store_true",
+        "--check",
+        action="store_true",
         help="体检模式：只读检查 provider / 模型 / 维度 / 节点分布，不写数据",
     )
     mode.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="试运行：只报告将要重嵌哪些节点，不实际写入",
     )
     mode.add_argument(
-        "--restart", action="store_true",
+        "--restart",
+        action="store_true",
         help="忽略断点进度，从头重嵌所有节点",
     )
     p.add_argument(
-        "--resume", action="store_true", default=False,
+        "--resume",
+        action="store_true",
+        default=False,
         help="断点续跑（跳过已完成节点，这也是默认行为）",
     )
     p.add_argument(
-        "--only", default="",
+        "--only",
+        default="",
         help="只重嵌指定 payload.type（逗号分隔，如 memory,record）",
     )
     p.add_argument(
-        "--skip", default="",
+        "--skip",
+        default="",
         help="跳过指定 payload.type（逗号分隔，如 kb_chunk,novel_chunk）",
     )
     p.add_argument(
-        "--batch", type=int, default=64,
+        "--batch",
+        type=int,
+        default=64,
         help="每处理多少个节点打印一次进度并保存状态（默认 64）",
     )
     p.add_argument(
-        "--yes", "-y", action="store_true",
+        "--yes",
+        "-y",
+        action="store_true",
         help="跳过二次确认提示（脚本 / CI 自动化时使用）",
     )
 
@@ -496,8 +506,13 @@ def main():
         only = [s.strip() for s in args.only.split(",") if s.strip()] or None
         skip = [s.strip() for s in args.skip.split(",") if s.strip()] or None
         code = cmd_reindex(
-            store, only=only, skip=skip, batch=args.batch,
-            restart=args.restart, dry_run=args.dry_run, yes=args.yes,
+            store,
+            only=only,
+            skip=skip,
+            batch=args.batch,
+            restart=args.restart,
+            dry_run=args.dry_run,
+            yes=args.yes,
         )
 
     sys.exit(code)

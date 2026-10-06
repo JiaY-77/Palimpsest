@@ -192,12 +192,14 @@ _USAGE = {"calls": 0, "prompt": 0, "completion": 0, "reasoning": 0}
 def _call_deepseek(prompt: str, max_retries: int = 1) -> str | None:
     """Call DeepSeek chat completions API. Returns response content or None."""
     url = f"{Config.DEEPSEEK_BASE_URL}/chat/completions"
-    body = json.dumps({
-        "model": Config.DEEPSEEK_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.7,
-        "max_tokens": 8192,
-    }).encode()
+    body = json.dumps(
+        {
+            "model": Config.DEEPSEEK_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.7,
+            "max_tokens": 8192,
+        }
+    ).encode()
 
     headers = {
         "Content-Type": "application/json",
@@ -218,7 +220,7 @@ def _call_deepseek(prompt: str, max_retries: int = 1) -> str | None:
             _USAGE["reasoning"] += int(det.get("reasoning_tokens") or 0)
             return data["choices"][0]["message"]["content"]
         except Exception as e:  # noqa: BLE001 —— DeepSeek 调用失败打印告警按策略重试
-            print(f"  [WARN] DeepSeek call failed (attempt {attempt+1}): {e}")
+            print(f"  [WARN] DeepSeek call failed (attempt {attempt + 1}): {e}")
             if attempt < max_retries:
                 time.sleep(2)
     return None
@@ -240,10 +242,10 @@ def _generate_batch(
         "请为每条生成一条中文查询（模拟真实用户向助手提问的口吻，8–25字）。\n\n"
         "要求：\n"
         "- 交替产出两类查询：\n"
-        "  奇数条(idx 0,2,4,...) kind=\"semantic\"：口语化改写，不带专业术语黑话\n"
-        "  偶数条(idx 1,3,...) kind=\"entity\"：包含关键实体/术语\n"
+        '  奇数条(idx 0,2,4,...) kind="semantic"：口语化改写，不带专业术语黑话\n'
+        '  偶数条(idx 1,3,...) kind="entity"：包含关键实体/术语\n'
         "- **严禁复制原文中连续≥6个字的短语**——用自己的话重新表述\n"
-        "- 返回严格JSON：{\"items\":[{\"idx\":0,\"query\":\"...\"},...]}\n"
+        '- 返回严格JSON：{"items":[{"idx":0,"query":"..."},...]}\n'
         "- 只输出JSON，不要任何其他文字\n\n"
         "节点内容：\n" + "\n".join(lines)
     )
@@ -293,35 +295,34 @@ def _generate_batch(
                     skipped += 1
                     continue
 
-        result.append({
-            "query": query,
-            "kind": kind,
-            "gold_ids": [node["node_id"]],
-            "gold_type": node["payload"].get("type", "unknown"),
-            "gold_domain": node["payload"].get("domain", "general"),
-            "layer": _categorize_node(node["payload"]),
-            "source_content": content[:200],
-        })
+        result.append(
+            {
+                "query": query,
+                "kind": kind,
+                "gold_ids": [node["node_id"]],
+                "gold_type": node["payload"].get("type", "unknown"),
+                "gold_domain": node["payload"].get("domain", "general"),
+                "layer": _categorize_node(node["payload"]),
+                "source_content": content[:200],
+            }
+        )
 
     return result
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate eval query set")
-    parser.add_argument("--limit", type=int, default=0,
-                        help="Only generate first N questions (0=all)")
-    parser.add_argument("--seed", type=int, default=20260910,
-                        help="Random seed for reproducibility")
-    parser.add_argument("--resume", action="store_true",
-                        help="Skip existing qids and continue")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Only sample, print distribution, no API calls")
-    parser.add_argument("--exclude-sources", type=str,
-                        default="hermes-session_end",
-                        help="逗号分隔的 source 值，命中的节点不入池；"
-                             "显式传空字符串表示不过滤")
-    parser.add_argument("--keep-duplicates", action="store_true",
-                        help="开启后不做内容去重（默认做去重）")
+    parser.add_argument("--limit", type=int, default=0, help="Only generate first N questions (0=all)")
+    parser.add_argument("--seed", type=int, default=20260910, help="Random seed for reproducibility")
+    parser.add_argument("--resume", action="store_true", help="Skip existing qids and continue")
+    parser.add_argument("--dry-run", action="store_true", help="Only sample, print distribution, no API calls")
+    parser.add_argument(
+        "--exclude-sources",
+        type=str,
+        default="hermes-session_end",
+        help="逗号分隔的 source 值，命中的节点不入池；显式传空字符串表示不过滤",
+    )
+    parser.add_argument("--keep-duplicates", action="store_true", help="开启后不做内容去重（默认做去重）")
     args = parser.parse_args()
 
     rng = random.Random(args.seed)
@@ -350,10 +351,12 @@ def main() -> int:
         exclude_sources=exclude_sources,
         drop_duplicates=not args.keep_duplicates,
     )
-    print(f"[gen_eval_set] Pool filter: input={pool_stats['input']} "
-          f"excluded_source={pool_stats['excluded_source']} "
-          f"excluded_duplicate={pool_stats['excluded_duplicate']} "
-          f"kept={pool_stats['kept']}")
+    print(
+        f"[gen_eval_set] Pool filter: input={pool_stats['input']} "
+        f"excluded_source={pool_stats['excluded_source']} "
+        f"excluded_duplicate={pool_stats['excluded_duplicate']} "
+        f"kept={pool_stats['kept']}"
+    )
 
     # ── Stratified sampling ──────────────────────────────────────────────
     layers: dict[str, list[dict]] = {
@@ -438,23 +441,21 @@ def main() -> int:
     if done_targets:
         before = len(sampled)
         sampled = [n for n in sampled if n["node_id"] not in done_targets]
-        print(f"[gen_eval_set] Resume: 跳过 {before - len(sampled)} 个已覆盖 target，"
-              f"剩余 {len(sampled)} 个")
+        print(f"[gen_eval_set] Resume: 跳过 {before - len(sampled)} 个已覆盖 target，剩余 {len(sampled)} 个")
 
-    batches = [sampled[i:i + BATCH_SIZE] for i in range(0, len(sampled), BATCH_SIZE)]
+    batches = [sampled[i : i + BATCH_SIZE] for i in range(0, len(sampled), BATCH_SIZE)]
 
     for batch_idx, batch in enumerate(batches):
         # Check limit
         if limit and success_count >= limit:
             break
 
-        print(f"[gen_eval_set] Batch {batch_idx+1}/{len(batches)} "
-              f"(nodes {[n['node_id'] for n in batch]})")
+        print(f"[gen_eval_set] Batch {batch_idx + 1}/{len(batches)} (nodes {[n['node_id'] for n in batch]})")
 
         results = _generate_batch(batch)
         if results is None:
             fail_count += 1
-            print(f"  [FAIL] Batch {batch_idx+1} failed entirely")
+            print(f"  [FAIL] Batch {batch_idx + 1} failed entirely")
             continue
 
         for res in results:
@@ -476,8 +477,7 @@ def main() -> int:
         time.sleep(0.5)  # rate-limit
 
     # ── Add negative samples (Problem 4: dedup on resume) ──────────────
-    existing_neg_queries = {it["query"] for it in all_items
-                            if it.get("kind") == KIND_NEGATIVE}
+    existing_neg_queries = {it["query"] for it in all_items if it.get("kind") == KIND_NEGATIVE}
     neg_count = sum(1 for it in all_items if it.get("kind") == KIND_NEGATIVE)
     target_neg = 20
     for neg_query in _NEGATIVE_QUERIES:
@@ -487,15 +487,17 @@ def main() -> int:
             continue
         qid = f"q{qid_counter:03d}"
         qid_counter += 1
-        all_items.append({
-            "qid": qid,
-            "query": neg_query,
-            "kind": KIND_NEGATIVE,
-            "gold_ids": [],
-            "gold_type": "negative",
-            "gold_domain": "negative",
-            "layer": "negative",
-        })
+        all_items.append(
+            {
+                "qid": qid,
+                "query": neg_query,
+                "kind": KIND_NEGATIVE,
+                "gold_ids": [],
+                "gold_type": "negative",
+                "gold_domain": "negative",
+                "layer": "negative",
+            }
+        )
         existing_neg_queries.add(neg_query)
         neg_count += 1
 
@@ -520,9 +522,11 @@ def main() -> int:
     os.replace(tmp_path, output_path)
 
     total = _USAGE["prompt"] + _USAGE["completion"]
-    print(f"[gen_eval_set] Token 消耗: calls={_USAGE['calls']} "
-          f"prompt={_USAGE['prompt']} completion={_USAGE['completion']} "
-          f"(reasoning={_USAGE['reasoning']}) total={total}")
+    print(
+        f"[gen_eval_set] Token 消耗: calls={_USAGE['calls']} "
+        f"prompt={_USAGE['prompt']} completion={_USAGE['completion']} "
+        f"(reasoning={_USAGE['reasoning']}) total={total}"
+    )
     print(f"[gen_eval_set] Done. Success: {success_count}, Failed batches: {fail_count}")
     print(f"[gen_eval_set] Output: {output_path}")
 

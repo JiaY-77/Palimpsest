@@ -133,30 +133,32 @@ def build_archive_md(item: dict) -> str:
     title = item.get("title") or str(item.get("id", ""))
     now = datetime.now().isoformat(timespec="seconds")
     content = (item.get("content") or "").rstrip()
-    return "\n".join([
-        "---",
-        f"node_id: {item.get('id', '')}",
-        f"archived_at: {now}",
-        f"type: {item.get('type', '')}",
-        "---",
-        "",
-        f"# {title}",
-        "",
-        "> 归档自 Palimpsest（自动归档）",
-        "",
-        "| 字段 | 值 |",
-        "|---|---|",
-        f"| 节点 ID | {item.get('id', '')} |",
-        f"| 类型 | {item.get('type', '')} |",
-        f"| 状态 | {item.get('status', '')} |",
-        f"| 重要度 | {item.get('importance', '')} |",
-        f"| 归档时间 | {now} |",
-        "",
-        "## 任务内容",
-        "",
-        content,
-        "",
-    ])
+    return "\n".join(
+        [
+            "---",
+            f"node_id: {item.get('id', '')}",
+            f"archived_at: {now}",
+            f"type: {item.get('type', '')}",
+            "---",
+            "",
+            f"# {title}",
+            "",
+            "> 归档自 Palimpsest（自动归档）",
+            "",
+            "| 字段 | 值 |",
+            "|---|---|",
+            f"| 节点 ID | {item.get('id', '')} |",
+            f"| 类型 | {item.get('type', '')} |",
+            f"| 状态 | {item.get('status', '')} |",
+            f"| 重要度 | {item.get('importance', '')} |",
+            f"| 归档时间 | {now} |",
+            "",
+            "## 任务内容",
+            "",
+            content,
+            "",
+        ]
+    )
 
 
 def _resolve_knowledge_dir(knowledge_dir: str | None = None) -> str:
@@ -170,8 +172,7 @@ def _resolve_knowledge_dir(knowledge_dir: str | None = None) -> str:
     return os.path.abspath(os.path.join(project_root, "knowledge"))
 
 
-def _unique_target(archive_dir: str, date_str: str, base: str,
-                   used_names: set[str]) -> str:
+def _unique_target(archive_dir: str, date_str: str, base: str, used_names: set[str]) -> str:
     """生成不重复的归档文件名（YYYYMMDD_{base}.md，重名追加序号后缀）。"""
     name = f"{date_str}_{base}.md"
     i = 2
@@ -221,8 +222,7 @@ def _write_archive_file(path: str, text: str) -> None:
     os.replace(tmp, path)
 
 
-def archive_tasks(store: TriviumStore, dry_run: bool = True,
-                  knowledge_dir: str | None = None) -> dict:
+def archive_tasks(store: TriviumStore, dry_run: bool = True, knowledge_dir: str | None = None) -> dict:
     """已完成任务节点自动归档主入口。
 
     dry_run=True   只扫描预览：返回 candidates（含将写入的文件路径），不写文件、不删节点；
@@ -255,12 +255,15 @@ def archive_tasks(store: TriviumStore, dry_run: bool = True,
         target = _unique_target(archive_dir, date_str, base, used_names)
         planned.append({**item, "target_path": target, "already_archived": False})
 
-    preview = [{
-        "id": p["id"],
-        "title": p["title"],
-        "target_path": p["target_path"],
-        "already_archived": p["already_archived"],
-    } for p in planned]
+    preview = [
+        {
+            "id": p["id"],
+            "title": p["title"],
+            "target_path": p["target_path"],
+            "already_archived": p["already_archived"],
+        }
+        for p in planned
+    ]
 
     if dry_run:
         return {
@@ -296,12 +299,14 @@ def archive_tasks(store: TriviumStore, dry_run: bool = True,
         except Exception as e:  # noqa: BLE001 —— FTS 清理失败仅告警不阻塞归档主流程
             errors.append({"id": p["id"], "title": p["title"], "error": f"移除 FTS 索引失败: {e}"})
             logger.warning(f"FTS 索引清理失败 node={p['id']}: {e}")
-        archived.append({
-            "id": p["id"],
-            "title": p["title"],
-            "target_path": p["target_path"],
-            "already_archived": p["already_archived"],
-        })
+        archived.append(
+            {
+                "id": p["id"],
+                "title": p["title"],
+                "target_path": p["target_path"],
+                "already_archived": p["already_archived"],
+            }
+        )
 
     return {
         "dry_run": False,

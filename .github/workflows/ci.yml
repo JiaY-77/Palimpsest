@@ -43,6 +43,10 @@ jobs:
       - name: Ruff check
         run: ruff check .
 
+      # 格式化门禁：防止风格再次漂移（历史上 ruff check 通过但格式不统一）。
+      - name: Ruff format check
+        run: ruff format --check .
+
   typecheck:
     name: Type check (mypy)
     runs-on: ubuntu-latest

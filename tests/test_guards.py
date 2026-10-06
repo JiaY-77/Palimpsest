@@ -29,8 +29,7 @@ def test_get_memory_returns_payload(db_path):
 
     emb = store.embed_text("GET 端点护栏：一条用于读取端点的记忆内容")
     nid = store.insert_node(
-        {"type": "memory", "content": "GET 端点护栏：一条用于读取端点的记忆内容",
-         "importance": 0.7, "domain": "hero"},
+        {"type": "memory", "content": "GET 端点护栏：一条用于读取端点的记忆内容", "importance": 0.7, "domain": "hero"},
         emb,
     )
 
@@ -104,15 +103,19 @@ def test_mem_review_dirty_importance(db_path):
     from mcp_tools import store
     from mcp_tools.memory import mem_review
 
-    assert _to_float("abc", 0) == 0.0      # 非数值字符串 → 默认值
-    assert _to_float(None, 0) == 0.0       # None → 默认值
-    assert _to_float("0.8", 0) == 0.8      # 合法数字字符串 → 数值
+    assert _to_float("abc", 0) == 0.0  # 非数值字符串 → 默认值
+    assert _to_float(None, 0) == 0.0  # None → 默认值
+    assert _to_float("0.8", 0) == 0.8  # 合法数字字符串 → 数值
 
     # 直写一个 importance 为非数值字符串的节点
     emb = store.embed_text("脏数据护栏：importance 是字符串的记忆内容")
     store.insert_node(
-        {"type": "memory", "content": "脏数据护栏：importance 是字符串的记忆内容",
-         "importance": "not-a-number", "status": "active"},
+        {
+            "type": "memory",
+            "content": "脏数据护栏：importance 是字符串的记忆内容",
+            "importance": "not-a-number",
+            "status": "active",
+        },
         emb,
     )
 
@@ -134,8 +137,7 @@ def test_check_fts_consistency_content_drift(db_path):
     from scripts.check_fts_consistency import check
 
     emb = store.embed_text("内容对账护栏：主库全文内容 A")
-    nid = store.insert_node(
-        {"type": "memory", "content": "内容对账护栏：主库全文内容 A"}, emb)
+    nid = store.insert_node({"type": "memory", "content": "内容对账护栏：主库全文内容 A"}, emb)
 
     # 往 FTS 写入与主库不一致的 content（模拟漂移）
     sync_node(nid, "内容对账护栏：这是 FTS 侧的旧内容")
@@ -147,6 +149,7 @@ def test_check_fts_consistency_content_drift(db_path):
 
     # 修复：重建后一致
     from core.fts_index import rebuild
+
     rebuild(store)
     result2 = check(store)
     assert result2["consistent"] is True, result2

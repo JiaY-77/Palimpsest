@@ -39,18 +39,10 @@ BLOCKING_ENDPOINTS = [
 
 
 def test_blocking_endpoints_are_sync_def():
-    offenders = [
-        name for name in BLOCKING_ENDPOINTS
-        if inspect.iscoroutinefunction(getattr(main, name))
-    ]
-    assert not offenders, (
-        f"这些端点是 async def 但体内无 await，会在事件循环里跑阻塞代码、"
-        f"串行化所有请求：{offenders}"
-    )
+    offenders = [name for name in BLOCKING_ENDPOINTS if inspect.iscoroutinefunction(getattr(main, name))]
+    assert not offenders, f"这些端点是 async def 但体内无 await，会在事件循环里跑阻塞代码、串行化所有请求：{offenders}"
 
 
 def test_report_endpoint_stays_async():
     """唯一例外：``/report`` 真的 ``await generate_report(...)``，必须保持 async。"""
-    assert inspect.iscoroutinefunction(main.report_endpoint), (
-        "/report 走了 await，改成同步 def 会让协程不被执行"
-    )
+    assert inspect.iscoroutinefunction(main.report_endpoint), "/report 走了 await，改成同步 def 会让协程不被执行"

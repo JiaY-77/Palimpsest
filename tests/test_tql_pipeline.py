@@ -10,6 +10,7 @@ TriviumDB 0.8.3 特性测试 —— TQL 管线、集合代数与 EXPLAIN（P0）
 
 隔离保证：%TEMP%/tdb_ftest/ 独立临时库，不触碰正式库。
 """
+
 import math
 import os
 import tempfile
@@ -35,10 +36,8 @@ def tdb():
         norm = math.sqrt(sum(x * x for x in out)) or 1.0
         return [x / norm for x in out]
 
-    ids = [db.insert(vec(f"c{i}"), {"type": "memory", "num": i})
-           for i in range(6)]
-    for a, b, label in [(0, 1, "REL"), (1, 2, "REL"), (0, 3, "REL"),
-                        (3, 4, "CAUSES"), (1, 4, "CAUSES"), (4, 5, "REL")]:
+    ids = [db.insert(vec(f"c{i}"), {"type": "memory", "num": i}) for i in range(6)]
+    for a, b, label in [(0, 1, "REL"), (1, 2, "REL"), (0, 3, "REL"), (3, 4, "CAUSES"), (1, 4, "CAUSES"), (4, 5, "REL")]:
         db.link(ids[a], ids[b], label)
     yield db
     db.close()
@@ -76,24 +75,20 @@ def test_pipeline_page_rank_one_row_per_node(tdb):
 # 集合代数
 # ---------------------------------------------------------------------------
 def test_union(tdb):
-    rows = tdb.tql(
-        "MATCH (a)-[:REL]->(b) RETURN b UNION MATCH (a)-[:CAUSES]->(b) RETURN b")
+    rows = tdb.tql("MATCH (a)-[:REL]->(b) RETURN b UNION MATCH (a)-[:CAUSES]->(b) RETURN b")
     # REL 命中 4 个目标，CAUSES 命中 2 个目标，UNION 去重后也是这 4 个
     assert len(_rel_ids(rows, "b")) >= 4
 
 
 def test_intersect(tdb):
-    rows = tdb.tql(
-        "MATCH (a)-[:REL]->(b) RETURN b INTERSECT MATCH (a)-[:REL]->(b) RETURN b")
+    rows = tdb.tql("MATCH (a)-[:REL]->(b) RETURN b INTERSECT MATCH (a)-[:REL]->(b) RETURN b")
     assert len(_rel_ids(rows, "b")) == 4
 
 
 def test_except(tdb):
-    rows = tdb.tql(
-        "MATCH (a)-[:REL]->(b) RETURN b EXCEPT MATCH (a)-[:CAUSES]->(b) RETURN b")
+    rows = tdb.tql("MATCH (a)-[:REL]->(b) RETURN b EXCEPT MATCH (a)-[:CAUSES]->(b) RETURN b")
     # 在 REL 目标中剔除也是 CAUSES 目标的节点
-    all_rel = {r.row["b"]["id"] for r in
-               tdb.tql("MATCH (a)-[:REL]->(b) RETURN b")}
+    all_rel = {r.row["b"]["id"] for r in tdb.tql("MATCH (a)-[:REL]->(b) RETURN b")}
     except_ids = _rel_ids(rows, "b")
     assert set(except_ids) <= all_rel
     assert len(except_ids) < len(all_rel) or set(except_ids) == all_rel
@@ -104,12 +99,11 @@ def test_except(tdb):
 # ---------------------------------------------------------------------------
 @pytest.mark.xfail(
     reason="#ITERATE 定点迭代语法在当前 build 未公开（解析为 Expected Expand/identifier），"
-           "属未落地语法；待作者补充文档后恢复断言",
+    "属未落地语法；待作者补充文档后恢复断言",
     strict=False,
 )
 def test_iterate_fixed_point(tdb):
-    q = (f"SEARCH VECTOR [{V8}] TOP 1 AS seed WITH seed "
-         f"ITERATE seed EXPAND seed [:REL*1..1] AS seed RETURN seed")
+    q = f"SEARCH VECTOR [{V8}] TOP 1 AS seed WITH seed ITERATE seed EXPAND seed [:REL*1..1] AS seed RETURN seed"
     rows = tdb.tql(q)
     assert len(rows) >= 1
 
@@ -148,8 +142,7 @@ def _build_large_graph(path, n=30000):
 
 
 @pytest.mark.xfail(
-    reason="issue #31：上游 3 万节点 pagerank 大图 panic 尚未修复；"
-           "作者修好后解除 xfail 并验证结果完整性",
+    reason="issue #31：上游 3 万节点 pagerank 大图 panic 尚未修复；作者修好后解除 xfail 并验证结果完整性",
     strict=False,
 )
 def test_pagerank_30k_no_panic():
@@ -161,7 +154,6 @@ def test_pagerank_30k_no_panic():
             os.remove(os.path.join(_dir, f))
     db = _build_large_graph(path)
     v8 = ",".join(["0.5"] * 8)
-    rows = db.tql(
-        f"SEARCH VECTOR [{v8}] TOP 100 AS seed WITH seed PAGERANK seed AS pr RETURN pr")
+    rows = db.tql(f"SEARCH VECTOR [{v8}] TOP 100 AS seed WITH seed PAGERANK seed AS pr RETURN pr")
     assert 0 < len(rows) <= 100
     db.close()

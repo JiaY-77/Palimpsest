@@ -12,6 +12,7 @@ TriviumDB 0.8.3 特性测试 —— 内嵌图算法（P1）
 
 隔离保证：%TEMP%/tdb_ftest/ 独立临时库。
 """
+
 import math
 import os
 import tempfile
@@ -40,9 +41,16 @@ def tdb():
     ids = [db.insert(vec(f"n{i}"), {"num": i}) for i in range(9)]
     # 两个连通分量：A={0..4} 全连通三角，B={5..8} 环
     edges = [
-        (0, 1), (1, 2), (2, 0),          # A 三角
-        (0, 3), (3, 4), (4, 0),          # A 延伸
-        (5, 6), (6, 7), (7, 8), (8, 5),  # B 环
+        (0, 1),
+        (1, 2),
+        (2, 0),  # A 三角
+        (0, 3),
+        (3, 4),
+        (4, 0),  # A 延伸
+        (5, 6),
+        (6, 7),
+        (7, 8),
+        (8, 5),  # B 环
     ]
     for a, b in edges:
         db.link(ids[a], ids[b], "REL")

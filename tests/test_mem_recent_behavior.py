@@ -23,6 +23,7 @@ MATCH 可全量返回）。本文件在【简化前】锁定现行为，作为�
 透传进 payload（insert_node 非事务版恒置 None）。helper 复刻该路径并
 同步 FTS 索引（index_node），避免共享库主库/FTS 不一致。
 """
+
 import contextlib
 import json
 import uuid
@@ -35,8 +36,7 @@ def _ns():
 def _ingest(store, content, ts=None, domain=None):
     """经事务路径插入记忆；返回 (node_id, domain)。ts=None → 无 created_at。"""
     domain = domain or _ns()
-    pl = {"type": "memory", "content": content,
-          "importance": 0.5, "domain": domain}
+    pl = {"type": "memory", "content": content, "importance": 0.5, "domain": domain}
     if ts is not None:
         pl["created_at"] = ts
     emb = store.embed_text(content)
@@ -53,6 +53,7 @@ def _ingest(store, content, ts=None, domain=None):
     # 与 mem_ingest 链路一致：事务提交后同步 FTS 索引
     try:
         from mcp_tools.memory import index_node
+
         index_node(nid, content)
     except Exception:  # noqa: S110, BLE001 —— FTS 同步失败静默断言基于主节点数据
         pass
@@ -61,13 +62,13 @@ def _ingest(store, content, ts=None, domain=None):
 
 def _recent(domain, limit=10):
     from mcp_tools.memory import mem_recent
+
     return json.loads(mem_recent(domain=domain, limit=limit))
 
 
 def _filter_by_domain(data, ns):
     """只取本命名空间域（ns 为前缀）的结果，避免其他文件节点干扰。"""
-    return [it for it in data["results"]
-            if str(it.get("domain", "")).startswith(ns)]
+    return [it for it in data["results"] if str(it.get("domain", "")).startswith(ns)]
 
 
 def test_mem_recent_empty_domain_sorts_by_created_at_desc():
@@ -83,9 +84,7 @@ def test_mem_recent_empty_domain_sorts_by_created_at_desc():
     data = _recent("", limit=50)
     mine = _filter_by_domain(data, ns)
     contents = [it["content"] for it in mine]
-    assert contents == ["图书馆顶层藏着泛黄的手稿",
-                        "码头货轮正在装卸彩色集装箱",
-                        "山间清泉在晨光里缓缓流淌"]
+    assert contents == ["图书馆顶层藏着泛黄的手稿", "码头货轮正在装卸彩色集装箱", "山间清泉在晨光里缓缓流淌"]
 
 
 def test_mem_recent_missing_created_at_goes_last():
@@ -128,9 +127,23 @@ def test_mem_recent_limit_truncates():
 
     ns = _ns()
     d = f"{ns}d"
-    words = ["苹果园", "河流石", "星辰图", "火车站", "纸飞机",
-             "火焰山", "岛屿链", "诗歌集", "时钟塔", "森林浴",
-             "露水珠", "峡谷风", "风筝线", "灯塔光", "麦田浪"]
+    words = [
+        "苹果园",
+        "河流石",
+        "星辰图",
+        "火车站",
+        "纸飞机",
+        "火焰山",
+        "岛屿链",
+        "诗歌集",
+        "时钟塔",
+        "森林浴",
+        "露水珠",
+        "峡谷风",
+        "风筝线",
+        "灯塔光",
+        "麦田浪",
+    ]
     for i, w in enumerate(words):
         _ingest(store, f"{w}旁的木屋在黄昏亮起暖灯", ts=1000 + i, domain=d)
 
@@ -139,8 +152,8 @@ def test_mem_recent_limit_truncates():
     assert len(mine) == 5
     # 最新 5 条 = ts 最大（麦田浪/灯塔光/风筝线/峡谷风/露水珠）
     assert [it["content"] for it in mine] == [
-        f"{w}旁的木屋在黄昏亮起暖灯" for w in
-        ["麦田浪", "灯塔光", "风筝线", "峡谷风", "露水珠"]]
+        f"{w}旁的木屋在黄昏亮起暖灯" for w in ["麦田浪", "灯塔光", "风筝线", "峡谷风", "露水珠"]
+    ]
 
 
 def test_mem_recent_tie_break_by_id_desc():
@@ -159,4 +172,5 @@ def test_mem_recent_tie_break_by_id_desc():
     assert [it["content"] for it in mine] == [
         "白鹭掠过暮色中的芦苇荡",
         "礁石灯塔在雾中忽明忽暗",
-        "北斗七星在子夜指向北极方向"]
+        "北斗七星在子夜指向北极方向",
+    ]

@@ -42,8 +42,7 @@ def iso_store():
 def _mk(store, content, type, domain, importance, **extra):
     """在独立 store 直写一个节点并返回 node_id。"""
     nid = store.insert_node(
-        {"type": type, "content": content, "importance": importance,
-         "domain": domain, **extra},
+        {"type": type, "content": content, "importance": importance, "domain": domain, **extra},
         store.embed_text(content),
     )
     return nid
@@ -68,8 +67,7 @@ def test_stats_sections(iso_store):
     s.update_payload(id3, {"status": "outdated"})
     # ④⑤ novel_chunk + kind
     _mk(s, "设定丁盘点", "novel_chunk", "novel", 0.5, kind="character")
-    id5 = _mk(s, "设定戊盘点", "novel_chunk", "novel", 0.6, kind="setting",
-              hit_count=3)
+    id5 = _mk(s, "设定戊盘点", "novel_chunk", "novel", 0.6, kind="setting", hit_count=3)
     # ⑥ todo/task 0.2，无 created_at（time 分节应跳过）
     _mk(s, "任务己盘点", "todo", "task", 0.2)
 
@@ -99,10 +97,10 @@ def test_stats_sections(iso_store):
 
     # ---- importance 分桶 ----
     imp = stats["importance"]
-    assert imp["lt_0_4"] == 2, imp      # memory 0.3 + todo 0.2
+    assert imp["lt_0_4"] == 2, imp  # memory 0.3 + todo 0.2
     assert imp["0_4_to_0_6"] == 2, imp  # character 0.5 + novel_chunk 0.5
     assert imp["0_6_to_0_8"] == 1, imp  # novel_chunk 0.6
-    assert imp["ge_0_8"] == 1, imp      # character 0.9
+    assert imp["ge_0_8"] == 1, imp  # character 0.9
 
     # ---- time：按 created_at 月份（null/0 跳过）----
     tm = stats["time"]

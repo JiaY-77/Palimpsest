@@ -40,13 +40,16 @@ def _insert_completed(content: str) -> int:
     注意：`store.insert_node` 固定写 `status="active"`（extra_fields 只补 payload 里
     没有的键），因此完成状态必须在插入后 `update_payload` 补写。
     """
-    nid = store.insert_node({
-        "type": "task",
-        "domain": "task",
-        "character_name": "task",
-        "content": content,
-        "importance": 0.6,
-    }, store.embed_text(content))
+    nid = store.insert_node(
+        {
+            "type": "task",
+            "domain": "task",
+            "character_name": "task",
+            "content": content,
+            "importance": 0.6,
+        },
+        store.embed_text(content),
+    )
     store.update_payload(nid, {**store.get_node(nid)["payload"], "status": "completed"})
     return nid
 

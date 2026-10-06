@@ -10,6 +10,7 @@
   - is_included(rel_path, is_dir, rules) → bool
   - chunk_markdown(text, rules) → list[str]
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -34,6 +35,7 @@ class IndexRulesError(ValueError):
 @dataclass(frozen=True)
 class Rule:
     """kind_map 中的单条匹配规则。"""
+
     kind: str
     filename: str | None = None
     dir_prefix: str | None = None
@@ -43,6 +45,7 @@ class Rule:
 @dataclass(frozen=True)
 class IndexRules:
     """完整的索引规则配置。"""
+
     kind_map: tuple[Rule, ...] = ()
     default_kind: str = "default"
     chunk_strategy: str = "file"
@@ -96,11 +99,10 @@ KB_BUILTIN_RULES = IndexRules(
 #  校验辅助
 # ---------------------------------------------------------------------------
 
+
 def _validate_chunk_strategy(val: str) -> None:
     if val not in VALID_CHUNK_STRATEGIES:
-        raise IndexRulesError(
-            f"chunk_strategy 取值非法: {val!r}，仅支持 {VALID_CHUNK_STRATEGIES}"
-        )
+        raise IndexRulesError(f"chunk_strategy 取值非法: {val!r}，仅支持 {VALID_CHUNK_STRATEGIES}")
 
 
 def _validate_kind_map(entries: list[Any]) -> list[Rule]:
@@ -113,18 +115,21 @@ def _validate_kind_map(entries: list[Any]) -> list[Rule]:
         kind = entry["kind"]
         if not isinstance(kind, str) or not kind:
             raise IndexRulesError(f"kind_map[{i}].kind 非法: {kind!r}")
-        rules.append(Rule(
-            kind=kind,
-            filename=entry.get("filename"),
-            dir_prefix=entry.get("dir_prefix"),
-            glob=entry.get("glob"),
-        ))
+        rules.append(
+            Rule(
+                kind=kind,
+                filename=entry.get("filename"),
+                dir_prefix=entry.get("dir_prefix"),
+                glob=entry.get("glob"),
+            )
+        )
     return rules
 
 
 # ---------------------------------------------------------------------------
 #  JSON 加载
 # ---------------------------------------------------------------------------
+
 
 def _load_json_file(path: str | os.PathLike) -> dict[str, Any]:
     try:
@@ -144,9 +149,15 @@ def _build_rules_from_dict(
     """从 dict 构建 IndexRules，校验类型与取值。"""
     warnings: list[str] = []
     known_keys = {
-        "kind_map", "default_kind", "chunk_strategy",
-        "min_chunk_len", "max_chunk_len", "domain",
-        "include", "exclude", "require_frontmatter_id",
+        "kind_map",
+        "default_kind",
+        "chunk_strategy",
+        "min_chunk_len",
+        "max_chunk_len",
+        "domain",
+        "include",
+        "exclude",
+        "require_frontmatter_id",
     }
     for key in data:
         if key not in known_keys:
@@ -177,9 +188,7 @@ def _build_rules_from_dict(
         raise IndexRulesError(f"max_chunk_len 非法: {max_chunk_len!r}")
 
     if max_chunk_len < min_chunk_len:
-        raise IndexRulesError(
-            f"max_chunk_len({max_chunk_len}) < min_chunk_len({min_chunk_len})"
-        )
+        raise IndexRulesError(f"max_chunk_len({max_chunk_len}) < min_chunk_len({min_chunk_len})")
 
     domain: str | None = data.get("domain")
     if domain is not None and (not isinstance(domain, str) or not domain):
@@ -256,9 +265,7 @@ def load_rules(
     # 3. .palimpsest-index.yaml 检测（不解析，只警告）
     yaml_path = root_path / LEGACY_RULES_FILENAME
     if yaml_path.is_file():
-        warnings.append(
-            f"{LEGACY_RULES_FILENAME} 格式不再支持，请改用 {DEFAULT_RULES_FILENAME}"
-        )
+        warnings.append(f"{LEGACY_RULES_FILENAME} 格式不再支持，请改用 {DEFAULT_RULES_FILENAME}")
 
     # 4. .palimpsest-index.json
     json_path = root_path / DEFAULT_RULES_FILENAME
@@ -275,6 +282,7 @@ def load_rules(
 #  路径匹配
 # ---------------------------------------------------------------------------
 
+
 def match_kind(rel_path: str, rules: IndexRules) -> str:
     """按声明顺序逐条匹配 kind_map，全不命中返回 default_kind。"""
     norm = rel_path.replace("\\", "/")
@@ -288,10 +296,12 @@ def match_kind(rel_path: str, rules: IndexRules) -> str:
 
         if rule.dir_prefix is not None:
             prefix = rule.dir_prefix
-            if not (norm == prefix
-                    or norm.startswith(prefix + "/")
-                    or ("/" + prefix + "/") in norm
-                    or norm.endswith("/" + prefix)):
+            if not (
+                norm == prefix
+                or norm.startswith(prefix + "/")
+                or ("/" + prefix + "/") in norm
+                or norm.endswith("/" + prefix)
+            ):
                 matched = False
 
         if rule.glob is not None and not fnmatch.fnmatchcase(norm, rule.glob):
@@ -349,7 +359,7 @@ def chunk_markdown(text: str, rules: IndexRules) -> list[str]:
     if lines and lines[0].strip() == "---":
         for i in range(1, len(lines)):
             if lines[i].strip() == "---":
-                lines = lines[i + 1:]
+                lines = lines[i + 1 :]
                 break
 
     if strategy == "heading":
@@ -389,9 +399,7 @@ def chunk_markdown(text: str, rules: IndexRules) -> list[str]:
     # 相邻过小块合并
     merged: list[str] = []
     for c in chunks:
-        if (merged
-                and len(merged[-1]) < min_len
-                and len(merged[-1]) + len(c) <= max_len):
+        if merged and len(merged[-1]) < min_len and len(merged[-1]) + len(c) <= max_len:
             merged[-1] = merged[-1] + "\n" + c
         else:
             merged.append(c)
@@ -406,5 +414,5 @@ def _strip_frontmatter(text: str) -> str:
         return text
     for i in range(1, len(lines)):
         if lines[i].strip() == "---":
-            return "\n".join(lines[i + 1:])
+            return "\n".join(lines[i + 1 :])
     return text

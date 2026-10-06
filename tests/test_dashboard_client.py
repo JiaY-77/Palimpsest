@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 
 # ---- 静态检查：不得自己开库 ----
 
+
 def test_dashboard_does_not_open_database_directly():
     """dashboard 源码**代码部分**不得实例化 TriviumStore/TriviumDB。
 
@@ -40,9 +41,7 @@ def test_dashboard_does_not_open_database_directly():
             node.body = node.body[1:] or [ast.Pass()]
     code_only = ast.unparse(tree)
 
-    assert "TriviumStore" not in code_only, (
-        "dashboard 代码不得引用 TriviumStore——它是客户端，必须走 REST"
-    )
+    assert "TriviumStore" not in code_only, "dashboard 代码不得引用 TriviumStore——它是客户端，必须走 REST"
     assert "TriviumDB" not in code_only, "dashboard 代码不得引用 TriviumDB"
 
     # 也不得 import core 里的存储/索引模块
@@ -51,9 +50,7 @@ def test_dashboard_does_not_open_database_directly():
             mod = getattr(node, "module", "") or ""
             names = [a.name for a in node.names]
             assert "core.trivium_store" not in mod, "dashboard 不得 import core.trivium_store"
-            assert "core" not in [n.split(".")[0] for n in names], (
-                f"dashboard 不得直接 import core 模块：{names}"
-            )
+            assert "core" not in [n.split(".")[0] for n in names], f"dashboard 不得直接 import core 模块：{names}"
 
 
 def test_dashboard_has_no_module_level_store_instance():
@@ -68,9 +65,11 @@ def test_dashboard_has_no_module_level_store_instance():
 
 # ---- 行为检查：代理到 REST ----
 
+
 @pytest.fixture()
 def client():
     import scripts.dashboard as dash_mod
+
     return TestClient(dash_mod.app)
 
 
@@ -98,13 +97,15 @@ def test_mem_stats_proxies_rest(client, monkeypatch):
     def fake_request(method, url, **kwargs):
         captured["method"] = method
         captured["url"] = url
-        return _fake_response({
-            "totals": {
-                "total_nodes": 1169,
-                "outdated": 3,
-                "by_type": {"memory": 118, "record": 287},
+        return _fake_response(
+            {
+                "totals": {
+                    "total_nodes": 1169,
+                    "outdated": 3,
+                    "by_type": {"memory": 118, "record": 287},
+                }
             }
-        })
+        )
 
     monkeypatch.setattr(dash_mod.httpx, "request", fake_request)
 
@@ -124,13 +125,15 @@ def test_mem_recent_proxies_export(client, monkeypatch):
 
     def fake_request(method, url, **kwargs):
         assert kwargs.get("params", {}).get("page") == 1
-        return _fake_response({
-            "memories": [
-                {"id": 10, "payload": {"type": "memory", "content": "a", "status": "active"}},
-                {"id": 30, "payload": {"type": "plan", "content": "b", "status": "active"}},
-                {"id": 20, "payload": {"type": "record", "content": "c", "status": "active"}},
-            ]
-        })
+        return _fake_response(
+            {
+                "memories": [
+                    {"id": 10, "payload": {"type": "memory", "content": "a", "status": "active"}},
+                    {"id": 30, "payload": {"type": "plan", "content": "b", "status": "active"}},
+                    {"id": 20, "payload": {"type": "record", "content": "c", "status": "active"}},
+                ]
+            }
+        )
 
     monkeypatch.setattr(dash_mod.httpx, "request", fake_request)
 

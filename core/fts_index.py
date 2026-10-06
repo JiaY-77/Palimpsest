@@ -158,37 +158,31 @@ def search_fts(query: str, limit: int = 10) -> list[dict]:
         return []
     conn = None
     try:
-        conn = sqlite3.connect(
-            pathlib.Path(os.path.abspath(path)).as_uri() + "?mode=ro", uri=True
-        )
+        conn = sqlite3.connect(pathlib.Path(os.path.abspath(path)).as_uri() + "?mode=ro", uri=True)
         conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
         if len(query) > 8 and '"' not in query:
             fts_query = build_fts_query(query)
             if fts_query:
                 rows = conn.execute(
-                    "SELECT node_id, content FROM mem_fts WHERE mem_fts MATCH ? "
-                    "ORDER BY rank LIMIT ?",
+                    "SELECT node_id, content FROM mem_fts WHERE mem_fts MATCH ? ORDER BY rank LIMIT ?",
                     (fts_query, int(limit)),
                 ).fetchall()
             else:
                 pattern = f"%{query}%"
                 rows = conn.execute(
-                    "SELECT node_id, content FROM mem_fts WHERE content LIKE ? "
-                    "LIMIT ?",
+                    "SELECT node_id, content FROM mem_fts WHERE content LIKE ? LIMIT ?",
                     (pattern, int(limit)),
                 ).fetchall()
         elif len(query) >= 3 and '"' not in query:
             fts_query = f'"{query}"'
             rows = conn.execute(
-                "SELECT node_id, content FROM mem_fts WHERE mem_fts MATCH ? "
-                "ORDER BY rank LIMIT ?",
+                "SELECT node_id, content FROM mem_fts WHERE mem_fts MATCH ? ORDER BY rank LIMIT ?",
                 (fts_query, int(limit)),
             ).fetchall()
         else:
             pattern = f"%{query}%"
             rows = conn.execute(
-                "SELECT node_id, content FROM mem_fts WHERE content LIKE ? "
-                "LIMIT ?",
+                "SELECT node_id, content FROM mem_fts WHERE content LIKE ? LIMIT ?",
                 (pattern, int(limit)),
             ).fetchall()
         return [{"node_id": r[0], "content": (r[1] or "")[:120]} for r in rows]

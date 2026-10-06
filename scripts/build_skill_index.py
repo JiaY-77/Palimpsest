@@ -254,8 +254,7 @@ def _upsert_skill(store, payload: dict[str, Any], existing: dict) -> str:
     return "inserted"
 
 
-def build(skills_dir: str | None = DEFAULT_SKILLS_DIR, store=None,
-          full: bool = False) -> dict[str, Any]:
+def build(skills_dir: str | None = DEFAULT_SKILLS_DIR, store=None, full: bool = False) -> dict[str, Any]:
     """构建技能语义索引。
 
     ``full=False`` 为增量模式：新增或 mtime 变化的文件走 upsert，未变化文件跳过；
@@ -308,8 +307,7 @@ def build(skills_dir: str | None = DEFAULT_SKILLS_DIR, store=None,
             failed_paths.append(source_path)
             print(f"[跳过] 技能索引失败 {source_path}: {exc}")
 
-    total = sum(1 for _nid, payload in store.iter_payloads()
-                if payload.get("type") == CHUNK_TYPE)
+    total = sum(1 for _nid, payload in store.iter_payloads() if payload.get("type") == CHUNK_TYPE)
     result = {
         "skills_dir": skills_dir,
         "mode": "full" if full else "incremental",
@@ -320,17 +318,13 @@ def build(skills_dir: str | None = DEFAULT_SKILLS_DIR, store=None,
         "failed_paths": failed_paths,
         "total": total,
     }
-    print(
-        f"技能索引构建完成：索引 {indexed} | 跳过 {skipped} | "
-        f"清理 {cleaned} | 失败 {failed} | 总节点 {total}"
-    )
+    print(f"技能索引构建完成：索引 {indexed} | 跳过 {skipped} | 清理 {cleaned} | 失败 {failed} | 总节点 {total}")
     return result
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Hermes 技能语义索引构建（默认增量，--full 全量）")
-    parser.add_argument("--skills-dir", default=DEFAULT_SKILLS_DIR,
-                        help="技能根目录（默认 ~/.hermes/skills）")
+    parser.add_argument("--skills-dir", default=DEFAULT_SKILLS_DIR, help="技能根目录（默认 ~/.hermes/skills）")
     parser.add_argument("--full", action="store_true", help="强制刷新所有技能文件")
     args = parser.parse_args()
     print(f"技能目录: {os.path.abspath(args.skills_dir)}")
