@@ -46,7 +46,7 @@ def collect_group(db_path: str) -> list[str]:
     for name in sorted(os.listdir(directory)):
         if not name.startswith(stem):
             continue
-        tail = name[len(stem):]
+        tail = name[len(stem) :]
         if any(marker in tail for marker in _SKIP_MARKERS):
             continue
         if tail == "" or tail in _SIDE_SUFFIXES or tail.startswith(".pld."):
@@ -74,8 +74,7 @@ def verify_group(db_path: str) -> int:
 def prune_backups(target_dir: str, keep: int) -> list[str]:
     """滚动清理：按名称排序（时间戳前缀）保留最近 keep 份。"""
     entries = sorted(
-        d for d in os.listdir(target_dir)
-        if d.startswith("backup_") and os.path.isdir(os.path.join(target_dir, d))
+        d for d in os.listdir(target_dir) if d.startswith("backup_") and os.path.isdir(os.path.join(target_dir, d))
     )
     removed = []
     for name in entries[:-keep] if keep > 0 else []:
@@ -118,8 +117,7 @@ def main() -> int:
             print(f"[backup] 回读校验通过：{count} 节点")
         except Exception as exc:  # noqa: BLE001 —— 校验失败即视为备份不可用
             print(f"[backup] 回读校验失败：{exc}", file=sys.stderr)
-            print("[backup] 快照可能不是同一 generation —— 请检查备份期间是否有写入",
-                  file=sys.stderr)
+            print("[backup] 快照可能不是同一 generation —— 请检查备份期间是否有写入", file=sys.stderr)
             return 1
 
     for name in prune_backups(target_dir, args.keep):

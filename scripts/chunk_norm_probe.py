@@ -56,14 +56,26 @@ TMP = EVAL_DIR / ".tmp"
 TMP.mkdir(parents=True, exist_ok=True)
 
 _env_db = os.getenv("DB_PATH", "")
-ORIG_DB = (Path(_env_db) if os.path.isabs(_env_db) else ROOT / _env_db) if _env_db \
-    else ROOT / "data" / "mh_memory.db"
+ORIG_DB = (Path(_env_db) if os.path.isabs(_env_db) else ROOT / _env_db) if _env_db else ROOT / "data" / "mh_memory.db"
 ORIG_FTS = ORIG_DB.parent / "fts.db"
 
-VARIANTS = ("base", "max", "mean_top2", "max_div_sqrt", "layered_top2", "layered_max",
-            "rrf_layered", "calib_max",
-            "calib_s80", "calib_s60", "calib_s40", "calib_cond2", "calib_cond3",
-            "calib_head", "calib_dom")
+VARIANTS = (
+    "base",
+    "max",
+    "mean_top2",
+    "max_div_sqrt",
+    "layered_top2",
+    "layered_max",
+    "rrf_layered",
+    "calib_max",
+    "calib_s80",
+    "calib_s60",
+    "calib_s40",
+    "calib_cond2",
+    "calib_cond3",
+    "calib_head",
+    "calib_dom",
+)
 
 # 方向⑤新增变体说明：
 #   rrf_layered  RRF(k=60) 融合 layered_max 与 layered_top2 两路排序
@@ -112,8 +124,7 @@ def unit(m: np.ndarray) -> np.ndarray:
 
 
 def node_domain(payload: dict) -> str:
-    return (payload.get("domain", "")
-            or payload.get("character_name", "") or "general").strip().lower()
+    return (payload.get("domain", "") or payload.get("character_name", "") or "general").strip().lower()
 
 
 def embed_batch(texts: list[str]) -> np.ndarray:
@@ -123,8 +134,7 @@ def embed_batch(texts: list[str]) -> np.ndarray:
     url = Config.OLLAMA_EMBEDDING_BASE_URL.rstrip("/")
     model = Config.OLLAMA_EMBEDDING_MODEL
     try:
-        r = requests.post(f"{url}/api/embed",
-                          json={"model": model, "input": texts}, timeout=300)
+        r = requests.post(f"{url}/api/embed", json={"model": model, "input": texts}, timeout=300)
         r.raise_for_status()
         vecs = r.json().get("embeddings")
         if vecs:
@@ -133,8 +143,7 @@ def embed_batch(texts: list[str]) -> np.ndarray:
         pass
     out = []
     for t in texts:
-        rr = requests.post(f"{url}/api/embeddings",
-                           json={"model": model, "prompt": t[:2500]}, timeout=120)
+        rr = requests.post(f"{url}/api/embeddings", json={"model": model, "prompt": t[:2500]}, timeout=120)
         rr.raise_for_status()
         out.append(rr.json()["embedding"])
     return np.asarray(out, dtype=np.float32)
@@ -145,7 +154,7 @@ def chunks(text: str, size: int, overlap: int) -> list[str]:
     if len(text) <= size:
         return [text] if text else []
     step = max(1, size - overlap)
-    return [text[i:i + size] for i in range(0, len(text), step) if text[i:i + size].strip()]
+    return [text[i : i + size] for i in range(0, len(text), step) if text[i : i + size].strip()]
 
 
 def main() -> None:
@@ -183,10 +192,11 @@ def main() -> None:
     gold_layer = Counter(it.get("layer") for it in pos)
     gold_dom = Counter(gold_domain.values())
     print(f"\n分组键核对（n={len(pos)} 题）:")
-    print("  gold 题目 layer 层分布（旧分组口径，勿再用）: "
-          + "  ".join(f"{L}:{gold_layer.get(L, 0)}" for L in LAYERS))
-    print("  gold 节点真实 domain 分布（本次分组键）: "
-          + "  ".join(f"{d}:{gold_dom.get(d, 0)}" for d in sorted(gold_dom, key=lambda d: -gold_dom[d])))
+    print("  gold 题目 layer 层分布（旧分组口径，勿再用）: " + "  ".join(f"{L}:{gold_layer.get(L, 0)}" for L in LAYERS))
+    print(
+        "  gold 节点真实 domain 分布（本次分组键）: "
+        + "  ".join(f"{d}:{gold_dom.get(d, 0)}" for d in sorted(gold_dom, key=lambda d: -gold_dom[d]))
+    )
     align = Counter((gold_domain[it["qid"]], it.get("layer")) for it in pos)
     print("  gold真实domain × 题目layer 交叉（应能看出旧 key 与真实分组错位）:")
     for (d, L), c in sorted(align.items(), key=lambda x: (-x[1], x[0])):
@@ -198,8 +208,7 @@ def main() -> None:
     cand_dom_c = Counter()
     for n, it in enumerate(pos, 1):
         qv = unit(np.asarray(store.embed_text(it["query"]), dtype=np.float32)[None, :])[0]
-        cands = store.search_similar(qv, top_k=args.cand, expand_depth=0,
-                                     apply_decay=False, block="")
+        cands = store.search_similar(qv, top_k=args.cand, expand_depth=0, apply_decay=False, block="")
         ids, texts, doms = [], [], []
         for c in cands:
             pl = c.get("payload", {}) or {}
@@ -277,8 +286,7 @@ def main() -> None:
 
         # ---- 方向⑤ 第3轮：软校准 / 条件校准 / 保头校准 / 分域校准 ----
         # 四个新变体都以 calib_max 的「非 kb 映射分」为基础，kb 侧一律保持整条余弦（同 calib_max）。
-        for key in ("calib_s80", "calib_s60", "calib_s40", "calib_cond2", "calib_cond3",
-                    "calib_head", "calib_dom"):
+        for key in ("calib_s80", "calib_s60", "calib_s40", "calib_cond2", "calib_cond3", "calib_head", "calib_dom"):
             scores[key] = np.array(base_scores, dtype=np.float64)
         if nonkb_pos:
             mapped = {i: float(scores["calib_max"][i]) for i in nonkb_pos}
@@ -291,31 +299,33 @@ def main() -> None:
             #     （块数 1 时 max == 整条余弦，本不需要动；映射反而破坏其分数）
             for t, key in ((2, "calib_cond2"), (3, "calib_cond3")):
                 for i in nonkb_pos:
-                    scores[key][i] = (mapped[i] if len(node_sims[i]) >= t
-                                      else float(base_scores[i]))
+                    scores[key][i] = mapped[i] if len(node_sims[i]) >= t else float(base_scores[i])
             # (c) 保头校准：非 kb 组内 base 分最高者不被组内他人反超（护住 R@1 头部）
             for i in nonkb_pos:
                 scores["calib_head"][i] = mapped[i]
             top_base = max(nonkb_pos, key=lambda i: float(base_scores[i]))
-            scores["calib_head"][top_base] = max(float(base_scores[top_base]),
-                                                 max(mapped.values()))
+            scores["calib_head"][top_base] = max(float(base_scores[top_base]), max(mapped.values()))
             # (d) 分域校准：非 kb 内部按真实 domain 各自分组，映射到组内 base 分分布
             for d in sorted({doms[i] for i in nonkb_pos}):
                 grp = [i for i in nonkb_pos if doms[i] == d]
                 if len(grp) == 1:
                     scores["calib_dom"][grp[0]] = float(base_scores[grp[0]])
                     continue
-                ref_d = np.sort(np.asarray([float(base_scores[i]) for i in grp],
-                                           dtype=np.float64))
+                ref_d = np.sort(np.asarray([float(base_scores[i]) for i in grp], dtype=np.float64))
                 grid_d = np.linspace(0.0, 1.0, len(ref_d))
                 order_d = sorted(grp, key=lambda i: -scores["max"][i])
                 for r, i in enumerate(order_d):
                     p = 1.0 - (r + 0.5) / len(order_d)
                     scores["calib_dom"][i] = float(np.interp(p, grid_d, ref_d))
 
-        row = {"qid": it["qid"], "layer": it.get("layer"),
-               "gold": it["gold_ids"], "gold_domain": gold_domain[it["qid"]],
-               "ids": ids, "doms": doms}
+        row = {
+            "qid": it["qid"],
+            "layer": it.get("layer"),
+            "gold": it["gold_ids"],
+            "gold_domain": gold_domain[it["qid"]],
+            "ids": ids,
+            "doms": doms,
+        }
         for v in VARIANTS:
             row[v] = [ids[i] for i in np.argsort(-scores[v])]
         rows.append(row)
@@ -343,8 +353,7 @@ def main() -> None:
             return sum(v) / len(v) if v else 0.0
 
         out = {m: avg(v) for m, v in agg.items()}
-        out["domain_r5"] = {d: avg(v["recall@5"]) for d, v in sorted(
-            dom.items(), key=lambda x: -len(x[1]))}
+        out["domain_r5"] = {d: avg(v["recall@5"]) for d, v in sorted(dom.items(), key=lambda x: -len(x[1]))}
         return out
 
     res = {v: evaluate(v) for v in VARIANTS}
@@ -352,15 +361,19 @@ def main() -> None:
     dom_order = list(base["domain_r5"].keys())
 
     print("\n" + "=" * 78)
-    print(f"变体对照表（题数 {len(rows)}/{len(pos)}, cand={args.cand}, chunk={args.chunk}, overlap={args.overlap}, model={MODEL}）")
+    print(
+        f"变体对照表（题数 {len(rows)}/{len(pos)}, cand={args.cand}, chunk={args.chunk}, overlap={args.overlap}, model={MODEL}）"
+    )
     hdr = f"{'variant':<14} R@1    R@3    R@5    R@10   MRR    "
     for d in dom_order:
         hdr += f"{d[:5]:>7}"
     print(hdr)
     for v in VARIANTS:
         m = res[v]
-        line = (f"{v:<14} {m['recall@1']:.4f} {m['recall@3']:.4f} {m['recall@5']:.4f} "
-                f"{m['recall@10']:.4f} {m['mrr@10']:.4f}  ")
+        line = (
+            f"{v:<14} {m['recall@1']:.4f} {m['recall@3']:.4f} {m['recall@5']:.4f} "
+            f"{m['recall@10']:.4f} {m['mrr@10']:.4f}  "
+        )
         for d in dom_order:
             line += f"{m['domain_r5'][d]:7.3f}"
         print(line)
@@ -375,11 +388,16 @@ def main() -> None:
         return sum(recall_at_k(r[key], gold[i], 5) for i, r in enumerate(sub)) / len(sub)
 
     base_r5_all, base_r5_kb, base_r5_hermes, base_r5_nonkb = (
-        r5_pp("base"), r5_pp("base", [r for r in rows if r["gold_domain"] == "kb"]),
-        r5_pp("base", [r for r in rows if r["gold_domain"] == "hermes"]), r5_pp("base", nonkb_idx))
+        r5_pp("base"),
+        r5_pp("base", [r for r in rows if r["gold_domain"] == "kb"]),
+        r5_pp("base", [r for r in rows if r["gold_domain"] == "hermes"]),
+        r5_pp("base", nonkb_idx),
+    )
     print("\nΔ R@5 相对 base（pp）:")
-    print(f"  base R@5 参照值  全部 {base_r5_all:.4f} | kb {base_r5_kb:.4f} | "
-          f"hermes {base_r5_hermes:.4f} | 非kb {base_r5_nonkb:.4f}")
+    print(
+        f"  base R@5 参照值  全部 {base_r5_all:.4f} | kb {base_r5_kb:.4f} | "
+        f"hermes {base_r5_hermes:.4f} | 非kb {base_r5_nonkb:.4f}"
+    )
     deltas = {}
     for v in VARIANTS:
         if v == "base":
@@ -389,8 +407,7 @@ def main() -> None:
         d_her = 100 * (r5_pp(v, [r for r in rows if r["gold_domain"] == "hermes"]) - base_r5_hermes)
         d_non = 100 * (r5_pp(v, nonkb_idx) - base_r5_nonkb)
         deltas[v] = {"all": d_all, "kb": d_kb, "hermes": d_her, "nonkb": d_non}
-        print(f"  {v:<14} 全部 {d_all:+6.2f} | kb {d_kb:+6.2f} | "
-              f"hermes {d_her:+6.2f} | 非kb {d_non:+6.2f}")
+        print(f"  {v:<14} 全部 {d_all:+6.2f} | kb {d_kb:+6.2f} | hermes {d_her:+6.2f} | 非kb {d_non:+6.2f}")
     print("\n判定标准：kb R@5 相对 base 下降 ≤ 1pp 且 非kb（尤其 hermes）R@5 上涨 → 可用候选")
     for v in VARIANTS:
         if v == "base":
@@ -402,32 +419,48 @@ def main() -> None:
         hermes_up = d["hermes"] > 0.0
         usable = kb_ok and nonkb_up and hermes_up
         verdict = "可用 ✔" if usable else "不可用 ✘"
-        print(f"  {v:<14} kb:{d['kb']:+.2f}pp({'降≤1pp' if kb_ok else '降>1pp'}) "
-              f"hermes:{d['hermes']:+.2f}pp({'涨' if hermes_up else '未涨'}) "
-              f"非kb:{d['nonkb']:+.2f}pp({'涨' if nonkb_up else '未涨'})  → {verdict}")
+        print(
+            f"  {v:<14} kb:{d['kb']:+.2f}pp({'降≤1pp' if kb_ok else '降>1pp'}) "
+            f"hermes:{d['hermes']:+.2f}pp({'涨' if hermes_up else '未涨'}) "
+            f"非kb:{d['nonkb']:+.2f}pp({'涨' if nonkb_up else '未涨'})  → {verdict}"
+        )
 
     post_sha = sha256(ORIG_DB)
     consistent = pre_sha == post_sha
-    print(f"\n库完整性: 原库前 {pre_sha[:16]} 后 {post_sha[:16]} → "
-          f"{'一致' if consistent else '不一致'}")
-    print(f"题数 {len(rows)}；块总数 {n_chunks}；参数 chunk={args.chunk} overlap={args.overlap} "
-          f"cand={args.cand} limit={args.limit}；耗时 {time.time() - t0:.0f}s")
+    print(f"\n库完整性: 原库前 {pre_sha[:16]} 后 {post_sha[:16]} → {'一致' if consistent else '不一致'}")
+    print(
+        f"题数 {len(rows)}；块总数 {n_chunks}；参数 chunk={args.chunk} overlap={args.overlap} "
+        f"cand={args.cand} limit={args.limit}；耗时 {time.time() - t0:.0f}s"
+    )
 
     out = {
-        "meta": {"chunk": args.chunk, "overlap": args.overlap, "cand": args.cand,
-                 "limit": args.limit, "model": MODEL, "n_questions": len(rows),
-                 "n_chunks": n_chunks, "runtime_s": round(time.time() - t0, 1)},
+        "meta": {
+            "chunk": args.chunk,
+            "overlap": args.overlap,
+            "cand": args.cand,
+            "limit": args.limit,
+            "model": MODEL,
+            "n_questions": len(rows),
+            "n_chunks": n_chunks,
+            "runtime_s": round(time.time() - t0, 1),
+        },
         "sha256": {"pre": pre_sha, "post": post_sha, "consistent": consistent},
-        "distributions": {"gold_layer": dict(gold_layer), "gold_domain": dict(gold_dom),
-                          "candidate_domain": dict(cand_dom_c)},
-        "variants": {v: {**{m: res[v][m] for m in ("recall@1", "recall@3", "recall@5",
-                                                   "recall@10", "mrr@10")},
-                          "domain_r5": res[v]["domain_r5"],
-                          "delta_r5_pp": deltas.get(v)} for v in VARIANTS},
+        "distributions": {
+            "gold_layer": dict(gold_layer),
+            "gold_domain": dict(gold_dom),
+            "candidate_domain": dict(cand_dom_c),
+        },
+        "variants": {
+            v: {
+                **{m: res[v][m] for m in ("recall@1", "recall@3", "recall@5", "recall@10", "mrr@10")},
+                "domain_r5": res[v]["domain_r5"],
+                "delta_r5_pp": deltas.get(v),
+            }
+            for v in VARIANTS
+        },
         "rows": rows,
     }
-    (TMP / "chunk_norm_probe.json").write_text(json.dumps(out, ensure_ascii=False),
-                                              encoding="utf-8")
+    (TMP / "chunk_norm_probe.json").write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
     print(f"结果已写入 {TMP / 'chunk_norm_probe.json'}")
 
 

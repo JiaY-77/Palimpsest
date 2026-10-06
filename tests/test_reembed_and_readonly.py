@@ -59,9 +59,7 @@ def _fake_embed(text):
 class TestReembedNode:
     def test_reembed_updates_vector_to_new_content(self):
         with _isolated_store() as store:
-            nid = store.insert_node(
-                {"type": "memory", "content": "alpha topic"}, _fake_embed("alpha topic")
-            )
+            nid = store.insert_node({"type": "memory", "content": "alpha topic"}, _fake_embed("alpha topic"))
             before = store.get_node(nid)["vector"]
             # change content via the same path PUT/PATCH uses (no vector touch)
             store.update_payload(nid, {"content": "beta topic"})
@@ -74,8 +72,9 @@ class TestReembedNode:
             # f32 storage vs f64 compute → compare approximately, not exactly
             expected = _fake_embed("beta topic")
             assert len(after) == len(expected)
-            assert max(abs(a - b) for a, b in zip(after, expected, strict=False)) < 1e-5, \
+            assert max(abs(a - b) for a, b in zip(after, expected, strict=False)) < 1e-5, (
                 "vector must match new content"
+            )
 
     def test_reembed_missing_node_returns_false(self):
         with _isolated_store() as store:
@@ -83,9 +82,7 @@ class TestReembedNode:
 
     def test_reembed_is_idempotent_for_same_content(self):
         with _isolated_store() as store:
-            nid = store.insert_node(
-                {"type": "memory", "content": "stable"}, _fake_embed("stable")
-            )
+            nid = store.insert_node({"type": "memory", "content": "stable"}, _fake_embed("stable"))
             assert store.reembed_node(nid) is True
             first = store.get_node(nid)["vector"]
             assert store.reembed_node(nid) is True

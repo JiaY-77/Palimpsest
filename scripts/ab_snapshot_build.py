@@ -27,8 +27,7 @@ TMP = ROOT / "eval" / ".tmp" / "ab2"
 TMP.mkdir(parents=True, exist_ok=True)
 
 _env_db = os.getenv("DB_PATH", "")
-ORIG_DB = (Path(_env_db) if os.path.isabs(_env_db) else ROOT / _env_db) if _env_db \
-    else ROOT / "data" / "mh_memory.db"
+ORIG_DB = (Path(_env_db) if os.path.isabs(_env_db) else ROOT / _env_db) if _env_db else ROOT / "data" / "mh_memory.db"
 ORIG_FTS = ORIG_DB.parent / "fts.db"
 
 
@@ -43,8 +42,7 @@ def sha256(p: Path) -> str:
 PRE = sha256(ORIG_DB)
 
 # ── 1) 两份副本都从同一真库快照复制 ──
-sidecars = [p for p in ORIG_DB.parent.iterdir()
-            if p.name.startswith(ORIG_DB.name) and p.is_file()]
+sidecars = [p for p in ORIG_DB.parent.iterdir() if p.name.startswith(ORIG_DB.name) and p.is_file()]
 for name in ("qwen3", "bgem3"):
     d = TMP / name
     if d.exists():
@@ -73,8 +71,7 @@ if len(probe) != store.dim:
     raise SystemExit(f"维度不匹配 bge-m3={len(probe)} vs 库={store.dim}")
 
 # 物化后再写（iter_nodes 生成器占连接，循环内 update_vector 会 Database locked）
-targets = [(nid, (node.get("payload") or {}).get("content") or "")
-           for nid, node in store.iter_nodes()]
+targets = [(nid, (node.get("payload") or {}).get("content") or "") for nid, node in store.iter_nodes()]
 print(f"待重嵌节点 {len(targets)} 条（连接已释放）")
 
 t0 = time.time()
@@ -104,7 +101,11 @@ if fails:
 
 POST = sha256(ORIG_DB)
 print(f"真库完整性: {'一致 ✅' if PRE == POST else '不一致 ❌'}")
-(TMP / "build_report.json").write_text(json.dumps(
-    {"ok": ok, "skip": skip, "fail": fail, "fails": fails[:50],
-     "dim": store.dim, "db_unchanged": PRE == POST},
-    ensure_ascii=False, indent=1), encoding="utf-8")
+(TMP / "build_report.json").write_text(
+    json.dumps(
+        {"ok": ok, "skip": skip, "fail": fail, "fails": fails[:50], "dim": store.dim, "db_unchanged": PRE == POST},
+        ensure_ascii=False,
+        indent=1,
+    ),
+    encoding="utf-8",
+)

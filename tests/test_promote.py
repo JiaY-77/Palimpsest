@@ -42,13 +42,19 @@ def iso_store():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def _mk(store, content, type, importance, hit_count, domain="general",
-        **extra):
-    nid = store.insert_node({
-        "type": type, "content": content, "importance": importance,
-        "domain": domain, "hit_count": hit_count, "last_hit_at": time.time(),
-        **extra,
-    }, store.embed_text(content))
+def _mk(store, content, type, importance, hit_count, domain="general", **extra):
+    nid = store.insert_node(
+        {
+            "type": type,
+            "content": content,
+            "importance": importance,
+            "domain": domain,
+            "hit_count": hit_count,
+            "last_hit_at": time.time(),
+            **extra,
+        },
+        store.embed_text(content),
+    )
     return nid
 
 
@@ -66,8 +72,7 @@ def test_promote_candidates_filter(iso_store):
     assert len(result["candidates"]) == 1
     assert yi not in cand_ids and bing not in cand_ids
     c = result["candidates"][0]
-    for k in ("id", "content", "type", "domain", "importance", "hit_count",
-              "suggested_action"):
+    for k in ("id", "content", "type", "domain", "importance", "hit_count", "suggested_action"):
         assert k in c, f"候选缺字段 {k}: {c}"
 
 
@@ -100,18 +105,16 @@ def test_hit_tracking_via_search(iso_store):
     """真实检索路径：命中计数先进内存缓冲，flush 后才落库（+1）。"""
     s = iso_store
     content = "命中追踪护栏唯一标记词promoteunique"
-    nid = s.insert_node({"type": "memory", "content": content,
-                         "importance": 0.5, "domain": "general"},
-                        s.embed_text(content))
+    nid = s.insert_node(
+        {"type": "memory", "content": content, "importance": 0.5, "domain": "general"}, s.embed_text(content)
+    )
     assert s.get_node(nid)["payload"].get("hit_count") is None
 
     results = s.search_similar(s.embed_text(content), top_k=5, expand_depth=1)
     assert any(r.get("id") == nid for r in results), f"应命中插入节点: {results}"
 
     # 检索返回热路径不写库：返回后库里不应出现 hit_count
-    assert s.get_node(nid)["payload"].get("hit_count") is None, (
-        "search_similar 仍在返回路径上写库"
-    )
+    assert s.get_node(nid)["payload"].get("hit_count") is None, "search_similar 仍在返回路径上写库"
 
     s.flush_hit_counts()
 

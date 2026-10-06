@@ -26,6 +26,7 @@
     venv/Scripts/python.exe scripts/link_novel_relations.py --dry-run
     venv/Scripts/python.exe scripts/link_novel_relations.py --apply
 """
+
 import argparse
 import json
 import os
@@ -47,7 +48,11 @@ DEFAULT_RELATIONS = os.path.join(PROJECT_ROOT, "_novel_relations.json")
 # 双向建边约定：所有语义关系（本脚本 type）均视为无向，建一对反向边。
 # 在此集合外的 label 需特别处理，但本脚本 type 全部归属此集合。
 BIDIRECTIONAL_TYPES = {
-    "TEACHER_STUDENT", "FAMILY", "RIVAL", "ALLY", "SAME_SECT",
+    "TEACHER_STUDENT",
+    "FAMILY",
+    "RIVAL",
+    "ALLY",
+    "SAME_SECT",
 }
 
 
@@ -96,14 +101,10 @@ def main():
         description="小说人物关系批量建边",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--relations", default=DEFAULT_RELATIONS,
-                        help="关系清单 JSON 路径")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="只预览统计，不写库")
-    parser.add_argument("--force", action="store_true",
-                        help="已存在的同名边也强制重建（默认跳过）")
-    parser.add_argument("--apply", action="store_true",
-                        help="真正写库建边（默认 dry-run 只预览统计）")
+    parser.add_argument("--relations", default=DEFAULT_RELATIONS, help="关系清单 JSON 路径")
+    parser.add_argument("--dry-run", action="store_true", help="只预览统计，不写库")
+    parser.add_argument("--force", action="store_true", help="已存在的同名边也强制重建（默认跳过）")
+    parser.add_argument("--apply", action="store_true", help="真正写库建边（默认 dry-run 只预览统计）")
     args = parser.parse_args()
 
     # 默认 dry-run：未给 --apply 时按 dry-run
@@ -120,8 +121,8 @@ def main():
     # 第一步：预解析所有角色名，判断匹配/未匹配/去重
     total = len(relations)
     linked = 0
-    skipped_relations = 0      # 任一端匹配不到角色而跳过的关系
-    existing_skipped = 0       # 已存在边而跳过的关系
+    skipped_relations = 0  # 任一端匹配不到角色而跳过的关系
+    existing_skipped = 0  # 已存在边而跳过的关系
     unmatched_roles = set()
 
     # （去重集合：同一 (source, target, type) 只建一次）
@@ -154,8 +155,7 @@ def main():
             print(f"警告：未约定的关系类型 {rtype}（{src}→{dst}），仍按双向建边")
 
         # 幂等检查：正反向任一条已存在即视为已建（除非 --force）
-        exists = edge_exists(store, src_id, dst_id, rtype) \
-            or edge_exists(store, dst_id, src_id, rtype)
+        exists = edge_exists(store, src_id, dst_id, rtype) or edge_exists(store, dst_id, src_id, rtype)
         if exists and not args.force:
             existing_skipped += 1
             continue

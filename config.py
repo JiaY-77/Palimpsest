@@ -28,6 +28,7 @@ def _detect_embedding_provider() -> str:
         return "openai"
     return "ollama"
 
+
 # 项目根 = config.py 所在目录（直接运行时为仓库根，pip 安装后为 site-packages 下包目录）。
 # DB_PATH 等相对路径一律以它为基准解析为绝对路径，不再依赖/修改进程当前工作目录
 # （此前依赖 mcp_tools 里 os.chdir 切换到项目根来解析相对路径，作为包安装后会污染
@@ -96,9 +97,7 @@ class Config:
     # 逗号分隔的 type 列表，列在这里的 type 完全跳过冲突检测（不标 outdated、
     # 不建 REVISED_BY 边）。默认空 = 行为完全不变（向后兼容）。
     #   例：CONFLICT_SKIP_TYPES=task
-    CONFLICT_SKIP_TYPES = frozenset(
-        t.strip() for t in os.getenv("CONFLICT_SKIP_TYPES", "").split(",") if t.strip()
-    )
+    CONFLICT_SKIP_TYPES = frozenset(t.strip() for t in os.getenv("CONFLICT_SKIP_TYPES", "").split(",") if t.strip())
 
     # 语义主序的图扩散深度：0 = 纯语义排序（默认；实测 R@5 0.7542）
     # 1 = 原行为（图邻居参与语义主序，实测 R@5 0.5000；可一键回退）
@@ -116,16 +115,14 @@ class Config:
     # 未登记的 type 一律归 facts（保守兜底，避免静默丢结果）。
     # 逗号分隔便于按部署调整，无需改代码（默认值与 2.0 行为一致）。
     TIER_FACTS = frozenset(
-        t.strip() for t in os.getenv(
+        t.strip()
+        for t in os.getenv(
             "TIER_FACTS",
             "memory,correction,decision,plan,task,review,solution,inspiration,user_intent,character_state",
-        ).split(",") if t.strip()
+        ).split(",")
+        if t.strip()
     )
-    TIER_LOGS = frozenset(
-        t.strip() for t in os.getenv(
-            "TIER_LOGS", "record,event,git_commit"
-        ).split(",") if t.strip()
-    )
+    TIER_LOGS = frozenset(t.strip() for t in os.getenv("TIER_LOGS", "record,event,git_commit").split(",") if t.strip())
     DEFAULT_TIER = os.getenv("DEFAULT_TIER", "facts")
 
     # ---- LLM 后端选择 ----

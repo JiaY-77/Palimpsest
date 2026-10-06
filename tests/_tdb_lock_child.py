@@ -14,6 +14,7 @@ TriviumDB 0.8.3 特性测试 —— 跨进程写锁子进程（仅供 test_concu
   · 顶层仅在被作为脚本执行时运行（__main__ 守卫），被 import 时不做事；
   · 进程计数守卫：同库路径的并发写入由本子进程通过 lock 文件互斥，防止重复实例踩踏。
 """
+
 import os
 import sys
 import time
@@ -43,8 +44,7 @@ def _writer(path: str) -> int:
 
 
 def _reader(path: str) -> int:
-    db = triviumdb.TriviumDB(path, dim=8, auto_build_quiver=False,
-                             access_mode="read_only")
+    db = triviumdb.TriviumDB(path, dim=8, auto_build_quiver=False, access_mode="read_only")
     print("OPEN_READ")
     time.sleep(0.5)
     db.close()

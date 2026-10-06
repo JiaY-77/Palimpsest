@@ -9,6 +9,7 @@ mem_communities 社区发现工具回归测试
   - content 用低相似短语（fake embedder 2-gram 共享前缀会互相高相似，
     干扰 test_consolidate_dryrun 的候选断言）。
 """
+
 import contextlib
 import json
 import uuid
@@ -24,11 +25,14 @@ def _mk_cluster_graph():
         for i in range(6):
             vec = [0.0] * store.dim
             vec[i % 2] = 0.5
-            nid = db.insert(vec, {
-                "type": "memory",
-                "domain": f"b1_{uuid.uuid4().hex[:8]}",
-                "content": f"分析测试内容节点编号{i}",
-            })
+            nid = db.insert(
+                vec,
+                {
+                    "type": "memory",
+                    "domain": f"b1_{uuid.uuid4().hex[:8]}",
+                    "content": f"分析测试内容节点编号{i}",
+                },
+            )
             ids.append(nid)
         for a, b in [(0, 1), (1, 2), (2, 0), (3, 4), (4, 5), (5, 3), (0, 3)]:
             db.link(ids[a], ids[b], "REL")
@@ -45,6 +49,7 @@ def _sync_fts(ids, contents):
     """对直插节点同步 FTS（与 mem_ingest 事务后 index_node 链路一致）。"""
     try:
         from mcp_tools.memory import index_node
+
         for nid, content in zip(ids, contents, strict=False):
             with contextlib.suppress(Exception):
                 index_node(nid, content)
@@ -54,6 +59,7 @@ def _sync_fts(ids, contents):
 
 def _call(**kw):
     from mcp_tools.graph import mem_communities
+
     return json.loads(mem_communities(**kw))
 
 
@@ -88,7 +94,9 @@ def test_empty_graph_returns_hint():
     db = store._acquire()
     content = "孤立节点测试内容"
     try:
-        nid = db.insert([0.5] * store.dim, {"type": "memory", "domain": f"iso_{uuid.uuid4().hex[:8]}", "content": content})
+        nid = db.insert(
+            [0.5] * store.dim, {"type": "memory", "domain": f"iso_{uuid.uuid4().hex[:8]}", "content": content}
+        )
     finally:
         with contextlib.suppress(Exception):
             db.close()
@@ -105,6 +113,7 @@ def test_do_pagerank_internal_smoke():
     若炸说明 _do_pagerank 或数据有 bug，应当暴露而非静默通过。
     """
     from mcp_tools.graph import _do_pagerank
+
     db = store._acquire()
     try:
         node_count = db.node_count()
@@ -149,6 +158,4 @@ def test_communities_reports_acquire_failure(monkeypatch):
     result = json.loads(graph.mem_communities())
 
     assert result["error"] == "acquire 探针失败", result
-    assert not [e for e in swallowed if isinstance(e, NameError)], (
-        f"finally 里抛了 NameError 并被吞掉: {swallowed}"
-    )
+    assert not [e for e in swallowed if isinstance(e, NameError)], f"finally 里抛了 NameError 并被吞掉: {swallowed}"

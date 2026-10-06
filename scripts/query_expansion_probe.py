@@ -46,8 +46,7 @@ TMP = EVAL_DIR / ".tmp"
 TMP.mkdir(parents=True, exist_ok=True)
 
 _env_db = os.getenv("DB_PATH", "")
-ORIG_DB = (Path(_env_db) if os.path.isabs(_env_db) else ROOT / _env_db) if _env_db \
-    else ROOT / "data" / "mh_memory.db"
+ORIG_DB = (Path(_env_db) if os.path.isabs(_env_db) else ROOT / _env_db) if _env_db else ROOT / "data" / "mh_memory.db"
 ORIG_FTS = ORIG_DB.parent / "fts.db"
 
 CACHE = TMP / "query_expansion_cache.json"
@@ -101,8 +100,7 @@ def unit(m: np.ndarray) -> np.ndarray:
 
 
 def node_domain(payload: dict) -> str:
-    return (payload.get("domain", "")
-            or payload.get("character_name", "") or "general").strip().lower()
+    return (payload.get("domain", "") or payload.get("character_name", "") or "general").strip().lower()
 
 
 def embed_batch(texts: list[str], batch: int = 64) -> np.ndarray:
@@ -111,10 +109,9 @@ def embed_batch(texts: list[str], batch: int = 64) -> np.ndarray:
     url = Config.OLLAMA_EMBEDDING_BASE_URL.rstrip("/")
     out: list[list[float]] = []
     for i in range(0, len(texts), batch):
-        part = texts[i:i + batch]
+        part = texts[i : i + batch]
         try:
-            r = requests.post(f"{url}/api/embed",
-                              json={"model": EMB_MODEL, "input": part}, timeout=600)
+            r = requests.post(f"{url}/api/embed", json={"model": EMB_MODEL, "input": part}, timeout=600)
             r.raise_for_status()
             vecs = r.json().get("embeddings")
             if not vecs or len(vecs) != len(part):
@@ -122,8 +119,7 @@ def embed_batch(texts: list[str], batch: int = 64) -> np.ndarray:
             out.extend(vecs)
         except Exception:  # noqa: BLE001 —— 批量嵌入失败逐条回退保证部分结果
             for t in part:
-                rr = requests.post(f"{url}/api/embeddings",
-                                   json={"model": EMB_MODEL, "prompt": t[:2500]}, timeout=180)
+                rr = requests.post(f"{url}/api/embeddings", json={"model": EMB_MODEL, "prompt": t[:2500]}, timeout=180)
                 rr.raise_for_status()
                 out.append(rr.json()["embedding"])
     return np.asarray(out, dtype=np.float32)
@@ -132,19 +128,23 @@ def embed_batch(texts: list[str], batch: int = 64) -> np.ndarray:
 def rewrite(gen_model: str, query: str) -> str:
     """调本地生成模型改写查询；temperature=0，输出清洗成单行。"""
     url = Config.OLLAMA_EMBEDDING_BASE_URL.rstrip("/")
-    r = requests.post(f"{url}/api/generate", json={
-        "model": gen_model,
-        "prompt": PROMPT.format(q=query),
-        "stream": False,
-        "options": {"temperature": 0, "num_predict": 96, "top_p": 1.0},
-    }, timeout=180)
+    r = requests.post(
+        f"{url}/api/generate",
+        json={
+            "model": gen_model,
+            "prompt": PROMPT.format(q=query),
+            "stream": False,
+            "options": {"temperature": 0, "num_predict": 96, "top_p": 1.0},
+        },
+        timeout=180,
+    )
     r.raise_for_status()
     txt = (r.json().get("response") or "").strip()
     txt = txt.splitlines()[0].strip() if txt else ""
     for pref in ("改写：", "改写:", "查询：", "查询:"):
         if txt.startswith(pref):
-            txt = txt[len(pref):].strip()
-    return txt.strip('"“”\'') or query
+            txt = txt[len(pref) :].strip()
+    return txt.strip("\"“”'") or query
 
 
 def main() -> None:
@@ -157,9 +157,11 @@ def main() -> None:
 
     store = TriviumStore()
     all_nodes = list(store.iter_nodes())
-    active = [(nid, n) for nid, n in all_nodes
-              if (n["payload"].get("status") or "active") != "outdated"
-              and (n["payload"].get("content") or "").strip()]
+    active = [
+        (nid, n)
+        for nid, n in all_nodes
+        if (n["payload"].get("status") or "active") != "outdated" and (n["payload"].get("content") or "").strip()
+    ]
     nids = [nid for nid, _ in active]
     texts = [(n["payload"].get("content") or "") for _, n in active]
     doms = [node_domain(n["payload"]) for _, n in active]
@@ -177,8 +179,7 @@ def main() -> None:
     gold_domain = {}
     for it in pos:
         pid = id2idx.get(it["gold_ids"][0])
-        gold_domain[it["qid"]] = doms[pid] if pid is not None else \
-            (it.get("gold_domain") or "other").strip().lower()
+        gold_domain[it["qid"]] = doms[pid] if pid is not None else (it.get("gold_domain") or "other").strip().lower()
 
     # ---- 改写（缓存）----
     cache = {}
@@ -192,11 +193,13 @@ def main() -> None:
         for n, it in enumerate(todo, 1):
             t1 = time.time()
             try:
-                bucket[it["qid"]] = {"q": it["query"], "rw": rewrite(args.model, it["query"]),
-                                     "s": round(time.time() - t1, 3)}
+                bucket[it["qid"]] = {
+                    "q": it["query"],
+                    "rw": rewrite(args.model, it["query"]),
+                    "s": round(time.time() - t1, 3),
+                }
             except Exception as e:  # noqa: BLE001 —— 改写失败回退原查询并记录错误继续评估
-                bucket[it["qid"]] = {"q": it["query"], "rw": it["query"], "s": 0.0,
-                                     "err": str(e)[:120]}
+                bucket[it["qid"]] = {"q": it["query"], "rw": it["query"], "s": 0.0, "err": str(e)[:120]}
             if n % 20 == 0:
                 print(f"  {n}/{len(todo)}  {time.time() - t0:.0f}s", flush=True)
             CACHE.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
@@ -211,6 +214,7 @@ def main() -> None:
     for k, it in enumerate(pos, 1):
         q = it["query"]
         qr = rw[it["qid"]]["rw"] if it["qid"] in rw else q
+
         def rank(text: str):
             v = unit(np.asarray(store.embed_text(text), dtype=np.float32)[None, :])[0]
             return [nids[i] for i in np.argsort(-(node_vecs @ v))]
@@ -224,14 +228,23 @@ def main() -> None:
             ra = {x: i + 1 for i, x in enumerate(a)}
             rb = {x: i + 1 for i, x in enumerate(b)}
             keys = set(ra) | set(rb)
-            sc = {x: 1.0 / (K_RRF + ra.get(x, 10 ** 6)) + 1.0 / (K_RRF + rb.get(x, 10 ** 6))
-                  for x in keys}
+            sc = {x: 1.0 / (K_RRF + ra.get(x, 10**6)) + 1.0 / (K_RRF + rb.get(x, 10**6)) for x in keys}
             return sorted(keys, key=lambda x: -sc[x])
 
-        rows.append({"qid": it["qid"], "query": q, "rewritten": qr, "gold": it["gold_ids"],
-                     "gold_domain": gold_domain[it["qid"]],
-                     "base": rk_base, "exp_all": rk_rw, "exp_cond": rk_cond,
-                     "fuse_all": rrf(rk_base, rk_rw), "fuse_cond": rrf(rk_base, rk_cond)})
+        rows.append(
+            {
+                "qid": it["qid"],
+                "query": q,
+                "rewritten": qr,
+                "gold": it["gold_ids"],
+                "gold_domain": gold_domain[it["qid"]],
+                "base": rk_base,
+                "exp_all": rk_rw,
+                "exp_cond": rk_cond,
+                "fuse_all": rrf(rk_base, rk_rw),
+                "fuse_cond": rrf(rk_base, rk_cond),
+            }
+        )
         if k % 20 == 0:
             print(f"  {k}/{len(pos)}  {time.time() - t0:.0f}s", flush=True)
 
@@ -256,8 +269,10 @@ def main() -> None:
     print(f"{'variant':<12} {'R@1':>7} {'R@3':>7} {'R@5':>7} {'R@10':>7} {'MRR':>7}   kb / hermes R@5")
     for k in keys:
         m = res[k]
-        print(f"{k:<12} {m['R@1']:7.4f} {m['R@3']:7.4f} {m['R@5']:7.4f} {m['R@10']:7.4f} "
-              f"{m['MRR']:7.4f}   {m['dom'].get('kb', 0):.3f} / {m['dom'].get('hermes', 0):.3f}")
+        print(
+            f"{k:<12} {m['R@1']:7.4f} {m['R@3']:7.4f} {m['R@5']:7.4f} {m['R@10']:7.4f} "
+            f"{m['MRR']:7.4f}   {m['dom'].get('kb', 0):.3f} / {m['dom'].get('hermes', 0):.3f}"
+        )
     print("=" * 80)
 
     b = res["base"]
@@ -272,25 +287,33 @@ def main() -> None:
                 g += 1
             elif b2 < a:
                 loss += 1
-        print(f"  {k:<12} ΔR@1 {100 * (m['R@1'] - b['R@1']):+6.2f} | ΔR@5 {100 * (m['R@5'] - b['R@5']):+6.2f} "
-              f"| ΔR@10 {100 * (m['R@10'] - b['R@10']):+6.2f} | ΔMRR {100 * (m['MRR'] - b['MRR']):+6.2f} "
-              f"| 逐题 +{g}/−{loss}")
+        print(
+            f"  {k:<12} ΔR@1 {100 * (m['R@1'] - b['R@1']):+6.2f} | ΔR@5 {100 * (m['R@5'] - b['R@5']):+6.2f} "
+            f"| ΔR@10 {100 * (m['R@10'] - b['R@10']):+6.2f} | ΔMRR {100 * (m['MRR'] - b['MRR']):+6.2f} "
+            f"| 逐题 +{g}/−{loss}"
+        )
 
     print("\n改写抽样（前 8 题）：")
     for r in rows[:8]:
         print(f"  [{r['qid']}] {r['query']}\n        → {r['rewritten']}")
 
     post_sha = sha256(ORIG_DB)
-    print(f"\n库完整性: 前 {pre_sha[:16]} 后 {post_sha[:16]} → "
-          f"{'一致' if pre_sha == post_sha else '不一致'}")
+    print(f"\n库完整性: 前 {pre_sha[:16]} 后 {post_sha[:16]} → {'一致' if pre_sha == post_sha else '不一致'}")
 
-    out = {"meta": {"model": args.model, "min_len": args.min_len, "n_questions": len(rows),
-                    "limit": args.limit, "embed_model": EMB_MODEL,
-                    "rewrite_latency_s": round(sum(lat) / max(len(lat), 1), 3)},
-           "sha256": {"pre": pre_sha, "post": post_sha, "consistent": pre_sha == post_sha},
-           "results": res, "rows": rows}
-    (TMP / "query_expansion_probe.json").write_text(json.dumps(out, ensure_ascii=False),
-                                                    encoding="utf-8")
+    out = {
+        "meta": {
+            "model": args.model,
+            "min_len": args.min_len,
+            "n_questions": len(rows),
+            "limit": args.limit,
+            "embed_model": EMB_MODEL,
+            "rewrite_latency_s": round(sum(lat) / max(len(lat), 1), 3),
+        },
+        "sha256": {"pre": pre_sha, "post": post_sha, "consistent": pre_sha == post_sha},
+        "results": res,
+        "rows": rows,
+    }
+    (TMP / "query_expansion_probe.json").write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
     print(f"结果已写入 {TMP / 'query_expansion_probe.json'}")
 
 

@@ -19,13 +19,22 @@ from protocols import Store
 
 # ---- 协议本身的完整性 ----
 
+
 def test_protocol_defines_expected_methods():
     """Store 协议必须包含 core 依赖的那批方法。"""
     required = {
-        "get_node", "get_edges", "iter_payloads", "iter_nodes",
-        "count_by_type", "recent_ids",
-        "insert_node", "update_payload", "update_vector", "delete_node",
-        "create_edge", "search_similar",
+        "get_node",
+        "get_edges",
+        "iter_payloads",
+        "iter_nodes",
+        "count_by_type",
+        "recent_ids",
+        "insert_node",
+        "update_payload",
+        "update_vector",
+        "delete_node",
+        "create_edge",
+        "search_similar",
     }
     defined = {name for name in dir(Store) if not name.startswith("_")}
     missing = required - defined
@@ -34,20 +43,32 @@ def test_protocol_defines_expected_methods():
 
 # ---- 实现类的结构契合（不实例化） ----
 
-@pytest.mark.parametrize("module_path,class_name", [
-    ("server.local_store", "LocalStore"),
-    ("client.remote_store", "RemoteStore"),
-])
+
+@pytest.mark.parametrize(
+    "module_path,class_name",
+    [
+        ("server.local_store", "LocalStore"),
+        ("client.remote_store", "RemoteStore"),
+    ],
+)
 def test_implementation_declares_protocol_methods(module_path: str, class_name: str):
     """实现类必须声明协议要求的方法（不实例化，避免副作用）。"""
     mod = pytest.importorskip(module_path)
     cls = getattr(mod, class_name)
 
     required = [
-        "get_node", "get_edges", "iter_payloads", "iter_nodes",
-        "count_by_type", "recent_ids",
-        "insert_node", "update_payload", "update_vector", "delete_node",
-        "create_edge", "search_similar",
+        "get_node",
+        "get_edges",
+        "iter_payloads",
+        "iter_nodes",
+        "count_by_type",
+        "recent_ids",
+        "insert_node",
+        "update_payload",
+        "update_vector",
+        "delete_node",
+        "create_edge",
+        "search_similar",
     ]
     missing = [m for m in required if not callable(getattr(cls, m, None))]
     assert not missing, f"{class_name} 未实现协议方法：{missing}"
@@ -72,8 +93,7 @@ def test_local_store_signature_matches_protocol():
         proto_sig = inspect.signature(getattr(Store, name))
         impl_sig = inspect.signature(getattr(LocalStore, name))
         assert list(proto_sig.parameters) == list(impl_sig.parameters), (
-            f"{name} 签名与协议不一致："
-            f"协议={list(proto_sig.parameters)} 实现={list(impl_sig.parameters)}"
+            f"{name} 签名与协议不一致：协议={list(proto_sig.parameters)} 实现={list(impl_sig.parameters)}"
         )
 
 
@@ -113,9 +133,7 @@ def protocol_stores(monkeypatch):
     from server.local_store import LocalStore
 
     monkeypatch.setattr(main_mod, "_store", shared_store)
-    monkeypatch.setattr(
-        httpx, "Client", lambda *args, **kwargs: TestClient(main_mod.app)
-    )
+    monkeypatch.setattr(httpx, "Client", lambda *args, **kwargs: TestClient(main_mod.app))
 
     remote = RemoteStore(base_url="http://testserver")
     try:
@@ -130,8 +148,7 @@ def _assert_store_contract(s, impl: str) -> None:
 
     content = f"存储契约测试节点（{impl}）"
     nid = s.insert_node(
-        {"type": "memory", "content": content, "importance": 0.5,
-         "domain": "contract", "source": "pytest"},
+        {"type": "memory", "content": content, "importance": 0.5, "domain": "contract", "source": "pytest"},
         _fake_embed(content),
     )
     assert isinstance(nid, int), f"{impl}: insert_node 应返回节点 id，得到 {nid!r}"
@@ -154,15 +171,9 @@ def _assert_store_contract(s, impl: str) -> None:
     from_iter = [pl for nid_, pl in s.iter_payloads() if nid_ == nid]
     assert from_iter, f"{impl}: iter_payloads 未包含刚写入的节点"
     payload_iter = from_iter[0]
-    assert payload_iter.get("content") == content, (
-        f"{impl}: iter_payloads 的 payload 残缺：{payload_iter}"
-    )
-    assert payload_iter.get("domain") == "contract", (
-        f"{impl}: iter_payloads 丢了 domain（残缺摘要）：{payload_iter}"
-    )
-    assert "importance" in payload_iter, (
-        f"{impl}: iter_payloads 的 payload 残缺：{payload_iter}"
-    )
+    assert payload_iter.get("content") == content, f"{impl}: iter_payloads 的 payload 残缺：{payload_iter}"
+    assert payload_iter.get("domain") == "contract", f"{impl}: iter_payloads 丢了 domain（残缺摘要）：{payload_iter}"
+    assert "importance" in payload_iter, f"{impl}: iter_payloads 的 payload 残缺：{payload_iter}"
 
     # 向量整体替换：远程实现曾用 PUT + {"vector": [...]}，在任何服务端版本都不可用
     s.update_vector(nid, [0.25] * 1024)

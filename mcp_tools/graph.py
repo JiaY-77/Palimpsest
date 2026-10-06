@@ -94,8 +94,7 @@ def _clamp_params(depth, limit, min_weight, relation, block) -> tuple:
     return depth, limit, min_w, rel, blk
 
 
-def _bfs_neighbors(node_id: int, depth: int, min_w: float, rel: str,
-                   blk: str) -> list:
+def _bfs_neighbors(node_id: int, depth: int, min_w: float, rel: str, blk: str) -> list:
     """BFS 收集出边邻居（min_weight 过滤弱边；block 分区块；去重）。
 
     返回原始 relations 列表（仅 target_id/relation/weight，target_type/title 留空）。
@@ -129,13 +128,15 @@ def _bfs_neighbors(node_id: int, depth: int, min_w: float, rel: str,
                 if not domain_in_block(tdomain, blk):
                     continue
             seen.add(tid)
-            relations.append({
-                "target_id": tid,
-                "relation": label,
-                "weight": w,
-                "target_type": "",
-                "target_title": "",
-            })
+            relations.append(
+                {
+                    "target_id": tid,
+                    "relation": label,
+                    "weight": w,
+                    "target_type": "",
+                    "target_title": "",
+                }
+            )
             frontier.append((tid, hop + 1))
     return relations
 
@@ -152,9 +153,9 @@ def _fill_neighbor_summaries(relations: list) -> None:
 
 
 @mcp.tool()
-def graph_neighbors(node_id: int, relation: str = "", depth: int = 1,
-                    limit: int = 20, min_weight: float = 0.0,
-                    block: str = "") -> str:
+def graph_neighbors(
+    node_id: int, relation: str = "", depth: int = 1, limit: int = 20, min_weight: float = 0.0, block: str = ""
+) -> str:
     """
     图谱邻居查询：从 node_id 沿出边 BFS 遍历到 depth 层（1-3）。
     relation 非空时只保留 label 匹配的边（忽略大小写）；min_weight 过滤弱边；
@@ -166,23 +167,28 @@ def graph_neighbors(node_id: int, relation: str = "", depth: int = 1,
     （结构已拆分：_clamp_params / _bfs_neighbors / _fill_neighbor_summaries，行为不变。）
     """
     # 参数钳制：depth 1-3，limit >= 1，min_weight >= 0
-    depth, limit, min_w, rel, blk = _clamp_params(depth, limit, min_weight,
-                                                  relation, block)
+    depth, limit, min_w, rel, blk = _clamp_params(depth, limit, min_weight, relation, block)
 
     if not store.get_node(node_id):
-        return _to_json({"node_id": node_id, "depth": depth, "count": 0,
-                         "relations": [], "hint": f"节点不存在: {node_id}"})
+        return _to_json(
+            {"node_id": node_id, "depth": depth, "count": 0, "relations": [], "hint": f"节点不存在: {node_id}"}
+        )
 
     # 起点自检（审查补丁）：带 block 时起点必须属于该区块，
     # 否则直接拦截——堵死跨域起点污染（起点自身不能违规闯入别的区块）
     if blk:
         start_payload = (store.get_node(node_id) or {}).get("payload", {}) or {}
         if not domain_in_block(node_domain(start_payload), blk):
-            return _to_json({
-                "node_id": node_id, "block": blk, "depth": depth, "count": 0,
-                "relations": [],
-                "error": f"起点节点 {node_id} 不属于 {blk} 区块（domain={node_domain(start_payload)}），已拦截",
-            })
+            return _to_json(
+                {
+                    "node_id": node_id,
+                    "block": blk,
+                    "depth": depth,
+                    "count": 0,
+                    "relations": [],
+                    "error": f"起点节点 {node_id} 不属于 {blk} 区块（domain={node_domain(start_payload)}），已拦截",
+                }
+            )
 
     # BFS 收集出边（min_weight 过滤弱边；block 分区块；先收集后按 weight 排序截断）
     relations = _bfs_neighbors(node_id, depth, min_w, rel, blk)
@@ -194,17 +200,20 @@ def graph_neighbors(node_id: int, relation: str = "", depth: int = 1,
     # 补邻居节点摘要（target_type / target_title=content 前 80 字）
     _fill_neighbor_summaries(relations)
 
-    return _to_json({
-        "node_id": node_id,
-        "depth": depth,
-        "count": len(relations),
-        "relations": relations,
-    })
+    return _to_json(
+        {
+            "node_id": node_id,
+            "depth": depth,
+            "count": len(relations),
+            "relations": relations,
+        }
+    )
 
 
 @mcp.tool()
-def mem_link(source_id: int, target_id: int, relation: str = "RELATED_TO",
-             weight: float = 0.9, bidirectional: bool = True) -> str:
+def mem_link(
+    source_id: int, target_id: int, relation: str = "RELATED_TO", weight: float = 0.9, bidirectional: bool = True
+) -> str:
     """
     手动建边：在 source_id → target_id 之间建立 relation 类型的关联边
     （如 RELATED_TO / CAUSES / REFERS_TO），供 graph_neighbors 图谱查询使用。
@@ -216,8 +225,7 @@ def mem_link(source_id: int, target_id: int, relation: str = "RELATED_TO",
                "reverse_added"}。
     """
     if source_id == target_id:
-        return _to_json({"linked": False,
-                         "error": "自环禁止：source_id 与 target_id 不能相同"})
+        return _to_json({"linked": False, "error": "自环禁止：source_id 与 target_id 不能相同"})
     relation = (relation or "").strip() or "related"
     try:
         weight = round(float(weight), 6)
@@ -232,23 +240,21 @@ def mem_link(source_id: int, target_id: int, relation: str = "RELATED_TO",
     main_edge_needed = not _edge_exists(source_id, target_id, rel_upper)
     # 双向建边协议：无向语义关系自动补反向边（先查存在则跳过）
     reverse_added = False
-    if (
-        bidirectional
-        and rel_upper in _BIDIRECTIONAL_RELATIONS
-        and not _edge_exists(target_id, source_id, rel_upper)
-    ):
+    if bidirectional and rel_upper in _BIDIRECTIONAL_RELATIONS and not _edge_exists(target_id, source_id, rel_upper):
         store.create_edge(target_id, source_id, rel_upper, weight=weight)
         reverse_added = True
     if main_edge_needed:
         store.create_edge(source_id, target_id, rel_upper, weight=weight)
-    return _to_json({
-        "linked": True,
-        "source_id": source_id,
-        "target_id": target_id,
-        "relation": rel_upper,
-        "weight": weight,
-        "reverse_added": reverse_added,
-    })
+    return _to_json(
+        {
+            "linked": True,
+            "source_id": source_id,
+            "target_id": target_id,
+            "relation": rel_upper,
+            "weight": weight,
+            "reverse_added": reverse_added,
+        }
+    )
 
 
 @mcp.tool()
@@ -266,17 +272,18 @@ def mem_unlink(source_id: int, target_id: int, relation: str = "RELATED_TO") -> 
     """
     label = (relation or "").strip().upper() or "RELATED_TO"
     deleted = store.delete_edge(source_id, target_id, label)
-    return _to_json({
-        "deleted": deleted,
-        "source_id": source_id,
-        "target_id": target_id,
-        "relation": label,
-    })
+    return _to_json(
+        {
+            "deleted": deleted,
+            "source_id": source_id,
+            "target_id": target_id,
+            "relation": label,
+        }
+    )
 
 
 @mcp.tool()
-def mem_communities(min_community_size: int = 2, top_k: int = 20,
-                    with_summary: bool = True) -> str:
+def mem_communities(min_community_size: int = 2, top_k: int = 20, with_summary: bool = True) -> str:
     """
     leiden 社区发现：自动发现记忆库里的主题簇（互相紧密关联的记忆群）。
 
@@ -300,12 +307,19 @@ def mem_communities(min_community_size: int = 2, top_k: int = 20,
         stats = db.graph_stats()
         edge_count = stats.get("edge_count", 0) if isinstance(stats, dict) else 0
         if node_count == 0:
-            return _to_json({"mode": "communities", "error": "图谱为空，无节点",
-                             "hint": "先用 mem_ingest 写入记忆再分析"})
+            return _to_json(
+                {"mode": "communities", "error": "图谱为空，无节点", "hint": "先用 mem_ingest 写入记忆再分析"}
+            )
         if edge_count == 0:
-            return _to_json({"mode": "communities", "num_clusters": 0, "total_nodes": node_count,
-                             "communities": [],
-                             "hint": "图谱无边，建议先 mem_link 建边"})
+            return _to_json(
+                {
+                    "mode": "communities",
+                    "num_clusters": 0,
+                    "total_nodes": node_count,
+                    "communities": [],
+                    "hint": "图谱无边，建议先 mem_link 建边",
+                }
+            )
 
         min_community_size = max(1, int(min_community_size))
         top_k = max(1, int(top_k))
@@ -313,8 +327,7 @@ def mem_communities(min_community_size: int = 2, top_k: int = 20,
         result = _do_communities(db, min_community_size, top_k, with_summary)
         return _to_json(result)
     except Exception as e:  # noqa: BLE001 —— 图分析异常返回错误结构工具调用不崩溃
-        return _to_json({"mode": "communities", "error": str(e),
-                         "hint": "图分析异常，请检查 TriviumDB 版本/图数据"})
+        return _to_json({"mode": "communities", "error": str(e), "hint": "图分析异常，请检查 TriviumDB 版本/图数据"})
     finally:
         if db is not None:
             with contextlib.suppress(Exception):
@@ -328,7 +341,7 @@ def _get_node_payload(db, nid: int) -> dict:
         if hasattr(node, "payload"):
             return node.payload or {}
         if isinstance(node, dict):
-            return (node.get("payload") or {})
+            return node.get("payload") or {}
     except Exception as e:  # noqa: BLE001 —— 节点读取失败返回空 dict 邻居摘要尽力而为
         logger.debug("读取节点 payload 失败 node=%s: %s（邻居摘要按空处理）", nid, e)
     return {}
@@ -339,8 +352,7 @@ def _do_communities(db, min_community_size: int, top_k: int, with_summary: bool)
     try:
         result = db.leiden_cluster(min_community_size=min_community_size)
     except Exception as e:  # noqa: BLE001 —— leiden 失败返回错误提示调用方可感知
-        return {"mode": "communities", "error": str(e),
-                "hint": "leiden_cluster 调用失败"}
+        return {"mode": "communities", "error": str(e), "hint": "leiden_cluster 调用失败"}
     communities_raw = result.get("communities", [])
     num_clusters = result.get("num_clusters", len(communities_raw))
     total_nodes = db.node_count()
@@ -356,19 +368,23 @@ def _do_communities(db, min_community_size: int, top_k: int, with_summary: bool)
         if with_summary:
             for nid in members_ids:
                 payload = _get_node_payload(db, nid)
-                members.append({
-                    "id": nid,
-                    "type": payload.get("type", ""),
-                    "title": _shorten(payload.get("content", ""), 60),
-                    "domain": payload.get("domain", ""),
-                    "importance": _to_float(payload.get("importance"), 0),
-                })
-        communities.append({
-            "community_id": cid,
-            "size": len(members_ids),
-            "node_ids": members_ids,
-            "members": members,
-        })
+                members.append(
+                    {
+                        "id": nid,
+                        "type": payload.get("type", ""),
+                        "title": _shorten(payload.get("content", ""), 60),
+                        "domain": payload.get("domain", ""),
+                        "importance": _to_float(payload.get("importance"), 0),
+                    }
+                )
+        communities.append(
+            {
+                "community_id": cid,
+                "size": len(members_ids),
+                "node_ids": members_ids,
+                "members": members,
+            }
+        )
 
     return {
         "mode": "communities",
@@ -390,12 +406,10 @@ def _do_pagerank(db, top_k: int, node_count: int) -> dict:
     vec = [0.0] * dim
     vec[0] = 1.0
     try:
-        tql = (f"SEARCH VECTOR {vec} TOP {limit} AS seed "
-               f"WITH seed PAGERANK seed AS pr RETURN pr")
+        tql = f"SEARCH VECTOR {vec} TOP {limit} AS seed WITH seed PAGERANK seed AS pr RETURN pr"
         rows = db.tql(tql)
     except Exception as e:  # noqa: BLE001 —— TQL pagerank 失败返回错误内部保留函数不冒泡
-        return {"mode": "pagerank", "error": str(e),
-                "hint": "TQL pagerank 执行失败，检查 TriviumDB 版本"}
+        return {"mode": "pagerank", "error": str(e), "hint": "TQL pagerank 执行失败，检查 TriviumDB 版本"}
 
     nodes = []
     for rank, row in enumerate(rows, start=1):
@@ -417,15 +431,17 @@ def _do_pagerank(db, top_k: int, node_count: int) -> dict:
         except Exception as e:  # noqa: BLE001 —— 边数读取失败按 0 计不阻塞枢纽统计
             logger.debug("读取节点边数失败 node=%s: %s（按 0 计）", nid, e)
             num_edges = 0
-        nodes.append({
-            "id": nid,
-            "rank": rank,
-            "num_edges": num_edges,
-            "type": payload.get("type", ""),
-            "title": _shorten(payload.get("content", ""), 60),
-            "domain": payload.get("domain", ""),
-            "importance": _to_float(payload.get("importance"), 0),
-        })
+        nodes.append(
+            {
+                "id": nid,
+                "rank": rank,
+                "num_edges": num_edges,
+                "type": payload.get("type", ""),
+                "title": _shorten(payload.get("content", ""), 60),
+                "domain": payload.get("domain", ""),
+                "importance": _to_float(payload.get("importance"), 0),
+            }
+        )
 
     nodes = nodes[:top_k]
     return {

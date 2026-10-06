@@ -18,8 +18,7 @@ from core.trivium_store import node_domain
 logger = logging.getLogger(__name__)
 
 
-def resolve_conflict(store, embedding, node_id, tx=None, db=None,
-                     new_payload=None) -> dict:
+def resolve_conflict(store, embedding, node_id, tx=None, db=None, new_payload=None) -> dict:
     """查找与本次写入相似的旧记忆并分级处理，返回 {"outdated_ids": […], "related_ids": […]}
 
     逻辑与 mem_ingest 内联版一致（embedding 由调用方传入，此处不再 embed）：
@@ -58,12 +57,10 @@ def resolve_conflict(store, embedding, node_id, tx=None, db=None,
     if new_type in Config.CONFLICT_SKIP_TYPES:
         return {"outdated_ids": outdated_ids, "related_ids": related_ids}
 
-
     if tx is not None:
         similar = _similar_hits(db, embedding)
     else:
-        similar = store.search_similar(embedding, top_k=3, expand_depth=0,
-                                       apply_decay=False)
+        similar = store.search_similar(embedding, top_k=3, expand_depth=0, apply_decay=False)
     for r in similar:
         old_id = r.get("id")
         score = float(r.get("score", 0.0))
@@ -86,8 +83,7 @@ def resolve_conflict(store, embedding, node_id, tx=None, db=None,
         # 第 3 层：domain 隔离——双方都非 general 且不同则跨域绝不互标；
         # general（含未分类空域，node_domain 兜底）不隔离，通用节点可被任何域修订
         old_domain = node_domain(old_payload)
-        if (new_domain != old_domain
-                and new_domain != "general" and old_domain != "general"):
+        if new_domain != old_domain and new_domain != "general" and old_domain != "general":
             continue
         # 过完所有门后分档：
         if score > 0.75:
@@ -115,12 +111,8 @@ def _similar_hits(db, embedding: list[float]) -> list[dict]:
     _acquire 触发 "Database locked"。
     """
     try:
-        hits = db.search(embedding, top_k=max(3 * 3, 10), min_score=0.0,
-                         expand_depth=0)
-        return [
-            {"id": hit.id, "score": float(hit.score), "payload": hit.payload}
-            for hit in (hits or [])
-        ][:3]
+        hits = db.search(embedding, top_k=max(3 * 3, 10), min_score=0.0, expand_depth=0)
+        return [{"id": hit.id, "score": float(hit.score), "payload": hit.payload} for hit in (hits or [])][:3]
     except Exception as e:  # noqa: BLE001 —— 事务内相似检索失败降级空结果不阻断冲突检测
         logger.warning(f"事务内相似检索失败，返回空结果: {e}")
         return []

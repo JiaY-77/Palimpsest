@@ -11,6 +11,7 @@
 隔离原则：纯函数直接测；需要 store 的用「手写假对象」记录调用，不新增依赖。
 """
 
+
 # ---------------------------------------------------------------------------
 # 1. 时间衰减：_days_since_created（纯函数）
 # ---------------------------------------------------------------------------
@@ -50,6 +51,7 @@ def test_days_since_created_invalid_returns_0():
 # ---------------------------------------------------------------------------
 def _rrf():
     from mcp_tools.memory import _rrf_fuse
+
     return _rrf_fuse
 
 
@@ -113,8 +115,8 @@ class _RecordingStore:
         # nodes: {id: payload}；similar: 预设的 search_similar 返回列表
         self.nodes = dict(nodes)
         self.similar = list(similar)
-        self.updated = []      # [(id, payload)]
-        self.edges = []        # [(source, target, label)]
+        self.updated = []  # [(id, payload)]
+        self.edges = []  # [(source, target, label)]
 
     def get_node(self, node_id):
         payload = self.nodes.get(node_id)
@@ -139,18 +141,17 @@ class _RecordingStore:
 
 def _resolve():
     from core.conflict import resolve_conflict
+
     return resolve_conflict
 
 
 def test_conflict_high_score_marks_outdated():
     resolve_conflict = _resolve()
     store = _RecordingStore(
-        nodes={1: {"type": "memory", "domain": "hero", "status": "active",
-                   "content": "旧"}},
+        nodes={1: {"type": "memory", "domain": "hero", "status": "active", "content": "旧"}},
         similar=[{"id": 1, "score": 0.9, "payload": {}}],
     )
-    new_payload = {"type": "memory", "domain": "hero", "status": "active",
-                   "content": "新"}
+    new_payload = {"type": "memory", "domain": "hero", "status": "active", "content": "新"}
     store.nodes[99] = new_payload
     result = resolve_conflict(store, [0.5] * 8, 99)
     assert result["outdated_ids"] == [1]
@@ -163,12 +164,10 @@ def test_conflict_high_score_marks_outdated():
 def test_conflict_mid_score_only_related():
     resolve_conflict = _resolve()
     store = _RecordingStore(
-        nodes={1: {"type": "memory", "domain": "hero", "status": "active",
-                   "content": "旧"}},
+        nodes={1: {"type": "memory", "domain": "hero", "status": "active", "content": "旧"}},
         similar=[{"id": 1, "score": 0.6, "payload": {}}],
     )
-    new_payload = {"type": "memory", "domain": "hero", "status": "active",
-                   "content": "新"}
+    new_payload = {"type": "memory", "domain": "hero", "status": "active", "content": "新"}
     store.nodes[99] = new_payload
     result = resolve_conflict(store, [0.5] * 8, 99)
     assert result["related_ids"] == [1]
@@ -283,6 +282,7 @@ class _GraphStore:
 
 def _collect(items, limit=5, edges=None, nodes=None):
     from mcp_tools import graph as graph_mod
+
     original = graph_mod.store
     fake = _GraphStore(edges or {}, nodes or {})
     graph_mod.store = fake
@@ -372,12 +372,13 @@ def test_neighbors_missing_node_skipped():
 def test_neighbors_limit_applied_and_sorted():
     items = [{"id": 1, "score": 0.9}]
     edges = {
-        1: [_Edge(101, "related", 1.0), _Edge(102, "related", 0.9),
-            _Edge(103, "related", 0.8)],
+        1: [_Edge(101, "related", 1.0), _Edge(102, "related", 0.9), _Edge(103, "related", 0.8)],
     }
-    nodes = {101: {"payload": {"type": "memory", "content": "a"}},
-             102: {"payload": {"type": "memory", "content": "b"}},
-             103: {"payload": {"type": "memory", "content": "c"}}}
+    nodes = {
+        101: {"payload": {"type": "memory", "content": "a"}},
+        102: {"payload": {"type": "memory", "content": "b"}},
+        103: {"payload": {"type": "memory", "content": "c"}},
+    }
     out = _collect(items, 2, edges, nodes)
     assert len(out) == 2
     # 按 score 降序：0.9, 0.81, 0.72 → 取前二
@@ -625,8 +626,7 @@ def test_recording_store_update_payload_merges_like_real_store():
     却保留其它字段——fake 与真契约不一致，测试通过不代表真实路径正确。
     """
     store = _RecordingStore(
-        nodes={1: {"type": "record", "domain": "hero", "status": "active",
-                   "content": "原文"}},
+        nodes={1: {"type": "record", "domain": "hero", "status": "active", "content": "原文"}},
         similar=[],
     )
 

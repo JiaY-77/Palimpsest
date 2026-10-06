@@ -22,10 +22,12 @@ from mcp_tools._common import (
 def kb_index() -> str:
     """知识库索引：扫描知识库根目录下所有 .md 文件，返回相对路径 + 文件名"""
     if not os.path.isdir(KNOWLEDGE_DIR):
-        return _to_json({
-            "results": [],
-            "hint": f"知识库目录不存在，请设置 KNOWLEDGE_DIR 或创建 {KNOWLEDGE_DIR}",
-        })
+        return _to_json(
+            {
+                "results": [],
+                "hint": f"知识库目录不存在，请设置 KNOWLEDGE_DIR 或创建 {KNOWLEDGE_DIR}",
+            }
+        )
     entries = []
     for fp in _kb_md_files():
         rel = os.path.relpath(fp, KNOWLEDGE_DIR).replace("\\", "/")
@@ -43,20 +45,21 @@ def kb_search(query: str, top_k: int = 5) -> str:
     if not query:
         return _to_json({"results": [], "hint": "查询内容不能为空"})
     emb = store.embed_text(query)
-    results = store.search_similar(emb, top_k=top_k,
-                                   expand_depth=getattr(Config, "RETRIEVAL_EXPAND_DEPTH", 0))
+    results = store.search_similar(emb, top_k=top_k, expand_depth=getattr(Config, "RETRIEVAL_EXPAND_DEPTH", 0))
     items = []
     for r in results:
         payload = r.get("payload", {}) or {}
         # 只保留知识库块，过滤记忆节点
         if payload.get("type") != "kb_chunk":
             continue
-        items.append({
-            "path": payload.get("source_path", ""),
-            "title": payload.get("title", ""),
-            "score": round(_to_float(r.get("score"), 0.0), 4),
-            "snippet": _shorten(payload.get("content", ""), 150),
-        })
+        items.append(
+            {
+                "path": payload.get("source_path", ""),
+                "title": payload.get("title", ""),
+                "score": round(_to_float(r.get("score"), 0.0), 4),
+                "snippet": _shorten(payload.get("content", ""), 150),
+            }
+        )
     if not items:
         return _to_json({"results": [], "hint": "未命中，可试 kb_index 查看全部笔记"})
     return _to_json({"results": items})

@@ -57,8 +57,10 @@ def get_version() -> str:
     try:
         out = subprocess.check_output(
             ["git", "describe", "--tags", "--always", "--dirty"],
-            cwd=_PROJECT_ROOT, stderr=subprocess.DEVNULL,
-            text=True, timeout=3,
+            cwd=_PROJECT_ROOT,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=3,
         ).strip()
         version = out or "dev"
     except Exception:  # noqa: BLE001 —— git describe 失败回退 dev 非 git 部署可用

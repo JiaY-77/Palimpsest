@@ -64,7 +64,9 @@ def test_stats_keys_and_values():
         _node(4, source=None, content=""),
     ]
     kept, stats = filter_pool(
-        nodes, exclude_sources=("hermes-session_end",), drop_duplicates=True,
+        nodes,
+        exclude_sources=("hermes-session_end",),
+        drop_duplicates=True,
     )
     assert set(stats.keys()) == {"input", "excluded_source", "excluded_duplicate", "kept"}
     assert stats["input"] == 4

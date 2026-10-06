@@ -23,6 +23,7 @@ from core.trivium_store import TriviumStore
 # 假组件：可控 search_advanced 返回（替代真实向量检索）
 # ---------------------------------------------------------------------------
 
+
 class _FakeHit:
     """模拟 search_advanced 的 hit：score 由测试精确控制。"""
 
@@ -69,14 +70,14 @@ def _mem_payload(importance: float, created_at: float, type_: str = "memory") ->
 
 
 def _run(store, top_k=3, apply_decay=True):
-    res = store.search_similar([0.0] * 4, top_k=top_k, expand_depth=1,
-                               apply_decay=apply_decay)
+    res = store.search_similar([0.0] * 4, top_k=top_k, expand_depth=1, apply_decay=apply_decay)
     return {r["id"]: r["score"] for r in res}, [r["id"] for r in res]
 
 
 # ---------------------------------------------------------------------------
 # a) soft：语义分差 > 2ε → 元数据不得翻转顺序
 # ---------------------------------------------------------------------------
+
 
 def test_soft_metadata_cannot_flip_large_semantic_gap(monkeypatch, _rerank_store):
     eps = 0.02
@@ -105,7 +106,7 @@ def test_soft_large_gap_recency_biased_against_semantic(monkeypatch, _rerank_sto
     now = time.time()
     hits = [
         _FakeHit(1, 0.90, _mem_payload(1.0, now - 600 * 86400)),  # 语义高但很老
-        _FakeHit(2, 0.85, _mem_payload(1.0, now)),                # 语义低但很新，同 importance
+        _FakeHit(2, 0.85, _mem_payload(1.0, now)),  # 语义低但很新，同 importance
     ]
     store = _rerank_store(hits)
     _, order = _run(store, top_k=2)
@@ -116,14 +117,15 @@ def test_soft_large_gap_recency_biased_against_semantic(monkeypatch, _rerank_sto
 # b) soft：语义分差 < ε → 元数据决定顺序
 # ---------------------------------------------------------------------------
 
+
 def test_soft_higher_importance_wins_on_tie(monkeypatch, _rerank_store):
     eps = 0.02
     monkeypatch.setattr(Config, "MEMORY_RERANK_MODE", "soft")
     monkeypatch.setattr(Config, "SOFT_RERANK_EPS", eps)
     now = time.time()
     hits = [
-        _FakeHit(1, 0.80, _mem_payload(1.0, now)),   # importance 高
-        _FakeHit(2, 0.80, _mem_payload(0.0, now)),   # importance 低，语义分相同
+        _FakeHit(1, 0.80, _mem_payload(1.0, now)),  # importance 高
+        _FakeHit(2, 0.80, _mem_payload(0.0, now)),  # importance 低，语义分相同
     ]
     store = _rerank_store(hits)
     _, order = _run(store, top_k=2)
@@ -137,7 +139,7 @@ def test_soft_newer_node_wins_on_tie(monkeypatch, _rerank_store):
     now = time.time()
     hits = [
         _FakeHit(1, 0.80, _mem_payload(1.0, now - 500 * 86400)),  # 老
-        _FakeHit(2, 0.80, _mem_payload(1.0, now)),                # 新，语义分相同
+        _FakeHit(2, 0.80, _mem_payload(1.0, now)),  # 新，语义分相同
     ]
     store = _rerank_store(hits)
     _, order = _run(store, top_k=2)
@@ -150,8 +152,8 @@ def test_soft_sub_eps_gap_metadata_can_dominate(monkeypatch, _rerank_store):
     monkeypatch.setattr(Config, "SOFT_RERANK_EPS", eps)
     now = time.time()
     hits = [
-        _FakeHit(1, 0.800, _mem_payload(1.0, now)),                  # 语义略低但元数据强
-        _FakeHit(2, 0.801, _mem_payload(0.0, now - 500 * 86400)),    # 语义略高但元数据弱
+        _FakeHit(1, 0.800, _mem_payload(1.0, now)),  # 语义略低但元数据强
+        _FakeHit(2, 0.801, _mem_payload(0.0, now - 500 * 86400)),  # 语义略高但元数据弱
     ]
     store = _rerank_store(hits)
     _, order = _run(store, top_k=2)
@@ -162,6 +164,7 @@ def test_soft_sub_eps_gap_metadata_can_dominate(monkeypatch, _rerank_store):
 # ---------------------------------------------------------------------------
 # c) hard：与旧乘性公式逐位一致（回归保护）
 # ---------------------------------------------------------------------------
+
 
 def test_hard_mode_matches_old_multiplicative_formula(monkeypatch, _rerank_store):
     decay = 0.9
@@ -177,7 +180,7 @@ def test_hard_mode_matches_old_multiplicative_formula(monkeypatch, _rerank_store
     store = _rerank_store(hits)
     by_id, _ = _run(store, top_k=3)
     expected = {
-        1: 0.80 * 1.0 * (decay ** 0),
+        1: 0.80 * 1.0 * (decay**0),
         2: 0.75 * 0.5 * (decay ** (300 / 30.0)),
         3: 0.60,  # kb_chunk 整条跳过：不乘 importance 不乘衰减
     }
@@ -188,6 +191,7 @@ def test_hard_mode_matches_old_multiplicative_formula(monkeypatch, _rerank_store
 # ---------------------------------------------------------------------------
 # d) soft：kb_chunk 固定加成、不随时间变化
 # ---------------------------------------------------------------------------
+
 
 def test_soft_kb_chunk_fixed_bonus_time_invariant(monkeypatch, _rerank_store):
     eps = 0.02
@@ -210,6 +214,7 @@ def test_soft_kb_chunk_fixed_bonus_time_invariant(monkeypatch, _rerank_store):
 # ---------------------------------------------------------------------------
 # e) apply_decay=False：不加任何元数据项
 # ---------------------------------------------------------------------------
+
 
 def test_apply_decay_false_adds_nothing(monkeypatch, _rerank_store):
     monkeypatch.setattr(Config, "MEMORY_RERANK_MODE", "soft")

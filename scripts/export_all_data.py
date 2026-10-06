@@ -79,17 +79,15 @@ def export_via_store(store: TriviumStore) -> dict:
                 if key in seen_edges:
                     continue
                 seen_edges.add(key)
-                edges.append(
-                    {"source_id": source_id, "target_id": target_id,
-                     "label": label, "weight": weight}
-                )
+                edges.append({"source_id": source_id, "target_id": target_id, "label": label, "weight": weight})
                 label_counter[label] += 1
     finally:
         with contextlib.suppress(Exception):
             db.close()
 
     return {
-        "nodes": nodes, "edges": edges,
+        "nodes": nodes,
+        "edges": edges,
         "stats": {
             "node_total": len(nodes),
             "type_counts": dict(type_counter),
@@ -106,6 +104,7 @@ def export_via_store(store: TriviumStore) -> dict:
 # 旧解析逻辑必然失败，故退役（函数已删除）。需要备份时请停服务后物理复制
 # data/ 目录。
 # --------------------------------------------------------------------------
+
 
 # --------------------------------------------------------------------------
 def main() -> None:
@@ -128,7 +127,9 @@ def main() -> None:
     with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
         json.dump(
             {"nodes": data["nodes"], "edges": data["edges"]},
-            f, ensure_ascii=False, indent=2,
+            f,
+            ensure_ascii=False,
+            indent=2,
         )
 
     # 回读校验

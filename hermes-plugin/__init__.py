@@ -62,9 +62,7 @@ _EXPLICIT_INSTRUCTION_RE = re.compile(
 def _http_post(url: str, payload: dict, timeout: float = 5.0) -> dict:
     """REST POST 到 Palimpsest :8090，返回解析后的 JSON；失败返回 {"error": ...}。"""
     data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url, data=data, headers={"Content-Type": "application/json"}
-    )
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
@@ -113,9 +111,15 @@ _NEAR_DUP_THRESHOLD = 0.95
 def _is_near_duplicate(content: str, base_url: str, domain: str, threshold: float = _NEAR_DUP_THRESHOLD) -> bool:
     """查询 Palimpsest 是否已存在近似内容。任何异常均返回 False（fail-open）。"""
     try:
-        resp = _http_post(f"{base_url}/mem/search", {
-            "query": content, "scope": "memory", "domain": domain, "top_k": 1,
-        })
+        resp = _http_post(
+            f"{base_url}/mem/search",
+            {
+                "query": content,
+                "scope": "memory",
+                "domain": domain,
+                "top_k": 1,
+            },
+        )
         if "error" in resp:
             return False
         results = resp.get("results", [])
@@ -142,10 +146,17 @@ SEARCH_SCHEMA = {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "想查的内容（自然语言）"},
-            "scope": {"type": "string", "enum": ["all", "memory", "kb"], "description": "all=记忆+知识库(默认)；memory=只记忆；kb=只知识库"},
+            "scope": {
+                "type": "string",
+                "enum": ["all", "memory", "kb"],
+                "description": "all=记忆+知识库(默认)；memory=只记忆；kb=只知识库",
+            },
             "top_k": {"type": "integer", "description": "返回条数（默认 5）"},
             "include_neighbors": {"type": "boolean", "description": "是否附带图谱邻居（默认 false）"},
-            "tier": {"type": "string", "description": "记忆分层：facts(默认，只回事实层) / logs(只回日志层) / 空串(不过滤)"},
+            "tier": {
+                "type": "string",
+                "description": "记忆分层：facts(默认，只回事实层) / logs(只回日志层) / 空串(不过滤)",
+            },
             "domain": {"type": "string", "description": "域（默认 hermes）"},
         },
         "required": ["query"],
@@ -174,8 +185,7 @@ INGEST_SCHEMA = {
 LINK_SCHEMA = {
     "name": "palimpsest_link",
     "description": (
-        "在两条记忆节点之间建图谱边（默认 RELATED_TO）。"
-        "用于把相关事实显式关联起来，后续图谱检索/邻居扩散可用。"
+        "在两条记忆节点之间建图谱边（默认 RELATED_TO）。用于把相关事实显式关联起来，后续图谱检索/邻居扩散可用。"
     ),
     "parameters": {
         "type": "object",
@@ -191,8 +201,7 @@ LINK_SCHEMA = {
 GRAPH_SCHEMA = {
     "name": "palimpsest_graph",
     "description": (
-        "查某个记忆节点的图谱邻居（沿出边 BFS，depth 1-3）。"
-        "用于看一条记忆关联了哪些其他记忆/知识，发现隐藏关系。"
+        "查某个记忆节点的图谱邻居（沿出边 BFS，depth 1-3）。用于看一条记忆关联了哪些其他记忆/知识，发现隐藏关系。"
     ),
     "parameters": {
         "type": "object",
@@ -205,22 +214,19 @@ GRAPH_SCHEMA = {
     },
 }
 
+
 class PalimpsestMemoryProvider(MemoryProvider):
     """Palimpsest 记忆后端：语义召回 + 自动沉淀 + 图谱。"""
 
     pre_compress_checkpoint_api_version = 1
 
     def __init__(self) -> None:
-        self._base_url = os.environ.get(
-            "PALIMPSEST_BASE_URL", "http://127.0.0.1:8090"
-        ).rstrip("/")
+        self._base_url = os.environ.get("PALIMPSEST_BASE_URL", "http://127.0.0.1:8090").rstrip("/")
         self._domain = os.environ.get("PALIMPSEST_DOMAIN", "hermes")
         self._top_k = int(os.environ.get("PALIMPSEST_PREFETCH_TOP_K", "3"))
         # 注入降噪（T081 配套）：图邻居默认关（记忆域图近乎无边，纯空转）；
         # 注入最低相关度门槛可配，默认与旧硬编码一致 0.3，可调高再砍噪音。
-        self._include_neighbors = (
-            os.environ.get("PALIMPSEST_PREFETCH_NEIGHBORS", "false").lower() == "true"
-        )
+        self._include_neighbors = os.environ.get("PALIMPSEST_PREFETCH_NEIGHBORS", "false").lower() == "true"
         self._min_score = float(os.environ.get("PALIMPSEST_PREFETCH_MIN_SCORE", "0.3"))
         # 记忆分层：默认只注入事实层，日志层（record/event/git_commit）不进上下文。
         self._tier = os.environ.get("PALIMPSEST_PREFETCH_TIER", "facts")
@@ -228,9 +234,7 @@ class PalimpsestMemoryProvider(MemoryProvider):
         # 混进注入池并挤占 top_k 名额（kb_chunk 的 domain 恒为 "kb"，domain 过滤对它
         # 无效，只有 scope=memory 能挡住）。需要把知识库切片一并注入时显式设为 all。
         self._scope = os.environ.get("PALIMPSEST_PREFETCH_SCOPE", "memory")
-        self._auto_ingest = (
-            os.environ.get("PALIMPSEST_AUTO_INGEST", "true").lower() != "false"
-        )
+        self._auto_ingest = os.environ.get("PALIMPSEST_AUTO_INGEST", "true").lower() != "false"
         self._enabled = False
         self._cron_skipped = False
         self._session_id = ""
@@ -261,7 +265,9 @@ class PalimpsestMemoryProvider(MemoryProvider):
         self._enabled = True
         logger.info(
             "Palimpsest memory provider initialized (domain=%s, base=%s, auto_ingest=%s)",
-            self._domain, self._base_url, self._auto_ingest,
+            self._domain,
+            self._base_url,
+            self._auto_ingest,
         )
 
     def system_prompt_block(self) -> str:
@@ -279,11 +285,17 @@ class PalimpsestMemoryProvider(MemoryProvider):
             return ""
         if len((query or "").strip()) < 4:
             return ""
-        resp = _http_post(f"{self._base_url}/mem/search", {
-            "query": query, "scope": self._scope, "domain": self._domain,
-            "top_k": self._top_k, "include_neighbors": self._include_neighbors,
-            "tier": self._tier,
-        })
+        resp = _http_post(
+            f"{self._base_url}/mem/search",
+            {
+                "query": query,
+                "scope": self._scope,
+                "domain": self._domain,
+                "top_k": self._top_k,
+                "include_neighbors": self._include_neighbors,
+                "tier": self._tier,
+            },
+        )
         if "error" in resp or not resp.get("results"):
             return ""
         hits = [r for r in resp["results"] if r.get("score", 0) >= self._min_score]
@@ -322,19 +334,21 @@ class PalimpsestMemoryProvider(MemoryProvider):
         m = _EXPLICIT_INSTRUCTION_RE.search(user_content)
         if not m:
             return
-        importance = (
-            0.7
-            if any(k in user_content for k in ("不对", "不是这样", "错了", "纠正", "更正"))
-            else 0.6
-        )
+        importance = 0.7 if any(k in user_content for k in ("不对", "不是这样", "错了", "纠正", "更正")) else 0.6
         truncated = user_content[:300]
         note = "…[截断]" if len(user_content) > 300 else ""
-        _http_post(f"{self._base_url}/mem/ingest", {
-            "content": f"[对话沉淀] 用户: {truncated}{note}",
-            "type": "record", "importance": importance,
-            "domain": self._domain, "source": "hermes-sync_turn",
-            "matched_keyword": m.group(0), "match_pos": m.start(),
-        })
+        _http_post(
+            f"{self._base_url}/mem/ingest",
+            {
+                "content": f"[对话沉淀] 用户: {truncated}{note}",
+                "type": "record",
+                "importance": importance,
+                "domain": self._domain,
+                "source": "hermes-sync_turn",
+                "matched_keyword": m.group(0),
+                "match_pos": m.start(),
+            },
+        )
 
     def on_session_end(self, messages: list[dict[str, Any]]) -> None:
         """会话结束：把含强信号的消息提炼成一条要点。
@@ -354,10 +368,16 @@ class PalimpsestMemoryProvider(MemoryProvider):
         if _is_near_duplicate(content, self._base_url, self._domain):
             logger.info("Palimpsest: 跳过近似重复的会话要点")
             return
-        _http_post(f"{self._base_url}/mem/ingest", {
-            "content": content, "type": "memory", "importance": 0.55,
-            "domain": self._domain, "source": "hermes-session_end",
-        })
+        _http_post(
+            f"{self._base_url}/mem/ingest",
+            {
+                "content": content,
+                "type": "memory",
+                "importance": 0.55,
+                "domain": self._domain,
+                "source": "hermes-session_end",
+            },
+        )
 
     def on_pre_compress(self, messages: list[dict[str, Any]]) -> str:
         """压缩前抽取要点，贡献给压缩 prompt（不写入 Palimpsest，只保上下文）。"""
@@ -388,46 +408,58 @@ class PalimpsestMemoryProvider(MemoryProvider):
             return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
     def _tool_search(self, args: dict[str, Any]) -> dict:
-        return _http_post(f"{self._base_url}/mem/search", {
-            "query": args.get("query", ""), "scope": args.get("scope", "all"),
-            "domain": args.get("domain", self._domain),
-            "top_k": int(args.get("top_k", 5)),
-            "include_neighbors": (
-                str(args.get("include_neighbors", False)).lower() == "true"
-            ),
-            "tier": args.get("tier", self._tier),
-        })
+        return _http_post(
+            f"{self._base_url}/mem/search",
+            {
+                "query": args.get("query", ""),
+                "scope": args.get("scope", "all"),
+                "domain": args.get("domain", self._domain),
+                "top_k": int(args.get("top_k", 5)),
+                "include_neighbors": (str(args.get("include_neighbors", False)).lower() == "true"),
+                "tier": args.get("tier", self._tier),
+            },
+        )
 
     def _tool_ingest(self, args: dict[str, Any]) -> dict:
-        return _http_post(f"{self._base_url}/mem/ingest", {
-            "content": args.get("content", ""), "type": args.get("type", "memory"),
-            "importance": float(args.get("importance", 0.5)),
-            "domain": args.get("domain", self._domain), "source": "hermes-tool",
-        })
+        return _http_post(
+            f"{self._base_url}/mem/ingest",
+            {
+                "content": args.get("content", ""),
+                "type": args.get("type", "memory"),
+                "importance": float(args.get("importance", 0.5)),
+                "domain": args.get("domain", self._domain),
+                "source": "hermes-tool",
+            },
+        )
 
     def _tool_link(self, args: dict[str, Any]) -> dict:
-        return _http_post(f"{self._base_url}/mem/link", {
-            "source_id": int(args.get("source_id", 0)),
-            "target_id": int(args.get("target_id", 0)),
-            "relation": args.get("relation", "RELATED_TO"),
-            "weight": float(args.get("weight", 0.9)),
-            "bidirectional": (
-                str(args.get("bidirectional", True)).lower() == "true"
-            ),
-        })
+        return _http_post(
+            f"{self._base_url}/mem/link",
+            {
+                "source_id": int(args.get("source_id", 0)),
+                "target_id": int(args.get("target_id", 0)),
+                "relation": args.get("relation", "RELATED_TO"),
+                "weight": float(args.get("weight", 0.9)),
+                "bidirectional": (str(args.get("bidirectional", True)).lower() == "true"),
+            },
+        )
 
     def _tool_graph(self, args: dict[str, Any]) -> dict:
-        return _http_post(f"{self._base_url}/graph/neighbors", {
-            "node_id": int(args.get("node_id", 0)),
-            "relation": args.get("relation", ""),
-            "depth": int(args.get("depth", 1)),
-            "limit": int(args.get("limit", 20)),
-        })
+        return _http_post(
+            f"{self._base_url}/graph/neighbors",
+            {
+                "node_id": int(args.get("node_id", 0)),
+                "relation": args.get("relation", ""),
+                "depth": int(args.get("depth", 1)),
+                "limit": int(args.get("limit", 20)),
+            },
+        )
 
 
 # ---------------------------------------------------------------------------
 # Plugin entry point
 # ---------------------------------------------------------------------------
+
 
 def register(ctx) -> None:
     """注册 Palimpsest 为 Hermes memory provider + context engine 插件（双插件换脑）。"""

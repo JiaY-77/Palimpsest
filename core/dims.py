@@ -9,6 +9,7 @@ def get_db_dim(store):
     返回 (dim: int, error: str | None)。
     """
     import triviumdb
+
     db = None
     try:
         # 这里必须传 dim=store.dim：TriviumDB 构造函数要求该参数。

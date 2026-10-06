@@ -119,11 +119,13 @@ def _accumulate_node(acc: dict, nid, node, db) -> None:
     hc = _to_float(payload.get("hit_count"), 0)
     if hc:
         acc["hit_count_total"] += int(hc)
-        acc["hit_nodes"].append({
-            "id": nid,
-            "hit_count": int(hc),
-            "content": (payload.get("content") or "")[:60],
-        })
+        acc["hit_nodes"].append(
+            {
+                "id": nid,
+                "hit_count": int(hc),
+                "content": (payload.get("content") or "")[:60],
+            }
+        )
 
 
 def _build_tiers_result(by_type: dict) -> dict:

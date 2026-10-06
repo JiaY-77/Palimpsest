@@ -11,6 +11,7 @@
   python scripts/retrieval_probe.py --probe-file my.json # 自定义探针集
   python scripts/retrieval_probe.py --no-warmup          # 计入冷启动（默认先预热一次）
 """
+
 import argparse
 import contextlib
 import json
@@ -95,11 +96,13 @@ def evaluate_probe(probe: dict, top1: dict | None) -> bool:
     # expect_text_contains（在 summary / meta.title / meta.source_path 中搜索）
     txt = probe.get("expect_text_contains")
     if txt:
-        searchable = " ".join([
-            top1.get("summary", ""),
-            meta.get("title", ""),
-            meta.get("source_path", ""),
-        ])
+        searchable = " ".join(
+            [
+                top1.get("summary", ""),
+                meta.get("title", ""),
+                meta.get("source_path", ""),
+            ]
+        )
         if txt not in searchable:
             return False
     return True
@@ -136,14 +139,13 @@ def run_one_probe(probe: dict, top_k: int) -> dict:
 def _fmt_result(r: dict, idx: int) -> str:
     lines = []
     tag = "✅" if r["hit"] else "❌"
-    lines.append(f"[{idx+1}] {r['name']}  {tag}")
+    lines.append(f"[{idx + 1}] {r['name']}  {tag}")
     lines.append(f"    query: {r['query']}")
     if r["top1"]:
         t = r["top1"]
         m = t.get("meta", {}) or {}
         lines.append(
-            f"    top-1: id={t.get('id')}  type={t.get('type')}  "
-            f"score={t.get('score')}  latency={r['latency_ms']}ms"
+            f"    top-1: id={t.get('id')}  type={t.get('type')}  score={t.get('score')}  latency={r['latency_ms']}ms"
         )
         if m.get("title"):
             lines.append(f"            title={m['title']}")
@@ -165,13 +167,9 @@ def print_human(results: list[dict]) -> None:
     print(f"top-1 命中率 {hits}/{total}")
     if latencies:
         print(
-            f"延迟 min={min(latencies):.1f}ms  "
-            f"avg={sum(latencies)/len(latencies):.1f}ms  "
-            f"max={max(latencies):.1f}ms"
+            f"延迟 min={min(latencies):.1f}ms  avg={sum(latencies) / len(latencies):.1f}ms  max={max(latencies):.1f}ms"
         )
-    print(
-        "基线：换 embedding 模型/维度后回跑同一条命令，对比命中率与延迟变化"
-    )
+    print("基线：换 embedding 模型/维度后回跑同一条命令，对比命中率与延迟变化")
     print("（默认已预热一次，模型冷启动不计入；需含冷启动的数字请加 --no-warmup）")
 
 
@@ -180,6 +178,7 @@ def print_human(results: list[dict]) -> None:
 # ---------------------------------------------------------------------------
 def build_json(results: list[dict]) -> dict:
     from core.trivium_store import TriviumStore
+
     _store = TriviumStore()
     provider = getattr(_store, "provider", Config.EMBEDDING_PROVIDER)
     dim = getattr(_store, "dim", Config.OLLAMA_EMBEDDING_DIM)
@@ -227,7 +226,7 @@ def load_probe_file(path: str) -> list[dict]:
         sys.exit(2)
     for i, p in enumerate(data):
         if not isinstance(p, dict) or "name" not in p or "query" not in p:
-            print(f"错误：第 {i+1} 条探针缺少必要字段 (name/query)", file=sys.stderr)
+            print(f"错误：第 {i + 1} 条探针缺少必要字段 (name/query)", file=sys.stderr)
             sys.exit(2)
     return data
 
@@ -240,16 +239,13 @@ def main():
         prog="retrieval_probe",
         description="检索体检探针：输出 top-1 命中率 + 延迟",
     )
-    parser.add_argument("--json", dest="json_output", action="store_true",
-                        help="输出机器可读 JSON")
-    parser.add_argument("--top-k", type=int, default=1,
-                        help="检索 top-k（默认 1）")
-    parser.add_argument("--repeat", type=int, default=1,
-                        help="每条探针重复次数，取延迟中位数（默认 1）")
-    parser.add_argument("--probe-file", default="",
-                        help="自定义探针集 JSON 文件路径")
-    parser.add_argument("--no-warmup", action="store_true",
-                        help="跳过预热（默认先跑一次丢弃，避免模型冷启动污染延迟基线）")
+    parser.add_argument("--json", dest="json_output", action="store_true", help="输出机器可读 JSON")
+    parser.add_argument("--top-k", type=int, default=1, help="检索 top-k（默认 1）")
+    parser.add_argument("--repeat", type=int, default=1, help="每条探针重复次数，取延迟中位数（默认 1）")
+    parser.add_argument("--probe-file", default="", help="自定义探针集 JSON 文件路径")
+    parser.add_argument(
+        "--no-warmup", action="store_true", help="跳过预热（默认先跑一次丢弃，避免模型冷启动污染延迟基线）"
+    )
     args = parser.parse_args()
 
     probes = load_probe_file(args.probe_file) if args.probe_file else DEFAULT_PROBES

@@ -15,7 +15,6 @@
   - 内部永不抛异常（护栏原则）
 """
 
-
 # 维度校验复用 core.dims 的实现（避免两份漂移）
 from config import Config
 from core.dims import get_db_dim
@@ -53,8 +52,7 @@ def _check_dimension_consistency():
     # 3) 汇总判断
     ollama_model = getattr(Config, "OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:0.6b")
     emb_fix = (
-        f"启动 Ollama 并拉取模型: ollama pull {ollama_model}；"
-        "若使用云端 provider，请确认 EMBEDDING_API_KEY 已设置"
+        f"启动 Ollama 并拉取模型: ollama pull {ollama_model}；若使用云端 provider，请确认 EMBEDDING_API_KEY 已设置"
     )
     if probe_err and (db_dim is None):
         return (
@@ -139,30 +137,36 @@ def run_doctor() -> dict:
     # 第一阶段：复用 startup_check 的 5 项检查（fail-fast 已在其内部隔离）
     startup = run_startup_check()
     for c in startup["checks"]:
-        checks.append({
-            "name": c["name"],
-            "ok": c["ok"],
-            "detail": c["detail"],
-            "fix": _suggest_fix(c),
-        })
+        checks.append(
+            {
+                "name": c["name"],
+                "ok": c["ok"],
+                "detail": c["detail"],
+                "fix": _suggest_fix(c),
+            }
+        )
 
     # 第二阶段：向量维度一致性（独立于上述 5 项，确保 embedding 不可用时仍尝试执行）
     ok, detail, fix = _check_dimension_consistency()
-    checks.append({
-        "name": "向量维度一致性",
-        "ok": ok,
-        "detail": detail,
-        "fix": fix,
-    })
+    checks.append(
+        {
+            "name": "向量维度一致性",
+            "ok": ok,
+            "detail": detail,
+            "fix": fix,
+        }
+    )
 
     # 第三阶段：domain 字段迁移状态（无 domain 但有 character_name 的历史兼容镜像存量）
     ok, detail, fix = _check_legacy_domain_mirror()
-    checks.append({
-        "name": "domain 字段迁移状态",
-        "ok": ok,
-        "detail": detail,
-        "fix": fix,
-    })
+    checks.append(
+        {
+            "name": "domain 字段迁移状态",
+            "ok": ok,
+            "detail": detail,
+            "fix": fix,
+        }
+    )
 
     return {"ok": all(c["ok"] for c in checks), "checks": checks}
 
@@ -185,6 +189,7 @@ def _suggest_fix(check: dict) -> str:
 
 
 # ---- 人类可读渲染 ----
+
 
 def render_text(result: dict) -> str:
     """将 doctor 结果渲染为终端友好的人类可读文本。

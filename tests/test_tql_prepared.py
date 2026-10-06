@@ -8,6 +8,7 @@ TriviumDB 0.8.3 特性测试 —— Prepared TQL（P0）
 
 隔离保证：%TEMP%/tdb_ftest/ 独立临时库。
 """
+
 import math
 import os
 import tempfile
@@ -40,8 +41,7 @@ def tdb():
 
 
 def test_parameter_names(tdb):
-    prepared = tdb.prepare_tql(
-        'FIND {type: "note"} RETURN $bonus + 1 AS score')
+    prepared = tdb.prepare_tql('FIND {type: "note"} RETURN $bonus + 1 AS score')
     names = prepared.parameter_names()
     assert isinstance(names, list)
     assert "bonus" in names

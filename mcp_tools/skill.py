@@ -30,18 +30,22 @@ def skill_search(query: str, top_k: int = 5) -> str:
         payload = r.get("payload", {}) or {}
         if payload.get("type") != "skill_chunk":
             continue
-        items.append({
-            "name": payload.get("name", ""),
-            "description": payload.get("description", ""),
-            "category": payload.get("category", ""),
-            "source_path": payload.get("source_path", ""),
-            "score": round(_to_float(r.get("score"), 0.0), 4),
-        })
+        items.append(
+            {
+                "name": payload.get("name", ""),
+                "description": payload.get("description", ""),
+                "category": payload.get("category", ""),
+                "source_path": payload.get("source_path", ""),
+                "score": round(_to_float(r.get("score"), 0.0), 4),
+            }
+        )
         if len(items) >= max(top_k, 1):
             break
     if not items:
-        return _to_json({
-            "results": [],
-            "hint": "未命中技能，可先运行 scripts/build_skill_index.py 建立索引",
-        })
+        return _to_json(
+            {
+                "results": [],
+                "hint": "未命中技能，可先运行 scripts/build_skill_index.py 建立索引",
+            }
+        )
     return _to_json({"results": items})

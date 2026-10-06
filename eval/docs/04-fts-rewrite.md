@@ -27,6 +27,7 @@
 ```python
 _SPLIT_RE = re.compile(r"[\s,，。；;、/（）()？?！!：:+【】\[\]「」『』\-—·…]+")
 
+
 def build_fts_query(query: str, n: int = 3, max_grams: int = 12) -> str:
     """把自然语言查询改写为 FTS5 trigram OR 查询（长查询专用）。
 

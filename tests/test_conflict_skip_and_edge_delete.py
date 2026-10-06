@@ -73,9 +73,11 @@ def _resolve(new_type, old_payload, score, store_payloads=None, new_payload=None
     payloads = store_payloads or {}
     store = _FakeStore(payloads, [_Result(1, score)])
     return _conflict.resolve_conflict(
-        store, [0.0], 2, tx=None,
-        new_payload=new_payload if new_payload is not None
-        else {"type": new_type, "domain": "task"},
+        store,
+        [0.0],
+        2,
+        tx=None,
+        new_payload=new_payload if new_payload is not None else {"type": new_type, "domain": "task"},
     ), store
 
 
@@ -107,7 +109,9 @@ class TestConflictSkipTypes:
         old = {"type": "memory", "domain": "hermes", "status": "active"}
         with patch.object(Config, "CONFLICT_SKIP_TYPES", frozenset({"task"})):
             result, _ = _resolve(
-                "memory", old, 0.9,
+                "memory",
+                old,
+                0.9,
                 store_payloads={1: old},
                 new_payload={"type": "memory", "domain": "hermes"},
             )
@@ -131,7 +135,10 @@ class TestConflictSkipTypes:
         )
         out = subprocess.run(
             [sys.executable, "-c", code],
-            cwd=str(_REPO_ROOT), capture_output=True, text=True, timeout=60,
+            cwd=str(_REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         assert out.returncode == 0, out.stderr
         assert out.stdout.strip() == "['plan', 'task']"
@@ -142,7 +149,10 @@ class TestConflictSkipTypes:
         code = "from config import Config; print(len(Config.CONFLICT_SKIP_TYPES))"
         out = subprocess.run(
             [sys.executable, "-c", code],
-            cwd=str(_REPO_ROOT), capture_output=True, text=True, timeout=60,
+            cwd=str(_REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         assert out.returncode == 0, out.stderr
         assert out.stdout.strip() == "0"

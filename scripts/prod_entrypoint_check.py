@@ -29,8 +29,7 @@ TMP = EVAL_DIR / ".tmp"
 TMP.mkdir(parents=True, exist_ok=True)
 
 _env_db = os.getenv("DB_PATH", "")
-ORIG_DB = (Path(_env_db) if os.path.isabs(_env_db) else ROOT / _env_db) if _env_db \
-    else ROOT / "data" / "mh_memory.db"
+ORIG_DB = (Path(_env_db) if os.path.isabs(_env_db) else ROOT / _env_db) if _env_db else ROOT / "data" / "mh_memory.db"
 ORIG_FTS = ORIG_DB.parent / "fts.db"
 
 
@@ -67,9 +66,16 @@ for depth in (0, 1):
     lay = {L: defaultdict(list) for L in LAYERS}
     t0 = time.time()
     for it in pos:
-        out = _mem_search_impl(it["query"], scope="all", domain="", domain_bias="",
-                               top_k=10, include_neighbors=False,
-                               block="", include_outdated=False)
+        out = _mem_search_impl(
+            it["query"],
+            scope="all",
+            domain="",
+            domain_bias="",
+            top_k=10,
+            include_neighbors=False,
+            block="",
+            include_outdated=False,
+        )
         ranked = [r["id"] for r in out.get("results", [])]
         gold = set(it["gold_ids"])
         for k in (1, 3, 5, 10):
@@ -85,10 +91,13 @@ for depth in (0, 1):
     row["layer_r5"] = {L: avg(lay[L]["recall@5"]) for L in LAYERS}
     row["seconds"] = round(time.time() - t0, 1)
     results[f"RETRIEVAL_EXPAND_DEPTH={depth}"] = row
-    print(f"[expand_depth={depth}]  R@1 {row['recall@1']:.4f} R@3 {row['recall@3']:.4f} "
-          f"R@5 {row['recall@5']:.4f} R@10 {row['recall@10']:.4f} MRR {row['mrr@10']:.4f} | "
-          + " ".join(f"{L[:3]}:{row['layer_r5'][L]:.3f}" for L in LAYERS)
-          + f"  ({row['seconds']}s)", flush=True)
+    print(
+        f"[expand_depth={depth}]  R@1 {row['recall@1']:.4f} R@3 {row['recall@3']:.4f} "
+        f"R@5 {row['recall@5']:.4f} R@10 {row['recall@10']:.4f} MRR {row['mrr@10']:.4f} | "
+        + " ".join(f"{L[:3]}:{row['layer_r5'][L]:.3f}" for L in LAYERS)
+        + f"  ({row['seconds']}s)",
+        flush=True,
+    )
 
 d0 = results["RETRIEVAL_EXPAND_DEPTH=0"]["recall@5"]
 d1 = results["RETRIEVAL_EXPAND_DEPTH=1"]["recall@5"]
@@ -96,6 +105,5 @@ print(f"\nmem_search 真实接口 R@5：depth=1 {d1:.4f} → depth=0 {d0:.4f}  (
 
 POST = sha256(ORIG_DB)
 print(f"库完整性: {'一致 ✅' if PRE == POST else '不一致 ❌'}")
-(TMP / "prod_entrypoint_check.json").write_text(
-    json.dumps(results, ensure_ascii=False, indent=1), encoding="utf-8")
+(TMP / "prod_entrypoint_check.json").write_text(json.dumps(results, ensure_ascii=False, indent=1), encoding="utf-8")
 print(f"结果写入 {TMP / 'prod_entrypoint_check.json'}")

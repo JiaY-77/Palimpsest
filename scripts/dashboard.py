@@ -24,13 +24,9 @@ from config import Config
 
 app = FastAPI(title="Palimpsest Dashboard")
 
-REST_BASE_URL = (
-    os.getenv("PALIMPSEST_BASE_URL") or f"http://127.0.0.1:{Config.REST_PORT}"
-).rstrip("/")
+REST_BASE_URL = (os.getenv("PALIMPSEST_BASE_URL") or f"http://127.0.0.1:{Config.REST_PORT}").rstrip("/")
 
-DASHBOARD_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dashboard.html"
-)
+DASHBOARD_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dashboard.html")
 
 
 def _rest(method: str, path: str, **kwargs) -> object:
@@ -49,9 +45,7 @@ def _rest(method: str, path: str, **kwargs) -> object:
             ),
         ) from exc
     if resp.status_code >= 400:
-        raise HTTPException(
-            status_code=502, detail=f"REST 返回 {resp.status_code}：{resp.text[:300]}"
-        )
+        raise HTTPException(status_code=502, detail=f"REST 返回 {resp.status_code}：{resp.text[:300]}")
     if not resp.content:
         return None
     return resp.json()
@@ -71,12 +65,7 @@ async def mem_stats():
         return {"total": 0, "by_type": {}, "outdated": 0}
 
     totals = data.get("totals") if isinstance(data.get("totals"), dict) else data
-    total = (
-        totals.get("total_nodes")
-        or totals.get("total")
-        or totals.get("nodes")
-        or 0
-    )
+    total = totals.get("total_nodes") or totals.get("total") or totals.get("nodes") or 0
     by_type = totals.get("by_type") or data.get("by_type") or {}
     outdated = totals.get("outdated") or 0
     return {"total": total, "by_type": by_type, "outdated": outdated}
@@ -99,13 +88,15 @@ async def mem_recent(limit: int = 20):
         payload = item.get("payload")
         if not isinstance(payload, dict):
             payload = item
-        nodes.append({
-            "id": item.get("id"),
-            "type": payload.get("type", ""),
-            "importance": payload.get("importance"),
-            "content": (payload.get("content") or "")[:120],
-            "status": payload.get("status", ""),
-        })
+        nodes.append(
+            {
+                "id": item.get("id"),
+                "type": payload.get("type", ""),
+                "importance": payload.get("importance"),
+                "content": (payload.get("content") or "")[:120],
+                "status": payload.get("status", ""),
+            }
+        )
     nodes.sort(key=lambda n: (n["id"] is None, -(n["id"] or 0)))
     return {"nodes": nodes[:limit], "total": len(nodes)}
 
@@ -148,10 +139,7 @@ async def consolidate_apply():
     """执行合并（不可逆）——同 ``/api/consolidate/preview``，待服务端业务端点。"""
     raise HTTPException(
         status_code=501,
-        detail=(
-            "合并功能暂不可用：REST 尚未提供 consolidate 端点。"
-            "见 /api/consolidate/preview 的说明。"
-        ),
+        detail=("合并功能暂不可用：REST 尚未提供 consolidate 端点。见 /api/consolidate/preview 的说明。"),
     )
 
 

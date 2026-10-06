@@ -29,6 +29,7 @@ insert_node / update_payload / update_vector / delete_node 用例一致）。
 
 可直接运行，也可 import 调用 build(source=..., full=...)。
 """
+
 import argparse
 import dataclasses
 import os
@@ -68,7 +69,7 @@ def _strip_frontmatter(text: str) -> str:
         return text
     for i in range(1, len(lines)):
         if lines[i].strip() == "---":
-            return "\n".join(lines[i + 1:])
+            return "\n".join(lines[i + 1 :])
     return text
 
 
@@ -190,8 +191,7 @@ def _count_novel_nodes(store) -> int:
     return total
 
 
-def _build_payload(rel_path: str, content: str, kind: str,
-                   title: str, mtime: float) -> dict:
+def _build_payload(rel_path: str, content: str, kind: str, title: str, mtime: float) -> dict:
     """组装单个节点的 payload（type/domain/kind/title/source_path/
     source_mtime/importance/content/status）。"""
     return {
@@ -224,8 +224,7 @@ def _upsert_node(store, payload: dict, content: str, existing: dict) -> str:
     return "inserted"
 
 
-def build(source: str | None = None, store=None, full: bool = False,
-          rules: IndexRules | str | None = None) -> dict:
+def build(source: str | None = None, store=None, full: bool = False, rules: IndexRules | str | None = None) -> dict:
     """构建小说设定库索引（v1.0）。
 
     full=True（--full）：先删除库里所有 domain=novel 旧节点（delete_node 连带
@@ -323,8 +322,7 @@ def build(source: str | None = None, store=None, full: bool = False,
                 title = _extract_title(rel, content, kind)
                 payload = _build_payload(rel, content, kind, title, mtime)
                 entry = existing.get(rel)
-                if entry is not None and entry["mtime"] is not None \
-                        and abs(entry["mtime"] - mtime) <= MTIME_TOLERANCE:
+                if entry is not None and entry["mtime"] is not None and abs(entry["mtime"] - mtime) <= MTIME_TOLERANCE:
                     continue  # mtime 未变，跳过
                 processed_files += 1
                 result = _upsert_node(store, payload, content, existing)
@@ -369,24 +367,28 @@ def build(source: str | None = None, store=None, full: bool = False,
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="小说设定库索引构建（默认增量 mtime 对比，--full 全量重建）")
-    parser.add_argument("--full", action="store_true",
-                        help="全量重建：先删除所有 domain=novel 旧节点再重建全部文件")
-    parser.add_argument("--source", default=DEFAULT_SOURCE_DIR,
-                        help="novel vault 根目录（必填；或设环境变量 PALIMPSEST_NOVEL_DIR）")
-    parser.add_argument("--rules", default=None,
-                        help="索引规则 JSON 文件路径（不传则使用 vault 根 .palimpsest-index.json 或内置默认）")
-    parser.add_argument("--require-frontmatter-id", action="store_true",
-                        help="仅索引 frontmatter 含 id: 键的文件，其余跳过并计入未匹配")
+    parser = argparse.ArgumentParser(description="小说设定库索引构建（默认增量 mtime 对比，--full 全量重建）")
+    parser.add_argument("--full", action="store_true", help="全量重建：先删除所有 domain=novel 旧节点再重建全部文件")
+    parser.add_argument(
+        "--source", default=DEFAULT_SOURCE_DIR, help="novel vault 根目录（必填；或设环境变量 PALIMPSEST_NOVEL_DIR）"
+    )
+    parser.add_argument(
+        "--rules", default=None, help="索引规则 JSON 文件路径（不传则使用 vault 根 .palimpsest-index.json 或内置默认）"
+    )
+    parser.add_argument(
+        "--require-frontmatter-id", action="store_true", help="仅索引 frontmatter 含 id: 键的文件，其余跳过并计入未匹配"
+    )
     args = parser.parse_args()
     if not args.source:
         parser.error("--source 必填：本地小说 vault 根目录（个人路径不入仓库，请显式传入）")
 
     import json
-    rules_arg = (load_rules(root=args.source, explicit=args.rules)
-                 if args.rules
-                 else load_rules(root=args.source, legacy_filename=NOVEL_RULES_FILENAME))
+
+    rules_arg = (
+        load_rules(root=args.source, explicit=args.rules)
+        if args.rules
+        else load_rules(root=args.source, legacy_filename=NOVEL_RULES_FILENAME)
+    )
     if args.require_frontmatter_id:
         # 用户显式 --require-frontmatter-id 时强制开启
         rules_arg = dataclasses.replace(rules_arg, require_frontmatter_id=True)
@@ -397,11 +399,9 @@ if __name__ == "__main__":
     print(f"模式: {'全量重建' if args.full else '增量更新（mtime 对比）'}")
     result = build(source=args.source, full=args.full, rules=rules_arg)
     # 只输出统计 JSON，不打印小说正文内容（避免刷屏）
-    print(json.dumps({k: v for k, v in result.items() if k != "failed_paths"},
-                     ensure_ascii=False))
+    print(json.dumps({k: v for k, v in result.items() if k != "failed_paths"}, ensure_ascii=False))
     if result["failed"]:
-        print(f"失败文件 {result['failed']} 个: {result['failed_paths'][:10]}",
-              file=__import__("sys").stderr)
+        print(f"失败文件 {result['failed']} 个: {result['failed_paths'][:10]}", file=__import__("sys").stderr)
     if result["unmatched_paths"]:
         shown = result["unmatched_paths"]
         print(f"未匹配 kind 的文件 {len(shown)} 个（default_kind 兜底）:")

@@ -35,8 +35,8 @@ def test_second_import_does_not_self_copy(module_name: str, monkeypatch):
 
     saved = os.environ.get("DB_PATH")
     try:
-        _reimport(module_name)          # 第一次：把 DB_PATH 指到 .tmp 副本
-        _reimport(module_name)          # 第二次：DB_PATH 已指向副本，触发 self-copy 场景
+        _reimport(module_name)  # 第一次：把 DB_PATH 指到 .tmp 副本
+        _reimport(module_name)  # 第二次：DB_PATH 已指向副本，触发 self-copy 场景
     finally:
         if saved is None:
             os.environ.pop("DB_PATH", None)

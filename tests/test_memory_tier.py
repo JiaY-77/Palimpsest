@@ -131,8 +131,7 @@ class TestTierMatches:
 def test_default_tier_excludes_logs(iso):
     q = "分层回归甲：北极航道破冰船的柴油机维护周期记录"
     fact_id = _insert(iso, {"type": "memory", "domain": "hermes", "importance": 0.5}, q)
-    log_id = _insert(iso, {"type": "record", "domain": "hermes", "importance": 0.5},
-                     q + "（日志）")
+    log_id = _insert(iso, {"type": "record", "domain": "hermes", "importance": 0.5}, q + "（日志）")
 
     default_out = _mem_search_impl(q, scope="all", top_k=20)
     assert fact_id in _ids(default_out)
@@ -142,8 +141,7 @@ def test_default_tier_excludes_logs(iso):
 def test_empty_tier_returns_both(iso):
     q = "分层回归乙：南极冰盖钻探取样的同位素比值表"
     fact_id = _insert(iso, {"type": "memory", "domain": "hermes", "importance": 0.5}, q)
-    log_id = _insert(iso, {"type": "record", "domain": "hermes", "importance": 0.5},
-                     q + "（日志）")
+    log_id = _insert(iso, {"type": "record", "domain": "hermes", "importance": 0.5}, q + "（日志）")
 
     out = _mem_search_impl(q, scope="all", top_k=20, tier="")
     ids = _ids(out)
@@ -153,8 +151,7 @@ def test_empty_tier_returns_both(iso):
 def test_logs_tier_returns_only_logs(iso):
     q = "分层回归丙：马达加斯加狐猴种群夜间声学监测"
     fact_id = _insert(iso, {"type": "memory", "domain": "hermes", "importance": 0.5}, q)
-    log_id = _insert(iso, {"type": "event", "domain": "hermes", "importance": 0.5},
-                     q + "（事件）")
+    log_id = _insert(iso, {"type": "event", "domain": "hermes", "importance": 0.5}, q + "（事件）")
 
     out = _mem_search_impl(q, scope="all", top_k=20, tier="logs")
     ids = _ids(out)
@@ -166,8 +163,7 @@ def test_all_three_log_types_filtered(iso):
     q = "分层回归丁：格陵兰冰芯气泡的古大气成分"
     log_ids = set()
     for i, t in enumerate(("record", "event", "git_commit")):
-        log_ids.add(_insert(iso, {"type": t, "domain": "hermes", "importance": 0.5},
-                            f"{q} 第{i}号"))
+        log_ids.add(_insert(iso, {"type": t, "domain": "hermes", "importance": 0.5}, f"{q} 第{i}号"))
 
     out = _mem_search_impl(q, scope="all", top_k=20)
     assert log_ids & _ids(out) == set(), "三个日志类型都不该被 facts 层返回"
@@ -188,8 +184,7 @@ def test_tier_empty_equals_pre_change_behaviour(iso):
     q = "分层回归己：鄂霍次克海海冰边缘区浮游植物水华观测"
     ids = set()
     for t in ("memory", "record", "event", "correction", "task"):
-        ids.add(_insert(iso, {"type": t, "domain": "hermes", "importance": 0.5},
-                        f"{q} 类型{t}"))
+        ids.add(_insert(iso, {"type": t, "domain": "hermes", "importance": 0.5}, f"{q} 类型{t}"))
 
     out = _mem_search_impl(q, scope="all", top_k=20, tier="")
     got = _ids(out)
@@ -205,8 +200,7 @@ def test_tier_empty_equals_pre_change_behaviour(iso):
 def test_hybrid_respects_tier(iso, mode):
     q = "分层混合回归：塞伦盖蒂角马迁徙的河道水文监测"
     fact_id = _insert(iso, {"type": "memory", "domain": "hermes", "importance": 0.5}, q)
-    log_id = _insert(iso, {"type": "record", "domain": "hermes", "importance": 0.5},
-                     q + "（记录）")
+    log_id = _insert(iso, {"type": "record", "domain": "hermes", "importance": 0.5}, q + "（记录）")
 
     default_ids = _ids(_hybrid_search_impl(q, scope="all", top_k=20, mode=mode))
     assert fact_id in default_ids
@@ -245,8 +239,7 @@ def test_cli_parsers_accept_tier():
     from scripts.palimpsest_cli import build_parser
 
     for cmd in ("search", "hybrid-search"):
-        assert build_parser().parse_args([cmd, "词"]).tier == "facts", \
-            f"{cmd} 默认应为 facts"
+        assert build_parser().parse_args([cmd, "词"]).tier == "facts", f"{cmd} 默认应为 facts"
         assert build_parser().parse_args([cmd, "词", "--tier", ""]).tier == ""
 
 
@@ -275,11 +268,11 @@ def test_cli_review_parser_accepts_tier():
 def test_mem_review_tier_filters_recent_ingests(iso):
     """recent_ingests 仅收录 type=memory（现状）；tier 在既有 type 约束上再过滤：
 
-      - tier=""：不过滤，窗口内 memory 全回（回归红线）；
-      - tier="facts"（默认)：memory 属事实层，照常返回；
-      - tier="logs"：memory 非日志层 → recent_ingests 为空（真实行为）。
-      记录型（record）节点历来不在 recent_ingests（type=memory 硬过滤），
-      tier 参数不改变这一既有约束。
+    - tier=""：不过滤，窗口内 memory 全回（回归红线）；
+    - tier="facts"（默认)：memory 属事实层，照常返回；
+    - tier="logs"：memory 非日志层 → recent_ingests 为空（真实行为）。
+    记录型（record）节点历来不在 recent_ingests（type=memory 硬过滤），
+    tier 参数不改变这一既有约束。
     """
     import json
     import time
@@ -287,10 +280,8 @@ def test_mem_review_tier_filters_recent_ingests(iso):
     from mcp_tools.memory import mem_review
 
     now = time.time()
-    fact = _insert(iso, {"type": "memory", "domain": "hermes", "importance": 0.5},
-                   "复盘分层：事实层内容")
-    log = _insert(iso, {"type": "record", "domain": "hermes", "importance": 0.5},
-                  "复盘分层：日志层内容")
+    fact = _insert(iso, {"type": "memory", "domain": "hermes", "importance": 0.5}, "复盘分层：事实层内容")
+    log = _insert(iso, {"type": "record", "domain": "hermes", "importance": 0.5}, "复盘分层：日志层内容")
     iso.update_payload(fact, {"created_at": now})
     iso.update_payload(log, {"created_at": now})
 

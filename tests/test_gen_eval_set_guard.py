@@ -72,9 +72,7 @@ def test_generate_batch_rejects_length_mismatch(monkeypatch) -> None:
 
     gen = _gen_eval_set()
 
-    batch = [
-        {"node_id": i, "payload": {"content": f"节点内容 {i}"}} for i in range(3)
-    ]
+    batch = [{"node_id": i, "payload": {"content": f"节点内容 {i}"}} for i in range(3)]
     monkeypatch.setattr(
         gen,
         "_call_deepseek",

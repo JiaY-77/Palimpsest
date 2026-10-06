@@ -36,15 +36,27 @@ def _code_only(source: str) -> str:
     for node in ast.walk(tree):
         if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             body = getattr(node, "body", [])
-            if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) \
-                    and isinstance(body[0].value.value, str):
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
                 body.pop(0)
     return ast.unparse(tree)
 
 
 # 已迁移到 REST 的读/写命令
-_MIGRATED = ["cmd_search", "cmd_hybrid_search", "cmd_recent",
-             "cmd_graph", "cmd_kb", "cmd_stats", "cmd_ingest", "cmd_link"]
+_MIGRATED = [
+    "cmd_search",
+    "cmd_hybrid_search",
+    "cmd_recent",
+    "cmd_graph",
+    "cmd_kb",
+    "cmd_stats",
+    "cmd_ingest",
+    "cmd_link",
+]
 
 
 def test_migrated_commands_use_rest():
@@ -105,10 +117,7 @@ def test_cli_does_not_import_mcp_tools_at_module_level():
                 if alias.name.startswith("mcp_tools") and not _inside_function(node.lineno):
                     offenders.append((node.lineno, alias.name))
 
-    assert not offenders, (
-        f"模块级 import 了 mcp_tools（会初始化库）：{offenders}；"
-        "应改为命令函数内惰性 import"
-    )
+    assert not offenders, f"模块级 import 了 mcp_tools（会初始化库）：{offenders}；应改为命令函数内惰性 import"
 
 
 # ---- 2. 代理层：_rest_call 请求形状 ----
@@ -239,11 +248,13 @@ def test_cmd_stats_section_filter_is_client_side(fake_httpx, capsys):
     import scripts.palimpsest_cli as cli
 
     # 让假客户端返回一份完整 stats
-    payload = json.dumps({
-        "totals": {"total_nodes": 10, "by_domain": {"hermes": 5}},
-        "kinds": {"memory": 3},
-        "importance": {"high": 1},
-    })
+    payload = json.dumps(
+        {
+            "totals": {"total_nodes": 10, "by_domain": {"hermes": 5}},
+            "kinds": {"memory": 3},
+            "importance": {"high": 1},
+        }
+    )
 
     class _Resp:
         status_code = 200
@@ -267,6 +278,7 @@ def test_cmd_stats_section_filter_is_client_side(fake_httpx, capsys):
             return False
 
     import httpx
+
     orig = httpx.Client
     httpx.Client = _C
     try:
@@ -300,8 +312,9 @@ def test_mem_recent_endpoint_returns_results(db_path):
 
     # 写一条可辨识的记忆
     emb = store.embed_text("CLI REST 读路径测试：最近记忆端点")
-    store.insert_node({"type": "memory", "content": "CLI REST 读路径测试：最近记忆端点",
-                       "importance": 0.5, "domain": "clitest"}, emb)
+    store.insert_node(
+        {"type": "memory", "content": "CLI REST 读路径测试：最近记忆端点", "importance": 0.5, "domain": "clitest"}, emb
+    )
 
     client = TestClient(app)
     resp = client.post("/mem/recent", json={"domain": "clitest", "limit": 5})

@@ -89,10 +89,7 @@ def test_ingest_search_roundtrip(db_path):
     # mem_search 应能检索到该节点
     s = _get(mem_search(content, scope="memory"))
     assert s["results"], "mem_search 未返回任何结果"
-    assert any(item["id"] == nid for item in s["results"]), (
-        f"mem_search 未命中刚写入的节点 {nid}"
-
-    )
+    assert any(item["id"] == nid for item in s["results"]), f"mem_search 未命中刚写入的节点 {nid}"
 
     # mem_get_full 应能取回全文
     full = _get(mem_get_full(nid))
@@ -250,25 +247,34 @@ def test_task_archive(tmp_path):
     from mcp_tools import store
 
     emb = store.embed_text("任务归档冒烟向量")
-    a_id = store.insert_node({
-        "type": "task",
-        "character_name": "task",
-        "content": "冒烟任务甲：完成状态直写节点，验证 status 级归档判定",
-        "importance": 0.7,
-    }, emb)
+    a_id = store.insert_node(
+        {
+            "type": "task",
+            "character_name": "task",
+            "content": "冒烟任务甲：完成状态直写节点，验证 status 级归档判定",
+            "importance": 0.7,
+        },
+        emb,
+    )
     store.update_payload(a_id, {**store.get_node(a_id)["payload"], "status": "completed"})
-    b_id = store.insert_node({
-        "type": "plan",
-        "character_name": "task",
-        "content": "冒烟任务乙：优化流程已完成，验证内容级归档判定",
-        "importance": 0.5,
-    }, emb)
-    c_id = store.insert_node({
-        "type": "task",
-        "character_name": "task",
-        "content": "冒烟任务丙：待启动，尚未开工，属未完成任务",
-        "importance": 0.3,
-    }, emb)
+    b_id = store.insert_node(
+        {
+            "type": "plan",
+            "character_name": "task",
+            "content": "冒烟任务乙：优化流程已完成，验证内容级归档判定",
+            "importance": 0.5,
+        },
+        emb,
+    )
+    c_id = store.insert_node(
+        {
+            "type": "task",
+            "character_name": "task",
+            "content": "冒烟任务丙：待启动，尚未开工，属未完成任务",
+            "importance": 0.3,
+        },
+        emb,
+    )
 
     # 独立临时知识库目录（与正式 KNOWLEDGE_DIR 完全隔离）
     # 注意：用 pytest 的 tmp_path 而不是从 db_path 派生——DB_PATH 可能被 eval
@@ -392,18 +398,15 @@ def test_transaction_merge(db_path):
     emb_b = store.embed_text(base + "（副本乙）")
     # importance 一高一低（0.3 / 0.5）且均 < max_importance(0.8)：既非 both_important
     # 也非 high_value，确保真正走合并路径（双方都高会被 _filter_candidates 跳过）
-    a_id = store.insert_node(
-        {"type": "memory", "content": base, "importance": 0.3}, emb_a)
-    b_id = store.insert_node(
-        {"type": "memory", "content": base + "（副本乙）", "importance": 0.5}, emb_b)
+    a_id = store.insert_node({"type": "memory", "content": base, "importance": 0.3}, emb_a)
+    b_id = store.insert_node({"type": "memory", "content": base + "（副本乙）", "importance": 0.5}, emb_b)
     assert a_id != b_id
 
     r = consolidate(store, dry_run=False)
     assert r["dry_run"] is False, r
     assert r["merged"] >= 1, r
 
-    merged_ids = [m for m in r["merged_ids"]
-                  if {m["old_a"], m["old_b"]} == {a_id, b_id}]
+    merged_ids = [m for m in r["merged_ids"] if {m["old_a"], m["old_b"]} == {a_id, b_id}]
     assert merged_ids, f"本测试的合并对应出现在 merged_ids: {r['merged_ids']}"
     m = merged_ids[0]
     new_id = m["new_id"]
@@ -433,9 +436,13 @@ def _edge_count(store) -> int:
 def _pair_will_merge(a_id, b_id, score=0.9, imp_a=0.3, imp_b=0.5) -> dict:
     """构造一条 _apply_merge 可直接消费的候选对。"""
     return {
-        "a": a_id, "b": b_id, "score": score,
-        "a_imp": imp_a, "b_imp": imp_b,
-        "a_content": "x", "b_content": "x",
+        "a": a_id,
+        "b": b_id,
+        "score": score,
+        "a_imp": imp_a,
+        "b_imp": imp_b,
+        "a_content": "x",
+        "b_content": "x",
     }
 
 
@@ -450,14 +457,18 @@ def test_consolidate_batch_rollback(iso_consolidator_store, monkeypatch):
     from core.secret_scan import SecretScanError
 
     s = iso_consolidator_store
-    n1 = s.insert_node({"type": "memory", "content": "整批回滚护栏甲", "importance": 0.3},
-                       s.embed_text("整批回滚护栏甲"))
-    n2 = s.insert_node({"type": "memory", "content": "整批回滚护栏甲副", "importance": 0.5},
-                       s.embed_text("整批回滚护栏甲副"))
-    n3 = s.insert_node({"type": "memory", "content": "整批回滚护栏乙", "importance": 0.3},
-                       s.embed_text("整批回滚护栏乙"))
-    n4 = s.insert_node({"type": "memory", "content": "整批回滚护栏乙副", "importance": 0.5},
-                       s.embed_text("整批回滚护栏乙副"))
+    n1 = s.insert_node(
+        {"type": "memory", "content": "整批回滚护栏甲", "importance": 0.3}, s.embed_text("整批回滚护栏甲")
+    )
+    n2 = s.insert_node(
+        {"type": "memory", "content": "整批回滚护栏甲副", "importance": 0.5}, s.embed_text("整批回滚护栏甲副")
+    )
+    n3 = s.insert_node(
+        {"type": "memory", "content": "整批回滚护栏乙", "importance": 0.3}, s.embed_text("整批回滚护栏乙")
+    )
+    n4 = s.insert_node(
+        {"type": "memory", "content": "整批回滚护栏乙副", "importance": 0.5}, s.embed_text("整批回滚护栏乙副")
+    )
     will_merge = [_pair_will_merge(n1, n2), _pair_will_merge(n3, n4)]
 
     before_ids = set(s._get_all_node_ids())
@@ -481,8 +492,7 @@ def test_consolidate_batch_rollback(iso_consolidator_store, monkeypatch):
     assert after_ids == before_ids, f"整批回滚后不应残留合并节点: {before_ids} -> {after_ids}"
     assert after_edges == before_edges, f"整批回滚后边数应还原: {before_edges} -> {after_edges}"
     for i in (n1, n2, n3, n4):
-        assert s.get_node(i)["payload"]["status"] == before_status[i], \
-            f"整批回滚后节点 {i} 不应被标 outdated"
+        assert s.get_node(i)["payload"]["status"] == before_status[i], f"整批回滚后节点 {i} 不应被标 outdated"
 
 
 def test_consolidate_per_pair_commit(iso_consolidator_store, monkeypatch):
@@ -496,18 +506,24 @@ def test_consolidate_per_pair_commit(iso_consolidator_store, monkeypatch):
     from core.secret_scan import SecretScanError
 
     s = iso_consolidator_store
-    n1 = s.insert_node({"type": "memory", "content": "逐对提交护栏甲", "importance": 0.3},
-                       s.embed_text("逐对提交护栏甲"))
-    n2 = s.insert_node({"type": "memory", "content": "逐对提交护栏甲副", "importance": 0.5},
-                       s.embed_text("逐对提交护栏甲副"))
-    n3 = s.insert_node({"type": "memory", "content": "逐对提交护栏乙", "importance": 0.3},
-                       s.embed_text("逐对提交护栏乙"))
-    n4 = s.insert_node({"type": "memory", "content": "逐对提交护栏乙副", "importance": 0.5},
-                       s.embed_text("逐对提交护栏乙副"))
-    n5 = s.insert_node({"type": "memory", "content": "逐对提交护栏丙", "importance": 0.3},
-                       s.embed_text("逐对提交护栏丙"))
-    n6 = s.insert_node({"type": "memory", "content": "逐对提交护栏丙副", "importance": 0.5},
-                       s.embed_text("逐对提交护栏丙副"))
+    n1 = s.insert_node(
+        {"type": "memory", "content": "逐对提交护栏甲", "importance": 0.3}, s.embed_text("逐对提交护栏甲")
+    )
+    n2 = s.insert_node(
+        {"type": "memory", "content": "逐对提交护栏甲副", "importance": 0.5}, s.embed_text("逐对提交护栏甲副")
+    )
+    n3 = s.insert_node(
+        {"type": "memory", "content": "逐对提交护栏乙", "importance": 0.3}, s.embed_text("逐对提交护栏乙")
+    )
+    n4 = s.insert_node(
+        {"type": "memory", "content": "逐对提交护栏乙副", "importance": 0.5}, s.embed_text("逐对提交护栏乙副")
+    )
+    n5 = s.insert_node(
+        {"type": "memory", "content": "逐对提交护栏丙", "importance": 0.3}, s.embed_text("逐对提交护栏丙")
+    )
+    n6 = s.insert_node(
+        {"type": "memory", "content": "逐对提交护栏丙副", "importance": 0.5}, s.embed_text("逐对提交护栏丙副")
+    )
     will_merge = [
         _pair_will_merge(n1, n2),
         _pair_will_merge(n3, n4),
@@ -540,14 +556,12 @@ def test_consolidate_per_pair_commit(iso_consolidator_store, monkeypatch):
     assert s.get_node(n2)["payload"]["status"] == "outdated"
 
     # 第二对自身事务回滚：无残留合并节点，旧节点保持 active
-    assert s.get_node(failed_second_id) is None, \
-        f"失败对的事务应回滚: id={failed_second_id} 不应存在"
+    assert s.get_node(failed_second_id) is None, f"失败对的事务应回滚: id={failed_second_id} 不应存在"
     assert s.get_node(n3)["payload"]["status"] == "active", "n3 不应被标 outdated"
     assert s.get_node(n4)["payload"]["status"] == "active", "n4 不应被标 outdated"
 
     # 第三对未执行（异常传播 → 循环中断）：无新合并节点，旧节点保持 active
-    assert s.get_node(unreached_third_id) is None, \
-        f"异常后循环应中断: id={unreached_third_id} 不应存在"
+    assert s.get_node(unreached_third_id) is None, f"异常后循环应中断: id={unreached_third_id} 不应存在"
     assert s.get_node(n5)["payload"]["status"] == "active", "n5 不应被标 outdated"
     assert s.get_node(n6)["payload"]["status"] == "active", "n6 不应被标 outdated"
 
@@ -595,16 +609,16 @@ def test_ingest_tx_rollback(db_path, monkeypatch):
     try:
         r = _get(mem_ingest(content="事务回滚护栏：这条记忆不应残留在库中", type="memory"))
     finally:
-        monkeypatch.setattr("mcp_tools.memory.resolve_conflict",
-                            __import__("core.conflict", fromlist=["resolve_conflict"]).resolve_conflict)
+        monkeypatch.setattr(
+            "mcp_tools.memory.resolve_conflict",
+            __import__("core.conflict", fromlist=["resolve_conflict"]).resolve_conflict,
+        )
 
     assert r["stored"] is False, f"应返回 stored:False: {r}"
     assert "回滚" in r["error"], r
 
     after = set(store._get_all_node_ids())
-    assert after == before, (
-        f"回滚后不应残留新节点（无半状态）：before={before} after={after}"
-    )
+    assert after == before, f"回滚后不应残留新节点（无半状态）：before={before} after={after}"
 
 
 def test_insert_node_tx_rollback(db_path):
@@ -620,8 +634,9 @@ def test_insert_node_tx_rollback(db_path):
     db = store._acquire()
     try:
         with db.transaction() as tx:
-            store.insert_node_tx(tx, {"type": "memory", "content": "回滚单元护栏"},
-                                 store.embed_text("回滚单元护栏"), next_id=next_id)
+            store.insert_node_tx(
+                tx, {"type": "memory", "content": "回滚单元护栏"}, store.embed_text("回滚单元护栏"), next_id=next_id
+            )
             raise RuntimeError("中途抛错触发回滚")
     except RuntimeError:
         pass
@@ -630,4 +645,3 @@ def test_insert_node_tx_rollback(db_path):
 
     current = store._get_all_node_ids()
     assert next_id not in current, f"事务回滚后新节点 {next_id} 不应存在: {current}"
-

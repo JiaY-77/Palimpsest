@@ -142,9 +142,7 @@ def _check_embedding() -> str:
     try:
         import requests
 
-        resp = requests.get(
-            Config.OLLAMA_EMBEDDING_BASE_URL.rstrip("/") + "/api/tags", timeout=2
-        )
+        resp = requests.get(Config.OLLAMA_EMBEDDING_BASE_URL.rstrip("/") + "/api/tags", timeout=2)
         resp.raise_for_status()
     except Exception as e:
         raise RuntimeError(f"{fail_detail}（探测失败: {e}）") from e

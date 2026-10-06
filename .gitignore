@@ -53,6 +53,8 @@ scripts/graph_edges.json
 
 # 本地服务日志
 scripts/start_rest.log
+scripts/manual_restart.log
+scripts/manual_restart.log.err
 
 # 压测日志（含绝对路径，不入库）
 scripts/tdb_stress/err.log

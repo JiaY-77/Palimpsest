@@ -7,6 +7,7 @@ TriviumDB 0.8.3 特性测试 —— TQL 路径查询（P2）
 
 隔离保证：%TEMP%/tdb_ftest/ 独立临时库。
 """
+
 import math
 import os
 import tempfile
@@ -34,8 +35,7 @@ def tdb():
 
     ids = [db.insert(vec(f"c{i}"), {"num": i}) for i in range(6)]
     # 0→1→2 ; 0→3→4 ; 1→4 ; 4→5
-    for a, b, label in [(0, 1, "REL"), (1, 2, "REL"), (0, 3, "REL"),
-                        (3, 4, "CAUSES"), (1, 4, "CAUSES"), (4, 5, "REL")]:
+    for a, b, label in [(0, 1, "REL"), (1, 2, "REL"), (0, 3, "REL"), (3, 4, "CAUSES"), (1, 4, "CAUSES"), (4, 5, "REL")]:
         db.link(ids[a], ids[b], label)
     yield db
     db.close()
@@ -53,8 +53,10 @@ def test_shortest_paths_returns_path_and_hops(tdb):
     且节点数恒等于跳数+1（路径一致性）。"""
     dst = _num(tdb, 2)
     fs = f"SEARCH VECTOR [{V8}] TOP 1 AS seed WITH seed "
-    q = (f"{fs}SHORTEST_PATHS seed TO [{dst}] LABEL REL AS route "
-         f"WITH route RETURN path(route) AS nodes, path_length(route) AS hops")
+    q = (
+        f"{fs}SHORTEST_PATHS seed TO [{dst}] LABEL REL AS route "
+        f"WITH route RETURN path(route) AS nodes, path_length(route) AS hops"
+    )
     rows = tdb.tql(q)
     assert rows
     row = rows[0].row
@@ -69,8 +71,10 @@ def test_shortest_paths_label_filter(tdb):
     """LABEL 过滤：只沿 REL 走，路径节点/payload 类型为 memory 的节点可达 dst。"""
     dst = _num(tdb, 2)
     fs = f"SEARCH VECTOR [{V8}] TOP 100 AS seed WITH seed "
-    q = (f"{fs}SHORTEST_PATHS seed TO [{dst}] LABEL REL AS route "
-         f"WITH route RETURN path(route) AS nodes, path_length(route) AS hops")
+    q = (
+        f"{fs}SHORTEST_PATHS seed TO [{dst}] LABEL REL AS route "
+        f"WITH route RETURN path(route) AS nodes, path_length(route) AS hops"
+    )
     rows = tdb.tql(q)
     # seed 覆盖全部节点时，应至少产出 1 条路径；每条路径节点数=跳数+1
     assert rows
@@ -83,8 +87,7 @@ def test_shortest_paths_causes_isolation(tdb):
     dst = _num(tdb, 2)
     _num(tdb, 0)
     fs = f"SEARCH VECTOR [{V8}] TOP 100 AS seed WITH seed "
-    q = (f"{fs}SHORTEST_PATHS seed TO [{dst}] LABEL REL AS route "
-         f"WITH route RETURN path(route) AS nodes")
+    q = f"{fs}SHORTEST_PATHS seed TO [{dst}] LABEL REL AS route WITH route RETURN path(route) AS nodes"
     rows = tdb.tql(q)
     # seed=全部节点，应覆盖到从 num0 出发的场景（存在 0→1→2 的 REL 路径）
     rel_paths = [r.row["nodes"] for r in rows]
@@ -99,8 +102,10 @@ def test_path_length_and_nodes_consistent(tdb):
     nodes 与 hops 恒保持 len==hops+1。"""
     dst = _num(tdb, 5)
     fs = f"SEARCH VECTOR [{V8}] TOP 1 AS seed WITH seed "
-    q = (f"{fs}SHORTEST_PATHS seed TO [{dst}] AS route "
-         f"WITH route RETURN path(route) AS nodes, path_length(route) AS hops")
+    q = (
+        f"{fs}SHORTEST_PATHS seed TO [{dst}] AS route "
+        f"WITH route RETURN path(route) AS nodes, path_length(route) AS hops"
+    )
     rows = tdb.tql(q)
     assert rows
     row = rows[0].row
@@ -114,13 +119,15 @@ def test_path_length_and_nodes_consistent(tdb):
 # ---------------------------------------------------------------------------
 @pytest.mark.xfail(
     reason="ALL_PATHS 的 DEPTH/paths 段语法在 0.8.3 未落地（多种合法写法均报 "
-           "Expected depth/paths/positive integer），待作者补齐 TQL 文法定稿后恢复",
+    "Expected depth/paths/positive integer），待作者补齐 TQL 文法定稿后恢复",
     strict=False,
 )
 def test_all_paths(tdb):
     dst = _num(tdb, 2)
     fs = f"SEARCH VECTOR [{V8}] TOP 1 AS seed WITH seed "
-    q = (f"{fs}ALL_PATHS seed TO [{dst}] DEPTH 3 paths LABEL REL AS route "
-         f"WITH route RETURN path(route) AS nodes, path_length(route) AS hops")
+    q = (
+        f"{fs}ALL_PATHS seed TO [{dst}] DEPTH 3 paths LABEL REL AS route "
+        f"WITH route RETURN path(route) AS nodes, path_length(route) AS hops"
+    )
     rows = tdb.tql(q)
     assert rows

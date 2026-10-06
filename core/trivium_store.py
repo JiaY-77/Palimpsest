@@ -72,7 +72,6 @@ class _LockedDB:
             self.close()
 
 
-
 class EmbeddingUnavailableError(Exception):
     """Embedding 服务不可用。
 
@@ -140,8 +139,7 @@ def node_domain(payload: dict) -> str:
     （既不能当起点也不能当邻居）——「无标签 = 未分类」，隔离场景下丢弃防污染；
     只有全量模式（block 为空）才可见。
     """
-    return (payload.get("domain", "")
-            or payload.get("character_name", "") or "general").strip().lower()
+    return (payload.get("domain", "") or payload.get("character_name", "") or "general").strip().lower()
 
 
 def _drop_outdated_candidates(scored: list[tuple[float, dict]]) -> list[tuple[float, dict]]:
@@ -149,10 +147,7 @@ def _drop_outdated_candidates(scored: list[tuple[float, dict]]) -> list[tuple[fl
 
     被新版取代的旧记忆不应占用候选名额（6x 候选余量中有约 24% 是 outdated）。
     """
-    return [
-        (s, n) for s, n in scored
-        if (n.get("payload", {}) or {}).get("status") != "outdated"
-    ]
+    return [(s, n) for s, n in scored if (n.get("payload", {}) or {}).get("status") != "outdated"]
 
 
 def _rerank_by_decay(scored: list[tuple[float, dict]]) -> list[tuple[float, dict]]:
@@ -201,10 +196,7 @@ def _rerank_by_decay(scored: list[tuple[float, dict]]) -> list[tuple[float, dict
 
 def _filter_candidates_by_block(scored: list[tuple[float, dict]], block: str) -> list[tuple[float, dict]]:
     """block 后置过滤：domain 匹配 block 时保留，否则丢弃。"""
-    return [
-        (s, n) for s, n in scored
-        if domain_in_block(node_domain(n.get("payload", {})), block)
-    ]
+    return [(s, n) for s, n in scored if domain_in_block(node_domain(n.get("payload", {})), block)]
 
 
 class TriviumStore:
@@ -279,7 +271,8 @@ class TriviumStore:
         _DB_ACCESS_LOCK.acquire()
         try:
             db = triviumdb.TriviumDB(
-                self.db_path, dim=self.dim,
+                self.db_path,
+                dim=self.dim,
                 access_mode="read_only" if self.read_only else "read_write",
             )
         except Exception as e:
@@ -367,8 +360,7 @@ class TriviumStore:
             raise
         except Exception as e:
             raise EmbeddingUnavailableError(
-                f"云端 Embedding 生成失败: {e}。"
-                "请检查 EMBEDDING_API_KEY / EMBEDDING_BASE_URL / EMBEDDING_MODEL 配置。"
+                f"云端 Embedding 生成失败: {e}。请检查 EMBEDDING_API_KEY / EMBEDDING_BASE_URL / EMBEDDING_MODEL 配置。"
             ) from e
 
     def insert_node(self, node_data: dict[str, Any], embedding: list[float]) -> int:
@@ -384,19 +376,13 @@ class TriviumStore:
                 "created_at": None,
             }
             # 合并额外字段（如 character_name, user_name）
-            extra_fields = {
-                k: v
-                for k, v in node_data.items()
-                if k not in payload and k not in ("label", "content")
-            }
+            extra_fields = {k: v for k, v in node_data.items() if k not in payload and k not in ("label", "content")}
             payload.update(extra_fields)
 
             # 敏感信息强/弱分级扫描（安全审计整改）：
             #   强规则命中（API key/token/私钥）→ 拒绝入库
             #   弱规则命中（身份证/手机号）→ 放行但打 secret_hint 标记供审计
-            scan_text = " ".join(
-                str(v) for v in payload.values() if isinstance(v, str)
-            )
+            scan_text = " ".join(str(v) for v in payload.values() if isinstance(v, str))
             classified = scan_secret_classified(scan_text)
             if classified["strong"]:
                 raise SecretScanError(classified["strong"])
@@ -406,8 +392,7 @@ class TriviumStore:
             node_id = db.insert(embedding, payload)
             return node_id
 
-    def insert_node_tx(self, tx, node_data: dict[str, Any],
-                       embedding: list[float], next_id: int | None = None) -> int:
+    def insert_node_tx(self, tx, node_data: dict[str, Any], embedding: list[float], next_id: int | None = None) -> int:
         """事务内插入节点（供 mem_ingest 事务化链路使用），返回节点 ID。
 
         逻辑与 insert_node 一致（payload 组装、secret_scan 强拒弱标），但写入
@@ -431,18 +416,12 @@ class TriviumStore:
             "importance": node_data.get("importance", 0.5),
             "status": "active",
         }
-        extra_fields = {
-            k: v
-            for k, v in node_data.items()
-            if k not in payload and k not in ("label", "content")
-        }
+        extra_fields = {k: v for k, v in node_data.items() if k not in payload and k not in ("label", "content")}
         payload.update(extra_fields)
         payload.setdefault("created_at", None)
 
         # 敏感信息强/弱分级扫描（与 insert_node 一致）：强拒入、弱打标
-        scan_text = " ".join(
-            str(v) for v in payload.values() if isinstance(v, str)
-        )
+        scan_text = " ".join(str(v) for v in payload.values() if isinstance(v, str))
         classified = scan_secret_classified(scan_text)
         if classified["strong"]:
             raise SecretScanError(classified["strong"])
@@ -531,10 +510,7 @@ class TriviumStore:
                 min_edge_weight=Config.EXPAND_MIN_EDGE_WEIGHT,
                 payload_filter=payload_filter,
             )
-            scored = [
-                (float(hit.score), {"id": hit.id, "payload": hit.payload})
-                for hit in (hits or [])
-            ]
+            scored = [(float(hit.score), {"id": hit.id, "payload": hit.payload}) for hit in (hits or [])]
         except Exception as e:  # noqa: BLE001 —— 检索失败告警后降级空结果不抛断主流程
             logger.warning(f"search_advanced 失败，返回空结果: {e}")
             return []
@@ -694,8 +670,7 @@ class TriviumStore:
                 }
             return None
 
-    def delete_edge(self, source_id: int, target_id: int,
-                    relation_type: str = "RELATED_TO") -> bool:
+    def delete_edge(self, source_id: int, target_id: int, relation_type: str = "RELATED_TO") -> bool:
         """删除一条边（issue #51）。
 
         此前建边只能通过 create_edge / mem_link，却没有任何删除途径：冲突检测
@@ -708,9 +683,7 @@ class TriviumStore:
         with self._acquire() as db:
             edges = db.get_edges(source_id) or []
             if not any(
-                getattr(e, "target_id", None) == target_id
-                and getattr(e, "label", None) == label
-                for e in edges
+                getattr(e, "target_id", None) == target_id and getattr(e, "label", None) == label for e in edges
             ):
                 return False
             db.unlink(source_id, target_id, label)
@@ -835,12 +808,15 @@ class TriviumStore:
                 node = db.get(nid)
                 if not node:
                     continue
-                yield nid, {
-                    "id": node.id,
-                    "payload": node.payload or {},
-                    "num_edges": node.num_edges,
-                    "vector": node.vector,
-                }
+                yield (
+                    nid,
+                    {
+                        "id": node.id,
+                        "payload": node.payload or {},
+                        "num_edges": node.num_edges,
+                        "vector": node.vector,
+                    },
+                )
         finally:
             if db is not None:
                 with contextlib.suppress(Exception):
@@ -894,11 +870,13 @@ class TriviumStore:
                     vec = node.vector
                     if not vec:
                         continue
-                    memory_nodes.append({
-                        "id": nid,
-                        "vector": vec,
-                        "payload": payload,
-                    })
+                    memory_nodes.append(
+                        {
+                            "id": nid,
+                            "vector": vec,
+                            "payload": payload,
+                        }
+                    )
             except Exception as e:  # noqa: BLE001 —— 节点遍历失败返回空列表不阻断检测
                 logger.warning(f"find_similar_pairs 收集节点失败，返回空列表: {e}")
                 return []
@@ -910,8 +888,7 @@ class TriviumStore:
                 for mn in memory_nodes:
                     nid = mn["id"]
                     vec = mn["vector"]
-                    hits = db.search(
-                        vec, top_k=6, min_score=0.0, expand_depth=0)
+                    hits = db.search(vec, top_k=6, min_score=0.0, expand_depth=0)
                     for hit in hits or []:
                         hid = hit.id
                         score = float(hit.score)
@@ -937,15 +914,17 @@ class TriviumStore:
                         b_payload = hpayload if b == hid else mn["payload"]
                         a_imp = _to_float(a_payload.get("importance"), 0.5)
                         b_imp = _to_float(b_payload.get("importance"), 0.5)
-                        candidates.append({
-                            "a": a,
-                            "b": b,
-                            "score": round(score, 4),
-                            "a_imp": round(a_imp, 2),
-                            "b_imp": round(b_imp, 2),
-                            "a_content": (a_payload.get("content") or "")[:80],
-                            "b_content": (b_payload.get("content") or "")[:80],
-                        })
+                        candidates.append(
+                            {
+                                "a": a,
+                                "b": b,
+                                "score": round(score, 4),
+                                "a_imp": round(a_imp, 2),
+                                "b_imp": round(b_imp, 2),
+                                "a_content": (a_payload.get("content") or "")[:80],
+                                "b_content": (b_payload.get("content") or "")[:80],
+                            }
+                        )
         except Exception as e:  # noqa: BLE001 —— 扫描失败保留已收集候选尽量返回部分结果
             logger.warning(f"find_similar_pairs 扫描失败，返回已收集候选: {e}")
 

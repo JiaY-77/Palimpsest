@@ -14,8 +14,7 @@ import sqlite3
 from core import fts_index
 
 
-def test_search_on_missing_index_returns_empty_without_creating(tmp_path,
-                                                                monkeypatch):
+def test_search_on_missing_index_returns_empty_without_creating(tmp_path, monkeypatch):
     """索引文件不存在 → 返回空且不创建文件（只读查询无副作用）。"""
     target = tmp_path / "fts.db"
     monkeypatch.setattr(fts_index, "_db_path", lambda: str(target))

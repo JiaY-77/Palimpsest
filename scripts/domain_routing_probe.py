@@ -46,15 +46,21 @@ TMP = EVAL_DIR / ".tmp"
 TMP.mkdir(parents=True, exist_ok=True)
 
 _env_db = os.getenv("DB_PATH", "")
-ORIG_DB = (Path(_env_db) if os.path.isabs(_env_db) else ROOT / _env_db) if _env_db \
-    else ROOT / "data" / "mh_memory.db"
+ORIG_DB = (Path(_env_db) if os.path.isabs(_env_db) else ROOT / _env_db) if _env_db else ROOT / "data" / "mh_memory.db"
 ORIG_FTS = ORIG_DB.parent / "fts.db"
 CACHE = TMP / "domain_routing_cache.json"
 
 GROUPS = ("hermes", "kb", "novel", "task", "general")
-GROUP_MAP = {"hermes": "hermes", "kb": "kb",
-             "novel": "novel", "由佳": "novel",
-             "task": "task", "tms": "task", "work": "task", "general": "general"}
+GROUP_MAP = {
+    "hermes": "hermes",
+    "kb": "kb",
+    "novel": "novel",
+    "由佳": "novel",
+    "task": "task",
+    "tms": "task",
+    "work": "task",
+    "general": "general",
+}
 
 PROMPT = (
     "你是检索域分类器。把用户查询归入下面 5 个域之一：\n"
@@ -105,8 +111,7 @@ def unit(m):
 
 
 def group_of(payload: dict) -> str:
-    raw = (payload.get("domain", "") or payload.get("character_name", "")
-           or "general").strip().lower()
+    raw = (payload.get("domain", "") or payload.get("character_name", "") or "general").strip().lower()
     return GROUP_MAP.get(raw, "general")
 
 
@@ -116,10 +121,9 @@ def embed_batch(texts, batch=32):
     url = Config.OLLAMA_EMBEDDING_BASE_URL.rstrip("/")
     out = []
     for i in range(0, len(texts), batch):
-        part = texts[i:i + batch]
+        part = texts[i : i + batch]
         try:
-            r = requests.post(f"{url}/api/embed",
-                              json={"model": EMB_MODEL, "input": part}, timeout=600)
+            r = requests.post(f"{url}/api/embed", json={"model": EMB_MODEL, "input": part}, timeout=600)
             r.raise_for_status()
             vecs = r.json().get("embeddings")
             if not vecs or len(vecs) != len(part):
@@ -127,8 +131,7 @@ def embed_batch(texts, batch=32):
             out.extend(vecs)
         except Exception:  # noqa: BLE001 —— 批量嵌入失败逐条回退保证部分结果
             for t in part:
-                rr = requests.post(f"{url}/api/embeddings",
-                                   json={"model": EMB_MODEL, "prompt": t[:2500]}, timeout=180)
+                rr = requests.post(f"{url}/api/embeddings", json={"model": EMB_MODEL, "prompt": t[:2500]}, timeout=180)
                 rr.raise_for_status()
                 out.append(rr.json()["embedding"])
     return np.asarray(out, dtype=np.float32)
@@ -136,9 +139,16 @@ def embed_batch(texts, batch=32):
 
 def classify(gen_model: str, query: str) -> str:
     url = Config.OLLAMA_EMBEDDING_BASE_URL.rstrip("/")
-    r = requests.post(f"{url}/api/generate", json={
-        "model": gen_model, "prompt": PROMPT.format(q=query), "stream": False,
-        "options": {"temperature": 0, "num_predict": 12, "top_p": 1.0}}, timeout=120)
+    r = requests.post(
+        f"{url}/api/generate",
+        json={
+            "model": gen_model,
+            "prompt": PROMPT.format(q=query),
+            "stream": False,
+            "options": {"temperature": 0, "num_predict": 12, "top_p": 1.0},
+        },
+        timeout=120,
+    )
     r.raise_for_status()
     txt = (r.json().get("response") or "").strip().lower()
     for g in GROUPS:
@@ -157,9 +167,11 @@ def main() -> None:
 
     store = TriviumStore()
     all_nodes = list(store.iter_nodes())
-    active = [(nid, n) for nid, n in all_nodes
-              if (n["payload"].get("status") or "active") != "outdated"
-              and (n["payload"].get("content") or "").strip()]
+    active = [
+        (nid, n)
+        for nid, n in all_nodes
+        if (n["payload"].get("status") or "active") != "outdated" and (n["payload"].get("content") or "").strip()
+    ]
     nids = [nid for nid, _ in active]
     texts = [(n["payload"].get("content") or "") for _, n in active]
     grp = [group_of(n["payload"]) for _, n in active]
@@ -201,10 +213,14 @@ def main() -> None:
     llm_lab = {q: v["label"] for q, v in bucket.items()}
     acc = sum(1 for it in pos if llm_lab.get(it["qid"]) == gold_grp[it["qid"]]) / len(pos)
     lat = [v.get("s", 0) for v in bucket.values() if v.get("s")]
-    print(f"LLM 域分类准确率 {acc:.4f}（{sum(1 for it in pos if llm_lab.get(it['qid']) == gold_grp[it['qid']])}/{len(pos)}）"
-          f"；延迟均值 {sum(lat) / max(len(lat), 1):.3f}s")
-    print(f"  混淆（真实→推断）: "
-          f"{dict(Counter((gold_grp[it['qid']], llm_lab.get(it['qid'])) for it in pos).most_common(8))}")
+    print(
+        f"LLM 域分类准确率 {acc:.4f}（{sum(1 for it in pos if llm_lab.get(it['qid']) == gold_grp[it['qid']])}/{len(pos)}）"
+        f"；延迟均值 {sum(lat) / max(len(lat), 1):.3f}s"
+    )
+    print(
+        f"  混淆（真实→推断）: "
+        f"{dict(Counter((gold_grp[it['qid']], llm_lab.get(it['qid'])) for it in pos).most_common(8))}"
+    )
 
     # ---- 评估 ----
     rows = []
@@ -226,21 +242,45 @@ def main() -> None:
             s2 = sc + np.asarray([b if g == target else 0.0 for g in grp])
             return [nids[i] for i in np.argsort(-s2)]
 
-        rows.append({"qid": it["qid"], "query": it["query"], "gold": it["gold_ids"],
-                     "gold_grp": truth, "llm_label": lab, "maj_label": maj,
-                     "base": rk_base, "oracle_hard": hard(truth), "llm_hard": hard(lab),
-                     "maj_hard": hard(maj), "maj_soft": soft(maj), "llm_soft": soft(lab),
-                     "oracle_soft": soft(truth),
-                     # 域已知（oracle）时的 boost 扫描：软加权能否既拿收益又不丢跨域
-                     "oracle_soft_b05": soft(truth, 0.05), "oracle_soft_b10": soft(truth, 0.10),
-                     "oracle_soft_b20": soft(truth, 0.20),
-                     # 最坏情况：boost 加在错误的域上（风险上界）
-                     "wrong_soft_b10": soft(next(g for g in GROUPS if g != truth), 0.10)})
+        rows.append(
+            {
+                "qid": it["qid"],
+                "query": it["query"],
+                "gold": it["gold_ids"],
+                "gold_grp": truth,
+                "llm_label": lab,
+                "maj_label": maj,
+                "base": rk_base,
+                "oracle_hard": hard(truth),
+                "llm_hard": hard(lab),
+                "maj_hard": hard(maj),
+                "maj_soft": soft(maj),
+                "llm_soft": soft(lab),
+                "oracle_soft": soft(truth),
+                # 域已知（oracle）时的 boost 扫描：软加权能否既拿收益又不丢跨域
+                "oracle_soft_b05": soft(truth, 0.05),
+                "oracle_soft_b10": soft(truth, 0.10),
+                "oracle_soft_b20": soft(truth, 0.20),
+                # 最坏情况：boost 加在错误的域上（风险上界）
+                "wrong_soft_b10": soft(next(g for g in GROUPS if g != truth), 0.10),
+            }
+        )
         if k % 20 == 0:
             print(f"  {k}/{len(pos)}  {time.time() - t0:.0f}s", flush=True)
 
-    keys = ("base", "oracle_hard", "oracle_soft", "oracle_soft_b05", "oracle_soft_b10",
-            "oracle_soft_b20", "wrong_soft_b10", "llm_hard", "maj_hard", "maj_soft", "llm_soft")
+    keys = (
+        "base",
+        "oracle_hard",
+        "oracle_soft",
+        "oracle_soft_b05",
+        "oracle_soft_b10",
+        "oracle_soft_b20",
+        "wrong_soft_b10",
+        "llm_hard",
+        "maj_hard",
+        "maj_soft",
+        "llm_soft",
+    )
 
     def met(key):
         agg = defaultdict(list)
@@ -265,8 +305,7 @@ def main() -> None:
     print(hdr)
     for k in keys:
         m = res[k]
-        line = (f"{k:<14} {m['R@1']:7.4f} {m['R@3']:7.4f} {m['R@5']:7.4f} {m['R@10']:7.4f} "
-                f"{m['MRR']:7.4f}  ")
+        line = f"{k:<14} {m['R@1']:7.4f} {m['R@3']:7.4f} {m['R@5']:7.4f} {m['R@10']:7.4f} {m['MRR']:7.4f}  "
         for d in doms:
             line += f"{m['dom'].get(d, 0):8.3f}"
         print(line)
@@ -284,22 +323,30 @@ def main() -> None:
                 g += 1
             elif b2 < a:
                 loss += 1
-        print(f"  {k:<14} ΔR@1 {100 * (m['R@1'] - b['R@1']):+6.2f} | ΔR@5 {100 * (m['R@5'] - b['R@5']):+6.2f} "
-              f"| ΔR@10 {100 * (m['R@10'] - b['R@10']):+6.2f} | ΔMRR {100 * (m['MRR'] - b['MRR']):+6.2f} "
-              f"| 逐题 +{g}/−{loss}")
+        print(
+            f"  {k:<14} ΔR@1 {100 * (m['R@1'] - b['R@1']):+6.2f} | ΔR@5 {100 * (m['R@5'] - b['R@5']):+6.2f} "
+            f"| ΔR@10 {100 * (m['R@10'] - b['R@10']):+6.2f} | ΔMRR {100 * (m['MRR'] - b['MRR']):+6.2f} "
+            f"| 逐题 +{g}/−{loss}"
+        )
 
     post_sha = sha256(ORIG_DB)
-    print(f"\n库完整性: 前 {pre_sha[:16]} 后 {post_sha[:16]} → "
-          f"{'一致' if pre_sha == post_sha else '不一致'}")
+    print(f"\n库完整性: 前 {pre_sha[:16]} 后 {post_sha[:16]} → {'一致' if pre_sha == post_sha else '不一致'}")
 
-    out = {"meta": {"model": args.model, "boost": args.boost, "n_questions": len(rows),
-                    "llm_accuracy": round(acc, 4),
-                    "llm_latency_s": round(sum(lat) / max(len(lat), 1), 3),
-                    "embed_model": EMB_MODEL, "limit": args.limit},
-           "sha256": {"pre": pre_sha, "post": post_sha, "consistent": pre_sha == post_sha},
-           "results": res, "rows": rows}
-    (TMP / "domain_routing_probe.json").write_text(json.dumps(out, ensure_ascii=False),
-                                                   encoding="utf-8")
+    out = {
+        "meta": {
+            "model": args.model,
+            "boost": args.boost,
+            "n_questions": len(rows),
+            "llm_accuracy": round(acc, 4),
+            "llm_latency_s": round(sum(lat) / max(len(lat), 1), 3),
+            "embed_model": EMB_MODEL,
+            "limit": args.limit,
+        },
+        "sha256": {"pre": pre_sha, "post": post_sha, "consistent": pre_sha == post_sha},
+        "results": res,
+        "rows": rows,
+    }
+    (TMP / "domain_routing_probe.json").write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
     print(f"结果已写入 {TMP / 'domain_routing_probe.json'}")
 
 

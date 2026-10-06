@@ -65,17 +65,15 @@ from _common import PROJECT_ROOT as _PROJECT_ROOT
 
 # 关键：必须在 import config 之前设置 DB_PATH（Config.DB_PATH 在类定义时读 env；
 # .env 里的 DB_PATH=data/mh_memory.db 不会覆盖已设置的变量）
-os.environ["DB_PATH"] = os.path.join(
-    _PROJECT_ROOT, "data", "mh_memory_new.db"
-).replace("\\", "/")
+os.environ["DB_PATH"] = os.path.join(_PROJECT_ROOT, "data", "mh_memory_new.db").replace("\\", "/")
 
 from config import Config
 from core.trivium_store import TriviumStore
 
 EXPORT_PATH = os.path.join("data", "export_backup_20260828.json")
-EXPECTED_NODES = 391   # 全量节点数（2026-08-28 导出：391 总，含 kb_chunk 212）
-EXPECTED_EDGES = 133   # 全部边数（2026-08-28 导出：REVISED_BY 106 + RELATED_TO 27）
-DEFERRED_EDGES = 0     # 全量恢复，无跳过边
+EXPECTED_NODES = 391  # 全量节点数（2026-08-28 导出：391 总，含 kb_chunk 212）
+EXPECTED_EDGES = 133  # 全部边数（2026-08-28 导出：REVISED_BY 106 + RELATED_TO 27）
+DEFERRED_EDGES = 0  # 全量恢复，无跳过边
 INDEX_FIELDS = ("type", "importance", "status", "domain", "character_name")
 
 
@@ -177,28 +175,31 @@ def verify(db, store: TriviumStore, nodes: list, edges: list, id_map: dict) -> N
     print(f"边数: 实际 {edge_total} 条（{dict(edge_labels)}）| 期望 {EXPECTED_EDGES} 条")
 
     # ---- 边逐条核对（导出边 -> 新库边，映射后端点 + label + weight）----
-    expect_edges = [e for e in edges
-                    if e["source_id"] in id_map and e["target_id"] in id_map]
+    expect_edges = [e for e in edges if e["source_id"] in id_map and e["target_id"] in id_map]
     mismatch = 0
     for e in expect_edges:
         new_src, new_dst = id_map[e["source_id"]], id_map[e["target_id"]]
         found = [
-            x for x in db.get_edges(new_src)
-            if x.target_id == new_dst and x.label == e["label"]
+            x
+            for x in db.get_edges(new_src)
+            if x.target_id == new_dst
+            and x.label == e["label"]
             and abs(float(x.weight or 0.0) - float(e.get("weight", 0.9))) < 1e-6
         ]
         if not found:
             mismatch += 1
             print(f"  [边缺失] {e['source_id']}->{e['target_id']} ({e['label']})")
-    print(f"边逐条核对: {len(expect_edges) - mismatch}/{len(expect_edges)} 条存在且 label/weight 一致"
-          if mismatch == 0 else f"边逐条核对: {mismatch}/{len(expect_edges)} 条缺失！")
+    print(
+        f"边逐条核对: {len(expect_edges) - mismatch}/{len(expect_edges)} 条存在且 label/weight 一致"
+        if mismatch == 0
+        else f"边逐条核对: {mismatch}/{len(expect_edges)} 条缺失！"
+    )
 
     # ---- RELATED_TO 双向对称性（已恢复部分应成对）----
     pairs = set()
     for e in expect_edges:
         if e["label"] == "RELATED_TO":
-            pairs.add((min(e["source_id"], e["target_id"]),
-                       max(e["source_id"], e["target_id"])))
+            pairs.add((min(e["source_id"], e["target_id"]), max(e["source_id"], e["target_id"])))
     rel_count = sum(1 for e in expect_edges if e["label"] == "RELATED_TO")
     print(f"RELATED_TO 已恢复: {rel_count} 条有向边 = {len(pairs)} 个双向对")
 
@@ -206,6 +207,7 @@ def verify(db, store: TriviumStore, nodes: list, edges: list, id_map: dict) -> N
     print("\n=== 检索冒烟（query: 派兵 练兵）===")
     qemb = store.embed_text("派兵 练兵")
     import numpy as np
+
     qv = np.array(qemb)
     scored = []
     for nid in ids:
@@ -220,8 +222,9 @@ def verify(db, store: TriviumStore, nodes: list, edges: list, id_map: dict) -> N
     if not scored:
         print("  ! 未召回任何结果")
     for score, nid, payload in scored[:3]:
-        print(f"  id={nid} score={score:.4f} type={payload.get('type')} "
-              f"content={str(payload.get('content', ''))[:60]!r}")
+        print(
+            f"  id={nid} score={score:.4f} type={payload.get('type')} content={str(payload.get('content', ''))[:60]!r}"
+        )
 
 
 def main() -> None:
@@ -250,8 +253,7 @@ def main() -> None:
             print(f"\n目标库已有 {existing} 个节点（上次运行已恢复），跳过恢复，直接验证 ...")
         else:
             raise RuntimeError(
-                f"目标库已有 {existing} 个节点（期望 0 或 {EXPECTED_NODES}），"
-                f"状态异常，中止以避免重复插入。"
+                f"目标库已有 {existing} 个节点（期望 0 或 {EXPECTED_NODES}），状态异常，中止以避免重复插入。"
             )
         verify(db, store, nodes, edges, id_map)
 

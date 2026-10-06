@@ -36,6 +36,7 @@ def iso_store(tmp_path, monkeypatch):
 @pytest.fixture
 def fake_embedder(monkeypatch):
     """用可解释的 token 向量替代真实 embedding。"""
+
     def _embed(text: str) -> list[float]:
         vector = [0.0] * 1024
         for token in str(text).lower().split():
@@ -92,9 +93,7 @@ def test_skill_search_survives_dense_non_skill_competition(iso_store, fake_embed
     assert len(result["results"]) == 1
 
 
-def test_skill_search_survives_competition_beyond_candidate_window(
-    iso_store, fake_embedder
-):
+def test_skill_search_survives_competition_beyond_candidate_window(iso_store, fake_embedder):
     """噪声节点多到填满候选放大窗口时，技能仍应被检索到。
 
     候选放大（top_k*4，至少 20）只能缓解挤压：噪声足够多时窗口会被填满，

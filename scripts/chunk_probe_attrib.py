@@ -12,6 +12,7 @@
     venv/Scripts/python.exe scripts/chunk_probe_attrib.py [变体名 ...]
     不带参数 = 归因所有 calib_* 变体（默认在 base / 新变体间对比）。
 """
+
 import json
 import sys
 from collections import Counter
@@ -49,8 +50,10 @@ def position(r, key):
 base_r1, base_r5, base_r10 = (avg(lambda r, k=k: r_at(r, "base", k)) for k in (1, 5, 10))
 print(f"题数 {len(rows)}  base: R@1 {base_r1:.4f}  R@5 {base_r5:.4f}  R@10 {base_r10:.4f}\n")
 
-print(f"{'variant':<14} {'R@1':>7} {'ΔR@1':>7} {'R@5':>7} {'ΔR@5':>7} {'R@10':>7} {'ΔR@10':>7} "
-      f"| R@5 gain/loss | R@1 gain/loss | 掉top5 | 掉top10")
+print(
+    f"{'variant':<14} {'R@1':>7} {'ΔR@1':>7} {'R@5':>7} {'ΔR@5':>7} {'R@10':>7} {'ΔR@10':>7} "
+    f"| R@5 gain/loss | R@1 gain/loss | 掉top5 | 掉top10"
+)
 for v in keys:
     r1v, r5v, r10v = (avg(lambda r, k=k, v=v: r_at(r, v, k)) for k in (1, 5, 10))
     g5 = sum(1 for r in rows if r_at(r, v, 5) > r_at(r, "base", 5))
@@ -59,9 +62,11 @@ for v in keys:
     l1 = sum(1 for r in rows if r_at(r, v, 1) < r_at(r, "base", 1))
     out5 = sum(1 for r in rows if r_at(r, "base", 5) == 1 and r_at(r, v, 5) == 0)
     out10 = sum(1 for r in rows if r_at(r, "base", 10) == 1 and r_at(r, v, 10) == 0)
-    print(f"{v:<14} {r1v:7.4f} {100*(r1v-base_r1):+7.2f} {r5v:7.4f} {100*(r5v-base_r5):+7.2f} "
-          f"{r10v:7.4f} {100*(r10v-base_r10):+7.2f} | {g5:2d}/{l5:2d}       | {g1:2d}/{l1:2d}       "
-          f"| {out5:6d} | {out10:7d}")
+    print(
+        f"{v:<14} {r1v:7.4f} {100 * (r1v - base_r1):+7.2f} {r5v:7.4f} {100 * (r5v - base_r5):+7.2f} "
+        f"{r10v:7.4f} {100 * (r10v - base_r10):+7.2f} | {g5:2d}/{l5:2d}       | {g1:2d}/{l1:2d}       "
+        f"| {out5:6d} | {out10:7d}"
+    )
 
 print("\n逐题明细（相对 base 有 R@1 / R@5 / R@10 变化的题）：")
 for v in keys:
@@ -80,5 +85,4 @@ for v in keys:
     pos = [position(r, v) for r in rows]
     hit = [p for p in pos if p]
     top1 = sum(1 for p in pos if p == 1)
-    print(f"  {v:<14} gold@top1 {top1}/{len(rows)}  平均位次(命中者) "
-          f"{sum(hit)/len(hit):.2f}")
+    print(f"  {v:<14} gold@top1 {top1}/{len(rows)}  平均位次(命中者) {sum(hit) / len(hit):.2f}")

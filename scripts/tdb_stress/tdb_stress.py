@@ -3,6 +3,7 @@ TriviumDB 0.8.0 高压压测脚本（隔离临时库，不碰 Palimpsest 真实 
 维度：顺序批量写 / 单条写 / 多进程并发写 / 同 id 冲突写 / 图谱扩展检索 / 混合读写 / 硬杀恢复 / compact
 输出：JSON 报告 + 控制台摘要
 """
+
 import json
 import multiprocessing as mp
 import os
@@ -45,6 +46,7 @@ def hit_attr(h):
 
 
 # ---------------- 阶段函数（顶层，供 multiprocessing spawn） ----------------
+
 
 def worker_conc_write(worker_id, n, start_id):
     """并发写：每进程独立开库，写入不冲突 id 段"""
@@ -95,8 +97,11 @@ def worker_mixed(worker_id, mode, nodes, duration):
         while time.time() - t0 < duration:
             if mode == "writer":
                 try:
-                    db.insert_with_id(10_000_000 + worker_id * 100_000 + count, rvec(rng),
-                                      {"text": f"mix-w{worker_id}-{count}", "kind": "mixed"})
+                    db.insert_with_id(
+                        10_000_000 + worker_id * 100_000 + count,
+                        rvec(rng),
+                        {"text": f"mix-w{worker_id}-{count}", "kind": "mixed"},
+                    )
                     count += 1
                 except Exception as e:  # noqa: BLE001 —— 混合写异常记入 errs 继续压到限时结束
                     errs.append(f"{type(e).__name__}: {e}")
@@ -113,8 +118,14 @@ def worker_mixed(worker_id, mode, nodes, duration):
         db.close()
     except Exception as e:  # noqa: BLE001 —— 混合 worker 顶层异常记 FATAL 返回
         errs.append(f"FATAL {type(e).__name__}: {e}")
-    return {"worker": worker_id, "mode": mode, "ops": count, "secs": round(time.time() - t0, 3),
-            "errs": errs[:30], "err_count": len(errs)}
+    return {
+        "worker": worker_id,
+        "mode": mode,
+        "ops": count,
+        "secs": round(time.time() - t0, 3),
+        "errs": errs[:30],
+        "err_count": len(errs),
+    }
 
 
 def child_hard_kill(target_secs):
@@ -134,9 +145,15 @@ def child_hard_kill(target_secs):
 
 # ---------------- 主流程 ----------------
 
+
 def main():
-    report = {"ts": datetime.now().isoformat(), "tdb_version": getattr(triviumdb, "__version__", "?"),
-              "dim": DIM, "db": DB, "stages": {}}
+    report = {
+        "ts": datetime.now().isoformat(),
+        "tdb_version": getattr(triviumdb, "__version__", "?"),
+        "dim": DIM,
+        "db": DB,
+        "stages": {},
+    }
 
     if os.path.exists(DB):
         os.remove(DB)
@@ -146,7 +163,11 @@ def main():
         rid = probe_db.insert(rvec(), {"text": "probe"})
         h = probe_db.search(rvec(), top_k=1, min_score=0.0)[0]
         report["searchhit_attrs"] = list(hit_attr(h).keys())
-        report["nodeview_attrs"] = list(getattr(probe_db.get(rid), "__dict__", {}).keys()) if hasattr(probe_db.get(rid), "__dict__") else "no_dict"
+        report["nodeview_attrs"] = (
+            list(getattr(probe_db.get(rid), "__dict__", {}).keys())
+            if hasattr(probe_db.get(rid), "__dict__")
+            else "no_dict"
+        )
     except Exception as e:  # noqa: BLE001 —— 探针失败写入报告不影响主压测阶段
         report["probe_err"] = f"{type(e).__name__}: {e}"
     finally:
@@ -172,8 +193,12 @@ def main():
                 errs1.append(f"batch {type(e).__name__}: {e}")
                 break
         dt = time.time() - t0
-        report["stages"]["seq_batch_20k"] = {"nodes": total, "secs": round(dt, 3),
-                                             "rate_per_sec": round(total / dt, 1), "errs": errs1[:20]}
+        report["stages"]["seq_batch_20k"] = {
+            "nodes": total,
+            "secs": round(dt, 3),
+            "rate_per_sec": round(total / dt, 1),
+            "errs": errs1[:20],
+        }
         db.close()
     except Exception as e:  # noqa: BLE001 —— 阶段整体异常记 fatal 继续下一阶段
         report["stages"]["seq_batch_20k"] = {"fatal": f"{type(e).__name__}: {e}"}
@@ -194,10 +219,18 @@ def main():
                 errs2.append(f"{type(e).__name__}: {e}")
         dt = time.time() - t0
         lat.sort()
-        report["stages"]["single_5k"] = {"nodes": 5000, "secs": round(dt, 3), "rate_per_sec": round(5000 / dt, 1),
-                                         "lat_ms": {"p50": round(lat[len(lat)//2], 2), "p90": round(lat[int(len(lat)*0.9)], 2),
-                                                    "p99": round(lat[int(len(lat)*0.99)], 2), "max": round(lat[-1], 2)},
-                                         "errs": errs2[:20]}
+        report["stages"]["single_5k"] = {
+            "nodes": 5000,
+            "secs": round(dt, 3),
+            "rate_per_sec": round(5000 / dt, 1),
+            "lat_ms": {
+                "p50": round(lat[len(lat) // 2], 2),
+                "p90": round(lat[int(len(lat) * 0.9)], 2),
+                "p99": round(lat[int(len(lat) * 0.99)], 2),
+                "max": round(lat[-1], 2),
+            },
+            "errs": errs2[:20],
+        }
         db.close()
     except Exception as e:  # noqa: BLE001 —— 阶段整体异常记 fatal 继续下一阶段
         report["stages"]["single_5k"] = {"fatal": f"{type(e).__name__}: {e}"}
@@ -208,8 +241,11 @@ def main():
         ctx = mp.get_context("spawn")
         with ctx.Pool(8) as pool:
             results = pool.starmap(worker_conc_write, [(w, 2500, 100_000 + w * 2500) for w in range(8)])
-        report["stages"]["conc_write_8x2500"] = {"secs": round(time.time() - t0, 3), "workers": results,
-                                                 "total_errs": sum(r["err_count"] for r in results)}
+        report["stages"]["conc_write_8x2500"] = {
+            "secs": round(time.time() - t0, 3),
+            "workers": results,
+            "total_errs": sum(r["err_count"] for r in results),
+        }
     except Exception as e:  # noqa: BLE001 —— 多进程阶段部分 worker 异常汇总整体异常记 fatal
         report["stages"]["conc_write_8x2500"] = {"fatal": f"{type(e).__name__}: {e}"}
 
@@ -231,8 +267,11 @@ def main():
         ctx = mp.get_context("spawn")
         with ctx.Pool(4) as pool:
             results = pool.starmap(worker_conflict_write, [(w, ids, 800) for w in range(4)])
-        report["stages"]["conflict_4x800"] = {"secs": round(time.time() - t0, 3), "workers": results,
-                                              "total_errs": sum(r["err_count"] for r in results)}
+        report["stages"]["conflict_4x800"] = {
+            "secs": round(time.time() - t0, 3),
+            "workers": results,
+            "total_errs": sum(r["err_count"] for r in results),
+        }
     except Exception as e:  # noqa: BLE001 —— 同 id 冲突压测异常记 fatal
         report["stages"]["conflict_4x800"] = {"fatal": f"{type(e).__name__}: {e}"}
 
@@ -274,9 +313,13 @@ def main():
             except Exception as e:  # noqa: BLE001 —— 扩展检索异常记入 errs 继续采样
                 errs5b.append(f"search d2 {type(e).__name__}: {e}")
         dt = time.time() - t0
-        report["stages"]["expand_search_200"] = {"queries": 200, "secs": round(dt, 3),
-                                                  "avg_results": round(sum(qs)/len(qs), 1) if qs else 0,
-                                                  "rate_per_sec": round(200/dt, 2), "errs": errs5b[:20]}
+        report["stages"]["expand_search_200"] = {
+            "queries": 200,
+            "secs": round(dt, 3),
+            "avg_results": round(sum(qs) / len(qs), 1) if qs else 0,
+            "rate_per_sec": round(200 / dt, 2),
+            "errs": errs5b[:20],
+        }
         db.close()
     except Exception as e:  # noqa: BLE001 —— 扩展检索阶段异常记 fatal
         report["stages"]["expand_search_200"] = {"fatal": f"{type(e).__name__}: {e}"}
@@ -289,11 +332,16 @@ def main():
         ctx = mp.get_context("spawn")
         [("w", w, None, 60) for w in range(4)] + [("r", w, node_pool, 60) for w in range(4)]
         with ctx.Pool(8) as pool:
-            results = pool.starmap(worker_mixed, [("writer", w, None, 60) for w in range(4)] +
-                                                  [("reader", w, node_pool, 60) for w in range(4)])
-        report["stages"]["mixed_60s"] = {"secs": round(time.time() - t0, 3), "workers": results,
-                                         "total_ops": sum(r["ops"] for r in results),
-                                         "total_errs": sum(r["err_count"] for r in results)}
+            results = pool.starmap(
+                worker_mixed,
+                [("writer", w, None, 60) for w in range(4)] + [("reader", w, node_pool, 60) for w in range(4)],
+            )
+        report["stages"]["mixed_60s"] = {
+            "secs": round(time.time() - t0, 3),
+            "workers": results,
+            "total_ops": sum(r["ops"] for r in results),
+            "total_errs": sum(r["err_count"] for r in results),
+        }
     except Exception as e:  # noqa: BLE001 —— 混合压测整体异常记 fatal
         report["stages"]["mixed_60s"] = {"fatal": f"{type(e).__name__}: {e}"}
 
@@ -303,7 +351,9 @@ def main():
         proc = subprocess.Popen(
             [sys.executable, os.path.abspath(__file__), "--child-hardkill", "25"],
             cwd=os.path.dirname(os.path.abspath(__file__)),
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         time.sleep(12)  # 让它写一会儿
         proc.kill()
         proc.wait(timeout=10)
@@ -345,9 +395,15 @@ def main():
         before = db.node_count()
         db.compact()
         after = db.node_count()
-        report["stages"]["compact"] = {"before": before, "after": after, "secs": round(time.time() - t0, 3),
-                                       "consistent": before == after,
-                                       "est_memory_mb": round(db.estimated_memory() / (1024*1024), 2) if hasattr(db, "estimated_memory") else None}
+        report["stages"]["compact"] = {
+            "before": before,
+            "after": after,
+            "secs": round(time.time() - t0, 3),
+            "consistent": before == after,
+            "est_memory_mb": round(db.estimated_memory() / (1024 * 1024), 2)
+            if hasattr(db, "estimated_memory")
+            else None,
+        }
         db.close()
     except Exception as e:  # noqa: BLE001 —— compact 异常记 fatal 最终核对仍继续
         report["stages"]["compact"] = {"fatal": f"{type(e).__name__}: {e}"}
@@ -362,7 +418,7 @@ def main():
 
     # 磁盘占用
     with contextlib.suppress(Exception):
-        report["db_size_mb"] = round(os.path.getsize(DB) / (1024*1024), 2)
+        report["db_size_mb"] = round(os.path.getsize(DB) / (1024 * 1024), 2)
 
     with open(REPORT, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2, default=str)

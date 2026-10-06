@@ -67,9 +67,7 @@ def filter_pool(
     return kept, stats
 
 
-def should_write_output(
-    success_count: int, existing_items: list, new_items: list
-) -> tuple[bool, str]:
+def should_write_output(success_count: int, existing_items: list, new_items: list) -> tuple[bool, str]:
     """Decide whether the generated eval set may be written back to file.
 
     Returns (allow, reason).  ``allow`` is *False* when the write must be

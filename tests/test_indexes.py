@@ -10,6 +10,7 @@ create_composite_index(Composite) / create_bitmap_index(Bitmap) 四类：
 
 隔离保证：%TEMP%/tdb_ftest/ 独立临时库。
 """
+
 import math
 import os
 import tempfile
@@ -36,16 +37,11 @@ def tdb():
         return [x / norm for x in out]
 
     nodes = [
-        {"type": "memory", "num": 1, "folder": "work", "tags": ["a", "b"],
-         "meta": {"score": 0.9}},
-        {"type": "memory", "num": 2, "folder": "work", "tags": ["a"],
-         "meta": {"score": 0.5}},
-        {"type": "memory", "num": 3, "folder": "home", "tags": ["b", "c"],
-         "meta": {"score": 0.7}},
-        {"type": "event", "num": 4, "folder": "work", "tags": [],
-         "meta": None},
-        {"type": "event", "num": 5, "folder": "home", "tags": ["a", "b", "c"],
-         "meta": {"score": 0.1}},
+        {"type": "memory", "num": 1, "folder": "work", "tags": ["a", "b"], "meta": {"score": 0.9}},
+        {"type": "memory", "num": 2, "folder": "work", "tags": ["a"], "meta": {"score": 0.5}},
+        {"type": "memory", "num": 3, "folder": "home", "tags": ["b", "c"], "meta": {"score": 0.7}},
+        {"type": "event", "num": 4, "folder": "work", "tags": [], "meta": None},
+        {"type": "event", "num": 5, "folder": "home", "tags": ["a", "b", "c"], "meta": {"score": 0.1}},
     ]
     for p in nodes:
         db.insert(vec(p["folder"] + str(p["num"])), p)
@@ -77,8 +73,8 @@ def test_index_does_not_change_results(tdb):
 def test_hash_ordered_consistent(tdb):
     tdb.create_index("num")
     tdb.create_ordered_index("num")
-    h = _ids(tdb.tql('FIND {num: {$gte: 3}} RETURN *'))
-    o = _ids(tdb.tql('FIND {num: {$gte: 3}} RETURN *'))
+    h = _ids(tdb.tql("FIND {num: {$gte: 3}} RETURN *"))
+    o = _ids(tdb.tql("FIND {num: {$gte: 3}} RETURN *"))
     assert h and sorted(h) == sorted(o)
 
 
@@ -150,7 +146,7 @@ def test_nested_field_dotted_query(tdb):
 def test_nested_field_nested_object_not_supported(tdb):
     """{meta: {score: ...}} 嵌套对象简写不被 Finder 支持 → 应报解析错误（边界）。"""
     with pytest.raises(RuntimeError):
-        tdb.tql('FIND {meta: {score: {$gte: 0.7}}} RETURN *')
+        tdb.tql("FIND {meta: {score: {$gte: 0.7}}} RETURN *")
 
 
 def test_array_field_all(tdb):
@@ -161,7 +157,7 @@ def test_array_field_all(tdb):
 
 def test_null_field_exists_true_includes_null(tdb):
     """$exists:true 会把「存在但值为 null」的字段也算作存在（0.8.3 语义）。"""
-    rows = tdb.tql('FIND {meta: {$exists: true}} RETURN *')
+    rows = tdb.tql("FIND {meta: {$exists: true}} RETURN *")
     a_meta = [r.row["_"]["payload"].get("meta") for r in rows]
     # 所有 5 个节点都有 meta 键（含 None）→ 全部命中
     assert len(rows) == 5
@@ -171,7 +167,7 @@ def test_null_field_exists_true_includes_null(tdb):
 
 def test_field_not_exists(tdb):
     """没有某字段的节点用 $exists:false 过滤。所有节点都带 folder，应命中 0。"""
-    rows = tdb.tql('FIND {folder: {$exists: false}} RETURN *')
+    rows = tdb.tql("FIND {folder: {$exists: false}} RETURN *")
     assert rows == []
 
 
@@ -185,7 +181,7 @@ def test_composite_equality_consistent(tdb):
 
 @pytest.mark.xfail(
     reason="复合索引 [type, num] 对辅助字段 num 的范围查询（$lt/$gte）在 0.8.3 "
-           "返回空集，而无索引时正常 → 疑似 composite 索引范围下推 bug，需上报作者",
+    "返回空集，而无索引时正常 → 疑似 composite 索引范围下推 bug，需上报作者",
     strict=False,
 )
 def test_composite_secondary_range_bug(tdb):
@@ -193,4 +189,3 @@ def test_composite_secondary_range_bug(tdb):
     tdb.create_composite_index(["type", "num"])
     rows = tdb.tql('FIND {type: "memory", num: {$lt: 3}} RETURN *')
     assert {r.row["_"]["payload"]["num"] for r in rows} == {1, 2}
-

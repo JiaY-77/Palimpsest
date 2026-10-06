@@ -64,11 +64,7 @@ class RemoteStore:
         base_url: str | None = None,
         timeout: float = 10.0,
     ) -> None:
-        self.base_url = (
-            base_url
-            or os.getenv("PALIMPSEST_BASE_URL")
-            or _DEFAULT_BASE_URL
-        ).rstrip("/")
+        self.base_url = (base_url or os.getenv("PALIMPSEST_BASE_URL") or _DEFAULT_BASE_URL).rstrip("/")
         self._timeout = timeout
         self._client = httpx.Client(base_url=self.base_url, timeout=timeout)
 
@@ -89,14 +85,10 @@ class RemoteStore:
             ) from exc
         # 404 必须先于 >=400 分支判定，否则会被统一吞掉、调用方无法精确捕获
         if resp.status_code == 404:
-            raise RemoteStoreNotFoundError(
-                f"REST 返回 404：{method} {self.base_url}{path}\n"
-                f"响应：{resp.text[:500]}"
-            )
+            raise RemoteStoreNotFoundError(f"REST 返回 404：{method} {self.base_url}{path}\n响应：{resp.text[:500]}")
         if resp.status_code >= 400:
             raise RemoteStoreError(
-                f"REST 返回 {resp.status_code}：{method} {self.base_url}{path}\n"
-                f"响应：{resp.text[:500]}"
+                f"REST 返回 {resp.status_code}：{method} {self.base_url}{path}\n响应：{resp.text[:500]}"
             )
         if resp.status_code == 204 or not resp.content:
             return None
@@ -117,16 +109,9 @@ class RemoteStore:
         REST 返回结构为 ``{"node_id":…, "relations":[…]}"``（键名 ``relations``，
         非 ``neighbors``/``edges``）——按实际响应解析。
         """
-        data = self._req(
-            "POST", "/graph/neighbors", json={"node_id": node_id, "depth": 1}
-        )
+        data = self._req("POST", "/graph/neighbors", json={"node_id": node_id, "depth": 1})
         if isinstance(data, dict):
-            return (
-                data.get("relations")
-                or data.get("neighbors")
-                or data.get("edges")
-                or []
-            )
+            return data.get("relations") or data.get("neighbors") or data.get("edges") or []
         return data or []
 
     def iter_payloads(self) -> Iterator[tuple[int, dict[str, Any]]]:
@@ -145,9 +130,9 @@ class RemoteStore:
         page_size = 500
         while True:
             data = self._req(
-                "GET", "/export",
-                params={"page": page, "page_size": page_size,
-                        "include_payload": "true"},
+                "GET",
+                "/export",
+                params={"page": page, "page_size": page_size, "include_payload": "true"},
             )
             items = []
             if isinstance(data, dict):
@@ -158,9 +143,7 @@ class RemoteStore:
                 return
             for item in items:
                 if not isinstance(item, dict):
-                    raise RemoteStoreError(
-                        f"/export 返回了非对象条目：{item!r}"
-                    )
+                    raise RemoteStoreError(f"/export 返回了非对象条目：{item!r}")
                 nid = item.get("id")
                 if nid is None:
                     continue
@@ -297,8 +280,7 @@ class RemoteStore:
         if block:
             body["block"] = block
         # 透传其余与 REST 端点同名的参数（scope / tier / include_neighbors ...）
-        for key in ("scope", "domain_bias", "include_neighbors",
-                    "include_outdated", "tier", "domain_boost"):
+        for key in ("scope", "domain_bias", "include_neighbors", "include_outdated", "tier", "domain_boost"):
             if key in kwargs:
                 body[key] = kwargs[key]
         data = self._req("POST", "/mem/search", json=body)

@@ -37,8 +37,9 @@ def hit(ranked, gold, k):
 
 for k in (5, 10):
     only_b, only_q = [], []
-    for qid, gold in ((i["qid"], set(i["gold_ids"])) for i in items
-                      if i.get("kind") != "negative" and i.get("gold_ids")):
+    for qid, gold in (
+        (i["qid"], set(i["gold_ids"])) for i in items if i.get("kind") != "negative" and i.get("gold_ids")
+    ):
         hb, hq = hit(pb[qid], gold, k), hit(pq[qid], gold, k)
         if hb and not hq:
             only_b.append(qid)
@@ -50,6 +51,7 @@ for k in (5, 10):
     for label, qids in (("bge独有", only_b), ("qwen独有", only_q)):
         if qids:
             from collections import Counter
+
             print(f"  {label} 分层: {dict(Counter(by_qid[q].get('layer') for q in qids))}")
 
 # gold 排名对比（对 bge 更差的题）
@@ -82,7 +84,6 @@ for row in gained:
     print(f"  {row[0]} [{row[1]}] qwen rank {row[2]} → bge rank {row[3]}  | {row[4]}")
 
 print("\n=== 汇总 ===")
-print(f"  R@5  : qwen3 {q1['recall@5']:.4f} → bge-m3 {b1['recall@5']:.4f}  "
-      f"(赢 {len(gained)} 题 / 输 {len(lost)} 题)")
+print(f"  R@5  : qwen3 {q1['recall@5']:.4f} → bge-m3 {b1['recall@5']:.4f}  (赢 {len(gained)} 题 / 输 {len(lost)} 题)")
 print(f"  R@10 : qwen3 {q1['recall@10']:.4f} → bge-m3 {b1['recall@10']:.4f}")
 print(f"  分层 R@5: qwen3 {q1['layer_r5']} → bge-m3 {b1['layer_r5']}")
