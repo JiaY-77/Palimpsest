@@ -6,9 +6,15 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **服务守护脚本 `scripts/service_guard.py`（防重复拉起）**：README 要求 REST 服务常驻运行，但仓库此前只提供 `start_rest.vbs`（一次性启动），没有守护——服务崩掉后不会自动恢复。新增的守护脚本守 REST 与 Ollama 两项，且**在拉起前先确认目标端口无人监听、上一次启动已过宽限期**。这道检查是必需的而非可选的：TriviumDB 以独占方式打开库文件，而 Palimpsest 采用「每操作开-关库」模式，因此两个 REST 进程同时运行会争抢库文件；抢输的写入被中途打断，会让 storage generation 不一致（`.flush_ok` 与 `.vec`/`.pld` 对不上），库从可读写退化为读不动，且不可原地修复（只能从备份恢复）。一个只看 HTTP 的守护恰好会制造这一场景——服务**正在启动**（加载 embedding、建索引）时 HTTP 无响应，被判为「已死」而再次拉起，而旧进程其实还活着。
+  实现上有两处必须留意：①端口探测**先于**HTTP 探测执行——HTTP 探测会阻塞至超时并在监听 backlog 上占位，先跑它会让端口探测自身超时（实测的 false-negative，会反过来触发重复拉起）；②端口探测用 `connect_ex` 并在 `finally` 中立即关闭套接字——留下半开连接同样会占用 backlog 槽位，让后续探测误判。`tests/test_service_guard.py` 锁定端口/HTTP 判定、启动宽限期与事件记录三组契约（含用只监听不响应的桩复现「启动中」场景）。
+
 ### 修复
 
 - **存储 generation 损坏时 fail-fast（不再静默降级）**：`TriviumStore._init_indexes()` 此前把一切异常都当「索引创建失败」静默吞掉——包括 triviumdb 的「存储 generation 损坏」（如 `.flush_ok` 与 `.vec` 不匹配）。后果是库实际已不可读写（`stats` 全空、写入回滚），`startup-check` 却五项全绿，只有 `doctor` 的向量维度 / 迁移两项才暴露，损坏因此被长期忽视、延误恢复。现新增 `core.utils._is_db_corrupt_error()`（消息标记识别，与既有锁判据 `_is_db_locked_error` 同构），`_init_indexes()` 遇损坏一律 fail-fast，与「库被其他进程占用」的处理一致。`tests/test_corrupt_error_failfast.py` 锁定该契约（含真实损坏措辞识别与「与损坏无关的索引错误仍降级」基准）。
+- **写入失败路径补回归测试（`tests/test_partial_write_rollback.py`）**：此前「事务失败不留半状态」与「失败后触发健康探测」两条契约无测试覆盖。新增三例：正常写入落库（对照组）、事务中途抛异常后节点未落库且返回 `stored: False`、失败路径确实调用 `check_db_health` 并回报 `db_healthy`。测试复用 `conftest.py` 的全局临时库，不自行改写 `Config.DB_PATH`——后者是无效的，因为 `mcp_tools._common.store` 是导入时构造的模块级单例，其路径在 import 那一刻已固定。
 
 ## [2.4.1] - 2026-10-06
 
