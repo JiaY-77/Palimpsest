@@ -4,6 +4,12 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
+## [Unreleased]
+
+### 修复
+
+- **存储 generation 损坏时 fail-fast（不再静默降级）**：`TriviumStore._init_indexes()` 此前把一切异常都当「索引创建失败」静默吞掉——包括 triviumdb 的「存储 generation 损坏」（如 `.flush_ok` 与 `.vec` 不匹配）。后果是库实际已不可读写（`stats` 全空、写入回滚），`startup-check` 却五项全绿，只有 `doctor` 的向量维度 / 迁移两项才暴露，损坏因此被长期忽视、延误恢复。现新增 `core.utils._is_db_corrupt_error()`（消息标记识别，与既有锁判据 `_is_db_locked_error` 同构），`_init_indexes()` 遇损坏一律 fail-fast，与「库被其他进程占用」的处理一致。`tests/test_corrupt_error_failfast.py` 锁定该契约（含真实损坏措辞识别与「与损坏无关的索引错误仍降级」基准）。
+
 ## [2.4.1] - 2026-10-06
 
 ### 修复
