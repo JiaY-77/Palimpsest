@@ -14,7 +14,7 @@ from core.secret_scan import SecretScanError, scan_secret_classified
 
 # 「库被占用」的标记表与判定函数统一放 core/utils.py（db_health 共用同一份）；
 # _DB_LOCK_MARKERS / _is_db_locked_error 再导出，保持既有导入方与测试可用。
-from core.utils import _DB_LOCK_MARKERS, _is_db_locked_error, _to_float  # noqa: F401
+from core.utils import _DB_LOCK_MARKERS, _is_db_corrupt_error, _is_db_locked_error, _to_float  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -238,8 +238,10 @@ class TriviumStore:
           - Bitmap（create_bitmap_index）：status —— 枚举值过滤（active/outdated）
 
         所有 create_*_index 幂等（已存在静默成功）；**索引本身**创建失败静默降级，
-        不影响启动。但「库被其他进程占用」**不降级**——那属于环境冲突而非索引
-        问题，静默吞掉它会把冲突伪装成「一切正常」，正是库退化的起点。
+        不影响启动。但两类错误**不降级**、直接 fail-fast：①「库被其他进程占用」
+        ——那属于环境冲突而非索引问题；②「存储 generation 损坏」——库实际不可用。
+        静默吞掉这两类致命状态会把它们都伪装成「一切正常」（startup-check 全绿而
+        库已不可用），正是库退化 / 延误恢复的起点。
         """
         db = None
         try:
@@ -251,7 +253,11 @@ class TriviumStore:
             db.create_bitmap_index("status")
         except DatabaseBusyError:
             raise  # 库被占用 → fail-fast，不伪装成「索引降级」
-        except Exception as e:  # noqa: BLE001 —— 索引创建失败静默降级不影响启动
+        except Exception as e:
+            if _is_db_corrupt_error(e):
+                # 存储 generation 损坏 → fail-fast：静默降级会让「库已损坏」伪装成
+                # 「索引创建失败」，启动检查全绿而库实际不可用（延误恢复）。
+                raise
             logger.warning(f"初始化字段索引失败（静默降级）: {e}")
         finally:
             if db is not None:
