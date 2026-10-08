@@ -16,8 +16,15 @@ Palimpsest 里的任务节点（``type=task``）长期把「任务当前处于�
   3. ``list_active_tasks`` —— 按状态/项目筛选 + 优先级排序的活跃任务查询；
   4. ``backfill_task_state`` —— 存量老节点一次性回填（默认 dry-run）。
 
-状态取值与 ``content`` 首行标记的映射见 ``PARSE_MAP``。解析不出时返回 ``None``
+状态取值与 ``content`` 首行标记的映射见 ``_STATE_KEYWORDS``。解析不出时返回 ``None``
 （``unknown`` 只在回填兜底时使用），绝不猜测——猜错的状态比没有状态更危险。
+
+解析是「关键词包含式」（不是精确相等）：存量语料的真实标记五花八门——
+``[待办，2026-09-10 主人指令「计入小帕」]``（含空格、超长）、``[完成 2026-09-05]``
+（带后缀）、``【任务·…（进行中）…】``（全角括号、状态词嵌在中间）。
+因此规则是：把 content **首行**里所有括号内容块拆出来，逐块做关键词包含匹配，
+**状态词所在的括号是第一个块就是第一个块，但匹配范围要到首行末尾**（真实语料里
+状态词常常在正文中间，如 ``T073：… → [待办，…]``）。
 """
 
 import logging
@@ -34,40 +41,62 @@ TASK_STATES = frozenset({"todo", "doing", "blocked", "done", "canceled", "unknow
 # 回填时解析不出状态 → unknown（并打 needs_review 标记，交给人工复核）。
 UNKNOWN_STATE = "unknown"
 
-# content 首行第一个方括号词 → 规范化状态。
-# 只认首行第一个 [xxx]；同名标记（如「部分完成」）按语义映射，不按字面猜。
-PARSE_MAP = {
-    "todo": "todo",
-    "待办": "todo",
-    "待启动": "todo",
-    "已拍板·待执行": "todo",
-    "doing": "doing",
-    "进行中": "doing",
-    "部分完成": "doing",
-    "blocked": "blocked",
-    "挂账": "blocked",
-    "阻塞": "blocked",
-    "done": "done",
-    "完成": "done",
-    "已完成": "done",
-    "canceled": "canceled",
-    "取消": "canceled",
-}
+# 状态关键词表：**(关键词, 规范化状态)**，顺序即优先级（先长词/更具体的语义）。
+#
+# 为什么用「包含」而不是「精确相等」：真实存量语料的状态标记带后缀、带日期、
+# 带说明（``[完成 2026-09-05]`` / ``[挂账持续]`` / ``[已开工 2026-09-14 晚，主人拍板]``），
+# 精确匹配只能解析 3/18。改为「块内含关键词即命中」。
+#
+# 优先级硬约束（避免误判）：
+#   1. ``部分完成`` 必须排在 ``完成`` 前 —— 否则「部分完成」被「完成」抢成 done；
+#   2. ``挂起``/``挂账``/``阻塞`` 必须排在 ``完成``/``进行中`` 前 ——
+#      「挂起待续」「等669复测触发」这类块里同时含「挂」「续」等字，先命中挂起语义；
+#   3. 否定词（``未完成``/``还没`` 等）单独判定，防止「未完成」被 ``完成`` 命中。
+_STATE_KEYWORDS: tuple[tuple[str, str], ...] = (
+    ("部分完成", "doing"),
+    ("已拍板·待执行", "todo"),
+    ("进行中", "doing"),
+    ("已开工", "doing"),
+    ("开工", "doing"),
+    ("落地", "doing"),
+    ("挂起", "blocked"),
+    ("挂账", "blocked"),
+    ("阻塞", "blocked"),
+    ("待办", "todo"),
+    ("待批准", "todo"),
+    ("待执行", "todo"),
+    ("待启动", "todo"),
+    ("计划中", "todo"),
+    ("待决策", "todo"),
+    ("已完成", "done"),
+    ("完成", "done"),
+    ("取消", "canceled"),
+    ("todo", "todo"),
+    ("doing", "doing"),
+    ("blocked", "blocked"),
+    ("done", "done"),
+    ("canceled", "canceled"),
+)
 
-# 活跃任务默认状态集（done / canceled 不再需要跟进）。
-DEFAULT_ACTIVE_STATES = ("todo", "doing", "blocked")
+# content 首行所有 ``[...]`` 半角块。``[^\[\]\n]*`` 允许含空格 / 任意长度 / 中文，
+# 因此 ``[待办，2026-09-10 主人指令「计入小帕」]`` 这类超长带空格标记也能整块取出。
+_BRACKET_RE = re.compile(r"\[([^\[\]\n]*)\]")
 
-# 排序优先级：doing 最紧（正在做）→ blocked（卡住要救）→ todo（排队）。
-_STATE_PRIORITY = {"doing": 0, "blocked": 1, "todo": 2}
+# 首行所有 ``【...】`` 全角内容块（真实语料 ``【任务·…（进行中）…】``）。
+# ``[^【】\n]*`` 允许内部嵌套全角圆括号 ``（...）``——「跨界嵌套」在整块文本上
+# 做关键词匹配，所以 ``（进行中）`` 落在块内即可命中，无需拆嵌套。
+_FULL_BRACKET_RE = re.compile(r"【([^【】\n]*)】")
 
-# 首行第一个方括号：``[`` 后跟 1~20 个非括号字符再 ``]``。
-# 限定长度既避免把正文里的长括号（如引用块）误当状态标记，也顺带挡掉
-# 跨行贪婪匹配——``.`` 不匹配 ``\n``，所以永远是「首行内」。
-_LEAD_MARK_RE = re.compile(r"\[\s*([^\[\]\n]{1,20}?)\s*\]")
+# 旧接口兼容：``PARSE_MAP`` 由 ``_STATE_KEYWORDS`` 派生（其余模块可能仍 import 它）。
+PARSE_MAP = dict(_STATE_KEYWORDS)
 
 # 否定/未完成提示：命中即不解析（如「还没完成」「未完成」——
 # 不能因为句子里出现「完成」就判成 done）。
 _NEGATION_HINTS = ("未完成", "还没", "尚未", "未开始", "未能", "暂未", "没有完成")
+DEFAULT_ACTIVE_STATES = ("todo", "doing", "blocked")
+
+# 排序优先级：doing 最紧（正在做）→ blocked（卡住要救）→ todo（排队）。
+_STATE_PRIORITY = {"doing": 0, "blocked": 1, "todo": 2}
 
 
 def _normalize(value: str) -> str:
@@ -78,32 +107,72 @@ def _normalize(value: str) -> str:
     return re.sub(r"\s+", "", value or "").strip().lower()
 
 
-def parse_task_state(content: str) -> str | None:
-    """从 ``content`` 首行第一个 ``[xxx]`` 解析任务状态。
+def _match_keyword(text: str) -> str | None:
+    """在文本里按优先级找第一个命中的状态关键词，返回规范化状态或 ``None``。
 
-    规则（与 ``PARSE_MAP`` 对应）：
-      - 只解析**首行第一个**方括号，正文里后续括号一律忽略；
-      - 标记词大小写 / 首尾空格 / 内部空格容错；
-      - ``[部分完成]`` → ``doing``、``[已拍板·待执行]`` → ``todo``（语义映射）；
-      - 无法识别、无括号、或命中否定提示（「未完成」等）→ 返回 ``None``（不猜）。
+    ``_STATE_KEYWORDS`` 的顺序即优先级（长词 / 更具体的语义在前），
+    因此 ``部分完成`` 不会被 ``完成`` 抢走、``挂起`` 不会被 ``进行中`` 抢走。
+    """
+    for keyword, state in _STATE_KEYWORDS:
+        if keyword in text:
+            return state
+    return None
+
+
+def parse_task_state(content: str) -> str | None:
+    """从 ``content`` **首行**解析任务状态（关键词包含式，不猜）。
+
+    规则：
+      - 只看**首行**（``\\n`` 前）；第二行及以后不参与；
+      - 取出首行里**所有**括号内容块：半角 ``[...]``（可含空格、任意长度）、
+        全角 ``【...】``（可嵌套全角 ``（...）``），按出现顺序依次尝试；
+      - 对每个块做**关键词包含匹配**（见 ``_STATE_KEYWORDS``），命中即返回其状态；
+      - 否定提示（``未完成``/``还没`` 等）命中的块直接跳过——防止
+        「未完成」被 ``完成`` 命中成 done；
+      - 全部块都不命中 / 首行没有括号 → 返回 ``None``（不猜）。
+
+    例：``[部分完成]`` → doing、``[完成 2026-09-05]`` → done、
+    ``【任务·…（进行中）…】`` → doing、``T073：… → [待办，…]`` → todo。
 
     返回规范化状态字符串或 ``None``。
     """
     text = content or ""
     first_line = text.split("\n", 1)[0]
-    # 否定判定只看第一个标记之前的文本（标记之后的正文不参与否定判定，
-    # 否则「[done] 未完成的收尾」会被误判）。为覆盖「还没 [done]」这种
-    # 标记本身带否定前缀的写法，把标记内容也纳入否定检查。
-    match = _LEAD_MARK_RE.search(first_line)
-    prefix = first_line[: match.start()] if match else first_line
-    if match:
-        prefix += match.group(1)
-    for hint in _NEGATION_HINTS:
-        if hint in prefix:
-            return None
-    if not match:
-        return None
-    return PARSE_MAP.get(_normalize(match.group(1)))
+
+    # 依次尝试首行里的每个括号块；第一个匹配到状态的块决定结果。
+    # 注意：**不做跨块合并**——真实语料里「部分完成」与「完成」可能分别出现在
+    # 不同块，逐块匹配 + 每块内部按优先级取词，能正确处理这种组合。
+    for match in _iter_mark_blocks(first_line):
+        block = match.group(1)
+        # 否定提示：块本身或**块之前的文本**命中即跳过该块
+        # （「还没完成 [done]」的否定词在括号外，必须看前缀才拦得住）
+        prefix = first_line[: match.start()]
+        if any(hint in block or hint in prefix for hint in _NEGATION_HINTS):
+            continue
+        state = _match_keyword(_normalize(block))
+        if state:
+            return state
+    return None
+
+
+def _iter_mark_blocks(first_line: str):
+    """按出现顺序产出首行里的括号内容块（半角 ``[...]`` + 全角 ``【...】``）。
+
+    半角块 ``[待办，2026-09-10 …]`` 与全角块 ``【…（进行中）…】`` 统一处理：
+    统一用 ``re.Match``（``group(1)`` = 块内容），调用方无需区分括号形态。
+    """
+    spans: list[tuple[int, re.Match]] = []
+    for pattern in (_BRACKET_RE, _FULL_BRACKET_RE):
+        for match in pattern.finditer(first_line):
+            spans.append((match.start(), match))
+    spans.sort(key=lambda item: item[0])
+    seen: set[tuple[int, int]] = set()
+    for _start, match in spans:
+        key = match.span()
+        if key in seen:
+            continue
+        seen.add(key)
+        yield match
 
 
 def _now_iso() -> str:
@@ -210,8 +279,10 @@ def _task_label(payload: dict) -> str:
     if label:
         return label
     first_line = ((payload.get("content") or "").split("\n", 1)[0]).strip()
-    # 去掉首行开头的状态标记，只留正文，便于日志可读
-    return _LEAD_MARK_RE.sub("", first_line, count=1).strip()
+    # 去掉首行里的状态标记（半角/全角都去），只留正文，便于日志可读
+    cleaned = _BRACKET_RE.sub("", first_line)
+    cleaned = _FULL_BRACKET_RE.sub("", cleaned)
+    return cleaned.strip()
 
 
 def _write_state_log(store, node_id: int, payload: dict, previous_state, new_state: str, now_iso: str) -> None:
@@ -219,6 +290,12 @@ def _write_state_log(store, node_id: int, payload: dict, previous_state, new_sta
 
     content 格式：``[{new_state}] {task_key} {任务名} · {YYYY-MM-DD}``
     （previous_state 一并写进 payload，便于回溯「从哪来」）。
+
+    ``created_at`` 走**插入后补写**：``insert_node`` 的基础 payload 里已含
+    ``created_at``（值 None），其 ``extra_fields`` 过滤会把传入的同名键剔掉
+    （``k not in payload``），直接传会被静默吞掉 → 日志节点时间戳恒为 None。
+    因此插入后按 ``mem_ingest`` 的同款做法（``mcp_tools/memory.py``）读回补写：
+    ``created_at`` 为空才写，避免覆盖既有值。
     """
     label = _task_label(payload)
     content = f"[{new_state}] {label} · {_date_str()}".strip()
@@ -232,9 +309,14 @@ def _write_state_log(store, node_id: int, payload: dict, previous_state, new_sta
         "task_id": node_id,
         "task_state": new_state,
         "previous_state": previous_state,
-        "created_at": now_iso,
     }
     log_id = store.insert_node(log_payload, store.embed_text(content))
+    # insert_node 吞掉 created_at（基础 payload 占位 None）→ 读回补写真实时间戳
+    node = store.get_node(log_id) or {}
+    log_stored = dict(node.get("payload") or {})
+    if log_stored.get("created_at") is None:
+        log_stored["created_at"] = now_iso
+        store.update_payload(log_id, log_stored)
     store.create_edge(log_id, node_id, "LOGS")
     logger.info("任务状态日志已写入 log_node=%s -> task=%s（%s）", log_id, node_id, new_state)
 

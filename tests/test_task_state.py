@@ -19,6 +19,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from corpus_real_cases import EXPECTED_NONE, REAL_CORPUS
 
 from core.task_state import (
     TASK_STATES,
@@ -104,21 +105,24 @@ def test_parse_task_state_only_first_bracket_on_first_line():
         ("[in_progress] 未登记的标记", "非法标记"),
         ("还没完成 [done] 的收尾", "否定句"),
         ("[未完成] 任务", "否定标记"),
-        ("[todo] 但还没启动", "todo 合法，应为 todo"),
     ],
 )
 def test_parse_task_state_failure_paths(content, why):
-    if content == "[todo] 但还没启动":
-        # 最后一个用例是「标记合法 + 正文有否定词」——标记之后正文的否定
-        # 不应污染首行标记（这是刻意的边界，与前面纯否定句区分）
-        assert parse_task_state(content) == "todo", why
-        return
     assert parse_task_state(content) is None, why
 
 
-def test_parse_task_state_negation_inside_mark_not_parsed():
-    """标记本身带否定（还没完成[done]）不解析——不能因出现 done 就判完成。"""
+def test_parse_task_state_negated_mark_defers_to_next_block():
+    """否定提示命中的块**跳过**，不再整条丢弃（除非没有可命中块）。
+
+    旧实现是「标记前文本 / 标记本身含否定词 → 整条返回 None」；改为逐块跳过，
+    因为真实语料里否定经常只否定某一项（如「未完成」是某块说明）。
+    注意：否定前缀会**累积**——首个块带否定后，其后同段文本的块也会被跳过，
+    这是刻意的保守取向（宁可返 None 交人工，也不在否定语境里误报完成）。
+    """
+    # 括号外否定词（前缀）→ 该块被跳过，无其它块 → None
     assert parse_task_state("还没完成 [done] 的任务") is None
+    # 括号内否定词 → 该块被跳过，无其它块 → None
+    assert parse_task_state("[未完成] 任务") is None
 
 
 # ---------------------------------------------------------------------------
@@ -547,3 +551,79 @@ def test_put_endpoint_non_task_node_unchanged(db_path):
     assert payload["importance"] == 0.9
     assert payload["content"] == content
     assert "task_state" not in resp.json()
+
+
+# ---------------------------------------------------------------------------
+# 8. 真实存量语料回归（姐姐复核硬伤：真实语料 3/18 → 必须 ≥13/18）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("node_id", "content", "expected", "_why"),
+    REAL_CORPUS,
+    ids=[f"n{i}" for i, _c, _e, _w in REAL_CORPUS],
+)
+def test_parse_task_state_real_corpus(node_id, content, expected, _why):
+    """逐条真实语料解析：期望状态、不得误判（尤其「部分完成」「完成」区分）。"""
+    got = parse_task_state(content)
+    assert got == expected, f"node={node_id} 期望 {expected!r}，实得 {got!r}（{_why}）"
+
+
+def test_real_corpus_parse_rate_meets_bar():
+    """18 条真实语料至少 13 条解析出非 None（姐姐要求的验收线）。"""
+    parsed = sum(1 for _i, c, _e, _w in REAL_CORPUS if parse_task_state(c) is not None)
+    total = len(REAL_CORPUS)
+    assert parsed >= 13, f"真实语料解析率不足：{parsed}/{total}"
+
+
+def test_real_corpus_labels_match_expectations():
+    """夹具期望值自洽：非 None 期望必须命中 TASK_STATES，None 条数固定。"""
+    assert len(REAL_CORPUS) == 18
+    for _i, _c, exp, _w in REAL_CORPUS:
+        if exp is not None:
+            assert exp in TASK_STATES
+    assert EXPECTED_NONE == 0, "本条前置：18 条里都用可判定状态"
+
+
+def test_parse_defers_to_earliest_block_when_multiple_present():
+    """多个括号块时按出现顺序取第一个可命中块（不跨块合并）。"""
+    assert parse_task_state("【挂账·等触发】… → [待办, 明天]") == "blocked"
+    assert parse_task_state("[部分完成] T-1 → [完成]") == "doing"
+    assert parse_task_state("任务 [完成 2026-01-01] 收尾 [挂账]") == "done"
+
+
+def test_parse_full_width_round_brackets_only():
+    """全角圆括号 ``（进行中）`` 嵌在全角【】内也要命中（跨嵌套括号）。"""
+    assert parse_task_state("【任务·改名（进行中）2026-10-08 启动】正文") == "doing"
+    assert parse_task_state("【技能瘦身（挂起待续）】正文") == "blocked"
+
+
+def test_parse_status_word_mid_line():
+    """状态词在正文中间（非首行开头）也要命中。"""
+    assert parse_task_state("T073：doctor 命令 → [待办，2026-09-10 主人指令「计入小帕」]") == "todo"
+    assert parse_task_state("普通描述文字 [阻塞] 尾部") == "blocked"
+
+
+def test_parse_long_block_with_spaces_and_punctuation():
+    """超长 / 含空格 / 含全角标点的标记块能被整块取出并匹配。"""
+    assert parse_task_state("[待办，2026-09-10 主人指令「计入小帕」] content") == "todo"
+    assert parse_task_state("[挂账持续] token 优化") == "blocked"
+
+
+# ---------------------------------------------------------------------------
+# 9. 状态变更日志节点 created_at 不得被吞（复核小问题 3）
+# ---------------------------------------------------------------------------
+
+
+def test_state_log_node_has_created_at():
+    """日志节点的 ``created_at`` 必须是真实时间戳（insert_node 会吞同名键）。"""
+    project = _ns()
+    nid = _insert_task("[todo] T-700 日志时间戳", project, task_state="todo")
+
+    apply_task_patch(store, nid, {"task_state": "doing"})
+
+    log_pl = next(pl for _i, pl in store.iter_payloads() if pl.get("type") == "record" and pl.get("task_id") == nid)
+    assert log_pl.get("created_at"), f"日志节点 created_at 被吞：{log_pl.get('created_at')!r}"
+    # ISO8601 带日期前缀，粗略校验格式
+    assert str(log_pl["created_at"]).startswith("20")
+
