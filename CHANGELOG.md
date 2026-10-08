@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-10-09
+
 ### 新增
 
 - **记忆策略引擎下沉本体 + 宿主无关的 lifecycle 协议**：此前「什么值得记、记哪一层、什么时候召回、怎么去重提炼」的判定住在 Hermes 接入插件（`hermes-plugin/__init__.py`）里——那是产品核心资产，却寄居在某个宿主的插件接口内：换个宿主智能即丢失，能力上限也被该宿主的钩子协议框住。现将决策整体收进 `core/strategy.py`（强信号正则、近似重复阈值、importance 分档、分层归属、trivial/长度门槛等），并暴露一组**宿主无关**的 lifecycle 端点：`POST /lifecycle/pre-turn`（决定召回什么，返回可注入 prompt 的文本）、`/lifecycle/post-turn`（决定是否沉淀 / 写什么 / 写哪层）、`/lifecycle/session-end`（会话要点提炼 + 去重 + 写入 facts 层）、`/lifecycle/pre-compress`（压缩前抽取，不写库）。每个决策都返回 `decision_log`，让「为什么召这些、为什么没写那条」可观测——判断力因此可审计、可评估，而不只是藏在代码里。
@@ -346,7 +348,8 @@
 
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
-[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.4.1...HEAD
+[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.5.0...HEAD
+[2.5.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.5.0
 [2.4.1]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.4.1
 [2.4.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.4.0
 [2.3.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.3.0
