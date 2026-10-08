@@ -14,11 +14,14 @@ from __future__ import annotations
 
 from core import strategy
 from core.strategy import (
+    clamp_max_topics,
     decide_post_turn,
     decide_pre_compress,
     decide_pre_turn,
     decide_session_end,
+    extract_graph_topics,
     extract_points,
+    format_graph_enhancement,
     is_near_duplicate,
     is_trivial_prompt,
 )
@@ -263,3 +266,108 @@ class TestDecidePreCompress:
         r = decide_pre_compress(msgs)
         assert "记住" in r["points_text"]
         assert "store" not in r  # 明确不写库
+
+
+# ---------------------------------------------------------------------------
+# extract_graph_topics — 压缩前图谱查询主题的选取（原 context_engine 下沉）
+# ---------------------------------------------------------------------------
+
+
+def _graph_msgs(middle: list[str], *, head: int = 3, tail: int = 6) -> list[dict]:
+    """构造 head 保护段 + 中间段 + tail 保护段的消息列表（内容都长于 8 字符）。"""
+    msgs = [_msg("user", f"开头保护段的内容 {i}") for i in range(head)]
+    msgs += [_msg("user", t) for t in middle]
+    msgs += [_msg("user", f"结尾保护段的内容 {i}") for i in range(tail)]
+    return msgs
+
+
+class TestExtractGraphTopics:
+    def test_no_middle_segment_returns_empty(self):
+        # 消息太短（没有真正的中间段可压缩）→ 无图谱提炼
+        assert extract_graph_topics([_msg("user", "记住：项目代号凤凰")]) == []
+
+    def test_middle_user_message_is_picked(self):
+        msgs = _graph_msgs(["项目代号是什么？部署在哪里？"])
+        assert extract_graph_topics(msgs) == ["项目代号是什么？部署在哪里？"]
+
+    def test_head_and_tail_are_not_topics(self):
+        msgs = _graph_msgs(["中间的真实问题内容"])
+        topics = extract_graph_topics(msgs)
+        assert all("保护段" not in t for t in topics)
+
+    def test_most_recent_middle_intent_wins(self):
+        msgs = _graph_msgs(["较早的一个问题内容", "更靠后的一个问题内容"])
+        assert extract_graph_topics(msgs, max_topics=1) == ["更靠后的一个问题内容"]
+
+    def test_short_pleasantry_in_middle_skipped(self):
+        msgs = _graph_msgs(["好的", "项目代号是什么？"])
+        assert extract_graph_topics(msgs) == ["项目代号是什么？"]
+
+    def test_assistant_messages_ignored(self):
+        msgs = _graph_msgs(["用户的问题内容在这里"])
+        msgs.insert(3, _msg("assistant", "助手的回答内容在这里"))
+        assert extract_graph_topics(msgs) == ["用户的问题内容在这里"]
+
+    def test_max_topics_caps(self):
+        msgs = _graph_msgs(["问题一的内容在这里", "问题二的内容在这里", "问题三的内容在这里", "问题四的内容在这里"])
+        assert len(extract_graph_topics(msgs, max_topics=2)) == 2
+
+    def test_focus_topic_goes_first(self):
+        msgs = _graph_msgs(["中间的问题内容"])
+        assert extract_graph_topics(msgs, "手动指定主题", max_topics=1) == ["手动指定主题"]
+
+    def test_long_topic_truncated(self):
+        msgs = _graph_msgs(["问题" + "x" * 500])
+        topics = extract_graph_topics(msgs)
+        assert len(topics[0]) == strategy.GRAPH_TOPIC_TRUNCATE
+
+
+# ---------------------------------------------------------------------------
+# format_graph_enhancement — 注入文本的排版（原 context_engine 下沉）
+# ---------------------------------------------------------------------------
+
+
+class TestFormatGraphEnhancement:
+    def test_empty_entries_returns_empty(self):
+        assert format_graph_enhancement([]) == ""
+
+    def test_formats_hit_and_neighbors(self):
+        entries = [
+            (
+                "项目代号",
+                {"score": 0.83, "summary": "项目代号是凤凰"},
+                [{"relation": "RELATED_TO", "title": "杭州机房"}],
+            )
+        ]
+        text = format_graph_enhancement(entries)
+        assert text.startswith(strategy.GRAPH_ENHANCE_HEADER)
+        assert "项目代号" in text
+        assert "0.83" in text
+        assert "项目代号是凤凰" in text
+        assert "RELATED_TO" in text
+        assert "杭州机房" in text
+
+    def test_long_summary_truncated(self):
+        entries = [("t", {"score": 0.5, "summary": "x" * 500}, [])]
+        text = format_graph_enhancement(entries)
+        assert "x" * (strategy.GRAPH_HIT_SUMMARY_DISPLAY + 1) not in text
+
+    def test_missing_score_is_tolerated(self):
+        entries = [("t", {"summary": "s"}, [])]
+        assert "0.00" in format_graph_enhancement(entries)
+
+    def test_respects_max_topics(self):
+        entries = [(f"t{i}", {"score": 0.5, "summary": "s"}, []) for i in range(5)]
+        text = format_graph_enhancement(entries, max_topics=2)
+        assert text.count("- 主题") == 2
+
+
+class TestClampMaxTopics:
+    def test_clamps_to_supported_range(self):
+        assert clamp_max_topics(0) == 1
+        assert clamp_max_topics(3) == 3
+        assert clamp_max_topics(99) == strategy.GRAPH_ENHANCE_MAX_TOPICS_CAP
+
+    def test_garbage_falls_back_to_default(self):
+        assert clamp_max_topics("abc") == strategy.GRAPH_ENHANCE_MAX_TOPICS
+        assert clamp_max_topics(None) == strategy.GRAPH_ENHANCE_MAX_TOPICS
