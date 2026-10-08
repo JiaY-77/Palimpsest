@@ -16,6 +16,8 @@ Palimpsest CLI —— 本地 CLI 薄封装（2026-08-25）。
   python palimpsest_cli.py index
   python palimpsest_cli.py graph --id N [--depth 1] [--relation X]
   python palimpsest_cli.py recent [--limit 10] [--domain X]
+  python palimpsest_cli.py tasks active [--project X] [--states todo,doing] [--limit 15]
+  python palimpsest_cli.py tasks backfill [--apply]
   python palimpsest_cli.py kb "关键词" [--top-k 5]
   python palimpsest_cli.py consolidate [--apply] [--threshold 0.85] [--max-importance 0.8]
   python palimpsest_cli.py ingest-git [--repo PATH] [--since N]
@@ -31,6 +33,7 @@ import json
 import os
 import subprocess
 import sys
+from urllib.parse import quote
 
 # 依赖守卫：以下 import 依赖第三方包（fastapi/dotenv/triviumdb/requests 等），
 # 未激活 venv 或依赖没装全时会抛 ModuleNotFoundError——给新手友好引导而非裸 traceback。
@@ -239,6 +242,22 @@ def cmd_recent(args):
             },
         )
     )
+
+
+def cmd_tasks_active(args):
+    """活跃任务列表（只读）：走 REST ``GET /tasks/active``，不在本进程开库。"""
+    params = f"?project={quote(args.project)}&states={quote(args.states)}&limit={int(args.limit)}"
+    print(_rest_call("GET", f"/tasks/active{params}"))
+
+
+def cmd_tasks_backfill(args):
+    """存量 task 节点回填 task_state（默认 dry-run，--apply 才写库）。"""
+    from core.task_state import backfill_task_state
+    from core.trivium_store import TriviumStore
+
+    store = TriviumStore(read_only=not args.apply)  # dry-run 只读，不推进 generation
+    result = backfill_task_state(store, dry_run=not args.apply)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 def cmd_kb(args):
@@ -552,6 +571,19 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--limit", type=int, default=10)
     sp.add_argument("--domain", default="")
     sp.set_defaults(fn=cmd_recent)
+
+    sp = sub.add_parser("tasks", help="任务节点状态注册表（active 查询 / backfill 回填）")
+    tsub = sp.add_subparsers(dest="tasks_cmd", required=True)
+
+    tp = tsub.add_parser("active", help="活跃任务列表（默认 todo,doing,blocked，按优先级排序）")
+    tp.add_argument("--project", default="", help="只列该项目（payload.project）的任务")
+    tp.add_argument("--states", default="todo,doing,blocked", help="逗号分隔的状态集")
+    tp.add_argument("--limit", type=int, default=15, help="返回条数上限（total 仍为过滤后总数）")
+    tp.set_defaults(fn=cmd_tasks_active)
+
+    tp = tsub.add_parser("backfill", help="存量 task 节点回填 task_state（默认 dry-run 预览）")
+    tp.add_argument("--apply", action="store_true", help="真正写库（默认只预览不落盘）")
+    tp.set_defaults(fn=cmd_tasks_backfill)
 
     sp = sub.add_parser("review", help="复盘盘点（近 N 天记忆 + 治理候选）")
     sp.add_argument("--days", type=int, default=7)
