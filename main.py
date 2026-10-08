@@ -32,6 +32,7 @@ from config import Config
 from core.fts_index import sync_node
 from core.reporting import generate_report
 from core.startup_check import run_startup_check
+from core.task_state import apply_task_patch
 from core.trivium_store import DatabaseBusyError, EmbeddingUnavailableError, TriviumStore
 from core.version import get_version
 from mcp_tools import (
@@ -237,6 +238,7 @@ def root():
             "/mem/link",
             "/mem/edge",
             "/mem/recent",
+            "/tasks/active",
             "/graph/neighbors",
             "/graph/communities",
             "/mem/stats",
@@ -371,9 +373,31 @@ def _sync_fts_after_update(node_id: int) -> None:
 
 @app.put("/memory/{node_id}")
 def update_memory_payload(node_id: int, payload: dict):
-    """更新指定 ID 的记忆 payload（部分更新合并语义：只改传入字段，其余保留）"""
+    """更新指定 ID 的记忆 payload（部分更新合并语义：只改传入字段，其余保留）。
+
+    ``type=task`` 节点走任务写路径（``core.task_state.apply_task_patch``）：状态变化时
+    自动补 ``last_touched_at``、写 ``type=record`` 日志节点并建 ``record -[LOGS]-> task``
+    边，保证任务状态「变了必留痕」；其余类型节点行为不变。
+    """
     try:
-        _get_store().update_payload(node_id, payload)
+        store = _get_store()
+        node = store.get_node(node_id)
+        if node is None:
+            # 404 + 固定提示（不泄漏内部异常，安全审计要求）
+            raise HTTPException(status_code=404, detail="更新失败：节点不存在或数据格式错误")
+        if (node.get("payload") or {}).get("type") == "task":
+            result = apply_task_patch(store, node_id, payload)
+            _sync_fts_after_update(node_id)
+            response = {
+                "status": "ok",
+                "message": f"节点 {node_id} payload 已更新",
+                "task_state": result["state"],
+                "state_changed": result["changed"],
+            }
+            if result["changed"]:
+                response["previous_state"] = result["previous_state"]
+            return response
+        store.update_payload(node_id, payload)
         _sync_fts_after_update(node_id)
         result = {"status": "ok", "message": f"节点 {node_id} payload 已更新"}
         # issue #52：改 content 不会自动重算向量（避免在写路径里塞网络调用），
@@ -384,6 +408,12 @@ def update_memory_payload(node_id: int, payload: dict):
                 f"如需同步，调用 POST /memory/{node_id}/reembed。"
             )
         return result
+    except HTTPException:
+        raise
+    except ValueError as e:
+        # 仅「任务状态非法」这类校验拒绝才映射 400（任务节点自身存在性已在上面判过）
+        logger.info("更新节点 payload 失败（校验拒绝） node=%s: %s", node_id, e)
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.info("更新节点 payload 失败 node=%s: %s", node_id, e)
         raise HTTPException(status_code=404, detail="更新失败：节点不存在或数据格式错误") from e
@@ -670,3 +700,20 @@ def mem_stats():
     stats = compute_stats(_get_store())
     stats.pop("elapsed_ms", None)
     return stats
+
+
+@app.get("/tasks/active")
+def tasks_active(
+    project: str = "",
+    states: str = "todo,doing,blocked",
+    limit: int = 15,
+):
+    """活跃任务列表：``type=task`` & ``status=active`` & 状态命中，按优先级排序。
+
+    只读。参数走 query（``?project=X&states=todo,doing&limit=15``）；核心逻辑见
+    ``core.task_state.list_active_tasks``，与 MCP 工具 ``tasks_active`` 同一实现。
+    默认排除 ``payload.legacy = true`` 的老节点（老节点请先跑 CLI ``tasks backfill``）。
+    """
+    from core.task_state import list_active_tasks
+
+    return list_active_tasks(_get_store(), project=project, states=states, limit=limit)

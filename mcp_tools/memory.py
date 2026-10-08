@@ -341,6 +341,33 @@ def mem_recent(domain: str = "", limit: int = 10) -> str:
     return _to_json({"results": items[:limit], "total": len(items)})
 
 
+def _task_state_date_str() -> str:
+    """当前日期 YYYY-MM-DD（任务状态查询的展示辅助）。"""
+    from datetime import datetime
+
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+@mcp.tool()
+def tasks_active(project: str = "", states: str = "todo,doing,blocked", limit: int = 15) -> str:
+    """活跃任务列表：``type=task`` & ``status=active`` & 状态命中，按优先级排序。
+
+    参数：
+      - ``project``：非空时只保留该项目（``payload.project``）的任务；
+      - ``states``：逗号分隔的状态集（``todo`` / ``doing`` / ``blocked`` /
+        ``done`` / ``canceled``）；非法值被忽略，全非法则回退默认三态；
+      - ``limit``：返回条数上限（``total`` 仍为过滤后总数）。
+
+    排序：``doing > blocked > todo`` → ``last_touched_at`` 倒序 → ``importance`` 倒序。
+    默认排除 ``payload.legacy = true`` 的老节点（见 CLI ``tasks backfill``）。
+
+    核心逻辑见 core.task_state.list_active_tasks（REST 端点复用同一实现，不复制）。
+    """
+    from core.task_state import list_active_tasks
+
+    return _to_json(list_active_tasks(store, project=project, states=states, limit=limit))
+
+
 @mcp.tool()
 def mem_review(days: int = 7, domain: str = "", tier: str = DEFAULT_TIER) -> str:
     """复盘盘点（复盘机制融入系统，复盘=记忆治理）。
