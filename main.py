@@ -32,6 +32,21 @@ from config import Config
 from core.fts_index import sync_node
 from core.reporting import generate_report
 from core.startup_check import run_startup_check
+from core.strategy import (
+    decide_post_turn as _strategy_post_turn,
+)
+from core.strategy import (
+    decide_pre_compress as _strategy_pre_compress,
+)
+from core.strategy import (
+    decide_pre_turn as _strategy_pre_turn,
+)
+from core.strategy import (
+    decide_session_end as _strategy_session_end,
+)
+from core.strategy import (
+    is_near_duplicate as _strategy_is_near_duplicate,
+)
 from core.task_state import apply_task_patch
 from core.trivium_store import DatabaseBusyError, EmbeddingUnavailableError, TriviumStore
 from core.version import get_version
@@ -242,6 +257,10 @@ def root():
             "/graph/neighbors",
             "/graph/communities",
             "/mem/stats",
+            "/lifecycle/pre-turn",
+            "/lifecycle/post-turn",
+            "/lifecycle/session-end",
+            "/lifecycle/pre-compress",
         ],
     }
 
@@ -717,3 +736,141 @@ def tasks_active(
     from core.task_state import list_active_tasks
 
     return list_active_tasks(_get_store(), project=project, states=states, limit=limit)
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle protocol —— 记忆策略引擎的宿主无关接口
+# ---------------------------------------------------------------------------
+# 设计：宿主（Hermes / Claude Code / 任意 agent）通过这组端点转发「原始事件」，
+# 由本体的策略引擎（core/strategy.py）决定「召不召、抽不抽、记哪层」。
+# 宿主适配器只做「钩子注册 + 字段映射 + 结果注入」，不含任何策略。
+#
+# 与 MCP 的分工：
+#   - MCP 工具        = 冷路径，「模型主动想用记忆时怎么用」
+#   - lifecycle 协议  = 热路径，「模型没想用记忆时记忆怎么找到模型」
+# 两者共享同一策略引擎与存储层。
+
+
+class PreTurnRequest(BaseModel):
+    session_id: str = ""
+    turn_index: int = 0
+    user_message: str
+    recent_context_summary: str = ""
+    scope: str = "all"
+    domain: str = ""
+    top_k: int = 5
+    include_neighbors: bool = False
+    tier: str = "facts"
+    min_score: float = 0.0
+
+
+class PostTurnRequest(BaseModel):
+    session_id: str = ""
+    turn_index: int = 0
+    user_message: str
+    assistant_message: str = ""
+    auto_ingest: bool = True
+
+
+class SessionEndRequest(BaseModel):
+    session_id: str = ""
+    messages: list[dict] = []
+    auto_ingest: bool = True
+
+
+class PreCompressRequest(BaseModel):
+    session_id: str = ""
+    messages: list[dict] = []
+
+
+@app.post("/lifecycle/pre-turn")
+def lifecycle_pre_turn(req: PreTurnRequest):
+    """每轮模型调用前：本体决定召回什么，返回可注入 prompt 的文本。
+
+    宿主适配器拿到 ``inject_text`` 后原样拼进 prompt（放 system / user 前缀由
+    适配器按自己的上下文组装方式决定——策略只管内容与优先级）。
+    """
+    probe = _strategy_pre_turn(req.user_message, hits=None, top_k=req.top_k, min_score=req.min_score)
+    if probe["skip"] and probe["skip_reason"] in ("trivial", "too_short"):
+        return probe
+
+    raw = _as_json(
+        _mcp_mem_search(
+            req.user_message,
+            scope=req.scope,
+            domain=req.domain,
+            top_k=req.top_k,
+            include_neighbors=req.include_neighbors,
+            tier=req.tier,
+        )
+    )
+    hits = raw.get("results", []) if isinstance(raw, dict) else []
+    result = _strategy_pre_turn(req.user_message, hits=hits, top_k=req.top_k, min_score=req.min_score)
+    result["session_id"] = req.session_id
+    result["turn_index"] = req.turn_index
+    return result
+
+
+@app.post("/lifecycle/post-turn")
+def lifecycle_post_turn(req: PostTurnRequest):
+    """每轮回复后：本体决定这轮要不要沉淀、写什么、写哪层。"""
+    decision = _strategy_post_turn(req.user_message, auto_ingest=req.auto_ingest)
+    decision["session_id"] = req.session_id
+    decision["turn_index"] = req.turn_index
+    if not decision.get("store"):
+        return decision
+
+    ingest = _as_json(
+        _mcp_mem_ingest(
+            decision["content"],
+            type=decision["type"],
+            importance=decision["importance"],
+        )
+    )
+    decision["stored"] = bool(ingest.get("stored"))
+    decision["node_id"] = ingest.get("node_id")
+    decision["tier_distribution"] = {decision["tier"]: 1} if ingest.get("stored") else {}
+    return decision
+
+
+@app.post("/lifecycle/session-end")
+def lifecycle_session_end(req: SessionEndRequest):
+    """会话结束：本体提炼要点、去重、写 facts 层。"""
+    decision = _strategy_session_end(req.messages, auto_ingest=req.auto_ingest)
+    decision["session_id"] = req.session_id
+    if not decision.get("store"):
+        return decision
+
+    probe = _as_json(_mcp_mem_search(decision["content"], scope="memory", top_k=1))
+    dup_hits = probe.get("results", []) if isinstance(probe, dict) else []
+    if _strategy_is_near_duplicate(dup_hits):
+        return {
+            "store": False,
+            "points": decision["points"],
+            "stored": False,
+            "tier_distribution": {},
+            "skip_reason": "near_duplicate",
+            "session_id": req.session_id,
+        }
+
+    ingest = _as_json(
+        _mcp_mem_ingest(
+            decision["content"],
+            type=decision["type"],
+            importance=decision["importance"],
+        )
+    )
+    return {
+        "store": True,
+        "stored": bool(ingest.get("stored")),
+        "node_id": ingest.get("node_id"),
+        "points": decision["points"],
+        "tier_distribution": {"facts": 1} if ingest.get("stored") else {},
+        "session_id": req.session_id,
+    }
+
+
+@app.post("/lifecycle/pre-compress")
+def lifecycle_pre_compress(req: PreCompressRequest):
+    """压缩前抽取要点，贡献给压缩 prompt（**不写库**，只保上下文）。"""
+    return _strategy_pre_compress(req.messages)
