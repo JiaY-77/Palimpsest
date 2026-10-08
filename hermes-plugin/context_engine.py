@@ -3,12 +3,15 @@
 不重写压缩逻辑（内置 ContextCompressor 成熟稳定：should_compress 阈值 /
 protect_first_n / protect_last_n / LLM 总结），只做图谱增强——
 
-compress() 时：
-  1. 从将被压缩的消息提取主题（focus_topic 优先 + 中间段 user 消息）
-  2. 调 Palimpsest /mem/search（include_neighbors=True）拿关键记忆 + 图谱关联
-  3. 组装「Palimpsest 图谱要点」合并进 memory_context（内置压缩器会把
-     memory_context 作为 <memory-provider-context> 注入总结 prompt）
-  4. 调 super().compress(..., memory_context=enhanced)
+compress() 时调本体 ``POST /lifecycle/context-enhance``，把「将要压缩的消息 +
+保护段参数 + 耗时预算」交给 Palimpsest；本体挑主题、查图谱、组装文本，返回
+``enhancement_text``。本适配器把它合并进 memory_context（内置压缩器会把
+memory_context 作为 <memory-provider-context> 注入总结 prompt），再调
+super().compress(..., memory_context=enhanced)。
+
+**决策全在本体**：挑哪些主题、每主题取几条、注入文本怎么排版，均由
+``core/strategy.py`` 判定；本适配器只读配置 + 转发 + 合并（无阈值 / 无正则）。
+检索也在本体内进程完成，省掉此前「每个主题一次 HTTP」的往返。
 
 fail-open：Palimpsest 不可达/超时/报错 → 原样压缩（图谱增强是增量，不阻塞主线）。
 prompt caching 红线：压缩本身是内置例外路径，我们只增强 memory_context 文本，
@@ -17,7 +20,8 @@ prompt caching 红线：压缩本身是内置例外路径，我们只增强 memo
 配置（环境变量，可选）：
   PALIMPSEST_BASE_URL        默认 http://127.0.0.1:8090
   PALIMPSEST_DOMAIN          默认 hermes
-  PALIMPSEST_GRAPH_TOPICS    图谱主题数（默认 3，最多 5）
+  PALIMPSEST_GRAPH_TOPICS    图谱主题数（默认 3；最终上限由本体收敛到 5）
+  PALIMPSEST_GRAPH_TIMEOUT   整条增强链路的耗时预算（秒，默认 8）
 """
 
 from __future__ import annotations
@@ -25,7 +29,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import time
 import urllib.request
 from typing import Any
 
@@ -41,7 +44,12 @@ class PalimpsestContextEngine(ContextCompressor):
         super().__init__(*args, **kwargs)
         self._base_url = os.environ.get("PALIMPSEST_BASE_URL", "http://127.0.0.1:8090").rstrip("/")
         self._domain = os.environ.get("PALIMPSEST_DOMAIN", "hermes")
-        self._max_topics = max(1, min(int(os.environ.get("PALIMPSEST_GRAPH_TOPICS", "3")), 5))
+        # 主题数上限由本体收敛（core.strategy.clamp_max_topics），这里只读原始配置。
+        raw_topics = os.environ.get("PALIMPSEST_GRAPH_TOPICS", "3")
+        try:
+            self._max_topics = int(raw_topics)
+        except (TypeError, ValueError):
+            self._max_topics = 3
         # 图谱增强总耗时预算（秒）：后端不可达时整体 fail-open，不让压缩链路白等
         self._graph_timeout_budget = float(os.environ.get("PALIMPSEST_GRAPH_TIMEOUT", "8.0"))
         self._graph_enhance_errors = 0
@@ -62,78 +70,29 @@ class PalimpsestContextEngine(ContextCompressor):
             logger.debug("Palimpsest graph REST %s failed: %s", url, exc)
             return {"error": str(exc)}
 
-    def _extract_topics(self, messages: list[dict[str, Any]], focus_topic: str | None) -> list[str]:
-        """从将被压缩的消息中提取图谱查询主题。
-
-        优先 focus_topic（手动 /compress <focus>）；否则取中间段 user 消息
-        （跳过开头 protect_first_n 与结尾 protect_last_n 保护段，那些不压缩）。
-        内容 < 8 字符的寒暄跳过。
-        """
-        topics: list[str] = []
-        if focus_topic and str(focus_topic).strip():
-            topics.append(str(focus_topic).strip())
-
-        head = getattr(self, "protect_first_n", 3) or 3
-        tail = getattr(self, "protect_last_n", 6) or 6
-        # 消息太短（没有真正的中间段可压缩）→ 无图谱提炼
-        if len(messages) - tail <= head:
-            return []
-        candidates = []
-        for idx, m in enumerate(messages):
-            if m.get("role") != "user":
-                continue
-            if idx < head or idx >= max(0, len(messages) - tail):
-                continue  # 保护段不参与图谱提炼
-            content = str(m.get("content") or "").strip()
-            if len(content) >= 8:
-                candidates.append(content)
-        # 取最近的意图（靠后的优先），补足主题数
-        for content in reversed(candidates):
-            if len(topics) >= self._max_topics:
-                break
-            topics.append(content[:120])
-        return topics[: self._max_topics]
-
     def _graph_enhancement(self, messages: list[dict[str, Any]], focus_topic: str | None) -> str:
-        """压缩前调 Palimpsest 图谱提炼关键链，返回注入文本；失败/无主题返回空串。
+        """把「挑主题 + 查图谱 + 组装」整条决策委托给本体，返回注入文本。
 
-        总耗时预算：整体链路的多次串行 POST 受 _graph_timeout_budget 约束，
-        超预算即停止后续 POST（fail-open，绝不让 Palimpsest 拖垮 Hermes 压缩）。
+        本体 ``POST /lifecycle/context-enhance`` 负责主题提取、图谱检索与排版；
+        本适配器只转发输入、取回 ``enhancement_text``。
+        fail-open：本体不可达/超时/报错 → 返回空串（compress() 遂原样压缩）。
         """
-        topics = self._extract_topics(messages, focus_topic)
-        if not topics:
+        if not messages:
             return ""
-        lines = ["[Palimpsest 图谱要点（压缩前提炼）]"]
-        added = 0
-        deadline = time.monotonic() + max(0.1, self._graph_timeout_budget)
-        for topic in topics:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            resp = self._http_post(
-                f"{self._base_url}/mem/search",
-                {
-                    "query": topic,
-                    "scope": "all",
-                    "domain": self._domain,
-                    "top_k": 2,
-                    "include_neighbors": True,
-                },
-                timeout=min(4.0, remaining),
-            )
-            if "error" in resp or not resp.get("results"):
-                continue
-            top = resp["results"][0]
-            lines.append(
-                f"- 主题「{topic[:50]}」→ 关键记忆({top.get('score', 0):.2f}): {str(top.get('summary', ''))[:120]}"
-            )
-            neighbors = resp.get("neighbors") or []
-            for nb in neighbors[:3]:
-                lines.append(f"  · 图谱关联: {nb.get('relation', 'LINKED')} → {str(nb.get('title', ''))[:80]}")
-            added += 1
-            if added >= self._max_topics:
-                break
-        return "\n".join(lines) if added else ""
+        resp = self._http_post(
+            f"{self._base_url}/lifecycle/context-enhance",
+            {
+                "messages": messages,
+                "focus_topic": focus_topic or "",
+                "domain": self._domain,
+                "protect_first_n": int(getattr(self, "protect_first_n", 3) or 3),
+                "protect_last_n": int(getattr(self, "protect_last_n", 6) or 6),
+                "max_topics": self._max_topics,
+                "timeout_budget": self._graph_timeout_budget,
+            },
+            timeout=min(self._graph_timeout_budget + 5.0, 60.0),
+        )
+        return str(resp.get("enhancement_text") or "")
 
     # -- 主入口 -------------------------------------------------------
 

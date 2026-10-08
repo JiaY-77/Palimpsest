@@ -9,6 +9,8 @@
   2. POST /lifecycle/post-turn     强信号才写；写 logs 层；无聊文本不写
   3. POST /lifecycle/session-end   要点写 facts 层；近似重复跳过
   4. POST /lifecycle/pre-compress  只回文本、不写库
+  5. 一次完整多轮会话的最终分层契约（混合 turn 批量走一遍）
+  6. POST /lifecycle/context-enhance 挑主题、进程内查图谱、组装注入文本；不写库
 
 隔离保证：conftest 已把 DB_PATH 指向临时库 + fake embedder，不触碰正式库。
 """
@@ -241,3 +243,100 @@ def test_full_session_cycle_layering(db_path):
     ebody = end.json()
     assert ebody["store"] is True
     assert ebody["tier_distribution"] == {"facts": 1}
+
+
+# ---------------------------------------------------------------------------
+# 6. context-enhance（压缩前图谱增强：挑主题 + 进程内查图谱 + 组装，不写库）
+# ---------------------------------------------------------------------------
+
+
+def _graph_msgs(middle: list[dict]) -> list[dict]:
+    """head 保护段 3 条 + 中间段 + tail 保护段 6 条（只有中间段参与图谱提炼）。"""
+    msgs = [{"role": "user", "content": f"开头保护段内容 {i}"} for i in range(3)]
+    msgs += middle
+    msgs += [{"role": "user", "content": f"结尾保护段内容 {i}"} for i in range(6)]
+    return msgs
+
+
+def test_context_enhance_no_middle_segment_returns_empty(db_path):
+    client = _client()
+    r = client.post(
+        "/lifecycle/context-enhance", json={"messages": [{"role": "user", "content": "记住：项目代号凤凰"}]}
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["enhancement_text"] == ""
+    assert body["topics"] == []
+    assert body["decision_log"]["reason"] == "no_topics"
+
+
+def test_context_enhance_returns_memory_and_neighbor(db_path):
+    from mcp_tools import store
+
+    # 目标节点
+    content = "契约测试：项目代号是凤凰，部署在杭州机房"
+    nid = store.insert_node(
+        {"type": "memory", "content": content, "importance": 0.8, "domain": "hermes"},
+        store.embed_text(content),
+    )
+    # 陪跑节点：与目标高度相似 → 占住语义区第 2 名
+    # （邻居区会跳过已在语义区出现的节点，所以陪跑是必须的，否则邻居被去重掉）
+    decoy = "契约测试：项目代号是凤凰，部署在杭州机房的备份说明"
+    store.insert_node(
+        {"type": "memory", "content": decoy, "importance": 0.5, "domain": "hermes"},
+        store.embed_text(decoy),
+    )
+    # 真正的邻居：内容不相似，只能经图谱边到达
+    neighbor_content = "货架编号 Q7 的盘点结果已归档"
+    nb_id = store.insert_node(
+        {"type": "memory", "content": neighbor_content, "importance": 0.5, "domain": "hermes"},
+        store.embed_text(neighbor_content),
+    )
+    store.create_edge(nid, nb_id, "RELATED_TO")
+
+    msgs = _graph_msgs([{"role": "user", "content": content}])
+    client = _client()
+    before = client.post("/mem/stats").json()["totals"]["total_nodes"]
+    r = client.post("/lifecycle/context-enhance", json={"messages": msgs, "domain": "hermes"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["hits"] >= 1
+    assert "Palimpsest 图谱要点" in body["enhancement_text"]
+    assert "项目代号是凤凰" in body["enhancement_text"]
+    assert neighbor_content in body["enhancement_text"], "图谱邻居应随 include_neighbors 注入"
+    assert "RELATED_TO" in body["enhancement_text"]
+    after = client.post("/mem/stats").json()["totals"]["total_nodes"]
+    assert before == after, "context-enhance must not write to the store"
+
+
+def test_context_enhance_focus_topic_is_forwarded(db_path):
+    from mcp_tools import store
+
+    content = "契约测试：焦点主题命中这条记忆"
+    store.insert_node(
+        {"type": "memory", "content": content, "importance": 0.6, "domain": "hermes"},
+        store.embed_text(content),
+    )
+    msgs = _graph_msgs([{"role": "user", "content": "无关的中间消息内容"}])
+    client = _client()
+    r = client.post(
+        "/lifecycle/context-enhance",
+        json={"messages": msgs, "focus_topic": content, "domain": "hermes", "max_topics": 1},
+    )
+    body = r.json()
+    assert body["topics"] == [content]
+    assert "焦点主题命中这条记忆" in body["enhancement_text"]
+
+
+def test_context_enhance_max_topics_is_clamped(db_path):
+    client = _client()
+    msgs = _graph_msgs(
+        [
+            {"role": "user", "content": "问题一的内容足够长"},
+            {"role": "user", "content": "问题二的内容足够长"},
+            {"role": "user", "content": "问题三的内容足够长"},
+        ]
+    )
+    r = client.post("/lifecycle/context-enhance", json={"messages": msgs, "max_topics": 99})
+    assert r.status_code == 200, r.text
+    assert r.json()["decision_log"]["max_topics"] == 5  # 收敛到上限

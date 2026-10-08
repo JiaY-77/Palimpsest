@@ -22,6 +22,7 @@ import asyncio
 import json
 import logging
 import secrets
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
@@ -33,6 +34,12 @@ from core.fts_index import sync_node
 from core.reporting import generate_report
 from core.startup_check import run_startup_check
 from core.strategy import (
+    GRAPH_ENHANCE_TOP_K,
+)
+from core.strategy import (
+    clamp_max_topics as _strategy_clamp_max_topics,
+)
+from core.strategy import (
     decide_post_turn as _strategy_post_turn,
 )
 from core.strategy import (
@@ -43,6 +50,12 @@ from core.strategy import (
 )
 from core.strategy import (
     decide_session_end as _strategy_session_end,
+)
+from core.strategy import (
+    extract_graph_topics as _strategy_extract_graph_topics,
+)
+from core.strategy import (
+    format_graph_enhancement as _strategy_format_graph_enhancement,
 )
 from core.strategy import (
     is_near_duplicate as _strategy_is_near_duplicate,
@@ -261,6 +274,7 @@ def root():
             "/lifecycle/post-turn",
             "/lifecycle/session-end",
             "/lifecycle/pre-compress",
+            "/lifecycle/context-enhance",
         ],
     }
 
@@ -874,3 +888,73 @@ def lifecycle_session_end(req: SessionEndRequest):
 def lifecycle_pre_compress(req: PreCompressRequest):
     """压缩前抽取要点，贡献给压缩 prompt（**不写库**，只保上下文）。"""
     return _strategy_pre_compress(req.messages)
+
+
+class ContextEnhanceRequest(BaseModel):
+    messages: list[dict] = []
+    focus_topic: str = ""
+    domain: str = ""
+    protect_first_n: int = 3
+    protect_last_n: int = 6
+    max_topics: int = 3
+    timeout_budget: float = 8.0
+
+
+@app.post("/lifecycle/context-enhance")
+def lifecycle_context_enhance(req: ContextEnhanceRequest):
+    """压缩前图谱增强：本体挑主题、进程内查图谱、组装注入文本（**不写库**）。
+
+    宿主（压缩引擎适配器）只提供「将要压缩的消息 + 保护段参数 + 耗时预算」，
+    「挑哪些主题、每主题取几条、怎么组装」的判定全在本体（core/strategy.py）。
+    与原适配器相比少了 N 次 HTTP 往返——检索在本进程内完成，预算在此统一约束。
+    """
+    max_topics = _strategy_clamp_max_topics(req.max_topics)
+    topics = _strategy_extract_graph_topics(
+        req.messages,
+        req.focus_topic or None,
+        protect_first_n=req.protect_first_n,
+        protect_last_n=req.protect_last_n,
+        max_topics=max_topics,
+    )
+    if not topics:
+        return {
+            "enhancement_text": "",
+            "topics": [],
+            "hits": 0,
+            "decision_log": {"reason": "no_topics"},
+        }
+
+    deadline = time.monotonic() + max(0.1, req.timeout_budget)
+    budget_exhausted = False
+    entries: list[tuple[str, dict, list]] = []
+    for topic in topics:
+        if time.monotonic() >= deadline:
+            budget_exhausted = True
+            break
+        raw = _as_json(
+            _mcp_mem_search(
+                topic,
+                scope="all",
+                domain=req.domain,
+                top_k=GRAPH_ENHANCE_TOP_K,
+                include_neighbors=True,
+            )
+        )
+        hits = raw.get("results", []) if isinstance(raw, dict) else []
+        if not hits:
+            continue
+        entries.append((topic, hits[0], raw.get("neighbors") or []))
+        if len(entries) >= max_topics:
+            break
+
+    return {
+        "enhancement_text": _strategy_format_graph_enhancement(entries, max_topics=max_topics),
+        "topics": topics,
+        "hits": len(entries),
+        "decision_log": {
+            "topics": len(topics),
+            "hits": len(entries),
+            "budget_exhausted": budget_exhausted,
+            "max_topics": max_topics,
+        },
+    }

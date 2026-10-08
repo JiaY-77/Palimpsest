@@ -518,6 +518,7 @@ python scripts/palimpsest_cli.py consolidate --apply # 合并
 | `POST` | `/lifecycle/post-turn` | **记忆策略**：每轮回复后决定是否沉淀、写什么内容、写哪一层（logs/facts） |
 | `POST` | `/lifecycle/session-end` | **记忆策略**：会话结束提炼要点、去重、写入 facts 层 |
 | `POST` | `/lifecycle/pre-compress` | **记忆策略**：压缩前抽取要点（只回文本，不写库） |
+| `POST` | `/lifecycle/context-enhance` | **记忆策略**：压缩前挑主题、查图谱关键链、组装注入文本（只回文本，不写库） |
 
 > 若设置了 `PALIMPSEST_API_KEY`，除 `/` 外所有端点要求 `Authorization: Bearer <key>` 或 `X-API-Key: <key>`。
 

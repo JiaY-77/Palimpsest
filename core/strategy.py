@@ -312,3 +312,105 @@ def is_near_duplicate(hits: list[dict[str, Any]] | None, threshold: float = NEAR
         return False
     score = hits[0].get("score", 0)
     return score >= threshold
+
+
+# ---------------------------------------------------------------------------
+# 决策五：context-enhance（压缩前图谱增强）
+# 原 contextual 压缩引擎（hermes-plugin/context_engine.py）的 _extract_topics /
+# _graph_enhancement 下沉而来。宿主只提供「将要压缩的消息 + 保护段参数」，
+# 「挑哪些主题、查几条、怎么组装注入文本」的判定全部在这里。
+# ---------------------------------------------------------------------------
+
+# 注入段标题与格式常量（原 context_engine 内联字面量）。
+GRAPH_ENHANCE_HEADER = "[Palimpsest 图谱要点（压缩前提炼）]"
+GRAPH_TOPIC_MIN_CHARS = 8  # 短于此的寒暄/确认不作为图谱查询主题
+GRAPH_TOPIC_TRUNCATE = 120  # 主题送检索前的截断长度
+GRAPH_TOPIC_DISPLAY = 50  # 注入文本里主题展示截断
+GRAPH_HIT_SUMMARY_DISPLAY = 120  # 注入文本里摘要展示截断
+GRAPH_NEIGHBOR_TITLE_DISPLAY = 80  # 注入文本里邻居标题展示截断
+GRAPH_ENHANCE_TOP_K = 2  # 每个主题取前几条记忆
+GRAPH_ENHANCE_NEIGHBORS = 3  # 每个主题最多附几条图谱邻居
+GRAPH_ENHANCE_MAX_TOPICS = 3  # 最多查询几个主题（宿主可用配置覆盖，上限 5）
+GRAPH_ENHANCE_MAX_TOPICS_CAP = 5
+GRAPH_ENHANCE_DEFAULT_BUDGET = 8.0  # 整条增强链路的默认耗时预算（秒）
+
+
+def clamp_max_topics(value: Any) -> int:
+    """把宿主的 ``PALIMPSEST_GRAPH_TOPICS`` 收敛到 [1, 5]（原插件行为）。"""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        n = GRAPH_ENHANCE_MAX_TOPICS
+    return max(1, min(n, GRAPH_ENHANCE_MAX_TOPICS_CAP))
+
+
+def extract_graph_topics(
+    messages: list[dict[str, Any]],
+    focus_topic: str | None = None,
+    *,
+    protect_first_n: int = 3,
+    protect_last_n: int = 6,
+    max_topics: int = GRAPH_ENHANCE_MAX_TOPICS,
+) -> list[str]:
+    """从将被压缩的消息中挑出图谱查询主题。
+
+    规则（与原 ``_extract_topics`` 逐条对齐，行为保持一致）：
+    focus_topic 优先；否则取**中间段**（跳过 protect_first_n / protect_last_n
+    保护段——那些不参与压缩）的 user 消息；内容短于 8 字符的寒暄跳过；
+    靠后的意图优先；每条截断 120 字符；主题数封顶 ``max_topics``。
+    消息太短（没有真正的中间段）→ 返回空列表（与原行为一致）。
+    """
+    topics: list[str] = []
+    if focus_topic and str(focus_topic).strip():
+        topics.append(str(focus_topic).strip())
+
+    head = protect_first_n or 3
+    tail = protect_last_n or 6
+    if len(messages) - tail <= head:
+        return []
+    boundary = max(0, len(messages) - tail)
+    candidates: list[str] = []
+    for idx, msg in enumerate(messages):
+        if msg.get("role") != "user":
+            continue
+        if idx < head or idx >= boundary:
+            continue  # 保护段不参与图谱提炼
+        content = str(msg.get("content") or "").strip()
+        if len(content) >= GRAPH_TOPIC_MIN_CHARS:
+            candidates.append(content)
+    for content in reversed(candidates):  # 靠后的意图优先
+        if len(topics) >= max_topics:
+            break
+        topics.append(content[:GRAPH_TOPIC_TRUNCATE])
+    return topics[:max_topics]
+
+
+def format_graph_enhancement(
+    entries: list[tuple[str, dict[str, Any], list[dict[str, Any]]]],
+    *,
+    max_topics: int = GRAPH_ENHANCE_MAX_TOPICS,
+) -> str:
+    """把「主题 → 关键记忆 + 图谱邻居」组装成注入文本；无命中返回空串。
+
+    ``entries`` 由调用方（main.py 端点）用**进程内**检索装配，每条为
+    ``(topic, top_hit, neighbors)``——本函数只管格式，不发请求。
+    """
+    lines: list[str] = []
+    added = 0
+    for topic, top, neighbors in entries:
+        if added >= max_topics:
+            break
+        try:
+            score = float(top.get("score", 0) or 0)
+        except (TypeError, ValueError):
+            score = 0.0
+        summary = str(top.get("summary", "") or "")[:GRAPH_HIT_SUMMARY_DISPLAY]
+        lines.append(f"- 主题「{str(topic)[:GRAPH_TOPIC_DISPLAY]}」→ 关键记忆({score:.2f}): {summary}")
+        for nb in (neighbors or [])[:GRAPH_ENHANCE_NEIGHBORS]:
+            relation = nb.get("relation", "LINKED")
+            title = str(nb.get("title", "") or "")[:GRAPH_NEIGHBOR_TITLE_DISPLAY]
+            lines.append(f"  · 图谱关联: {relation} → {title}")
+        added += 1
+    if not added:
+        return ""
+    return "\n".join([GRAPH_ENHANCE_HEADER, *lines])

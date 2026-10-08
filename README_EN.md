@@ -523,6 +523,7 @@ Node ownership is expressed by the `payload.domain` field. Specify a block at wr
 | `POST` | `/lifecycle/post-turn` | **Memory strategy**: after each reply, decide whether to persist, what to store, and which tier (logs/facts) |
 | `POST` | `/lifecycle/session-end` | **Memory strategy**: on session end, distil key points, deduplicate, and write to the facts tier |
 | `POST` | `/lifecycle/pre-compress` | **Memory strategy**: extract key points before compression (returns text only, writes nothing) |
+| `POST` | `/lifecycle/context-enhance` | **Memory strategy**: pick topics, walk the graph for key chains, assemble the text to inject before compression (returns text only, writes nothing) |
 
 > If `PALIMPSEST_API_KEY` is set, every route except `/` requires `Authorization: Bearer <key>` or `X-API-Key: <key>`.
 
