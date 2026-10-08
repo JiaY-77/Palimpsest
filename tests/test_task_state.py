@@ -610,6 +610,26 @@ def test_parse_long_block_with_spaces_and_punctuation():
     assert parse_task_state("[挂账持续] token 优化") == "blocked"
 
 
+def test_parse_block_internal_earliest_state_wins():
+    """块内含多个状态词时，**最先出现的**胜出（2026-10-08 复核修正的硬约束）。
+
+    两类真实语料必须同时正确：
+      - 「挂账」在前、「落地」在后 → blocked（落地是别人的条件）；
+      - 「进行中」在前、「挂起」在后 → doing（本任务在做）。
+    旧实现按全局优先级（blocked 词一律在前）会把第一类误判成 doing、
+    第二类误判成 blocked——本测试锁死「按块内位置取胜出」这条规则。
+    """
+    # blocked 在前：别人的完成条件（落地）不能覆盖本任务的挂账
+    assert parse_task_state("T057：→ [挂账，T055 换脑落地后实施]（主人 2026-08") == "blocked"
+    # doing 在前：本任务进行中，后面的「挂起待续」指别的事项
+    assert parse_task_state("【任务·技能库瘦身（进行中）2026-09-21 挂起待续】正文") == "doing"
+    # 仅「落地」出现（本任务进展描述）→ doing（弱词仍兜底）
+    assert parse_task_state("T055：→ [第二步入落地]（换脑已激活") == "doing"
+    # 对称性：同一对词交换位置 → 结果随首现者改变
+    assert parse_task_state("[落地后再挂账] 正文") == "doing"
+    assert parse_task_state("[挂账后落地] 正文") == "blocked"
+
+
 # ---------------------------------------------------------------------------
 # 9. 状态变更日志节点 created_at 不得被吞（复核小问题 3）
 # ---------------------------------------------------------------------------
