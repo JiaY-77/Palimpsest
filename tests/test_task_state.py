@@ -660,5 +660,8 @@ def test_state_log_node_has_created_at():
 
     log_pl = next(pl for _i, pl in store.iter_payloads() if pl.get("type") == "record" and pl.get("task_id") == nid)
     assert log_pl.get("created_at"), f"日志节点 created_at 被吞：{log_pl.get('created_at')!r}"
-    # ISO8601 带日期前缀，粗略校验格式
-    assert str(log_pl["created_at"]).startswith("20")
+    # 必须是数值时间戳（time.time()），与库内既有节点一致——ISO 字符串会让
+    # /mem/recent 的 created_at 排序在 float/str 之间抛 TypeError。
+    assert isinstance(log_pl["created_at"], (int, float)), (
+        f"created_at 应为数值时间戳，实际是 {type(log_pl['created_at']).__name__}：{log_pl['created_at']!r}"
+    )

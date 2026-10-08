@@ -29,6 +29,7 @@ Palimpsest 里的任务节点（``type=task``）长期把「任务当前处于�
 
 import logging
 import re
+import time
 from datetime import datetime, timezone
 
 from core.utils import _to_float
@@ -288,7 +289,7 @@ def apply_task_patch(store, node_id: int, payload_patch: dict | None = None) -> 
     changed = new_state is not None and new_state != previous_state
     now_iso = _now_iso()
     if changed:
-        _write_state_log(store, node_id, merged, previous_state, new_state, now_iso)
+        _write_state_log(store, node_id, merged, previous_state, new_state, time.time())
 
     merged["last_touched_at"] = now_iso
     store.update_payload(node_id, merged)
@@ -321,7 +322,7 @@ def _task_label(payload: dict) -> str:
     return cleaned.strip()
 
 
-def _write_state_log(store, node_id: int, payload: dict, previous_state, new_state: str, now_iso: str) -> None:
+def _write_state_log(store, node_id: int, payload: dict, previous_state, new_state: str, now_ts: float) -> None:
     """写一条状态变更日志节点并建 ``record -[LOGS]-> task`` 边。
 
     content 格式：``[{new_state}] {task_key} {任务名} · {YYYY-MM-DD}``
@@ -332,6 +333,9 @@ def _write_state_log(store, node_id: int, payload: dict, previous_state, new_sta
     （``k not in payload``），直接传会被静默吞掉 → 日志节点时间戳恒为 None。
     因此插入后按 ``mem_ingest`` 的同款做法（``mcp_tools/memory.py``）读回补写：
     ``created_at`` 为空才写，避免覆盖既有值。
+
+    时间戳**必须是数值**（``time.time()``），与库内既有节点一致——写 ISO 字符串
+    会让 ``/mem/recent`` 的 ``created_at`` 排序在 float/str 之间抛 TypeError。
     """
     label = _task_label(payload)
     content = f"[{new_state}] {label} · {_date_str()}".strip()
@@ -351,7 +355,7 @@ def _write_state_log(store, node_id: int, payload: dict, previous_state, new_sta
     node = store.get_node(log_id) or {}
     log_stored = dict(node.get("payload") or {})
     if log_stored.get("created_at") is None:
-        log_stored["created_at"] = now_iso
+        log_stored["created_at"] = now_ts
         store.update_payload(log_id, log_stored)
     store.create_edge(log_id, node_id, "LOGS")
     logger.info("任务状态日志已写入 log_node=%s -> task=%s（%s）", log_id, node_id, new_state)
