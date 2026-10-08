@@ -646,4 +646,3 @@ def test_state_log_node_has_created_at():
     assert log_pl.get("created_at"), f"日志节点 created_at 被吞：{log_pl.get('created_at')!r}"
     # ISO8601 带日期前缀，粗略校验格式
     assert str(log_pl["created_at"]).startswith("20")
-
