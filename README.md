@@ -422,7 +422,7 @@ python scripts/build_kb_index.py --rules rules.json
 
 ## 使用
 
-### MCP 工具（17 个）— `mcp_tools/*`
+### MCP 工具（18 个）— `mcp_tools/*`
 
 | 工具 | 说明 |
 |---|---|
@@ -432,6 +432,7 @@ python scripts/build_kb_index.py --rules rules.json
 | `mem_get_full` | 按 ID 拉取节点完整内容 |
 | `mem_ingest` | 写入新记忆——含冲突检测、`REVISED_BY` 版本链、敏感扫描、长度护栏 |
 | `mem_recent` | 最近的记忆（新的在前） |
+| `tasks_active` | 活跃任务列表（`type=task` & `status=active`）：按 `project` / 状态集过滤，`doing > blocked > todo` → 最近触碰倒序排序；默认排除 `legacy=true` 的老节点 |
 | `mem_review` | 最近 N 天的周期性回顾 + 治理候选（高价值升级 / outdated 清理 / 低价值）；`tier`（默认 `facts`）作用于 `recent_ingests`：`logs` 只回日志层、`""` 不过滤 |
 | `mem_stats` | 库级盘点：类型 / 域 / 重要度 / 时间 / 图谱分布 + 热点节点；`tiers` 分节按检索侧 tier 语义分组（facts / logs / unclassified）并输出实际生效的 `TIER_FACTS` / `TIER_LOGS` 清单 |
 | `mem_version_history` | 沿 `REVISED_BY` 链展开，查看事实演化过程 |
@@ -455,6 +456,9 @@ python scripts/build_kb_index.py --rules rules.json
 | `index` | 扫描并索引知识库 |
 | `graph --id N` | 某节点的图谱邻居（`--depth`、`--relation`、`--min-weight`） |
 | `recent` | 最近的记忆（`--limit`、`--domain`） |
+| `tasks` | 任务节点状态注册表（子命令 `active` / `backfill`） |
+| `tasks active` | 活跃任务列表（`--project`、`--states todo,doing,blocked`、`--limit`） |
+| `tasks backfill` | 存量任务节点回填 `task_state`（默认 dry-run 预览，`--apply` 才写库） |
 | `review` | 最近 N 天的周期回顾（`--tier facts\|logs\|''` 作用于 recent_ingests） |
 | `stats` | 库级盘点统计（totals/域/重要度/时间/图谱） |
 | `kb "QUERY"` | 知识切片的语义搜索 |
@@ -506,6 +510,7 @@ python scripts/palimpsest_cli.py consolidate --apply # 合并
 | `POST` | `/mem/link` | 创建图边 |
 | `DELETE` | `/mem/edge` | 删除图边（body：`source_id` / `target_id` / `relation`；幂等） |
 | `POST` | `/mem/recent` | 最近记忆列表（按 created_at 倒序） |
+| `GET` | `/tasks/active` | 活跃任务列表（query：`project` / `states` / `limit`；按状态优先级 → 最近触碰倒序） |
 | `POST` | `/mem/stats` | 库级盘点统计 |
 | `POST` | `/graph/neighbors` | 某节点的图谱邻居 |
 | `POST` | `/graph/communities` | Leiden 社区发现 |

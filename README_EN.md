@@ -427,7 +427,7 @@ A complete example with generic directory names (`notes/` / `reference/` / `arch
 
 ## Usage
 
-### MCP tools (17) — `mcp_tools/*`
+### MCP tools (18) — `mcp_tools/*`
 
 | Tool | Description |
 |---|---|
@@ -437,6 +437,7 @@ A complete example with generic directory names (`notes/` / `reference/` / `arch
 | `mem_get_full` | Fetch the full content of a node by ID |
 | `mem_ingest` | Write a new memory — with conflict detection, `REVISED_BY` version chaining, secret scanning, and length guards |
 | `mem_recent` | Most recent memories (newest first) |
+| `tasks_active` | Active task list (`type=task` & `status=active`): filtered by `project` / state set, sorted `doing > blocked > todo` then by last-touched desc; `legacy=true` nodes excluded by default |
 | `mem_review` | Periodic recap of the last N days plus governance candidates (high-value upgrades / outdated cleanup / low-value); `tier` (default `facts`) scopes `recent_ingests`: `logs` returns only the logs tier, `""` disables filtering |
 | `mem_stats` | Store-wide statistics: type / domain / importance / time / graph distributions + hot nodes; the `tiers` section groups types by retrieval-tier semantics (facts / logs / unclassified) and lists the effective `TIER_FACTS` / `TIER_LOGS` classification |
 | `mem_version_history` | Walk the `REVISED_BY` chain to show how a fact evolved |
@@ -460,6 +461,9 @@ A complete example with generic directory names (`notes/` / `reference/` / `arch
 | `index` | Scan and index the knowledge base |
 | `graph --id N` | Graph neighbors of a node (`--depth`, `--relation`, `--min-weight`) |
 | `recent` | Most recent memories (`--limit`, `--domain`) |
+| `tasks` | Task-state registry (subcommands `active` / `backfill`) |
+| `tasks active` | Active task list (`--project`, `--states todo,doing,blocked`, `--limit`) |
+| `tasks backfill` | Backfill `task_state` on existing task nodes (dry-run by default; `--apply` writes) |
 | `review` | Periodic recap of the last N days (`--tier facts\|logs\|''` scopes recent_ingests) |
 | `stats` | Store-wide statistics (totals / domains / importance / time / graph) |
 | `kb "QUERY"` | Semantic search over knowledge chunks |
@@ -511,6 +515,7 @@ Node ownership is expressed by the `payload.domain` field. Specify a block at wr
 | `POST` | `/mem/link` | Create a graph edge |
 | `DELETE` | `/mem/edge` | Delete a graph edge (body: `source_id` / `target_id` / `relation`; idempotent) |
 | `POST` | `/mem/recent` | Most recent memories (ordered by created_at) |
+| `GET` | `/tasks/active` | Active task list (query: `project` / `states` / `limit`; sorted by state priority then last-touched desc) |
 | `POST` | `/mem/stats` | Store-wide statistics |
 | `POST` | `/graph/neighbors` | Graph neighbors of a node |
 | `POST` | `/graph/communities` | Leiden community detection |
