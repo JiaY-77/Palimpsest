@@ -469,9 +469,16 @@ def backfill_task_state(store, dry_run: bool = True) -> dict:
     """存量 ``type=task`` 节点回填 ``task_state``。
 
     对每个 ``type=task``（且未回填过）的节点：
-      - 打 ``payload.legacy = True``（标记「老节点」，``/tasks/active`` 默认不再列出）；
       - 从 content 首行解析状态写入 ``payload.task_state``；
-      - 解析失败 → ``task_state="unknown"`` + ``needs_review=True``。
+      - 解析失败 → ``task_state="unknown"`` + ``needs_review=True``；
+      - **按状态决定是否打 ``legacy``**：只有不再需要跟进的状态（``done`` /
+        ``canceled`` / ``unknown``）才标 ``payload.legacy = True``（历史留痕，
+        ``/tasks/active`` 默认不列出）；仍在跟进的状态（``todo`` / ``doing`` /
+        ``blocked``）保持 legacy 缺失，**回填后即可出现在活跃任务视图里**。
+
+    为什么这样分：``legacy`` 的语义是「历史节点，不必再看」，不是「回填过的节点」。
+    把仍在做的任务一并标成 legacy，会让回填后的工作集立刻变空——恰好废掉这套
+    改造的目的。
 
     ``dry_run=True``（默认）只统计不写库；``--apply`` 才落盘。
 
@@ -479,13 +486,14 @@ def backfill_task_state(store, dry_run: bool = True) -> dict:
     （进程级 DB 访问锁），迭代中调 ``update_payload`` 会在同进程内重入取锁而自锁
     ——因此先把候选节点整体快照出来、迭代结束（连接释放）后再逐个写回。
 
-    返回 ``{dry_run, scanned, already, parsed, unknown, needs_review, changes}``；
+    返回 ``{dry_run, scanned, already, parsed, unknown, needs_review, legacy, changes}``；
     ``changes`` 为每个将变更 / 已变更节点的摘要（dry-run 预览 = 执行决策）。
     """
     scanned = 0
     already = 0
     parsed = 0
     unknown = 0
+    legacy_count = 0
     changes: list[dict] = []
     pending: list[tuple[int, dict]] = []  # (node_id, 待写 payload)，迭代结束再写
 
@@ -494,25 +502,33 @@ def backfill_task_state(store, dry_run: bool = True) -> dict:
         if payload.get("type") != "task":
             continue
         scanned += 1
-        # 幂等：已回填（legacy + 合法 task_state）的节点跳过，重跑输出 0 变更
-        if payload.get("legacy") is True and payload.get("task_state") in TASK_STATES:
-            already += 1
-            continue
         state = parse_task_state(payload.get("content") or "")
         if state is None:
             state = UNKNOWN_STATE
             unknown += 1
         else:
             parsed += 1
+        # 该节点**应该**是什么 legacy 值：不活跃状态才标 legacy
+        want_legacy = state not in DEFAULT_ACTIVE_STATES
+        # 幂等：已是目标形态（task_state 相符且 legacy 相符）→ 跳过，重跑输出 0 变更
+        if payload.get("task_state") == state and payload.get("legacy") is want_legacy:
+            already += 1
+            continue
         changes.append(
             {
                 "id": nid,
                 "task_state": state,
                 "needs_review": state == UNKNOWN_STATE,
+                "legacy": want_legacy,
                 "title": _task_label(payload),
             }
         )
-        new_payload = {**payload, "legacy": True, "task_state": state}
+        new_payload = {**payload, "task_state": state}
+        if want_legacy:
+            new_payload["legacy"] = True
+            legacy_count += 1
+        else:
+            new_payload["legacy"] = False
         if state == UNKNOWN_STATE:
             new_payload["needs_review"] = True
         pending.append((nid, new_payload))
@@ -528,5 +544,6 @@ def backfill_task_state(store, dry_run: bool = True) -> dict:
         "parsed": parsed,
         "unknown": unknown,
         "needs_review": unknown,
+        "legacy": legacy_count,
         "changes": changes,
     }

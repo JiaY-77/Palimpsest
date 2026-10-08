@@ -402,10 +402,26 @@ def test_backfill_apply_writes_state_and_legacy_flag():
     assert row["task_state"] == "doing"
     payload = store.get_node(nid)["payload"]
     assert payload["task_state"] == "doing"
-    assert payload["legacy"] is True
+    # doing 仍要跟进 → 不打 legacy
+    assert payload["legacy"] is False
 
-    # 回填后的 legacy 节点默认不再出现在 /tasks/active
-    assert nid not in [it["id"] for it in list_active_tasks(store, project=project)["results"]]
+    # 仍活跃的任务回填后应出现在 /tasks/active
+    assert nid in [it["id"] for it in list_active_tasks(store, project=project)["results"]]
+
+
+def test_backfill_inactive_states_get_legacy_flag():
+    """done / canceled / unknown 等不再跟进的状态 → legacy=True，不进工作集。"""
+    project = _ns()
+    done_id = _insert_task("[完成] T-510 已做完", project, project_marker=project)
+    unknown_id = _insert_task("没有状态标记的存量任务", project, project_marker=project)
+
+    backfill_task_state(store, dry_run=False)
+
+    assert store.get_node(done_id)["payload"]["legacy"] is True
+    assert store.get_node(unknown_id)["payload"]["legacy"] is True
+    active_ids = [it["id"] for it in list_active_tasks(store, project=project)["results"]]
+    assert done_id not in active_ids
+    assert unknown_id not in active_ids
 
 
 def test_backfill_unparseable_marks_unknown_and_needs_review():
@@ -429,7 +445,7 @@ def test_backfill_is_idempotent():
     nid = _insert_task("[todo] T-502 幂等", project, project_marker=project)
 
     backfill_task_state(store, dry_run=False)
-    assert store.get_node(nid)["payload"]["legacy"] is True
+    assert store.get_node(nid)["payload"]["legacy"] is False
 
     second = backfill_task_state(store, dry_run=False)
     assert nid not in [c["id"] for c in second["changes"]]
