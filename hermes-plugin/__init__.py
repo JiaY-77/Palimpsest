@@ -1,24 +1,19 @@
-"""Palimpsest memory plugin — MemoryProvider backed by Palimpsest REST :8090.
+"""Palimpsest × Hermes 适配器（薄）
+========================================
 
-把 Hermes 的记忆层换成 Palimpsest（Memory Provider 插件）。
+**本文件是宿主适配器，不是策略层。** 所有「什么值得记、记哪层、什么时候召回、
+怎么去重提炼」的判定都在 Palimpsest 本体的策略引擎里（``core/strategy.py``）；
+Hermes 侧只做三件事：
 
-能力：
-  - prefetch(): 每轮自动召回 Palimpsest 语义记忆（含图谱邻居）注入上下文
-  - sync_turn(): 检测「明确指令」信号（纠正/偏好/规则）自动沉淀到 logs 层
-  - on_session_end(): 会话末提炼要点写入 facts 层
-  - on_pre_compress(): 压缩前抽取要点，贡献给压缩 prompt（不写入）
-  - 4 个工具: palimpsest_search / palimpsest_ingest / palimpsest_link /
-    palimpsest_graph —— 模型可主动检索/写入/建边
+1. **钩子注册**——告诉 Hermes 在哪些生命周期点调用我们；
+2. **字段映射**——把 Hermes 的 hook payload 转成本体 lifecycle 协议的请求
+   （读环境变量配置、拼 JSON）；
+3. **结果注入**——把本体返回的 ``inject_text`` 原样拼进 prompt。
 
-配置（环境变量，可选；默认即指向本机 Palimpsest）:
-  PALIMPSEST_BASE_URL       默认 http://127.0.0.1:8090
-  PALIMPSEST_DOMAIN         默认 hermes
-  PALIMPSEST_PREFETCH_TOP_K 默认 3（注入降噪：5→3）
-  PALIMPSEST_PREFETCH_NEIGHBORS   默认 false（图邻居不入注入；true 打开）
-  PALIMPSEST_PREFETCH_MIN_SCORE   默认 0.3（注入最低相关度门槛）
-  PALIMPSEST_PREFETCH_TIER        默认 facts（只注入事实层；空串=不过滤）
-  PALIMPSEST_PREFETCH_SCOPE       默认 memory（只召回记忆；all=含知识库切片）
-  PALIMPSEST_AUTO_INGEST    默认 true；false 关闭自动沉淀（只用工具）
+为什么这样拆：记忆智能是 Palimpsest 的产品核心资产，必须住在本体，否则换一个
+宿主（Claude Code / Cursor / 任意 agent）智能就丢了。适配器越薄，本体通用性越强。
+
+双插件：Memory Provider（本文件）+ Context Engine（``context_engine.py``）。
 """
 
 from __future__ import annotations
@@ -26,41 +21,21 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import urllib.request
 from typing import Any
 
-from agent.memory_provider import MemoryProvider, RecallStatus, is_trivial_prompt
+from agent.memory_provider import MemoryProvider, RecallStatus
 
 logger = logging.getLogger(__name__)
 
-# 强信号：命中即触发 on_session_end 提炼 / on_pre_compress 抽取。
-# 保守锚定中文语料：纠正、偏好、决策、规则、启动类动词。
-# 注意：此正则偏「宽」——它的产出是「会话要点」（人工可读的提炼），不是
-# 逐条自动落库的事实，所以容忍一定噪音。sync_turn 的自动落库另用
-# _EXPLICIT_INSTRUCTION_RE（见下），两者刻意解耦。
-_IMPORTANT_RE = re.compile(
-    r"(记住|记好|以后|从今|别忘|不要忘|我的偏好|我更喜欢|我习惯|"
-    r"不对|不是|错了|纠正|更正|改成|改为|"
-    r"批准|决定|拍板|定案|方案|规则|规矩|红线|"
-    r"开始做|启动|立项|安排|计划|下一步|优先)"
-)
-
-# sync_turn 自动落库专用：只认「对助手的明确指令 / 长期偏好 / 纠正」，
-# 不认「操作动词」。原因：`启动|安排|计划|方案|优先|决定|立项` 这类词在
-# 命令输出、构建日志、后台进程通知里高频出现，宽正则会把噪音写进库；
-# 而 sync_turn 是「关键词命中即把用户原话落库」，误触发直接污染检索池。
-# 剔除操作词后，命中即可解释为「用户在下指令」，事后可审计。
-_EXPLICIT_INSTRUCTION_RE = re.compile(
-    r"(记住|记好|以后|从今|别忘|不要忘|别再|"
-    r"我的偏好|我更喜欢|我习惯|我一般|我通常|"
-    r"不对|不是这样|错了|纠正|更正|改成|改为|"
-    r"规则|规矩|红线)"
-)
+_DEFAULT_BASE_URL = "http://127.0.0.1:8090"
 
 
 def _http_post(url: str, payload: dict, timeout: float = 5.0) -> dict:
-    """REST POST 到 Palimpsest :8090，返回解析后的 JSON；失败返回 {"error": ...}。"""
+    """REST POST 到 Palimpsest :8090，返回解析后的 JSON；失败返回 {"error": ...}。
+
+    fail-open：记忆后端不可用时静默降级（返回空、不阻塞宿主）。
+    """
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
     try:
@@ -71,68 +46,8 @@ def _http_post(url: str, payload: dict, timeout: float = 5.0) -> dict:
         return {"error": str(exc)}
 
 
-def _msg_text(msg: dict[str, Any]) -> str:
-    return str(msg.get("content") or "")
-
-
-def _extract_points(messages: list[dict[str, Any]], limit: int, per_message_chars: int) -> list[str]:
-    """从消息列表中提炼要点行。只接受 user/assistant 角色，去重，命中 _IMPORTANT_RE。"""
-    _ALLOWED_ROLES = ("user", "assistant")
-    points: list[str] = []
-    seen: set = set()
-    for msg in messages:
-        if msg.get("role") not in _ALLOWED_ROLES:
-            continue
-        text = _msg_text(msg)
-        if not text or not text.strip():
-            continue
-        if text in seen:
-            continue
-        if not _IMPORTANT_RE.search(text):
-            continue
-        seen.add(text)
-        points.append(f"[{msg.get('role', '?')}] {text[:per_message_chars]}")
-        if len(points) >= limit:
-            break
-    return points
-
-
-# Semantic-score threshold for near-duplicate detection.  The top-1 result from
-# ``/mem/search`` is compared against this value:
-#   - This is the "content already exists" semantic-match threshold (0–1 scale).
-#   - The function is *fail-open*: HTTP errors, empty results, or missing scores
-#     are all treated as "not duplicate".  A high threshold here avoids false
-#     positives that would silently discard distinct-but-similar memories.
-# If you change this value, update the docstring and the boundary test in
-# ``tests/test_hermes_plugin_extraction.py`` accordingly.
-_NEAR_DUP_THRESHOLD = 0.95
-
-
-def _is_near_duplicate(content: str, base_url: str, domain: str, threshold: float = _NEAR_DUP_THRESHOLD) -> bool:
-    """查询 Palimpsest 是否已存在近似内容。任何异常均返回 False（fail-open）。"""
-    try:
-        resp = _http_post(
-            f"{base_url}/mem/search",
-            {
-                "query": content,
-                "scope": "memory",
-                "domain": domain,
-                "top_k": 1,
-            },
-        )
-        if "error" in resp:
-            return False
-        results = resp.get("results", [])
-        if not results:
-            return False
-        score = results[0].get("score", 0)
-        return score >= threshold
-    except Exception:  # noqa: BLE001 —— 近似查询失败视为不重复，fail-open
-        return False
-
-
 # ---------------------------------------------------------------------------
-# Tool schemas（面向模型：模型决定何时主动用）
+# Tool schemas（面向模型：模型决定何时主动用；冷路径，与 lifecycle 热路径分工）
 # ---------------------------------------------------------------------------
 
 SEARCH_SCHEMA = {
@@ -216,13 +131,20 @@ GRAPH_SCHEMA = {
 
 
 class PalimpsestMemoryProvider(MemoryProvider):
-    """Palimpsest 记忆后端：语义召回 + 自动沉淀 + 图谱。"""
+    """Hermes 记忆后端适配器：把生命周期事件转发到本体 lifecycle 协议。
 
+    本类只做传输（读环境变量配置、拼 payload、发 POST、把返回文本交给宿主）。
+    「召不召 / 抽不抽 / 记哪层」的判定全部在 Palimpsest 本体的 ``core/strategy.py``。
+    """
+
+    # Providers that durably checkpoint every successful on_pre_compress() set this to
+    # PRE_COMPRESS_CHECKPOINT_API_VERSION; 1 = best-effort legacy.
     pre_compress_checkpoint_api_version = 1
 
     def __init__(self) -> None:
-        self._base_url = os.environ.get("PALIMPSEST_BASE_URL", "http://127.0.0.1:8090").rstrip("/")
+        self._base_url = os.environ.get("PALIMPSEST_BASE_URL", _DEFAULT_BASE_URL).rstrip("/")
         self._domain = os.environ.get("PALIMPSEST_DOMAIN", "hermes")
+        # 召回参数（传输类配置，随请求传给本体策略引擎，由本体决策如何使用）
         self._top_k = int(os.environ.get("PALIMPSEST_PREFETCH_TOP_K", "3"))
         # 注入降噪（T081 配套）：图邻居默认关（记忆域图近乎无边，纯空转）；
         # 注入最低相关度门槛可配，默认与旧硬编码一致 0.3，可调高再砍噪音。
@@ -279,33 +201,33 @@ class PalimpsestMemoryProvider(MemoryProvider):
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """每轮召回相关记忆注入上下文；trivial 输入跳过（省一次 HTTP）。"""
+        """每轮召回：转发 ``/lifecycle/pre-turn``，原样返回本体给的注入文本。
+
+        策略（trivial 判定 / 长度门槛 / score 过滤 / 条数截断 / 格式化）全在本体。
+        """
         self._last_recall = None
-        if not self._enabled or is_trivial_prompt(query):
-            return ""
-        if len((query or "").strip()) < 4:
+        if not self._enabled:
             return ""
         resp = _http_post(
-            f"{self._base_url}/mem/search",
+            f"{self._base_url}/lifecycle/pre-turn",
             {
-                "query": query,
-                "scope": self._scope,
+                "session_id": session_id or self._session_id,
+                "user_message": query,
                 "domain": self._domain,
+                "scope": self._scope,
                 "top_k": self._top_k,
                 "include_neighbors": self._include_neighbors,
                 "tier": self._tier,
+                "min_score": self._min_score,
             },
         )
-        if "error" in resp or not resp.get("results"):
+        if "error" in resp:
             return ""
-        hits = [r for r in resp["results"] if r.get("score", 0) >= self._min_score]
-        if not hits:
-            return ""
-        lines = ["[Palimpsest 记忆注入]"]
-        for r in hits[: self._top_k]:
-            lines.append(f"- ({r.get('score', 0):.2f}) {r.get('summary', '')[:150]}")
-        self._last_recall = RecallStatus(provider_label="palimpsest", count=len(hits))
-        return "\n".join(lines)
+        text = resp.get("inject_text", "")
+        if text:
+            count = len(resp.get("inject_blocks", []))
+            self._last_recall = RecallStatus(provider_label="palimpsest", count=count)
+        return text
 
     def recall_status(self) -> RecallStatus | None:
         return self._last_recall
@@ -318,76 +240,48 @@ class PalimpsestMemoryProvider(MemoryProvider):
         session_id: str = "",
         messages: list[dict[str, Any]] | None = None,
     ) -> None:
-        """每轮沉淀：只在命中「明确指令」强信号时写入，避免库被低价值轮次污染。
-
-        落库层归属：写入 ``type="record"``（logs 层），不是 facts 层。理由——这里抓到
-        的是用户原话片段，属未经加工的对话记录，本就不是事实；facts 层留给人工/工具
-        显式写入与提炼后的结论（见 ``on_session_end``）。与 #12 的分层意图一致。
-
-        可审计性：命中词与命中位置写进 payload，事后可从节点内容解释它为何入库；
-        同时落库正文带 300 字截断标记，避免「触发了但正文看不到证据」。
-        """
+        """每轮沉淀：转发 ``/lifecycle/post-turn``（命中判定 / importance / 分层在本体）。"""
         if not self._enabled or not self._auto_ingest:
             return
-        if is_trivial_prompt(user_content) or not user_content:
-            return
-        m = _EXPLICIT_INSTRUCTION_RE.search(user_content)
-        if not m:
-            return
-        importance = 0.7 if any(k in user_content for k in ("不对", "不是这样", "错了", "纠正", "更正")) else 0.6
-        truncated = user_content[:300]
-        note = "…[截断]" if len(user_content) > 300 else ""
         _http_post(
-            f"{self._base_url}/mem/ingest",
+            f"{self._base_url}/lifecycle/post-turn",
             {
-                "content": f"[对话沉淀] 用户: {truncated}{note}",
-                "type": "record",
-                "importance": importance,
-                "domain": self._domain,
-                "source": "hermes-sync_turn",
-                "matched_keyword": m.group(0),
-                "match_pos": m.start(),
+                "session_id": session_id or self._session_id,
+                "user_message": user_content,
+                "assistant_message": assistant_content or "",
+                "auto_ingest": self._auto_ingest,
             },
         )
 
     def on_session_end(self, messages: list[dict[str, Any]]) -> None:
-        """会话结束：把含强信号的消息提炼成一条要点。
-
-        落库层归属：写入 ``type="memory"``（facts 层）。理由是这里产出的是**提炼后的
-        结论**（多轮消息压缩成要点行），不是逐轮原始片段——它应当回到后续上下文，
-        而非像 sync_turn 的原始对话片段那样沉进 logs 层。
-        修 #47：旧实现写 ``type="record"``（logs 层），而 prefetch 默认 ``tier="facts"``，
-        导致会话要点默认只写不读、静默失效。
-        """
+        """会话结束：转发 ``/lifecycle/session-end``（要点提炼 / 分层 / 去重在本体）。"""
         if not self._enabled or not self._auto_ingest:
             return
-        points = _extract_points(messages, limit=8, per_message_chars=150)
-        if not points:
-            return
-        content = "会话要点（Palimpsest 插件提炼）：\n" + "\n".join(points)
-        if _is_near_duplicate(content, self._base_url, self._domain):
-            logger.info("Palimpsest: 跳过近似重复的会话要点")
-            return
         _http_post(
-            f"{self._base_url}/mem/ingest",
+            f"{self._base_url}/lifecycle/session-end",
             {
-                "content": content,
-                "type": "memory",
-                "importance": 0.55,
-                "domain": self._domain,
-                "source": "hermes-session_end",
+                "session_id": self._session_id,
+                "messages": messages or [],
+                "auto_ingest": self._auto_ingest,
             },
         )
 
     def on_pre_compress(self, messages: list[dict[str, Any]]) -> str:
-        """压缩前抽取要点，贡献给压缩 prompt（不写入 Palimpsest，只保上下文）。"""
-        points = _extract_points(messages, limit=10, per_message_chars=200)
-        return "\n".join(points)
+        """压缩前抽取：转发 ``/lifecycle/pre-compress``（不写库，只回文本）。"""
+        if not self._enabled:
+            return ""
+        resp = _http_post(
+            f"{self._base_url}/lifecycle/pre-compress",
+            {"session_id": self._session_id, "messages": messages or []},
+        )
+        if "error" in resp:
+            return ""
+        return resp.get("points_text", "")
 
     def shutdown(self) -> None:
         self._enabled = False
 
-    # -- 工具 --------------------------------------------------------
+    # -- 工具（冷路径：模型主动调用）--------------------------------
 
     def get_tool_schemas(self) -> list[dict[str, Any]]:
         return [SEARCH_SCHEMA, INGEST_SCHEMA, LINK_SCHEMA, GRAPH_SCHEMA]

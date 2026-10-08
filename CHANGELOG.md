@@ -8,6 +8,8 @@
 
 ### 新增
 
+- **记忆策略引擎下沉本体 + 宿主无关的 lifecycle 协议**：此前「什么值得记、记哪一层、什么时候召回、怎么去重提炼」的判定住在 Hermes 接入插件（`hermes-plugin/__init__.py`）里——那是产品核心资产，却寄居在某个宿主的插件接口内：换个宿主智能即丢失，能力上限也被该宿主的钩子协议框住。现将决策整体收进 `core/strategy.py`（强信号正则、近似重复阈值、importance 分档、分层归属、trivial/长度门槛等），并暴露一组**宿主无关**的 lifecycle 端点：`POST /lifecycle/pre-turn`（决定召回什么，返回可注入 prompt 的文本）、`/lifecycle/post-turn`（决定是否沉淀 / 写什么 / 写哪层）、`/lifecycle/session-end`（会话要点提炼 + 去重 + 写入 facts 层）、`/lifecycle/pre-compress`（压缩前抽取，不写库）。每个决策都返回 `decision_log`，让「为什么召这些、为什么没写那条」可观测——判断力因此可审计、可评估，而不只是藏在代码里。
+  落地要点：①分层语义保持不变（自动抓到的用户原话片段 → logs 层 `type=record`；提炼后的要点 → facts 层 `type=memory`），历史修复（#46 scope 默认 memory、#47 会话要点写 facts、#48 明确指令正则）随之下沉；②`is_trivial_prompt` 此前借自宿主的 `agent.memory_provider`，现于本体自实现，`core/strategy.py` 不依赖任何宿主模块；③Hermes 适配器压薄为纯传输（读配置、拼 payload、转发、注入结果），不再含任何阈值/正则；④MCP 工具保留冷路径（模型主动用记忆），lifecycle 协议覆盖热路径（记忆自动找到模型），二者共享同一策略引擎与存储层。测试：决策行为迁移至 `tests/test_strategy_engine.py`，适配器传输由 `tests/test_hermes_plugin_adapter.py` 锁定（含「决策符号不得再出现在适配器」的边界守卫），端到端契约由 `tests/test_lifecycle_endpoints.py` 覆盖（含 10 轮模拟会话的分层断言）。
 - **服务守护脚本 `scripts/service_guard.py`（防重复拉起）**：README 要求 REST 服务常驻运行，但仓库此前只提供 `start_rest.vbs`（一次性启动），没有守护——服务崩掉后不会自动恢复。新增的守护脚本守 REST 与 Ollama 两项，且**在拉起前先确认目标端口无人监听、上一次启动已过宽限期**。这道检查是必需的而非可选的：TriviumDB 以独占方式打开库文件，而 Palimpsest 采用「每操作开-关库」模式，因此两个 REST 进程同时运行会争抢库文件；抢输的写入被中途打断，会让 storage generation 不一致（`.flush_ok` 与 `.vec`/`.pld` 对不上），库从可读写退化为读不动，且不可原地修复（只能从备份恢复）。一个只看 HTTP 的守护恰好会制造这一场景——服务**正在启动**（加载 embedding、建索引）时 HTTP 无响应，被判为「已死」而再次拉起，而旧进程其实还活着。
   实现上有两处必须留意：①端口探测**先于**HTTP 探测执行——HTTP 探测会阻塞至超时并在监听 backlog 上占位，先跑它会让端口探测自身超时（实测的 false-negative，会反过来触发重复拉起）；②端口探测用 `connect_ex` 并在 `finally` 中立即关闭套接字——留下半开连接同样会占用 backlog 槽位，让后续探测误判。`tests/test_service_guard.py` 锁定端口/HTTP 判定、启动宽限期与事件记录三组契约（含用只监听不响应的桩复现「启动中」场景）。
 
