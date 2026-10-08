@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import sys
@@ -165,8 +166,67 @@ def check_mcp_tools(root: Path) -> Report:
 
 
 def actual_cli_commands(root: Path) -> set[str]:
+    """CLI 子命令集合，含两级命令的完整形式（``tasks active`` 而非仅 ``active``）。
+
+    一级命令：``add_parser("recent")`` → ``recent``；
+    两级命令：``add_parser("tasks")`` 下再 ``add_subparsers()`` 挂 ``add_parser("active")``
+    → ``tasks active``。文档表格里就该写完整命令（用户敲的是 ``cli tasks active``），
+    因此这里也把子命令拼回父命令名，两侧口径一致。
+    """
     source = (root / "scripts/palimpsest_cli.py").read_text(encoding="utf-8")
-    return set(re.findall(r"add_parser\(\s*[\"']([^\"']+)[\"']", source))
+    return _collect_command_names(ast.parse(source))
+
+
+def _collect_command_names(tree: ast.AST, prefix: str = "") -> set[str]:
+    """递归收集 ``add_parser`` 命令名；遇到子解析器绑定则带上父命令前缀。
+
+    ``<var> = <owner>.add_parser("tasks")`` 之后若出现
+    ``<var2> = <var>.add_subparsers(...)`` 并在 ``<var2>`` 上继续 ``add_parser``，
+    则子命令名拼成 ``tasks <sub>``。
+    """
+    commands: set[str] = set()
+    # var 名 → 它是由哪个 add_parser 创建的（一级解析器）
+    parser_vars: dict[str, str] = {}
+    # var 名 → 该子解析器所属的父命令名
+    subparser_vars: dict[str, str] = {}
+
+    for stmt in ast.walk(tree):
+        if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1 or not isinstance(stmt.targets[0], ast.Name):
+            continue
+        target = stmt.targets[0].id
+        value = stmt.value
+        if not isinstance(value, ast.Call):
+            continue
+        name = _call_name(value.func)
+        if name == "add_parser":
+            parent = _owner_name(value.func, subparser_vars)
+            cmd = value.args[0].value if value.args and isinstance(value.args[0], ast.Constant) else ""
+            if not isinstance(cmd, str) or not cmd:
+                continue
+            full = f"{parent} {cmd}" if parent else cmd
+            commands.add(full)
+            parser_vars[target] = full
+        elif name == "add_subparsers":
+            owner = _owner_name(value.func, parser_vars)
+            if owner:
+                subparser_vars[target] = owner
+    return commands
+
+
+def _owner_name(func: ast.AST, known: dict[str, str]) -> str:
+    """取 ``xxx.add_parser`` / ``xxx.add_subparsers`` 里 xxx 对应的父命令名。"""
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+        return known.get(func.value.id, "")
+    return ""
+
+
+def _call_name(func: ast.AST) -> str:
+    """取调用名的末段：``sub.add_parser`` → ``add_parser``。"""
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    if isinstance(func, ast.Name):
+        return func.id
+    return ""
 
 
 def check_cli_commands(root: Path) -> Report:
@@ -183,7 +243,7 @@ def check_cli_commands(root: Path) -> Report:
         except ValueError as exc:
             report.warnings.append(f"{doc}: {exc}")
             continue
-        documented = table_first_column(segment, r"^\|\s*`([a-z][a-z0-9]*(?:-[a-z0-9]+)*)")
+        documented = table_first_column(segment, r"^\|\s*`([a-z][a-z0-9]*(?:-[a-z0-9]+)*(?: [a-z][a-z0-9-]*)?)")
         for name in sorted(actual - documented):
             report.errors.append(f"{doc}: 代码有、文档未列 —— {name}")
         for name in sorted(documented - actual):

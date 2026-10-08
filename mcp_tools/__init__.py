@@ -24,6 +24,7 @@ from mcp_tools.memory import (
     mem_review,
     mem_search,
     mem_version_history,
+    tasks_active,
 )
 from mcp_tools.skill import skill_search
 from mcp_tools.stats_tool import mem_stats
@@ -47,4 +48,5 @@ __all__ = [
     "mem_version_history",
     "skill_search",
     "store",
+    "tasks_active",
 ]
