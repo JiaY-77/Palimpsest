@@ -4,9 +4,21 @@
 递归扫描技能目录中的 ``SKILL.md``，每个文件作为一个 ``skill_chunk`` 节点写入
 TriviumDB，供 ``mcp_tools.skill.skill_search`` 做语义检索。
 
-默认扫描 ``~/.hermes/skills``，可用 ``--skills-dir`` 覆盖。默认采用增量模式：
-按 ``source_path`` 和 ``source_mtime`` 复用未变化的节点；``--full`` 会强制刷新
-所有现存技能文件。两种模式都会清理源文件已删除的孤儿节点。
+技能目录按下列顺序解析（见 :func:`resolve_skills_dir`）：
+
+1. 显式 ``--skills-dir``
+2. 当 ``HERMES_HOME`` 未指向档案目录、而 ``HERMES_PROFILE`` 指定的档案目录存在时，
+   ``<hermes 根>/profiles/<profile>/skills``
+3. ``<HERMES_HOME>/skills``（Hermes 的规范位置；档案模式下 ``HERMES_HOME`` 本身即
+   指向 ``profiles/<profile>``，故此处等价于档案目录）
+4. ``~/.hermes/skills``
+
+**解析不到任何存在的技能目录时脚本以非零码退出**，绝不静默按空目录继续——否则
+孤儿清理会把库中全部 ``skill_chunk`` 节点当作已删除源文件清空。
+
+默认采用增量模式：按 ``source_path`` 和 ``source_mtime`` 复用未变化的节点；
+``--full`` 会强制刷新所有现存技能文件。两种模式都会清理源文件已删除的孤儿节点，
+且只在技能目录真实存在并通过扫描时执行。
 """
 
 import argparse
@@ -32,14 +44,100 @@ except ImportError:  # pragma: no cover
     yaml = None
 
 
-DEFAULT_SKILLS_DIR = os.path.join(
-    os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes"),
-    "skills",
-)
 CHUNK_TYPE = "skill_chunk"
 SKILL_DOMAIN = "skill"
 CONTENT_LIMIT = 800
 MTIME_TOLERANCE = 1e-3
+
+
+class SkillsDirNotFoundError(RuntimeError):
+    """解析不到任何存在的技能目录时抛出。
+
+    调用方必须据此中止运行：把「目录缺失」当成「目录为空」会让孤儿清理
+    删除库中全部 ``skill_chunk`` 节点。
+    """
+
+
+def _env_home(env: dict[str, str]) -> str | None:
+    """``HERMES_HOME``（去空白）或 None；路径已展开 ``~`` / ``$VAR``。"""
+    raw = (env.get("HERMES_HOME") or "").strip()
+    if not raw:
+        return None
+    return os.path.abspath(os.path.expanduser(os.path.expandvars(raw)))
+
+
+def _platform_default_home(env: dict[str, str]) -> str:
+    """与 Hermes 一致的平台默认根（Windows: %LOCALAPPDATA%/hermes；其余: ~/.hermes）。"""
+    if sys.platform == "win32":
+        local_appdata = (env.get("LOCALAPPDATA") or "").strip()
+        base = local_appdata or os.path.join(os.path.expanduser("~"), "AppData", "Local")
+        return os.path.join(base, "hermes")
+    return os.path.join(os.path.expanduser("~"), ".hermes")
+
+
+def _hermes_root(env: dict[str, str]) -> str:
+    """Hermes 根目录（含 ``profiles/``、``skills/`` 的那一层）。
+
+    ``HERMES_HOME`` 在档案模式下指向 ``<root>/profiles/<name>``——此时上溯两级到
+    根；否则 ``HERMES_HOME`` 自身即根。未设置时回落平台默认根。
+    """
+    home = _env_home(env)
+    if home is None:
+        return os.path.abspath(_platform_default_home(env))
+    # <root>/profiles/<name> → <root>；仅当末段是 profiles 的**父辈**结构才上溯，
+    # 避免把恰好叫 profiles 的普通目录误判（要求父目录名确为 profiles）。
+    parent = os.path.dirname(home)
+    if os.path.basename(parent) == "profiles":
+        return os.path.dirname(parent)
+    return home
+
+
+def skills_dir_candidates(explicit: str | None = None, env: dict[str, str] | None = None) -> list[str]:
+    """按优先级返回候选技能目录（均已绝对化、去重，保持顺序）。
+
+    顺序：显式 ``--skills-dir`` → ``<root>/profiles/<profile>/skills``（仅当设了
+    ``HERMES_PROFILE`` 且 ``HERMES_HOME`` 未直接指向该档案目录）→ ``<HERMES_HOME>/skills``
+    → 平台默认 ``<root>/skills``。
+    """
+    env = dict(os.environ if env is None else env)
+    candidates: list[str] = []
+
+    def _add(path: str) -> None:
+        path = os.path.abspath(os.path.expanduser(os.path.expandvars(path)))
+        if path not in candidates:
+            candidates.append(path)
+
+    if explicit:
+        _add(explicit)
+        return candidates
+
+    home = _env_home(env)
+    root = _hermes_root(env)
+    profile = (env.get("HERMES_PROFILE") or "").strip()
+
+    # 档案目录优先，但仅当 HERMES_HOME 没有已经指向它（否则会与下一项重复，_add 已去重）。
+    if profile:
+        profile_dir = os.path.join(root, "profiles", profile, "skills")
+        if home is None or os.path.abspath(home) != os.path.abspath(os.path.dirname(os.path.dirname(profile_dir))):
+            _add(profile_dir)
+    if home:
+        _add(os.path.join(home, "skills"))
+    _add(os.path.join(root, "skills"))
+    return candidates
+
+
+def resolve_skills_dir(explicit: str | None = None, env: dict[str, str] | None = None) -> str:
+    """解析技能目录：返回第一个**存在**的候选。
+
+    一个都不存在时抛 :class:`SkillsDirNotFoundError`（附全部已尝试路径），
+    绝不返回一个不存在的路径让调用方按空目录继续。
+    """
+    candidates = skills_dir_candidates(explicit=explicit, env=env)
+    for path in candidates:
+        if os.path.isdir(path):
+            return path
+    tried = "；".join(candidates)
+    raise SkillsDirNotFoundError(f"未找到任何存在的技能目录（已尝试：{tried}）")
 
 
 def _split_frontmatter(text: str) -> tuple[str, str]:
@@ -195,9 +293,14 @@ def _parse_skill_file(fp: str) -> dict[str, Any]:
 
 
 def _skill_files(skills_dir: str) -> list[str]:
-    """递归查找所有文件名严格为 SKILL.md 的技能文件，按绝对路径稳定排序。"""
+    """递归查找所有文件名严格为 SKILL.md 的技能文件，按绝对路径稳定排序。
+
+    目录不存在时抛 :class:`SkillsDirNotFoundError`：把「缺失」当「为空」会让孤儿清理
+    删除库中全部 skill_chunk 节点。目录存在但没有任何 SKILL.md 时正常返回空列表
+    （这是合法的「技能目录为空」状态）。
+    """
     if not os.path.isdir(skills_dir):
-        return []
+        raise SkillsDirNotFoundError(f"技能目录不存在：{skills_dir}")
     files: list[str] = []
     for root, dirs, names in os.walk(skills_dir):
         dirs.sort()
@@ -254,15 +357,22 @@ def _upsert_skill(store, payload: dict[str, Any], existing: dict) -> str:
     return "inserted"
 
 
-def build(skills_dir: str | None = DEFAULT_SKILLS_DIR, store=None, full: bool = False) -> dict[str, Any]:
+def build(skills_dir: str | None = None, store=None, full: bool = False) -> dict[str, Any]:
     """构建技能语义索引。
 
+    ``skills_dir`` 为 None 时按 :func:`resolve_skills_dir` 自动解析（``--skills-dir`` →
+    档案目录 → ``HERMES_HOME/skills`` → 平台默认）。
     ``full=False`` 为增量模式：新增或 mtime 变化的文件走 upsert，未变化文件跳过；
     ``full=True`` 强制刷新所有文件。每次运行都执行孤儿清理，并保持已有节点 ID。
+
+    技能目录不存在时抛 :class:`SkillsDirNotFoundError`（在触碰 store 之前即失败），
+    确保不会把「目录缺失」当成「目录为空」而清空全库技能节点。
     """
-    skills_dir = os.path.abspath(skills_dir or DEFAULT_SKILLS_DIR)
-    store = store or TriviumStore()
+    skills_dir = os.path.abspath(skills_dir) if skills_dir else resolve_skills_dir()
+    # 先扫描（目录缺失在此 fatal），确认拿到有效文件列表后再建立 store 连接与清理，
+    # 使「目录缺失」不会走到孤儿清理那一步。
     files = _skill_files(skills_dir)
+    store = store or TriviumStore()
     existing = _load_existing_index(store)
     known_paths = {os.path.abspath(fp) for fp in files}
 
@@ -324,12 +434,24 @@ def build(skills_dir: str | None = DEFAULT_SKILLS_DIR, store=None, full: bool = 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Hermes 技能语义索引构建（默认增量，--full 全量）")
-    parser.add_argument("--skills-dir", default=DEFAULT_SKILLS_DIR, help="技能根目录（默认 ~/.hermes/skills）")
+    parser.add_argument(
+        "--skills-dir",
+        default=None,
+        help="技能根目录；省略时自动解析（档案目录 → <HERMES_HOME>/skills → ~/.hermes/skills）",
+    )
     parser.add_argument("--full", action="store_true", help="强制刷新所有技能文件")
     args = parser.parse_args()
-    print(f"技能目录: {os.path.abspath(args.skills_dir)}")
+
+    try:
+        skills_dir = resolve_skills_dir(args.skills_dir)
+    except SkillsDirNotFoundError as exc:
+        print(f"[错误] {exc}", file=sys.stderr)
+        print("提示：用 --skills-dir 显式指定技能目录，或设置 HERMES_HOME / HERMES_PROFILE", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+    print(f"技能目录: {skills_dir}")
     print(f"模式: {'全量刷新' if args.full else '增量更新（mtime 对比）'}")
-    build(skills_dir=args.skills_dir, full=args.full)
+    build(skills_dir=skills_dir, full=args.full)
 
 
 if __name__ == "__main__":

@@ -13,6 +13,11 @@ import pytest
 import mcp_tools.skill as skill_tool
 from config import Config
 from core.trivium_store import TriviumStore
+from scripts.build_skill_index import (
+    SkillsDirNotFoundError,
+    resolve_skills_dir,
+    skills_dir_candidates,
+)
 from scripts.build_skill_index import build as build_skill_index
 
 
@@ -160,3 +165,138 @@ def test_build_skill_index_removes_orphan(iso_store, fake_embedder, tmp_path):
     assert removed_id not in remaining
     assert kept_id in remaining
     assert remaining[kept_id]["source_path"] == kept
+
+
+# ---------------------------------------------------------------------------
+# 技能目录解析（profile 感知）
+# ---------------------------------------------------------------------------
+
+
+def _make_hermes_home(root, *, profile=None):
+    """搭一个 Hermes 目录骨架：<root>/skills（base）+ 可选 profiles/<name>/skills。
+
+    返回 (env, base_skills_dir, profile_skills_dir|None)。
+    """
+    env = {"LOCALAPPDATA": str(root / "LocalAppData"), "HERMES_HOME": str(root / "hermes")}
+    base_skills = root / "hermes" / "skills"
+    base_skills.mkdir(parents=True, exist_ok=True)
+    profile_skills = None
+    if profile:
+        profile_skills = root / "hermes" / "profiles" / profile / "skills"
+        profile_skills.mkdir(parents=True, exist_ok=True)
+        env["HERMES_HOME"] = str(root / "hermes" / "profiles" / profile)
+        env["HERMES_PROFILE"] = profile
+    return env, str(base_skills.resolve()), (str(profile_skills.resolve()) if profile_skills else None)
+
+
+def test_resolve_skills_dir_profile_scoped_home(tmp_path):
+    """HERMES_HOME 指向档案目录时直接解析到该档案的技能目录。"""
+    env, _base, profile_skills = _make_hermes_home(tmp_path, profile="xiaojiu")
+    assert resolve_skills_dir(env=env) == profile_skills
+
+
+def test_resolve_skills_dir_uses_profile_when_home_is_root(tmp_path):
+    """HERMES_HOME 停在根、但 HERMES_PROFILE 指定的档案目录存在时，优先档案目录。"""
+    env, base, profile_skills = _make_hermes_home(tmp_path, profile="xiaojiu")
+    # 把 HERMES_HOME 退回根：模拟只钉了 HERMES_PROFILE 的启动器
+    env["HERMES_HOME"] = str(tmp_path / "hermes")
+    assert resolve_skills_dir(env=env) == profile_skills
+    # 根下 base 技能目录仍作为后备出现在候选里
+    assert base in skills_dir_candidates(env=env)
+
+
+def test_resolve_skills_dir_falls_back_to_home_skills(tmp_path):
+    """未设 HERMES_PROFILE 时解析到 <HERMES_HOME>/skills。"""
+    env = {"HERMES_HOME": str(tmp_path / "hermes")}
+    (tmp_path / "hermes" / "skills").mkdir(parents=True)
+    expected = str((tmp_path / "hermes" / "skills").resolve())
+    assert resolve_skills_dir(env=env) == expected
+
+
+def test_resolve_skills_dir_explicit_wins(tmp_path):
+    """显式 --skills-dir 覆盖一切（即便档案目录存在也走显式值）。"""
+    env, _base, _profile = _make_hermes_home(tmp_path, profile="xiaojiu")
+    explicit = tmp_path / "custom-skills"
+    explicit.mkdir()
+    assert resolve_skills_dir(str(explicit), env=env) == str(explicit.resolve())
+    assert skills_dir_candidates(str(explicit), env=env) == [str(explicit.resolve())]
+
+
+def test_resolve_skills_dir_missing_raises(tmp_path):
+    """所有候选目录都不存在时抛 SkillsDirNotFoundError（不返回不存在的路径）。"""
+    env = {
+        "HERMES_HOME": str(tmp_path / "nope" / "hermes"),
+        "HERMES_PROFILE": "ghost",
+        "LOCALAPPDATA": str(tmp_path / "LocalAppData"),
+    }
+    with pytest.raises(SkillsDirNotFoundError):
+        resolve_skills_dir(env=env)
+
+
+# ---------------------------------------------------------------------------
+# 失败路径：目录缺失绝不能清空全库（回归防护）
+# ---------------------------------------------------------------------------
+
+
+def test_build_rejects_missing_dir_without_deleting(iso_store, fake_embedder, tmp_path):
+    """目标技能目录不存在时，build 必须 fail-fast，且**不删除任何**已索引节点。
+
+    回归锁：历史上 _skill_files 对缺失目录返回 []，known_paths 变空，
+    孤儿清理会把库中全部 skill_chunk 删光。
+    """
+    root = tmp_path / "skills"
+    kept = _write_skill(
+        root,
+        "research",
+        "literature-review",
+        "Review academic literature",
+        "Search papers, compare findings, and summarize evidence.",
+    )
+    build_skill_index(str(root), store=iso_store, full=True)
+    before = {nid: p for nid, p in iso_store.iter_payloads() if p.get("type") == "skill_chunk"}
+    assert len(before) == 1
+
+    missing = str(tmp_path / "does-not-exist" / "skills")
+    with pytest.raises(SkillsDirNotFoundError):
+        build_skill_index(missing, store=iso_store)
+
+    after = {nid: p for nid, p in iso_store.iter_payloads() if p.get("type") == "skill_chunk"}
+    assert after == before  # 节点与其 payload 原样保留
+    assert any(p["source_path"] == kept for p in after.values())
+
+
+def test_build_allows_empty_existing_dir(iso_store, fake_embedder, tmp_path):
+    """目录真实存在但没有任何 SKILL.md 时是合法的：正常返回，不抛异常。
+
+    与「目录缺失」区分：前者允许孤儿清理（确实无技能了），后者 fatal。
+    """
+    root = tmp_path / "skills"
+    stale = _write_skill(root, "", "stale", "stale skill", "body")
+    build_skill_index(str(root), store=iso_store, full=True)
+    assert len([1 for _n, p in iso_store.iter_payloads() if p.get("type") == "skill_chunk"]) == 1
+
+    # 删掉唯一的技能文件：目录仍在，清理应把孤儿移除
+    os.remove(stale)
+    result = build_skill_index(str(root), store=iso_store)
+    assert result["cleaned"] == 1
+    assert [p for _n, p in iso_store.iter_payloads() if p.get("type") == "skill_chunk"] == []
+
+
+def test_build_auto_resolves_when_dir_omitted(iso_store, fake_embedder, tmp_path, monkeypatch):
+    """不传 skills_dir 时走自动解析；解析失败则 fail-fast、不动库。"""
+    root = tmp_path / "skills"
+    _write_skill(root, "", "auto", "auto skill", "body")
+    monkeypatch.setattr(
+        "scripts.build_skill_index.resolve_skills_dir",
+        lambda *a, **k: str(root),
+    )
+    result = build_skill_index(store=iso_store, full=True)
+    assert result["indexed"] == 1
+    assert result["skills_dir"] == str(root.resolve())
+
+    monkeypatch.setattr(
+        "scripts.build_skill_index.resolve_skills_dir",
+        lambda *a, **k: (_ for _ in ()).throw(SkillsDirNotFoundError("无目录")),
+    )
+    with pytest.raises(SkillsDirNotFoundError):
+        build_skill_index(store=iso_store)

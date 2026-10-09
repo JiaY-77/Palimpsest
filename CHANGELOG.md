@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+### 修复
+
+- **技能索引在技能目录缺失时会清空全库技能节点**：`scripts/build_skill_index.py` 的 `_skill_files()` 对不存在的目录返回空列表，`build()` 随即以空 `known_paths` 执行孤儿清理，把库中**全部** `skill_chunk` 节点当作「源文件已删除」删光——一次 `HERMES_HOME` 指向不存在的目录即可静默清空技能检索。现在技能目录缺失一律 fail-fast（抛 `SkillsDirNotFoundError`，CLI 以退出码 2 结束并提示 `--skills-dir` / `HERMES_HOME` / `HERMES_PROFILE`），仅在目录真实存在并通过扫描时才执行孤儿清理；「目录存在但没有 SKILL.md」仍按合法空目录处理。
+  `tests/test_skill.py` 新增回归（目录缺失不删任何节点）与「空目录仍可清理孤儿」的对照用例。
+- **技能目录解析改为 profile 感知**：此前技能目录恒取 `<HERMES_HOME>/skills`。档案模式下 Hermes 会把 `HERMES_HOME` 指向 `<root>/profiles/<name>`，此时该式等价于档案目录、行为正确；但若启动器只钉了 `HERMES_PROFILE` 而 `HERMES_HOME` 停在根，则会误指向根下的技能目录。现新增 `resolve_skills_dir()`，按 `--skills-dir` → `<root>/profiles/<profile>/skills`（存在时）→ `<HERMES_HOME>/skills` → 平台默认 `<root>/skills` 的顺序解析，取第一个存在者。`tests/test_skill.py` 覆盖各档顺序与「全部缺失则报错」。
+
 ## [2.5.0] - 2026-10-09
 
 ### 新增
