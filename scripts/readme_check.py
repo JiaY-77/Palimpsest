@@ -269,26 +269,44 @@ def actual_routes(root: Path) -> set[tuple[str, str]]:
     return {(method.upper(), normalize_route(path)) for method, path in ROUTE_RE.findall(source)}
 
 
+def _doc_section(root: Path, doc: str, head: str, end: str | None, required: bool) -> str | None:
+    """读取某文档的目标小节：文件不存在返回 None；required 时缺标题抛 ValueError。
+
+    同一份检查可在多个「文档目标」上跑：README 只保留常用子集，docs/ 放全表，
+    两侧表项取并集后与代码比对——因此缺失文件不算错误（并集校验会兜底）。
+    """
+    path = root / doc
+    if not path.is_file():
+        return None
+    return section(path.read_text(encoding="utf-8"), head, end, required=required)
+
+
 def check_rest_routes(root: Path) -> Report:
     report = Report("REST 路由")
     actual = actual_routes(root)
     report.info = f"main.py 注册 {len(actual)} 条"
+    # README 保留常用子集，docs/API.md 放全表；并集必须覆盖全部真实路由。
     specs = (
-        ("README.md", "### REST API", "## 测试"),
-        ("README_EN.md", "### REST API", "## Tests"),
+        ("README.md", "### REST API", "## 测试", True),
+        ("README_EN.md", "### REST API", "## Tests", True),
+        ("docs/API.md", "## REST API", None, True),
     )
-    for doc, head, end in specs:
+    documented_union: set[tuple[str, str]] = set()
+    for doc, head, end, required in specs:
         try:
-            segment = section(read_text(root, doc), head, end, required=True)
+            segment = _doc_section(root, doc, head, end, required)
         except ValueError as exc:
             report.warnings.append(f"{doc}: {exc}")
             continue
+        if segment is None:  # 文件不存在：并集校验会兜底（缺项即报错）
+            continue
         rows = re.findall(r"^\|\s*`(GET|POST|PUT|PATCH|DELETE)`\s*\|\s*`([^`]+)`", segment, re.MULTILINE)
         documented = {(method.upper(), normalize_route(path)) for method, path in rows}
-        for method, path in sorted(actual - documented):
-            report.errors.append(f"{doc}: 代码有、文档未列 —— {method} {path}")
+        documented_union |= documented
         for method, path in sorted(documented - actual):
             report.errors.append(f"{doc}: 文档有、代码没有 —— {method} {path}")
+    for method, path in sorted(actual - documented_union):
+        report.errors.append(f"代码有、README 与 docs/API.md 均未列 —— {method} {path}")
     return report
 
 
@@ -460,19 +478,25 @@ def check_config_keys(root: Path) -> Report:
             "（死键请删；确由 config.py 之外读取，请登记进 CONFIG_READ_OUTSIDE_CONFIG_PY）"
         )
 
+    # README 只保留用户必配子集，docs/CONFIGURATION.md 放全表；
+    # 「文档未写」按两者并集判定：任一文档写了即视为已记录，但每个出现的默认值都要对。
     specs = (
-        ("README.md", "## 配置", "## 更换向量模型"),
-        ("README_EN.md", "## Configuration", "## Swapping models"),
+        ("README.md", "## 配置", "## 更换向量模型", True),
+        ("README_EN.md", "## Configuration", "## Swapping models", True),
+        ("docs/CONFIGURATION.md", "## 配置", "## 更换向量模型", True),
     )
-    for doc, head, end in specs:
-        segment = section(read_text(root, doc), head, end)
-        if not segment:
-            report.warnings.append(f"{doc}: 未找到配置小节（{head}）")
+    documented_union: set[str] = set()
+    for doc, head, end, required in specs:
+        try:
+            segment = _doc_section(root, doc, head, end, required)
+        except ValueError as exc:
+            report.warnings.append(f"{doc}: {exc}")
+            continue
+        if segment is None:  # 文件不存在：并集校验会兜底（缺项即报错）
             continue
         documented = table_first_column(segment, r"^\|\s*`([A-Z][A-Z0-9_]+)`")
+        documented_union |= documented
         cells = dict(CONFIG_ROW_RE.findall(segment))
-        for name in sorted(cfg - documented):
-            report.errors.append(f"{doc}: config.py 支持、文档未写 —— {name}")
         for name in sorted(documented - cfg - outside):
             report.warnings.append(f"{doc}: 文档写了、config.py 里没有 —— {name}")
         for name in comparable:
@@ -483,6 +507,8 @@ def check_config_keys(root: Path) -> Report:
                 report.warnings.append(f"{doc}: `{name}` 默认值单元格无法解析（表格列数异常？）")
                 continue
             _compare_config_defaults(report, doc, name, _canon_code_default(defaults[name]), cell)
+    for name in sorted(cfg - documented_union):
+        report.errors.append(f"config.py 支持、README 与 docs/CONFIGURATION.md 均未写 —— {name}")
     return report
 
 
