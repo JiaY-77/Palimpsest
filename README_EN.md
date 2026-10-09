@@ -2,11 +2,9 @@
 
 # Palimpsest
 
-**English** | [中文](./README.md)
+**A local-first long-term memory system · the cross-session memory backbone for AI assistants**
 
-**A local-first long-term memory system** that stores, retrieves, and evolves an AI assistant's memories through semantic vector search, a weighted knowledge graph, and full-text retrieval — all in a single embedded database.
-
-Pa·limp·sest: *a writing surface that is overwritten again and again while older incisions survive beneath the new text.* Palimpsest applies the same idea to memory: nothing is ever silently lost — new facts supersede old ones through an explicit, traceable **version chain** (`REVISED_BY`), and near-duplicates are passively consolidated instead of cluttering the store.
+Pa·limp·sest: *a writing surface that is overwritten again and again while older incisions survive beneath the new text.* Nothing is ever silently lost — new facts supersede old ones through an explicit, traceable **version chain** (`REVISED_BY`), and near-duplicates are passively consolidated.
 
 | | |
 |---|---|
@@ -17,146 +15,62 @@ Pa·limp·sest: *a writing surface that is overwritten again and again while old
 | Backends | DeepSeek / Ollama (LLM), Ollama / OpenAI-compatible (embeddings) |
 | CI | [![CI](https://github.com/JiaY-77/Palimpsest/actions/workflows/ci.yml/badge.svg)](https://github.com/JiaY-77/Palimpsest/actions/workflows/ci.yml) |
 
+**English** | [中文](./README.md)
+
 </div>
 
 ---
 
 ## Features
 
-- **Hybrid retrieval.** Semantic vector search (cosine) fused with an FTS5 full-text index (`trigram` tokenizer for Chinese substring matching) via Reciprocal Rank Fusion (RRF) or a cascade (FTS coarse-filter → vector re-rank). Every hit is labeled with its source — `fts_hit` / `sem_hit`.
-- **Knowledge-graph recall.** Nodes are connected by **weighted edges** (`RELATED_TO`, `REVISED_BY`, `CAUSES`, `REFERS_TO`). Retrieval expands along edges with BFS: per-node expansion is pruned to the strongest edges, weak edges are filtered, and diffusion can be scoped to a single domain "block" to prevent cross-domain pollution.
-- **Community detection.** Built-in Leiden clustering splits the store into topical clusters (project groups, character-relationship groups, …) — answering "what circles exist in my memory?"
-- **Conflict detection & version chains.** Every write is compared against similar existing memories. High similarity (score > 0.75) means the same fact was superseded: the old record is marked `outdated` and linked to its replacement with a `REVISED_BY` edge. Medium similarity only records `related_ids` (no false marking); type and domain isolation prevent cross-category mistakes.
-- **Pre-write secret scan.** Before anything is stored, content is scanned against **10 regular-expression rules**: a **strong-rule** match (API keys, tokens, private keys, SSH keys, bearer tokens — 8 rules) **rejects the write** and reports which rule fired, while a **weak-rule** match (Chinese ID-card numbers, phone numbers — 2 rules) is **let through and marked with a `secret_hint` flag** for later audit — the matched text itself is still stored as written (see [`SECURITY.md`](SECURITY.md)).
-- **Consolidation & memory stats.** `mem_consolidate` collapses near-duplicate memory pairs (similarity ≥ 0.85, protecting `importance ≥ 0.8`); `mem_stats` reports store-wide distributions (type / domain / importance / time / graph / hot spots / weak-secret flags) plus a tier-grouped `tiers` section.
-- **Auto-promotion of hot memories.** Retrieval hits are counted (`hit_count`); `promote` surfaces frequently-used memories — raises importance and tags them (dry-run first, idempotent, reversible) as candidates for human-reviewed knowledge-base promotion.
-- **Memory lifecycle.** Time decay weighting (`MEMORY_DECAY_FACTOR`, default 0.95 /month) fades stale memories in ranking without touching storage; `kb_chunk` knowledge slices are exempt; `outdated` versions no longer pollute ordinary retrieval (traceable on demand).
-- **Task auto-archiving.** Completed task nodes are moved out of the hot store into markdown archives under the knowledge base, then deleted — dry-run first, `apply` to commit.
-- **Deployment doctor.** `doctor` checks critical files / storage / FTS / dependencies / Embedding reachability and **vector-dimension consistency** (measured vs stored), printing an actionable fix for every failing check (`--json` for machines); `startup-check` is its lightweight subset.
-- **Token-efficient by design.** Retrieval returns a **150-character summary plus metadata** instead of full text; full content is fetched on demand.
-- **Memory tiering (`tier`).** A lightweight retrieval-side view that moves no data and changes no storage: by default only the **facts tier** is returned (`memory` / `correction` / `decision` / `plan` / `task`, …), keeping the logs tier (`record` / `event` / `git_commit`, roughly 40% of active nodes) out of both default retrieval and context injection. `tier="logs"` returns only the logs tier and `tier=""` restores the full pool explicitly (the history-traversal channel). The same view also scopes `mem_review`'s `recent_ingests` and `mem_stats`' `tiers` section. Tier membership is configured via `TIER_FACTS` / `TIER_LOGS`; unregistered types conservatively fall back to facts.
-- **Optional API-key auth.** Off by default (localhost direct access); setting `PALIMPSEST_API_KEY` requires a Bearer / X-API-Key header on all REST routes except `/` — for LAN / trusted-network deployments.
-- **Three interfaces, one core.** MCP (stdio) for agent tooling, a FastAPI REST service, and a full CLI — all reuse the same underlying tools, so behavior never drifts.
-- **Swap Hermes memory with two plugins.** Replace Hermes' memory layer with Palimpsest entirely: a Memory Provider (semantic recall + auto-sedimentation) plus a Context Engine (graph distillation before compression) — enabled with one command each, memory survives across sessions.
+Palimpsest is a **local-first embedded long-term memory system** that fuses **semantic vector search, a weighted knowledge graph, and full-text retrieval** into one local database. Its goal is to be the **memory backbone for an AI assistant** — so every conversation's gains are **searchable, linkable, and evolvable** instead of vanishing when the session closes:
+
+- 🗃️ **Hybrid retrieval.** Semantic vectors (cosine) fused with an FTS5 full-text index (`trigram` tokenizer for Chinese substrings) via RRF or a cascade; hits are labeled `fts_hit` / `sem_hit`.
+- 🔗 **Knowledge-graph recall.** Nodes connected by **weighted edges** (`RELATED_TO` / `REVISED_BY` / `CAUSES` / `REFERS_TO`); BFS expansion prunes to the strongest edges, filters weak edges, and can be scoped to one domain "block" to prevent cross-domain pollution.
+- 🕸️ **Community detection.** Built-in Leiden clustering splits the store into topical clusters — answering "what circles exist in my memory?"
+- 🔄 **Conflict detection & version chains.** High similarity (score > 0.75) means the same fact was superseded: the old record is marked `outdated` and linked `REVISED_BY` to its replacement; medium similarity only records `related_ids`; type / domain isolation prevents cross-category mistakes.
+- 🛡️ **Pre-write secret scan.** 10 regex rules: a **strong-rule** match (API keys / tokens / private keys / SSH keys / bearer tokens — 8 rules) **rejects the write**, while a **weak-rule** match (ID cards / phone numbers — 2 rules) is **let through and flagged `secret_hint`** for audit (see [`SECURITY.md`](SECURITY.md)).
+- 🧹 **Consolidation & memory stats.** `mem_consolidate` collapses near-duplicates (≥ 0.85, protecting high-value nodes); `mem_stats` reports type / domain / importance / time / graph / hot spots / tier distributions.
+- ⏫ **Auto-promotion of hot memories.** Retrieval hits are counted (`hit_count`); `promote` raises and tags frequently-used memories (dry-run first, idempotent, reversible).
+- ⏳ **Memory lifecycle.** Time decay (`MEMORY_DECAY_FACTOR`) fades stale memories in ranking without touching storage; `kb_chunk` is exempt; `outdated` versions leave ordinary retrieval.
+- 📁 **Task auto-archiving.** Completed tasks are written to markdown archives under the knowledge base, then deleted — dry-run first, `apply` to commit.
+- ✅ **Deployment doctor.** `doctor` checks critical files / storage / FTS / dependencies / Embedding reachability and vector-dimension consistency, printing an actionable fix per failure (`--json` for machines).
+- ✂️ **Token-efficient by design.** Retrieval returns a **150-char summary + metadata**, never full text; full content is fetched on demand.
+- 🗂️ **Memory tiering (`tier`).** A retrieval-side view, no data movement: by default only the facts tier (`memory` / `correction` / `decision` / `plan` / `task`, …) is returned, keeping the logs tier (`record` / `event` / `git_commit`) out; `tier="logs"` returns only logs, `tier=""` restores the full pool.
+- 🔐 **Optional API-key auth.** Off by default; setting `PALIMPSEST_API_KEY` requires a Bearer / X-API-Key header on REST — for LAN / trusted-network deployments.
+- 🎯 **Three interfaces, one core.** MCP (stdio and streamable-http), FastAPI REST, and a full CLI reuse the same tools, so behavior never drifts; REST also exposes an MCP endpoint at `/mcp` so a client can share the process.
+- 🧠 **Swap Hermes memory with two plugins.** A Memory Provider (semantic recall + auto-sedimentation) plus a Context Engine (graph distillation before compression) — one command each, memory survives across sessions.
 
 ---
 
-## Architecture
+## Why it exists · use cases
 
-```
-                         ┌──────────────────────────────────────┐
-                         │              Clients                 │
-                         │   MCP        REST         CLI        │
-                         │  (stdio)   (:8090)      (scripts/    │
-                         │             │           palimpsest)  │
-                         └──────────┬───┴───────────┬───────────┘
-                                    │               │
-                    ┌───────────────▼───────────────▼───────────┐
-                    │                 Palimpsest                │
-                    │                                           │
-                    │   mcp_server.py    main.py  (FastAPI)     │
-                    │   mcp_tools/*   (16 tools, shared)        │
-                    │                                           │
-                    │   ┌───────────────────────────────────┐   │
-                    │   │             core/                 │   │
-                    │   │  trivium_store   ·   conflict     │   │
-                    │   │  consolidator    ·   stats        │   │
-                    │   │  promoter        ·   reporting    │   │
-                    │   │  fts_index       ·   secret_scan  │   │
-                    │   │  startup_check   ·   task_archive │   │
-                    │   │  utils           ·   version      │   │
-                    │   └───────────────┬───────────────────┘   │
-                    └───────────────────┼───────────────────────┘
-                                        │
-       ┌────────────────────────────────┼──────────────────────────────┐
-       │                    ┌───────────▼───────────┐    ┌─────────────▼──────┐
-       │                    │     TriviumDB 0.8.8   │    │   SQLite FTS5      │
-       │                    │  vector + graph + doc │    │   fts.db (trigram) │
-       │                    └───────────┬───────────┘    └────────────────────┘
-       │                                │  embeddings
-       └────────────────────────────────┴──────────────────────────────────
-                      Ollama (qwen3-embedding:0.6b, 1024-d)
-                               or OpenAI-compatible API
-```
+Most AI apps suffer from three split data capabilities: session memory starting from zero, keyword-only knowledge bases, and memory piles that grow messier over time. Palimpsest solves "retrieve, relate, evolve" with **one local core**, avoiding shuttling data between a vector store, a document store, and a graph store.
 
-Three independently usable entry points share one `mcp_tools` layer and one `core` store:
+A "memory that doesn't disappear" example: you tell the assistant "the service listens on 8090", then a design change says "the port is now 8095". The old memory is not overwritten — it is marked `outdated` and linked via `REVISED_BY` to the new version, so the version chain always shows how the fact evolved. This is Palimpsest: overwritten but never lost, rewritable and traceable.
 
-1. **MCP server** (`mcp_server.py`) — exposes 16 tools over stdio for any Model Context Protocol client.
-2. **REST service** (`main.py`) — FastAPI on port 8090, with paginated JSON export and an optional API-key auth mode.
-3. **CLI** (`scripts/palimpsest_cli.py`) — subcommands for scripting, cron, and operations without a server.
-
-The dashboard (`scripts/dashboard.py`, port 8010) provides a lightweight human-facing view of the store.
-
----
-
-## Use cases
-
-### Use case 1 · Long-term companion / personal-assistant memory across sessions (Hermes & co.)
-
-Once Palimpsest is wired up as an agent's memory backend, every turn automatically recalls the relevant history, auto-sediments high-signal facts, and distills the round into highlights at session end; right before context compression, the graph layer distills once more, weaving scattered fragments into a searchable network. Closing the conversation doesn't matter — next time we meet, it still remembers and recalls.
-
-### Use case 2 · Making a knowledge base semantic (Obsidian users)
-
-Turn years of Obsidian notes into semantically searchable assets: `build_kb_index.py` scans every `.md`, slices by Markdown headings, vectorizes the chunks, and keeps `[[wikilinks]]` intact. Search is no longer keyword roulette — it returns semantically relevant hits with graph neighbors attached.
-
-### Use case 3 · Fiction / worldbuilding setting vaults (novelists, game designers)
-
-`build_novel_index.py` ingests a local creative vault (character cards, worldbuilding, relationship documents) whole-file into `domain=novel` nodes; `link_novel_relations.py` bulk-creates edges from a relationship list (mentor-student / bloodline / faction / rivalry). Combined with community detection and graph queries, relationships between settings become visible at a glance. Creative data stays local — never pushed to a public repo.
-
-### Use case 4 · Memory governance (anti-pollution / anti-bloat / traceable)
-
-Your store won't get messier over time: a pre-write secret scan blocks keys, conflict detection + version chains make every rewrite traceable, consolidation collapses near-duplicates into one node, time decay fades stale facts, and stats + promote surface the memories that earn their place. Memory is an asset, not a landfill.
+It fits four scenarios: **long-term companion / personal assistant** (Hermes & co.) auto-recalls each turn, auto-sediments high-signal facts, and distills the graph before compression; **making a knowledge base semantic** (Obsidian) slices and vectorizes years of notes so search returns semantically relevant hits with graph neighbors; **fiction / worldbuilding vaults** ingest whole files and bulk-create edges, with community detection revealing relationships; **memory governance** uses secret scanning, conflict detection, consolidation, time decay and `promote` to keep the store clean.
 
 ---
 
 ## For Hermes users: turn it into your memory plugin
 
-Hermes exposes a memory provider / context engine slot, and Palimpsest ships **both plugins**: a **Memory Provider** (read/write) and a **Context Engine** (pre-compression distillation). The plugin source lives in the repo at [`hermes-plugin/`](./hermes-plugin/README.md) — including `plugin.yaml` (`kind=standalone`) and two hooks: `on_session_end` (session-end highlight distillation) and `on_pre_compress` (graph distillation before compression).
-
-Deploy (copy the plugin into Hermes' plugin directory, then activate one line per item):
+Palimpsest ships **both plugins** for Hermes' memory provider / context engine slots: a **Memory Provider** (read/write) and a **Context Engine** (pre-compression distillation). Source lives in [`hermes-plugin/`](./hermes-plugin/README.md), with hooks `on_session_end` (session-end distillation) and `on_pre_compress` (graph distillation before compression).
 
 ```bash
-# 1. Copy the plugin into Hermes' plugin directory (default ~/.hermes/plugins/)
-mkdir -p ~/.hermes/plugins/palimpsest
-cp hermes-plugin/* ~/.hermes/plugins/palimpsest/
-
-# 2. Activate (one line per item)
+mkdir -p ~/.hermes/plugins/palimpsest && cp hermes-plugin/* ~/.hermes/plugins/palimpsest/
 hermes plugins enable palimpsest
 hermes config set memory.provider palimpsest
 hermes config set context.engine palimpsest-graph
 ```
 
-Once active, every round of conversation does this automatically:
-
-- **Auto recall** — each turn queries `:8090` REST and retrieves the relevant history (`memory.provider=palimpsest`).
-- **Auto sedimentation** — high-signal facts are written into memory automatically, via heuristics, no LLM involved.
-- **Session-end distillation** — `on_session_end` condenses the round into structured memory.
-- **Pre-compress graph distillation** — `on_pre_compress` distills graph highlights for the compression stage (`context.engine=palimpsest-graph`).
-- **Memory tools** — `palimpsest_search` / `palimpsest_ingest` / `palimpsest_link` / `palimpsest_graph`, etc., for the agent to call proactively.
-
-Two notes:
-
-- The REST service (`:8090`) must **stay running** (e.g. `scripts/start_rest.vbs` at login).
-- Auto-sedimentation is **heuristic** (similarity / importance thresholds), not an LLM judgment — it favors fast, stable, cost-free over clever.
+Once active, every turn automatically queries REST `:8090` for relevant history, heuristically sediments high-signal facts, distils at session end, and distils the graph before compression; it also exposes `palimpsest_search` / `palimpsest_ingest` / `palimpsest_link` / `palimpsest_graph` for the agent to call. Note: the REST service must **stay running** (e.g. `scripts/start_rest.vbs`); auto-sedimentation is **heuristic** — fast, stable, cost-free over clever.
 
 ---
 
-## Obsidian users: how we read your vault (even if you don't use Palimpsest)
+## Obsidian users: how we read your vault
 
-> This section is about the *approach*, not an ad — even if you never use Palimpsest, you can replicate this pipeline with any toolchain.
-
-We don't treat a vault as "files" but as a **source of knowledge**. Reading takes three steps:
-
-1. **The vault directory is the source** — recursively scan every `.md` under `KNOWLEDGE_DIR` (skipping config dirs like `.obsidian`); each note is one document.
-2. **Smart slicing by Markdown headings** — split on `##` / `###` into 300–800 char chunks, keeping `[[wikilinks]]` verbatim so cross-note context survives.
-3. **Vectorize into the store** — each slice is embedded and stored as a `kb_chunk` node (`domain=kb`), becoming a semantically searchable asset.
-
-**Want to build it yourself?** The skeleton is simple: one vector store (sqlite-vec, chroma, …) plus one embedding service is enough. The real design points are two:
-
-- **Chunk granularity** — too coarse hurts precision, too fine loses context.
-- **Wikilink preservation** — let `[[A]]⇄[[B]]` relationships enter retrieval results instead of lying inert in the body text.
-
-A working implementation of this approach is `scripts/build_kb_index.py` (full `--full` / incremental by default; incremental mode diffs `mtime` and only rebuilds changed files).
+We treat a vault not as "files" but as a **source of knowledge**: recursively scan every `.md` under `KNOWLEDGE_DIR`, slice by Markdown headings while keeping `[[wikilinks]]` intact, then vectorize the chunks into `kb_chunk` nodes for semantic search. Even if you never use Palimpsest you can replicate this pipeline with any toolchain; a working implementation is `scripts/build_kb_index.py`. Full approach in [`docs/OBSIDIAN.md`](docs/OBSIDIAN.md).
 
 ---
 
@@ -165,263 +79,103 @@ A working implementation of this approach is `scripts/build_kb_index.py` (full `
 ### Install (common)
 
 ```bash
-# 1. Python 3.10+ required
+# Python 3.10+ required
 python -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
-
-# 2. Dependencies
 pip install -r requirements.txt
 ```
 
-Pick the path that fits you — both work end-to-end:
-
-### Path A: Cloud API key — three lines to start (no Ollama needed)
+### Path A: Cloud API key — fastest start (no Ollama)
 
 ```bash
-# 1. Copy the config template
 cp .env.example .env
-
-# 2. Edit .env: fill in your cloud embedding key + LLM key
-#    EMBEDDING_API_KEY=your_key          # leave empty or delete → auto-falls back to local Ollama
-#    EMBEDDING_BASE_URL=https://api.voyageai.com/v1  (per your provider)
-#    EMBEDDING_MODEL=voyage-3                      (per your provider)
-#    EMBEDDING_DIM=1024                            (per your provider)
-#    DEEPSEEK_API_KEY=your_key         (required when LLM_BACKEND=deepseek)
+# Edit .env: fill in your cloud embedding key + LLM key
+#    EMBEDDING_API_KEY=your_key          # leave empty or delete → local Ollama
+#    EMBEDDING_BASE_URL / EMBEDDING_MODEL / EMBEDDING_DIM  per your provider
+#    DEEPSEEK_API_KEY=your_key           (required when LLM_BACKEND=deepseek)
 ```
-
-> **No need to set `EMBEDDING_PROVIDER`** — the system auto-detects: a valid `EMBEDDING_API_KEY` → cloud.
-> To force a specific provider, explicitly set `EMBEDDING_PROVIDER=openai` or `EMBEDDING_PROVIDER=ollama`.
 
 ### Path B: Local Ollama (privacy-first, data never leaves your machine)
 
 ```bash
-# 1. Install and start Ollama (https://ollama.com)
-# 2. Pull the embedding model
+# 1. Install and start Ollama (https://ollama.com); 2. Pull the embedding model
 ollama pull qwen3-embedding:0.6b
-
-# 3. Copy the config template
+# 3. Copy .env.example → .env and set DEEPSEEK_API_KEY (or LLM_BACKEND=ollama for full-local)
 cp .env.example .env
-
-# 4. Edit .env: fill in your LLM key (embedding needs no extra config, defaults to local Ollama)
-#    DEEPSEEK_API_KEY=your_key         (required when LLM_BACKEND=deepseek)
-#    or LLM_BACKEND=ollama             (fully local, no API keys needed)
 ```
 
-> **Both paths — important notes:**
-> - Changing the provider changes the vector space — **you must rebuild the knowledge-base index** — see [Swapping models / re-embedding](#swapping-models--re-embedding-the-full-store).
-> - `EMBEDDING_PROVIDER` left empty = auto-detect (recommended); set `ollama` or `openai` explicitly to force.
+> **Both paths:** leaving `EMBEDDING_PROVIDER` empty auto-detects (valid `EMBEDDING_API_KEY` → cloud, otherwise local; set `openai` / `ollama` to force). Changing the provider changes the vector space — **you must rebuild the knowledge-base index** (see [Swapping models](#swapping-models--re-embedding)).
 
 ### Run
 
 ```bash
-# Recommended: deployment doctor (prints the fix for every failing check)
+# Recommended: deployment doctor (prints the fix for every failing check); startup-check is its subset
 python scripts/palimpsest_cli.py doctor
-
-# Lightweight self-check (subset of doctor)
 python scripts/palimpsest_cli.py startup-check
-```
 
-> **First-run check**: `doctor` checks critical files / storage / FTS / dependencies /
-> Embedding service. If the Embedding check fails: for the default local Ollama, make sure Ollama is
-> running and `ollama pull qwen3-embedding:0.6b`; if you use cloud, set
-> `EMBEDDING_API_KEY` in `.env`.
-
-```bash
 # REST API (:8090) — the single writer; every integration goes through it
 python -m uvicorn main:app --host 127.0.0.1 --port 8090
 
-# CLI (example)
+# CLI example / dashboard (:8010) / index the knowledge base
 python scripts/palimpsest_cli.py search "what changed in the architecture?"
-
-# Dashboard (:8010)
 python scripts/dashboard.py
-
-# Index your knowledge base (Obsidian .md files under KNOWLEDGE_DIR)
 python scripts/build_kb_index.py
 ```
 
-> **Which integration to use (in priority order)**
+> **Integrations and the single-process constraint (important)**
 >
-> 1. **REST's `/mcp` — preferred.** Point your MCP client at `http://127.0.0.1:8090/mcp/`; it shares the REST process, so the "one process per database" rule holds by construction.
-> 2. **CLI / dashboard / scripts — also preferred.** All of them go through REST; the dashboard is a pure client.
-> 3. **stdio `mcp_server.py` — escape hatch, not a peer option.** Only for a pure-MCP setup with **no REST running**. ⚠️ Running it alongside REST means two processes competing for the same database, which breaks the single-writer rule. **Do not put it in a default config.** Start it with `python mcp_server.py` only when you are certain REST is not running.
-
-On Windows, `scripts/start_rest.vbs` launches the REST service in a hidden window (e.g. at login) and logs to `scripts/start_rest.log`.
-
-> **Single-process write constraint (important)**: the database file is opened by triviumdb in **exclusive mode** — a second connection (even a `read_only` one) fails at `TriviumDB` construction with `Database locked: already opened with an incompatible access mode`. Therefore:
-> - the REST service must stay **single-process** (do not use `uvicorn --workers N`, do not start a second instance);
-> - **only one process should access a database at a time**. If you need both REST and MCP, point the MCP client at REST's `/mcp` (see below) instead of running `mcp_server.py` separately;
-> - ⚠️ a failed concurrent write **corrupts the file group** (leftover `.tmp` / `.wal` → generation check fails → the database degrades from read-write to unreadable, and it does **not** self-heal), so configure periodic full-group cold backups (see "Backup & restore").
+> Prefer **REST's `/mcp`**: point your MCP client at `http://127.0.0.1:8090/mcp/`, sharing the REST process; the CLI / dashboard / scripts also go through REST. stdio `mcp_server.py` is an **escape hatch** (not a peer option), only for a **no-REST** pure-MCP setup: the database is opened in exclusive mode, a second connection fails with `Database locked: ...`, and a failed concurrent write **corrupts the file group** without self-healing. So REST must stay single-process (no `uvicorn --workers N`), **only one process should access a database**, and the conflict is loud — the CLI raises `DatabaseBusyError`, REST returns `503`.
 >
-> The conflict is **loud**, not silent: when the database is occupied, the CLI and scripts raise `DatabaseBusyError` — the message includes the database path and next steps — and the REST API returns `503` (`detail` = database occupied by another process).
+> If the Embedding check fails: start Ollama and `ollama pull qwen3-embedding:0.6b`, or set `EMBEDDING_API_KEY` in `.env` for cloud.
+
+On Windows, `scripts/start_rest.vbs` launches REST in a hidden window (e.g. at login), logging to `scripts/start_rest.log`.
 
 **MCP client integration** (recommended: HTTP, sharing the REST process):
 
-REST also exposes a streamable-http MCP endpoint at `/mcp`, so an MCP client can attach directly — no separate `mcp_server.py` needed:
-
 ```json
-{
-  "mcpServers": {
-    "palimpsest": {
-      "url": "http://127.0.0.1:8090/mcp/"
-    }
-  }
-}
+{ "mcpServers": { "palimpsest": { "url": "http://127.0.0.1:8090/mcp/" } } }
 ```
 
-> **stdio mode (`mcp_server.py`) — an escape hatch, not a peer option.**
->
-> It is only for a "**MCP only, no REST at all**" setup. It opens the same database
-> independently of REST, so running both means competing for one file group — which can
-> corrupt it. **Do not** use it where REST is already running, and do not put it into a
-> default config.
->
-> Why it is kept: if the REST service ever fails, it is a **manual recovery path that
-> does not depend on REST** — the point of an escape hatch is that you don't use it
-> day-to-day, but it is there when you need it. For daily use, take the HTTP option above.
-
-```json
-{
-  "mcpServers": {
-    "palimpsest": {
-      "command": "python",
-      "args": ["mcp_server.py"],
-      "cwd": "/path/to/Palimpsest"
-    }
-  }
-}
-```
+**Backup & restore**: `python scripts/backup_db.py --keep 7` performs a full-group cold backup + read-back check (keeps 7 by default). Backups must be **whole-group** (`.db` / `.vec` / `.gidx` / `.pidx` / `.flush_ok` / `.pld.*` / `.wal`, one generation); the script verifies by reading back and exits non-zero on failure.
 
 ---
 
 ## Configuration
 
-All configuration is read from environment variables (a `.env` file is loaded automatically via `python-dotenv`). See `.env.example` for a commented template.
+All configuration is read from environment variables (a `.env` file is loaded automatically via `python-dotenv`); see `.env.example` for a commented template. Below are the essentials to get running — the full 36-key table is in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
 
-| Variable | Default | Description | Precondition |
-|---|---|---|---|
-| `REST_PORT` | `8090` | Port for the FastAPI REST service | When starting the REST service |
-| `DASHBOARD_PORT` | `8010` | Port for the dashboard service | When starting the dashboard |
-| `DB_PATH` | `data/mh_memory.db` | Path to the embedded TriviumDB database | — |
-| `PALIMPSEST_API_KEY` | *(empty = off)* | Optional REST auth; when set, every route except `/` requires a Bearer / X-API-Key header | When REST auth is enabled |
-| `LLM_BACKEND` | `deepseek` | LLM backend: `deepseek` or `ollama` | When LLM calls are made |
-| `DEEPSEEK_API_KEY` | *(empty)* | API key for the DeepSeek API | `LLM_BACKEND=deepseek` |
-| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | DeepSeek API base URL | `LLM_BACKEND=deepseek` |
-| `DEEPSEEK_MODEL` | `deepseek-v4-flash` | DeepSeek model identifier | `LLM_BACKEND=deepseek` |
-| `OLLAMA_BASE_URL` | `http://127.0.0.1:11434/v1` | Ollama OpenAI-compatible base URL | `LLM_BACKEND=ollama` |
-| `OLLAMA_MODEL` | `deepseek-r1:7b` | Ollama chat model used as the LLM | `LLM_BACKEND=ollama` |
-| `EMBEDDING_PROVIDER` | *(empty = auto-detect)* | Embedding backend: leave empty for auto-detection (valid `EMBEDDING_API_KEY` → `openai`, otherwise → `ollama`); set `ollama` (local, private) or `openai` (OpenAI-compatible cloud, e.g. Voyage / SiliconFlow) explicitly to force | — |
-| `OLLAMA_EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | Local Ollama embedding model | `EMBEDDING_PROVIDER=ollama` |
-| `OLLAMA_EMBEDDING_BASE_URL` | `http://127.0.0.1:11434` | Ollama native embedding API root (decoupled from the LLM's `/v1` URL) | `EMBEDDING_PROVIDER=ollama` |
-| `OLLAMA_EMBEDDING_DIM` | `1024` | Embedding dimension (local backend) | `EMBEDDING_PROVIDER=ollama` |
-| `EMBEDDING_API_KEY` | *(empty)* | API key for the cloud embedding endpoint | `EMBEDDING_PROVIDER=openai` |
-| `EMBEDDING_BASE_URL` | `https://api.voyageai.com/v1` | Cloud embedding base URL (any OpenAI-compatible endpoint) | `EMBEDDING_PROVIDER=openai` |
-| `EMBEDDING_MODEL` | `voyage-3` | Cloud embedding model | `EMBEDDING_PROVIDER=openai` |
-| `EMBEDDING_DIM` | `1024` | Embedding dimension (cloud backend) | `EMBEDDING_PROVIDER=openai` |
-| `MEMORY_DECAY_FACTOR` | `0.95` | Monthly memory decay used in ranking (`score × importance × factor^(days/30)`); `1.0` disables decay; `kb_chunk` nodes never decay | soft mode: enters only the ε term `recency_norm` (ε defaults to 0.02, so ranking impact ≤0.02, ~0.01 over a year — nearly a dead knob); hard mode: multiplicative weighting |
-| `MEMORY_RERANK_MODE` | `soft` | Rerank mode: `soft` = semantic score as the main line plus ε-level metadata nudges (default); `hard` = legacy multiplicative weighting (fallback) | — |
-| `SOFT_RERANK_EPS` | `0.02` | ε for `soft` mode: 15%–40% of the cosine gap, tie-break only | `MEMORY_RERANK_MODE=soft` |
-| `DOMAIN_BOOST_EPS` | `0.10` | Additive soft domain boost applied to the semantic score for same-domain candidates when `domain_boost` is set | When the `domain_boost` parameter is non-empty |
-| `KB_SOFT_RERANK_MULT` | `1.5` | ε multiplier for `kb_chunk` (knowledge blocks never decay) under `soft` mode | `MEMORY_RERANK_MODE=soft` |
-| `DOMAIN_BIAS_WEIGHT` | `1.15` | Extra weight for domain-biased retrieval | When the `domain_bias` parameter is non-empty |
-| `EXPAND_MAX_EDGES_PER_NODE` | `20` | Max strongest edges diffused per node during graph expansion | Graph expansion enabled (`RETRIEVAL_EXPAND_DEPTH≥1` or neighbor-inclusion) |
-| `EXPAND_MIN_EDGE_WEIGHT` | `0.0` | Weak-edge pruning threshold during expansion (0 disables) | Graph expansion enabled (`RETRIEVAL_EXPAND_DEPTH≥1` or neighbor-inclusion) |
-| `RRF_K` | `60.0` | RRF constant k for hybrid retrieval (single-side hits still count) | `mem_hybrid_search` with `mode=rrf` |
-| `RRF_SEM_WEIGHT` | `1.0` | RRF weight for the semantic side | `mem_hybrid_search` with `mode=rrf` |
-| `RRF_FTS_WEIGHT` | `0.1` | RRF weight for the exact (FTS) side — a small FTS boost on top of a clean semantic ordering | `mem_hybrid_search` with `mode=rrf` |
-| `RETRIEVAL_EXPAND_DEPTH` | `0` | Graph expansion depth for the semantic ordering: `0` = pure semantic ranking (default); `1` = graph neighbors join the ordering (one-flag fallback) | When graph expansion is enabled for retrieval |
-| `TIER_FACTS` | `memory,correction,decision,plan,task,review,solution,inspiration,user_intent,character_state` | Memory types that belong to the facts tier (comma-separated); unregistered types also default to facts | When retrieval/injection filters by tier |
-| `TIER_LOGS` | `record,event,git_commit` | Memory types that belong to the logs tier (comma-separated); kept out of the default retrieval and injection pool | When retrieval/injection filters by tier |
-| `DEFAULT_TIER` | `facts` | Default tier for retrieval and injection; `logs` returns only the logs tier, empty string disables filtering (full history channel) | Whenever `tier` is not given explicitly |
-| `MEM_INGEST_MAX_LENGTH` | `50000` | Max characters of a single memory `content`; longer writes are rejected | On `mem_ingest` writes |
-| `CONFLICT_SKIP_TYPES` | *(empty)* | Types exempt from conflict detection (comma-separated): listed types are never marked `outdated` nor linked with `REVISED_BY`. Empty (default) keeps behaviour unchanged. For `task`-like accumulating records that are not "the same fact superseded" | Conflict detection on `mem_ingest` writes |
-| `KNOWLEDGE_DIR` | *(optional)* | Root of the knowledge base (Obsidian `.md` files) to index | With `kb_index` / `build_kb_index.py` |
+| Variable | Default | Description |
+|---|---|---|
+| `REST_PORT` | `8090` | Port for the FastAPI REST service |
+| `DASHBOARD_PORT` | `8010` | Port for the dashboard service |
+| `DB_PATH` | `data/mh_memory.db` | Path to the embedded TriviumDB database |
+| `PALIMPSEST_API_KEY` | *(empty = off)* | Optional REST auth; when set, every route except `/` requires Bearer / X-API-Key |
+| `LLM_BACKEND` | `deepseek` | LLM backend: `deepseek` or `ollama` |
+| `DEEPSEEK_API_KEY` | *(empty)* | DeepSeek API key (required when `LLM_BACKEND=deepseek`) |
+| `OLLAMA_MODEL` | `deepseek-r1:7b` | Ollama chat model when `LLM_BACKEND=ollama` |
+| `EMBEDDING_PROVIDER` | *(empty = auto-detect)* | Embedding backend: empty auto-detects, or `ollama` / `openai` |
+| `OLLAMA_EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | Local Ollama embedding model |
+| `EMBEDDING_API_KEY` | *(empty)* | Cloud embedding endpoint key (setting it routes to `openai`) |
+| `KNOWLEDGE_DIR` | *(optional)* | Root of the knowledge base (Obsidian `.md` files) to index |
 
 ---
 
-## Swapping models / re-embedding the full store
+## Swapping models / re-embedding
 
-### Why re-embed?
-
-Different embedding models produce different vector spaces — **vectors from different models are incompatible**. If you change `EMBEDDING_PROVIDER`, `OLLAMA_EMBEDDING_MODEL`, or `EMBEDDING_MODEL`, you must regenerate vectors for every node in the store; otherwise retrieval quality collapses.
-
-### Recommended sequence
-
-```bash
-# 1. Health check — verify provider / model / dimension, embedding service reachable
-python scripts/palimpsest_cli.py reindex --check
-
-# 2. Dry-run — preview which nodes will be re-embedded
-python scripts/palimpsest_cli.py reindex --dry-run
-
-# 3. Execute (resumable by default; Ctrl+C then re-run continues from checkpoint)
-python scripts/palimpsest_cli.py reindex --yes
-
-# 4. Smoke test
-python scripts/palimpsest_cli.py search "test" --top-k 3
-```
-
-Common options:
-
-| Option | Description |
-|---|---|
-| `--only memory,record` | Re-embed only the specified types |
-| `--skip kb_chunk,novel_chunk` | Skip the specified types |
-| `--batch 128` | Print progress every 128 nodes |
-| `--restart` | Ignore checkpoint, re-embed from scratch |
-
-### Changing dimension (new model outputs a different dimension)
-
-If the new model's output dimension differs from the current store (e.g. 1024 → 768), you **cannot re-embed in place** — you must create a new database:
-
-```bash
-# 1. Export
-python scripts/export_all_data.py
-
-# 2. Rebuild (new database)
-python scripts/rebuild_db.py
-
-# 3. Update dimension in .env
-# OLLAMA_EMBEDDING_DIM=768   or   EMBEDDING_DIM=768
-
-# 4. Rebuild knowledge-base index
-python scripts/build_kb_index.py --full
-
-# 5. If you have a fiction vault
-python scripts/build_novel_index.py --source <vault-path> --full
-```
+Changing the embedding model changes the vector space, so you **must re-embed the full store**. The complete sequence (`reindex --check` / `--dry-run` / `--yes`) and the dimension-change rebuild flow are in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
 
 ---
 
 ## Custom index rules
 
-The scan scope, per-node `kind`, chunking strategy, and payload `domain` of `build_novel_index.py` / `build_kb_index.py` are all driven by a **declarative JSON rule set** (built-in defaults, zero config to get started). Pass a rule file explicitly with `--rules`:
+The scan scope, per-node `kind`, chunking strategy, and payload `domain` of `build_novel_index.py` / `build_kb_index.py` come from a **declarative JSON rule set** (built-in defaults, zero config to start), and can be passed with `--rules`:
 
 ```bash
-# Explicit rule file (--rules)
 python scripts/build_novel_index.py --source <vault-path> --rules rules.json
 python scripts/build_kb_index.py --rules rules.json
-
-# Without --rules, lookups follow this order:
-#   1. <vault root>/.palimpsest-index.json (build_kb_index: knowledge dir root)
-#   2. built-in defaults
 ```
 
-**Loading priority**: `--rules <path>` (a missing path errors out) > `<vault root>/<legacy filename>` (the novel script also honors the old `.palimpsest-novel-index.json` convention) > `<vault root>/.palimpsest-index.json` > built-in defaults. A legacy `.palimpsest-index.yaml` found in the root is **not parsed**; a warning tells you to switch to `.json`.
-
-**JSON schema**: top-level keys are `kind_map` / `default_kind` / `chunk_strategy` / `min_chunk_len` / `max_chunk_len` / `domain` / `include` / `exclude` / `require_frontmatter_id`. Unknown keys only raise a warning (forward compatible); invalid types or values raise an error. Each `kind_map` rule looks like:
-
-```json
-[
-  { "kind": "reference", "dir_prefix": "reference" },
-  { "kind": "overview", "filename": "00-overview.md" },
-  { "kind": "archive", "glob": "archive/**/*" }
-]
-```
-
-Three match modes (combinable within one rule — multiple fields mean AND): `dir_prefix` matches a directory of that name at any depth, `filename` must **equal** the basename exactly, and `glob` is fnmatch-matched against the whole relative path. Rules are evaluated in declaration order, first match wins; if none matches, the path falls back to `default_kind` (default `"default"` — never silently folded into a concrete business kind). Unmatched paths are surfaced in the `unmatched_paths` stat and printed in the summary.
-
-A complete example with generic directory names (`notes/` / `reference/` / `archive/`) is in [`examples/index-rules.example.json`](examples/index-rules.example.json).
+**Loading priority**: `--rules <path>` (a missing path errors out) > `<vault root>/<legacy filename>` (the novel script also honors `.palimpsest-novel-index.json`) > `<vault root>/.palimpsest-index.json` > built-in defaults; a legacy `.palimpsest-index.yaml` is **not parsed**, only warned about. Top-level keys are `kind_map` / `default_kind` / `chunk_strategy` / `min_chunk_len` / `max_chunk_len` / `domain` / `include` / `exclude` / `require_frontmatter_id`; unknown keys only warn, invalid values error. Each `kind_map` rule supports `dir_prefix` / `filename` / `glob` (combinable = AND), first match wins, none → `default_kind` (never silently folded; unmatched paths show up in `unmatched_paths`). Complete example: [`examples/index-rules.example.json`](examples/index-rules.example.json).
 
 ---
 
@@ -477,182 +231,43 @@ A complete example with generic directory names (`notes/` / `reference/` / `arch
 | `task-archive` | Archive completed task nodes; `--apply` writes markdown and deletes the node |
 | `reindex` | Re-embed the whole store after switching embedding models (`--check` health check, `--dry-run` preview) |
 
-Examples:
-
-```bash
-python scripts/palimpsest_cli.py ingest "the service listens on 8090" --domain work --importance 0.6
-python scripts/palimpsest_cli.py search "8090 port" --neighbors
-python scripts/palimpsest_cli.py stats
-python scripts/palimpsest_cli.py promote            # preview hot-memory candidates
-python scripts/palimpsest_cli.py consolidate        # preview merge candidates
-python scripts/palimpsest_cli.py consolidate --apply # execute merges
-```
-
 ### Blocks
 
-`block` is the "domain-group" concept: the graph is isolated per block, and diffusion retrieval only follows edges inside the same block, preventing cross-domain pollution. Built-in generic blocks: `task` (tasks), `kb` (knowledge base), `hermes` (the assistant's own memory), `novel` (fiction / worldbuilding settings), `general` (unclassified fallback). Any of your own `domain` values can be used as a block (e.g. `--block myproject`). Leaving `--block` empty runs in full mode.
-
-Node ownership is expressed by the `payload.domain` field. Specify a block at write time via `--domain X` or `mem_ingest(domain=...)`; `kb`-type nodes are set automatically by the knowledge-base indexer to `kb`.
+`block` is the "domain-group" concept: the graph is isolated per block, and diffusion retrieval only follows edges inside the same block, preventing cross-domain pollution. Built-ins: `task` / `kb` / `hermes` / `novel` / `general`; any of your own `domain` values can be a block (e.g. `--block myproject`), and an empty `--block` runs in full mode. Node ownership is expressed by `payload.domain`: set it at write time via `--domain X` or `mem_ingest(domain=...)`; `kb` nodes are set automatically by the indexer.
 
 ### REST API — `main.py`, port 8090
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/` | Service info + version + endpoint index |
-| `GET` | `/export` | Export memories as a paginated JSON snapshot (default 100/page, max 500) |
-| `GET` | `/summary` | Human-readable memory summary (events / character states / plans) |
-| `GET` | `/memory/{id}` | Read a single node's full payload |
-| `POST` | `/report` | Generate an LLM analysis report over the current store (prompt is written for novel-writing / roleplay scenarios, not a generic summary) |
-| `DELETE` | `/memory/{id}` | Delete a memory node (FTS index synced) |
-| `PUT` | `/memory/{id}` | Update a node's payload (**merge semantics**: only supplied fields change, the rest are kept; FTS synced) |
-| `PATCH` | `/memory/{id}` | Partial update of a node (same merge semantics, REST-precise) |
-| `PATCH` | `/memory/{id}/vector` | Update a node's vector (dimension must match) |
-| `POST` | `/memory/{id}/reembed` | Recompute and store the vector from the node's current `content` (server-side remedy for semantic drift after an edit) |
 | `POST` | `/mem/search` | Unified retrieval |
-| `POST` | `/skill/search` | Semantic search over indexed skills |
-| `POST` | `/mem/hybrid-search` | FTS5 + vector hybrid retrieval |
 | `POST` | `/mem/ingest` | Write a new memory (conflict detection + secret scan) |
-| `POST` | `/mem/link` | Create a graph edge |
-| `DELETE` | `/mem/edge` | Delete a graph edge (body: `source_id` / `target_id` / `relation`; idempotent) |
-| `POST` | `/mem/recent` | Most recent memories (ordered by created_at) |
-| `GET` | `/tasks/active` | Active task list (query: `project` / `states` / `limit`; sorted by state priority then last-touched desc) |
-| `POST` | `/mem/stats` | Store-wide statistics |
 | `POST` | `/graph/neighbors` | Graph neighbors of a node |
-| `POST` | `/graph/communities` | Leiden community detection |
-| `POST` | `/lifecycle/pre-turn` | **Memory strategy**: decide which memories to recall before each model call; returns text ready to inject into the prompt (trivial/too-short inputs skipped) |
-| `POST` | `/lifecycle/post-turn` | **Memory strategy**: after each reply, decide whether to persist, what to store, and which tier (logs/facts) |
-| `POST` | `/lifecycle/session-end` | **Memory strategy**: on session end, distil key points, deduplicate, and write to the facts tier |
-| `POST` | `/lifecycle/pre-compress` | **Memory strategy**: extract key points before compression (returns text only, writes nothing) |
-| `POST` | `/lifecycle/context-enhance` | **Memory strategy**: pick topics, walk the graph for key chains, assemble the text to inject before compression (returns text only, writes nothing) |
+| `POST` | `/lifecycle/pre-turn` | **Memory strategy**: decide which memories to recall before each model call; returns text ready to inject into the prompt |
 
-> If `PALIMPSEST_API_KEY` is set, every route except `/` requires `Authorization: Bearer <key>` or `X-API-Key: <key>`.
-
-Example:
-
-```bash
-curl -X POST http://127.0.0.1:8090/mem/search \
-  -H "Content-Type: application/json" \
-  -d '{"query": "architecture", "scope": "all", "top_k": 5}'
-```
+> The full 26 routes are in [`docs/API.md`](docs/API.md). If `PALIMPSEST_API_KEY` is set, every route except `/` requires `Authorization: Bearer <key>` or `X-API-Key: <key>`.
 
 ---
 
-## Tests
+## Tests & evaluation
 
 ```bash
-# from the repo root
-python -m pytest tests/ -v
-```
-
-The suite covers the core loop: write → `mem_search` hit → `mem_get_full` round trip; graph edges → `graph_neighbors` / `mem_communities`; secret scan rejecting key-bearing content; FTS-side hit marking in hybrid retrieval; conflict detection / version chains and outdated filtering semantics; `consolidate` / `promote` dry-run and idempotency; PUT/PATCH partial updates preserving fields; concurrency and failure paths (dirty payloads, embedding unavailable, …).
-
-`tests/conftest.py` redirects `DB_PATH` to a **temporary database** (and isolates the knowledge base) before anything else is imported — the suite never touches a production store, and it runs green with a deterministic fake embedder, no live Ollama needed.
-
----
-
-## Stress testing
-
-`scripts/rest_stress.py` runs an end-to-end load test against the REST service across six realistic scenarios: high-frequency search / bulk writes / graph linking and diffusion / boundary inputs (empty content, oversized payload, malformed JSON, negative `top_k`, …) / mixed read-write load / post-write recall correctness.
-
-```bash
-# 1. Start a test instance (separate DB and port — the script writes data, never point it at a production store)
+python -m pytest tests/ -v                                 # from the repo root
 DB_PATH=/tmp/stress.db python -m uvicorn main:app --port 8091
-
-# 2. Run the stress test (--quick for a fast pass)
 python scripts/rest_stress.py --base http://127.0.0.1:8091 --seeds 200 --out report.json
-```
-
-The JSON report carries per-scenario qps, p50/p95/p99 latency and error rate, plus the HTTP status of every boundary case and correctness checks (can a unique marker be recalled; does a duplicate write trigger conflict detection). The random seed is fixed (42), so the same inputs reproduce.
-
----
-
-## Retrieval quality evaluation
-
-`eval/` is an **offline retrieval-quality evaluation framework**: it derives queries from real nodes in the store and scores four retrieval paths (`fts` / `vec` / `rrf` / `cascade`) with Recall@K, MRR@K and nDCG@K, so retrieval changes are measured instead of felt.
-
-```bash
-# Build the eval set (needs DEEPSEEK_API_KEY; --dry-run shows the layer distribution without calling the API)
-venv/Scripts/python.exe eval/gen_eval_set.py --dry-run
-
-# Run the evaluation (4 modes, top-10 by default; --modes rrf,cascade / --limit 20 available)
+venv/Scripts/python.exe eval/gen_eval_set.py --dry-run     # needs DEEPSEEK_API_KEY
 venv/Scripts/python.exe eval/run_eval.py
 ```
 
-**Read-only by construction:** every script copies the real store (plus sidecar files) into `eval/.tmp/` before it starts and works exclusively on the copy, computing SHA256 of the real files before and after and recording it in the report as proof. See [`eval/README.md`](eval/README.md) for the item schema and metric definitions.
+The suite covers the core loop: write → `mem_search` hit → `mem_get_full` round trip; graph edges → `graph_neighbors` / `mem_communities`; secret scan rejecting key-bearing content; FTS-side hit marking in hybrid retrieval; conflict detection / version chains and outdated semantics; `consolidate` / `promote` dry-run and idempotency; PUT/PATCH partial updates preserving fields; concurrency and failure paths. `tests/conftest.py` redirects `DB_PATH` to a temporary database before anything is imported, so the suite never touches a production store and runs green with a deterministic fake embedder, no live Ollama needed.
 
-Supporting tools:
-
-- `scripts/retrieval_probe.py` — retrieval health probe: replays verified queries and reports top-1 hit rate plus latency baselines for cross-version / cross-embedding comparisons
-- `scripts/prod_entrypoint_check.py` — production-entrypoint re-check: calls the real retrieval implementation under two configurations, proving a config change actually takes effect on the production path (read-only, SHA256-verified)
-- `scripts/ab_snapshot_*.py` — single-variable A/B: two copies of the same store snapshot, one variable changed, per-question attribution of what won and at which layer
+`scripts/rest_stress.py` runs an end-to-end load test across six realistic scenarios (high-frequency search / bulk writes / graph linking and diffusion / boundary inputs / mixed read-write load / post-write recall correctness), reporting qps and p50/p95/p99. `eval/` derives queries from real nodes and scores `fts` / `vec` / `rrf` / `cascade` with Recall@K, MRR@K and nDCG@K; every script copies the real store into `eval/.tmp/` and SHA256-verifies it before and after. Supporting tools: `scripts/retrieval_probe.py` / `scripts/prod_entrypoint_check.py` / `scripts/ab_snapshot_*.py`; see [`eval/README.md`](eval/README.md).
 
 ---
 
 ## Project structure
 
-```
-Palimpsest/
-├── README.md                     # Chinese (primary)
-├── README_EN.md                  # English
-├── CHANGELOG.md                  # version history
-├── CONTRIBUTING.md               # contribution guide
-├── CODE_OF_CONDUCT.md
-├── SECURITY.md
-├── LICENSE
-├── .env.example                  # commented config template
-├── .gitignore
-├── requirements.txt
-├── requirements-dev.txt          # dev dependencies (ruff / mypy / pytest-cov)
-├── config.py                     # env-driven configuration
-├── main.py                       # FastAPI REST entry (:8090)
-├── mcp_server.py                 # MCP stdio entry (FastMCP)
-├── dashboard.html
-├── docs/                         # RELEASING.md (release process) / DEPRECATIONS.md (retirements) / HERMES_INTEGRATION.md / refactor_plan.md
-├── core/                         # shared engine, framework-free
-│   ├── trivium_store.py          #   TriviumDB wrapper (vector + graph + doc)
-│   ├── conflict.py               #   conflict detection / version chains
-│   ├── consolidator.py           #   near-duplicate consolidation
-│   ├── stats.py                  #   store-wide statistics (mem_stats core)
-│   ├── promoter.py               #   hot-memory promotion (hit_count → promote)
-│   ├── fts_index.py              #   FTS5 full-text index (trigram)
-│   ├── reporting.py              #   LLM memory reports
-│   ├── secret_scan.py            #   pre-write secret scan (10 rules)
-│   ├── startup_check.py          #   startup self-check
-│   ├── task_archive.py           #   task auto-archiving
-│   ├── utils.py
-│   └── version.py                #   version from git tag (falls back to dev)
-├── mcp_tools/                    # 17 MCP tools (shared across MCP/REST/CLI)
-│   ├── __init__.py
-│   ├── _common.py                #   shared store / mcp / serialization helpers
-│   ├── memory.py                 #   mem_* tools
-│   ├── kb.py                     #   kb_index / kb_search
-│   ├── graph.py                  #   graph_neighbors / mem_link / mem_communities
-│   ├── consolidate_tool.py       #   mem_consolidate
-│   └── stats_tool.py             #   mem_stats
-├── scripts/                      # ops tooling
-│   ├── palimpsest_cli.py         #   CLI (search/ingest/…/stats/promote)
-│   ├── dashboard.py              #   monitoring dashboard (:8010)
-│   ├── build_kb_index.py         #   knowledge-base chunking & vectorization
-│   ├── build_novel_index.py      #   fiction vault whole-file import (--source)
-│   ├── link_novel_relations.py   #   fiction relationship bulk edge creation
-│   ├── check_fts_consistency.py  #   FTS content-level reconciliation
-│   ├── export_all_data.py        #   read-only JSON backup export
-│   ├── graph_edges.py            #   persisted knowledge-graph edges
-│   ├── migrate_domain.py         #   legacy field migration (character_name → domain)
-│   ├── rebuild_db.py             #   rebuild the database from an export snapshot
-│   ├── start_rest.vbs            #   Windows hidden-window REST launcher
-│   ├── rest_stress.py            #   REST application-level stress test (6 scenarios)
-│   ├── retrieval_probe.py        #   retrieval health probe (top-1 hit rate + latency baseline)
-│   ├── prod_entrypoint_check.py  #   production-entrypoint re-check (real implementation, two configs)
-│   ├── ab_snapshot_*.py          #   single-variable A/B (store copies + per-question attribution)
-│   └── tdb_stress/               #   TriviumDB stress tests (storage layer)
-├── eval/                         # offline retrieval-quality evaluation (eval set / 4 modes / Recall·MRR·nDCG)
-├── hermes-plugin/                # Hermes dual plugins (Memory Provider + Context Engine)
-├── tests/                        # pytest (isolated conftest + fake embedder, offline-green)
-└── data/                         # runtime database (gitignored)
-    ├── mh_memory.db              #   primary TriviumDB store
-    └── fts.db                    #   FTS5 full-text index
-```
+`main.py` (the REST single writer) / `mcp_server.py` (stdio escape hatch) / `config.py` → `core/` (framework-free shared engine) → `mcp_tools/` (18 tools, shared by MCP/REST/CLI); plus `scripts/` ops tooling, `eval/` offline evaluation, `hermes-plugin/` dual plugins, `tests/`, `docs/`, `data/`. Layering rules and the full tree are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
@@ -660,28 +275,22 @@ Palimpsest/
 
 - **Virtual env:** one per checkout (`python -m venv venv`) + `pip install -r requirements.txt`.
 - **Adding a tool:** register it in `mcp_tools/` with the shared `@mcp.tool()` decorator — it instantly appears across the MCP service, the REST layer, and the CLI.
-- **Adding a core module:** keep `core/` free of FastAPI/MCP; consume it via `mcp_tools/` and `main.py`. Version is derived from git tags by `core/version.py`.
-- **Changed the schema?** Rebuild the FTS index (`fts-rebuild`) and the knowledge-base index (`build_kb_index.py`); export / rebuild helpers live in `scripts/`.
+- **Adding a core module:** keep `core/` free of FastAPI/MCP; consume it via `mcp_tools/` and `main.py`.
+- **Changed the schema?** Rebuild the FTS index (`fts-rebuild`) and the knowledge-base index (`build_kb_index.py`).
 - **Tests:** stay isolated — never point tests at the production database.
 
 Run the quality gates before opening a PR (they map one-to-one onto the CI `lint` / `typecheck` / `test` jobs):
 
 ```bash
 python -m pytest tests/ -q                         # tests (CI runs 3.10 / 3.11 / 3.12)
-ruff check .                                       # lint (rules pinned in pyproject.toml [tool.ruff])
-mypy                                               # type check (core/ for now, non-strict to start)
-python -m pytest --cov=core --cov=mcp_tools -q     # coverage baseline (no gate yet, used to locate gaps)
+ruff check .                                       # lint (rules pinned in pyproject.toml)
+mypy                                               # type check (core/ for now)
+python -m pytest --cov=core --cov=mcp_tools -q     # coverage baseline
 ```
 
-Install dev dependencies with `pip install -r requirements-dev.txt`; the `ruff` version is aligned with CI so the gate cannot drift.
+Documentation-vs-code consistency is checked by `scripts/readme_check.py` (MCP tool list / CLI subcommands / REST routes / config keys and their documented defaults / file references / inline-code pairing); CI runs it with `--strict` in the `docs` job: `python scripts/readme_check.py --strict`.
 
-Documentation-vs-code consistency is checked by `scripts/readme_check.py` (MCP tool list / CLI subcommands / REST routes / config keys and their documented defaults / file references / inline-code pairing). CI runs it with `--strict` in the `docs` job; run it the same way locally:
-
-```bash
-python scripts/readme_check.py --strict
-```
-
-Releases follow [Semantic Versioning](https://semver.org/), see [RELEASING.md](docs/RELEASING.md) for the process and [CHANGELOG.md](CHANGELOG.md) for history. Deprecated fields / interfaces and their retirement schedule live in [DEPRECATIONS.md](docs/DEPRECATIONS.md).
+Releases follow [Semantic Versioning](https://semver.org/): process in [RELEASING.md](docs/RELEASING.md), history in [CHANGELOG.md](CHANGELOG.md), deprecations in [DEPRECATIONS.md](docs/DEPRECATIONS.md).
 
 ---
 

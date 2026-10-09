@@ -6,15 +6,12 @@
 
 **Local-first, battle-tested, memory that never disappears.**
 
-> _Palimpsest_：拉丁语，原指「重写的羊皮纸」——旧字迹被覆写抹去，却又在岁月里重新透出。
->
-> 我们把这个意象搬进记忆里：**新的事实覆盖旧的事实，但旧迹永不真正丢失**——每一次改写都通过一条有迹可循的 **版本链**（`REVISED_BY`）连接，新旧记忆可查可溯。
+> _Palimpsest_：拉丁语，原指「重写的羊皮纸」——旧字迹被覆写抹去，却又在岁月里重新透出。我们把这个意象搬进记忆里：**新的事实覆盖旧的事实，但旧迹永不真正丢失**——每次改写都通过一条有迹可循的 **版本链**（`REVISED_BY`）连接，新旧记忆可查可溯。
 
 [![Version](https://img.shields.io/badge/Version-v2.5.0-4c6ef5.svg)](/)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Storage](https://img.shields.io/badge/TriviumDB-0.8.8-2d9cdb.svg)](/)
-[![LLM](https://img.shields.io/badge/Backends-DeepSeek%E2%80%A2Ollama-6f42c1.svg)](/)
+[![Backends](https://img.shields.io/badge/Backends-DeepSeek%E2%80%A2Ollama-6f42c1.svg)](/)
 [![CI](https://github.com/JiaY-77/Palimpsest/actions/workflows/ci.yml/badge.svg)](https://github.com/JiaY-77/Palimpsest/actions/workflows/ci.yml)
 
 **中文** | [English](./README_EN.md)
@@ -25,118 +22,54 @@
 
 ## 一句话介绍
 
-Palimpsest 是一个 **本地优先的嵌入式长期记忆系统**，将 **语义向量检索（Vector Search）、加权知识图谱（Knowledge Graph）与全文检索（Full-Text Retrieval）** 三合一，把 AI 助手的跨会话记忆统一存放、管理、演化在一座本地数据库里。
+Palimpsest 是一个 **本地优先的嵌入式长期记忆系统**，将 **语义向量检索（Vector Search）、加权知识图谱（Knowledge Graph）与全文检索（Full-Text Retrieval）** 三合一，把 AI 助手的跨会话记忆统一存放、管理、演化在一座本地数据库里。目标是成为 **AI 助手的「记忆底座」**——让每一次对话的收获都不再随会话关闭而烟消云散，而是**可检索、可关联、可演进**：
 
-我们的目标是成为 **AI 助手的「记忆底座」** —— 让每一次对话的收获都不再随会话关闭而烟消云散，而是**可检索、可关联、可演进**：
-
-- 🗃️ **混合检索** —— 语义向量（cosine）与 FTS5 全文索引（`trigram` 分词，支持中文子串匹配）通过 RRF（Reciprocal Rank Fusion）或级联方式融合，每条命中都标注来源 `fts_hit` / `sem_hit`
-- 🔗 **图谱扩散召回** —— 节点由 **加权边**（`RELATED_TO` / `REVISED_BY` / `CAUSES` / `REFERS_TO`）相连，BFS 沿边扩散召回；扩散按最强边截断、弱边过滤、可按域「块」隔离，防止跨域污染
-- 🕸️ **社区发现** —— 内置 Leiden 聚类，一键把记忆库分成主题簇（如项目簇、人物关系簇），回答「记忆库里都有哪些圈子」
-- 🔄 **冲突检测与版本链** —— 写入时与相似旧记忆比对：高相似度（score > 0.75）判为同一事实被取代，旧版标记 `outdated` 并通过 `REVISED_BY` 链向新版；中相似度只记 `related_ids` 提示相关不误标；type / domain 双隔离防跨类误标
-- 🛡️ **写入前敏感扫描** —— 存储前按 **10 条正则规则**扫描：**强规则**（API Key、令牌、私钥、SSH Key、Bearer Token 等 8 条）命中即**拒绝写入**并报告命中的规则；**弱规则**（身份证、手机号 2 条）命中仅**放行并打 `secret_hint` 标记**供审计——命中原文仍会入库，弱规则是审计线索而非脱敏（详见 [`SECURITY.md`](SECURITY.md)）
-- 🧹 **容量合并与记忆盘点** —— `mem_consolidate` 把近似重复节点合并（相似度 ≥ 0.85、保护高价值记忆）；`mem_stats` 统一盘点库内分布（类型/域/重要度/时间/图谱/热点/弱敏感标记数/**tier 分层分节**），回答「库里有什么」
-- ⏫ **高频记忆自动升级** —— 检索命中自动计数（`hit_count`），`promote` 把反复被用到的记忆浮出水面：升权 + 打标（dry-run 预览、幂等可逆），为人工升级知识库提供依据
-- ⏳ **记忆生命周期** —— 时间衰减加权（`MEMORY_DECAY_FACTOR`，默认 0.95/月）在排序中淡化陈旧记忆而不动存储；`kb_chunk` 知识切片豁免衰减；`outdated` 旧版默认不再参与普通检索（可显式追溯）
-- 📁 **任务自动归档** —— 完成任务自动移出热库，写成 markdown 归档至知识库归档目录后删除——先 `dry-run` 预览，`apply` 提交
-- ✅ **部署体检** —— `doctor` 一键体检关键文件 / 存储 / FTS / 依赖 / Embedding 可达性与**向量维度一致性**（实测 vs 库），每个失败项直接给出修复命令（`--json` 机器可读）；`startup-check` 为其轻量子集
-- ✂️ **省 token 设计** —— 检索默认只返回 **150 字摘要 + 元数据**，而非全文；完整内容按需二次拉取
-- 🗂️ **记忆分层（`tier`）** —— 检索侧的轻量视图，不迁数据、不改存储：默认只取**事实层**（`memory` / `correction` / `decision` / `plan` / `task` 等），把日志层（`record` / `event` / `git_commit`，约占活跃节点四成）从默认检索与注入池中摘出；`tier="logs"` 只取日志层，`tier=""` 显式回到全量（历史追溯通道）。同一套分层视图同步覆盖 `mem_review` 的 `recent_ingests` 与 `mem_stats` 的 `tiers` 分节。层清单由 `TIER_FACTS` / `TIER_LOGS` 配置，未登记的 type 保守归事实层
-- 🔐 **可选 API Key 鉴权** —— 默认关闭（localhost 本机直连）；设置 `PALIMPSEST_API_KEY` 后 REST 层要求 Bearer / X-API-Key 头，适合局域网受信部署
-- 🎯 **三接口、一核心** —— MCP（stdio 与 streamable-http）、FastAPI REST、完整 CLI 三套接入共用同一套底层工具，行为永不割裂；REST 在 `/mcp` 同时暴露 MCP 端点，可与 MCP 客户端**共进程**运行，避免跨进程争抢同一个库
-- 🧠 **Hermes 双插件换脑** —— 把 Hermes 的记忆层整体换成 Palimpsest：Memory Provider（语义召回 + 自动沉淀）+ Context Engine（压缩前图谱提炼），一行命令激活，记忆跨会话不丢
+- 🗃️ **混合检索** —— 语义向量（cosine）与 FTS5 全文索引（`trigram` 分词，支持中文子串）经 RRF 或级联融合，命中标注来源 `fts_hit` / `sem_hit`
+- 🔗 **图谱扩散召回** —— 节点由**加权边**（`RELATED_TO` / `REVISED_BY` / `CAUSES` / `REFERS_TO`）相连，BFS 沿边扩散，按最强边截断、弱边过滤、可按「块」隔离防跨域污染
+- 🕸️ **社区发现** —— 内置 Leiden 聚类，一键把记忆库分成主题簇，回答「记忆库里都有哪些圈子」
+- 🔄 **冲突检测与版本链** —— 高相似（score > 0.75）判为同一事实被取代，旧版标 `outdated` 并经 `REVISED_BY` 链向新版；中相似只记 `related_ids`；type / domain 双隔离防跨类误标
+- 🛡️ **写入前敏感扫描** —— 按 10 条正则规则扫描：强规则（API Key / 令牌 / 私钥 / SSH Key / Bearer 等 8 条）命中即拒写，弱规则（身份证 / 手机号 2 条）仅放行并打 `secret_hint` 供审计（详见 [`SECURITY.md`](SECURITY.md)）
+- 🧹 **容量合并与记忆盘点** —— `mem_consolidate` 合并近似重复（≥ 0.85、保护高价值），`mem_stats` 盘点类型 / 域 / 重要度 / 时间 / 图谱 / 热点 / tier 分层
+- ⏫ **高频记忆自动升级** —— 检索命中计数（`hit_count`），`promote` 把反复被用到的记忆升权打标（dry-run 预览、幂等可逆）
+- ⏳ **记忆生命周期** —— 时间衰减加权（`MEMORY_DECAY_FACTOR`）在排序中淡化陈旧记忆而不动存储；`kb_chunk` 豁免；`outdated` 旧版默认不参与普通检索
+- 📁 **任务自动归档** —— 完成任务自动写成 markdown 归档至知识库归档目录后删除节点——先 `dry-run` 预览，`apply` 提交
+- ✅ **部署体检** —— `doctor` 一键体检关键文件 / 存储 / FTS / 依赖 / Embedding 可达性与向量维度一致性，每个失败项给出修复命令（`--json` 机器可读）
+- ✂️ **省 token 设计** —— 检索默认只返回 **150 字摘要 + 元数据**，完整内容按需二次拉取
+- 🗂️ **记忆分层（`tier`）** —— 检索侧轻量视图，不迁数据：默认只取事实层（`memory` / `correction` / `decision` / `plan` / `task` 等），把日志层（`record` / `event` / `git_commit`）从默认检索与注入池摘出；`tier="logs"` 只取日志层、`tier=""` 回到全量
+- 🔐 **可选 API Key 鉴权** —— 默认关闭；设置 `PALIMPSEST_API_KEY` 后 REST 层要求 Bearer / X-API-Key，适合局域网受信部署
+- 🎯 **三接口、一核心** —— MCP（stdio 与 streamable-http）、FastAPI REST、完整 CLI 共用同一套底层工具，行为永不割裂；REST 在 `/mcp` 同时暴露 MCP 端点，可与 MCP 客户端共进程运行
+- 🧠 **Hermes 双插件换脑** —— Memory Provider（语义召回 + 自动沉淀）+ Context Engine（压缩前图谱提炼），一行命令激活，记忆跨会话不丢
 
 ---
 
-## 为什么需要 Palimpsest？
+## 为什么需要它 · 使用场景
 
-### 当前 AI 助手的三类「记忆困境」
+绝大多数 AI 应用同时面临三类数据能力割裂：跨会话记忆每次从零开始、知识库只能关键词匹配、记忆无序堆积越用越乱。Palimpsest 用 **一个本地内核** 同时解决「检索、关联、演进」三件事，避免在向量库、文档库、图谱库之间搬运与同步。
 
-绝大多数 AI 应用同时面临三类数据能力的割裂：
+「记忆不丢」的一个例子：你告诉助手「服务监听 8090 端口」，后来设计变更又说「端口改为 8095」。旧记忆不会被粗暴覆盖——它被标记 `outdated`，通过 `REVISED_BY` 指向新版本，版本链查询随时能展开这条链，看清这个事实**如何一步步演变成今天的样子**。这就是 Palimpsest：覆而不失，改写可溯。
 
-| 场景 | 传统做法 | 问题 |
-|---|---|---|
-| 跨会话记忆 | 每次会话从零开始 | 历史经验与事实随会话关闭而丢失 |
-| 知识库语义化 | 简单关键词匹配 | 无法理解语义，无法在概念间关联 |
-| 记忆治理 | 无序堆积/手动清理 | 重复、过期、矛盾的信息越来越多 |
-
-Palimpsest 用 **一个本地内核** 同时解决「检索、关联、演进」三件事，避免在向量库、文档库、图谱库之间搬运与同步。
-
-### 「记忆不丢」的一个例子
-
-> 你告诉助手「服务监听 8090 端口」。后来设计变更，又说「端口改为 8095」。
->
-> 旧记忆并不会被粗暴覆盖——它被标记为 `outdated`，通过 `REVISED_BY` 指向新版本。任何时候版本链查询都能展开这条链，看清这个事实**如何一步步演变成今天的样子**。这就是 Palimpsest：覆而不失，改写可溯。
+它适合四类场景：**长期陪伴 / 个人助理**（Hermes 等）把每轮对话自动召回、强信号自动沉淀，压缩前图谱再提炼一次；**知识库语义化**（Obsidian）把多年 Vault 切片向量化，搜索从关键词碰运气变成语义相关 + 图谱邻居；**创作设定库**（小说 / 世界观）整文件入库并批量建边，配合社区发现看清设定关系；**记忆治理**用敏感扫描、冲突检测、容量合并、时间衰减与 `promote`，让记忆库越用越清晰。
 
 ---
 
-### 使用场景
+## 给 Hermes 用户：把它变成你的记忆插件
 
-#### 场景 1 · 长期陪伴 / 个人助理 agent 的跨会话记忆（Hermes 等）
-
-把 Palimpsest 接入 agent 后，它就是你的「记忆底座」：每轮对话自动召回相关历史、把强信号记忆自动沉淀，会话结束时再提炼本轮要点；上下文压缩之前，图谱还会先提炼一次，把散落的片段织成可检索的网络。会话关闭也没关系——下次见面它依然记得住、想得起。
-
-#### 场景 2 · 知识库语义化（Obsidian 用户）
-
-把积累了多年的 Obsidian Vault 变成可语义检索的资产：`build_kb_index.py` 扫描全部 `.md`，按 Markdown 标题切片、向量化入库，`[[双链]]` 上下文原样保留。搜索不再是「关键词碰运气」，而是「语义相关、附带图谱邻居」。
-
-#### 场景 3 · 创作设定库（小说 / 世界观作者）
-
-`build_novel_index.py` 把本地的创作 Vault（角色卡、世界观、人物关系文档）整文件入库为 `domain=novel` 节点；`link_novel_relations.py` 按关系清单批量建边（师徒/血缘/阵营等）；配合社区发现与图谱查询，设定之间的关系一目了然。创作数据留在本地，不入公网。
-
-#### 场景 4 · 记忆治理（防污染 / 防膨胀 / 可追溯）
-
-记忆库不会越用越乱：写入前敏感扫描拦下密钥，冲突检测 + 版本链让每次改写都有迹可循，容量合并把近似重复收缩成一条，时间衰减淡化陈旧记忆，盘点与 promote 让高频记忆浮出。记忆是资产，不是垃圾场。
-
----
-
-### 给 Hermes 用户：把它变成你的记忆插件
-
-Hermes 预留了 memory provider / context engine 插槽，Palimpsest 为此提供**双插件**：**Memory Provider**（记忆读写）+ **Context Engine**（上下文压缩前提炼）。插件源码在仓库 [`hermes-plugin/`](./hermes-plugin/README.md)，含 `plugin.yaml`（`kind=standalone`）与两个 hooks：`on_session_end`（会话结束提炼要点）与 `on_pre_compress`（压缩前图谱提炼）。
-
-部署（把插件复制到 Hermes 插件目录，然后一行一件激活）：
+Palimpsest 为 Hermes 提供**双插件**：**Memory Provider**（记忆读写）+ **Context Engine**（上下文压缩前提炼），源码在 [`hermes-plugin/`](./hermes-plugin/README.md)，含 hooks `on_session_end`（会话结束提炼要点）与 `on_pre_compress`（压缩前图谱提炼）。
 
 ```bash
-# 1. 复制插件到 Hermes 插件目录（默认 ~/.hermes/plugins/）
-mkdir -p ~/.hermes/plugins/palimpsest
-cp hermes-plugin/* ~/.hermes/plugins/palimpsest/
-
-# 2. 激活（一行一件）
+mkdir -p ~/.hermes/plugins/palimpsest && cp hermes-plugin/* ~/.hermes/plugins/palimpsest/
 hermes plugins enable palimpsest
 hermes config set memory.provider palimpsest
 hermes config set context.engine palimpsest-graph
 ```
 
-激活后，每轮对话都会自动发生这些事：
-
-- **自动召回** —— 每轮经 REST `:8090` 检索相关历史（`memory.provider=palimpsest`）。
-- **强信号自动沉淀** —— 高信号的事实自动写入记忆（启发式判断，不依赖 LLM）。
-- **会话结束提炼** —— `on_session_end` 把本轮要点沉淀为结构化记忆。
-- **压缩前图谱提炼** —— `on_pre_compress` 用 `context.engine=palimpsest-graph` 提炼图谱要点，喂给压缩阶段。
-- **记忆工具集** —— `palimpsest_search` / `palimpsest_ingest` / `palimpsest_link` / `palimpsest_graph` 等，供 agent 主动调用。
-
-两点注意：
-
-- REST 服务（`:8090`）需**常驻运行**（如 `scripts/start_rest.vbs` 开机自启）。
-- 自动沉淀是**启发式**判断（相似度、重要度阈值），不是 LLM 判断——它求「快、稳、不花钱」，而非「聪明」。
+激活后每轮对话自动：经 REST `:8090` 检索相关历史、高信号事实启发式沉淀、会话结束沉淀要点、压缩前图谱提炼；并提供 `palimpsest_search` / `palimpsest_ingest` / `palimpsest_link` / `palimpsest_graph` 等工具供 agent 主动调用。注意：REST 服务需**常驻运行**（如 `scripts/start_rest.vbs`）；自动沉淀是**启发式**判断，求「快、稳、不花钱」而非「聪明」。
 
 ---
 
-### Obsidian 用户：我们的读取思路（即使不用 Palimpsest）
+## Obsidian 用户：我们的读取思路
 
-> 这一节讲的是「思路」，不是广告——就算你完全不用 Palimpsest，也能照此用任何工具链复刻。
-
-我们不把 Vault 当「文件」看待，而是当作**知识源**。读取分五步：
-
-1. **Vault 目录即知识源** —— 递归扫描 `KNOWLEDGE_DIR` 下的全部 `.md`（自动跳过 `.obsidian` 等配置目录），每个笔记就是一个待处理文档。
-2. **按 Markdown 标题智能切片** —— 以 `##` / `###` 为边界切成 300~800 字符的块，块内**原样保留 `[[双链]]`**，让「哪篇关联哪篇」的上下文不丢。
-3. **向量化入库** —— 每个切片经 embedding 编码，作为 `kb_chunk` 节点（`domain=kb`）写入存储，构成可语义检索的知识资产。
-
-**想自己实现？** 这套流程的骨架很简单：一个向量库（sqlite-vec / chroma 皆可）+ 一个 embedding 服务就能复刻。真正的设计点有两个：
-
-- **切片粒度** —— 太粗检索不准、太碎丢上下文。
-- **双链保留** —— 让 `[[A]]⇄[[B]]` 的关系进入检索结果，而不是只在正文里躺着。
-
-本思路的现成实现即 `scripts/build_kb_index.py`（全量 `--full` / 增量默认，增量按 `mtime` 对比只重建变化文件）。
+我们不把 Vault 当「文件」看待，而是当作**知识源**：递归扫描 `KNOWLEDGE_DIR` 下的 `.md`，按 Markdown 标题切片并原样保留 `[[双链]]`，再向量化入库为可语义检索的 `kb_chunk`。就算完全不用 Palimpsest，也能照此思路用任何工具链复刻；现成实现即 `scripts/build_kb_index.py`。完整思路见 [`docs/OBSIDIAN.md`](docs/OBSIDIAN.md)。
 
 ---
 
@@ -145,278 +78,103 @@ hermes config set context.engine palimpsest-graph
 ### 安装（通用）
 
 ```bash
-# 1. 需要 Python 3.10+
+# 需要 Python 3.10+
 python -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
-
-# 2. 安装依赖
 pip install -r requirements.txt
 ```
 
-接下来按你的情况选一条路径——
-
-### 路径 A：云端 key，三行起跑（适合没装 Ollama、想最快跑起来）
+### 路径 A：云端 key，最快跑起来（无需 Ollama）
 
 ```bash
-# 1. 复制配置模板
 cp .env.example .env
-
-# 2. 编辑 .env：填入云端向量 API Key + LLM Key
-#    EMBEDDING_API_KEY=你的云端key      # 留空或删除该行 → 自动走本地 Ollama
-#    EMBEDDING_BASE_URL=https://api.voyageai.com/v1  (按服务商填写)
-#    EMBEDDING_MODEL=voyage-3                      (按服务商填写)
-#    EMBEDDING_DIM=1024                            (按服务商填写)
-#    DEEPSEEK_API_KEY=你的LLMkey       (LLM_BACKEND=deepseek 时必填)
+# 编辑 .env：填入云端向量 API Key + LLM Key
+#    EMBEDDING_API_KEY=你的云端key        # 留空或删除 → 自动走本地 Ollama
+#    EMBEDDING_BASE_URL / EMBEDDING_MODEL / EMBEDDING_DIM  按服务商填写
+#    DEEPSEEK_API_KEY=你的LLMkey         (LLM_BACKEND=deepseek 时必填)
 ```
-
-> **不设置 `EMBEDDING_PROVIDER` 即可**——系统自动探测：检测到有效 `EMBEDDING_API_KEY` → 走云端。
-> 如需强制指定，可显式写 `EMBEDDING_PROVIDER=openai` 或 `EMBEDDING_PROVIDER=ollama`。
 
 ### 路径 B：本地 Ollama（隐私优先，数据不出本机）
 
 ```bash
-# 1. 安装并启动 Ollama（https://ollama.com）
-# 2. 拉取向量模型
+# 1. 安装并启动 Ollama（https://ollama.com）；2. 拉取向量模型
 ollama pull qwen3-embedding:0.6b
-
-# 3. 复制配置模板
+# 3. 复制 .env.example → .env 并填 DEEPSEEK_API_KEY（或改 LLM_BACKEND=ollama 全本地）
 cp .env.example .env
-
-# 4. 编辑 .env：填入 LLM Key（向量后端无需额外配置，默认本地 Ollama）
-#    DEEPSEEK_API_KEY=你的LLMkey       (LLM_BACKEND=deepseek 时必填)
-#    或 LLM_BACKEND=ollama              (全部走本地，无需任何 API Key)
 ```
 
-> **两条路径通用说明：**
-> - 换 provider = 换向量空间，**必须重建知识库索引**——详见 [更换向量模型 / 重嵌全库](#更换向量模型--重嵌全库)。
-> - `EMBEDDING_PROVIDER` 留空 = 自动探测（推荐）；显式写 `ollama` 或 `openai` 可强制指定。
+> **两条路径通用**：不设置 `EMBEDDING_PROVIDER` 即自动探测（有有效 `EMBEDDING_API_KEY` → 云端，否则本地；可显式写 `openai` / `ollama` 强制）。换 provider = 换向量空间，**必须重建知识库索引**（见 [更换向量模型](#更换向量模型--重嵌全库)）。
 
 ### 启动
 
 ```bash
-# 推荐：部署体检（每个失败项都会打印对应的修复命令）
+# 推荐：部署体检（每个失败项都会打印对应的修复命令）；startup-check 为其轻量子集
 python scripts/palimpsest_cli.py doctor
-
-# 轻量自检（doctor 的子集）
 python scripts/palimpsest_cli.py startup-check
-```
 
-> **首次运行体检**：`doctor` 会检查关键文件 / 存储 / FTS / 依赖 / Embedding 服务可达性 / 向量维度一致性（实测 vs 库），任一失败项都会给出可执行的修复命令。
-> 若 Embedding 项失败：本地 Ollama 请先启动并 `ollama pull qwen3-embedding:0.6b`；
-> 若使用云端，请确认 `.env` 已配置 `EMBEDDING_API_KEY`。
-
-```bash
 # REST 服务 (:8090) —— 唯一写者，所有接入方式都经它
 python -m uvicorn main:app --host 127.0.0.1 --port 8090
 
-# CLI（示例）
+# CLI 示例 / 监控面板 (:8010) / 索引知识库
 python scripts/palimpsest_cli.py search "架构最近发生了什么变化？"
-
-# 监控面板 (:8010)
 python scripts/dashboard.py
-
-# 索引知识库（KNOWLEDGE_DIR 下的 Obsidian .md 文件）
 python scripts/build_kb_index.py
 ```
 
-> **接入方式优先级（请按此选择）**
+> **接入方式与单进程约束（重要）**
 >
-> 1. **REST 的 `/mcp`（首选）** —— MCP 客户端接入 `http://127.0.0.1:8090/mcp/`，
->    与 REST **共用同一个进程**，天然满足「一个库一个进程」。
-> 2. **CLI / dashboard / 各脚本（同样首选）** —— 一律经 REST 访问；dashboard 已是纯客户端。
-> 3. **stdio `mcp_server.py`（逃生梯，非首选）** —— 仅用于**不跑 REST** 的纯 MCP 场景。
->    ⚠️ 它与 REST **同时运行会争抢同一个库**，且会破坏「唯一写者」约束。**不要放进默认配置**。
->    仅当确定不跑 REST 时，才用 `python mcp_server.py` 启动它。
-
-> **单进程写入约束（重要）**：库文件由 triviumdb 以**独占写模式**打开——第二个连接（哪怕只是 `read_only`）也会在
-> 构造 `TriviumDB` 时失败并报 `Database locked: already opened with an incompatible access mode`。
-> 因此：
-> - REST 服务**禁止多 worker / 多实例**并发写同一库（不要用 `uvicorn --workers N`，保持上面这条单进程命令）；
-> - **一个库只应有一个进程访问**。若同时需要 REST 与 MCP，请让 MCP 接入 REST 的 `/mcp`（见下），不要再单独跑 `mcp_server.py`；
-> - ⚠️ 并发写入失败**会污染文件组**（残留 `.tmp` / `.wal` → generation 校验失败 → 库从可读写退化为读不动，
->   且不会自愈），因此务必配置定期整组冷备份（见「备份与恢复」）。
+> 首选 **REST 的 `/mcp`**：MCP 客户端接入 `http://127.0.0.1:8090/mcp/`，与 REST 共用同一进程；CLI / dashboard / 各脚本同样一律经 REST。stdio `mcp_server.py` 是**逃生梯**（非首选），仅用于**不跑 REST** 的纯 MCP 场景：库文件由 triviumdb 以独占写模式打开，第二个连接会失败并报 `Database locked: ...`，并发写入失败还**会污染文件组**且不自愈。因此 REST 服务禁止多 worker / 多实例，**一个库只应有一个进程访问**；冲突是响亮的——CLI 抛 `DatabaseBusyError`、REST 返回 `503`，不会静默降级。
 >
-> 冲突是**响亮**的，不是静默的：库被占用时，CLI / 脚本会抛 `DatabaseBusyError`（消息含库路径与处理指引），
-> REST 侧返回 `503`（`detail` = 记忆库被其他进程占用）。不会再出现「不知为何失败」的静默降级。
+> Embedding 项失败时：本地 Ollama 请先启动并 `ollama pull qwen3-embedding:0.6b`；云端请确认 `.env` 已配置 `EMBEDDING_API_KEY`。
 
-Windows 下 `scripts/start_rest.vbs` 可以隐藏窗口启动 REST 服务（如开机自启），日志写入 `scripts/start_rest.log`。
+Windows 下 `scripts/start_rest.vbs` 可隐藏窗口启动 REST 服务（如开机自启），日志写入 `scripts/start_rest.log`。
 
 **MCP 客户端接入（推荐：HTTP，与 REST 共进程）**
 
-REST 服务在 `/mcp` 同时暴露 streamable-http 传输的 MCP 端点，MCP 客户端直接接入即可，无需另起 `mcp_server.py`：
-
 ```json
-{
-  "mcpServers": {
-    "palimpsest": {
-      "url": "http://127.0.0.1:8090/mcp/"
-    }
-  }
-}
+{ "mcpServers": { "palimpsest": { "url": "http://127.0.0.1:8090/mcp/" } } }
 ```
 
-> **stdio 方式（`mcp_server.py`）——逃生梯，不是并列选项**。
->
-> 仅适用于「**完全不跑 REST**、只想用 MCP」的场景。它与 REST 各自独立打开
-> 同一个库，同时运行会争抢并可能损坏文件组，因此**不要**在 REST 已在跑的
-> 环境里使用，也不要写进默认配置。
->
-> 之所以保留它：万一 REST 服务出问题，它是一条**独立于 REST 的手动救援通道**
-> ——逃生梯的意义在于「平时不用，要用时在」。若你需要的是日常接入，请用上面的 HTTP 方式。
-
-```json
-{
-  "mcpServers": {
-    "palimpsest": {
-      "command": "python",
-      "args": ["mcp_server.py"],
-      "cwd": "/path/to/Palimpsest"
-    }
-  }
-}
-```
-
-**备份与恢复**
-
-```bash
-# 整文件组冷备份 + 回读校验（默认保留最近 7 份，落在 <数据目录>/backups/）
-python scripts/backup_db.py --keep 7
-```
-
-> 备份必须**整组**（`.db` / `.vec` / `.gidx` / `.pidx` / `.flush_ok` / `.pld.*` / `.wal`）：
-> 这些文件属于同一个 generation，只拷其中一部分得到的快照会「读得动、写不动」，无法用于恢复。
-> 脚本会在拷贝后**回读校验**，不通过即报错退出。
+**备份与恢复**：`python scripts/backup_db.py --keep 7` 做整文件组冷备份 + 回读校验（默认保留 7 份）。备份必须**整组**（`.db` / `.vec` / `.gidx` / `.pidx` / `.flush_ok` / `.pld.*` / `.wal`，同属一个 generation），脚本拷贝后会回读校验，不通过即报错退出。
 
 ---
 
 ## 配置
 
-所有配置均从环境变量读取（`.env` 文件由 `python-dotenv` 自动加载），完整带注释模板见 `.env.example`。
+所有配置均从环境变量读取（`.env` 由 `python-dotenv` 自动加载），完整带注释模板见 `.env.example`。以下是新用户必配项，完整配置表（36 项）见 [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)。
 
-| 变量 | 默认值 | 说明 | 生效前提（Precondition） |
-|---|---|---|---|
-| `REST_PORT` | `8090` | FastAPI REST 服务端口 | 启动 REST 服务时 |
-| `DASHBOARD_PORT` | `8010` | 监控面板服务端口 | 启动 dashboard 时 |
-| `DB_PATH` | `data/mh_memory.db` | 嵌入式 TriviumDB 数据库路径 | — |
-| `PALIMPSEST_API_KEY` | *（空 = 关闭）* | 可选 REST 鉴权；设置后除 `/` 外所有请求须带 Bearer / X-API-Key | 启用 REST 鉴权时 |
-| `LLM_BACKEND` | `deepseek` | LLM 后端：`deepseek` 或 `ollama` | 需要 LLM 调用时 |
-| `DEEPSEEK_API_KEY` | *（空）* | DeepSeek API 密钥 | `LLM_BACKEND=deepseek` |
-| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | DeepSeek API 基础地址 | `LLM_BACKEND=deepseek` |
-| `DEEPSEEK_MODEL` | `deepseek-v4-flash` | DeepSeek 模型标识 | `LLM_BACKEND=deepseek` |
-| `OLLAMA_BASE_URL` | `http://127.0.0.1:11434/v1` | Ollama OpenAI 兼容基础地址 | `LLM_BACKEND=ollama` |
-| `OLLAMA_MODEL` | `deepseek-r1:7b` | 作为 LLM 的 Ollama 对话模型 | `LLM_BACKEND=ollama` |
-| `EMBEDDING_PROVIDER` | *（空 = 自动探测）* | 向量后端：留空自动探测（有云端 key → `openai`，否则 → `ollama`）；显式写 `ollama`（本地、私有）或 `openai`（OpenAI 兼容云端，如 Voyage/硅基流动） | — |
-| `OLLAMA_EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | 本地 Ollama 向量模型 | `EMBEDDING_PROVIDER=ollama` |
-| `OLLAMA_EMBEDDING_BASE_URL` | `http://127.0.0.1:11434` | Ollama 原生 embedding API 根地址（与 LLM 的 /v1 解耦） | `EMBEDDING_PROVIDER=ollama` |
-| `OLLAMA_EMBEDDING_DIM` | `1024` | 向量维度（本地后端） | `EMBEDDING_PROVIDER=ollama` |
-| `EMBEDDING_API_KEY` | *（空）* | 云端向量端点的 API 密钥 | `EMBEDDING_PROVIDER=openai` |
-| `EMBEDDING_BASE_URL` | `https://api.voyageai.com/v1` | 云端向量基础地址（任意 OpenAI 兼容端点） | `EMBEDDING_PROVIDER=openai` |
-| `EMBEDDING_MODEL` | `voyage-3` | 云端向量模型 | `EMBEDDING_PROVIDER=openai` |
-| `EMBEDDING_DIM` | `1024` | 向量维度（云端后端） | `EMBEDDING_PROVIDER=openai` |
-| `MEMORY_DECAY_FACTOR` | `0.95` | 月度记忆衰减（排序用，`score × importance × factor^(天/30)`）；`1.0` 关闭衰减；`kb_chunk` 节点永不衰减 | soft 模式：仅进入 ε 微调项 `recency_norm`（ε 默认 0.02 → 排序影响 ≤0.02，一年内约 0.01 量级，近乎半死参数）；hard 模式：乘性硬加权 |
-| `MEMORY_RERANK_MODE` | `soft` | 重排模式：`soft` = 语义分为主线 + ε 级元数据微调（默认）；`hard` = 旧版乘性硬加权（可回退） | — |
-| `SOFT_RERANK_EPS` | `0.02` | `soft` 模式的 ε：落在余弦分差区间的 15%–40%，只做 tie-break | `MEMORY_RERANK_MODE=soft` |
-| `DOMAIN_BOOST_EPS` | `0.10` | 域软加权加分（加性，作用在语义分上）：`domain_boost` 非空时对同域候选加此值 | `domain_boost` 参数非空 |
-| `KB_SOFT_RERANK_MULT` | `1.5` | `kb_chunk`（知识块不老化）在 `soft` 模式下的 ε 加成倍率 | `MEMORY_RERANK_MODE=soft` |
-| `DOMAIN_BIAS_WEIGHT` | `1.15` | 域偏置检索的额外权重 | `domain_bias` 参数非空 |
-| `EXPAND_MAX_EDGES_PER_NODE` | `20` | 图谱扩散时每节点最多扩散的最强边数 | 图扩散启用（`RETRIEVAL_EXPAND_DEPTH≥1` 或检索附带邻居） |
-| `EXPAND_MIN_EDGE_WEIGHT` | `0.0` | 图谱扩散弱边过滤阈值（0 关闭） | 图扩散启用（`RETRIEVAL_EXPAND_DEPTH≥1` 或检索附带邻居） |
-| `RRF_K` | `60.0` | 混合检索 RRF 常数 k（单侧命中也计贡献） | `mem_hybrid_search` 且 `mode=rrf` |
-| `RRF_SEM_WEIGHT` | `1.0` | 混合检索 RRF 语义侧权重 | `mem_hybrid_search` 且 `mode=rrf` |
-| `RRF_FTS_WEIGHT` | `0.1` | 混合检索 RRF 精确（FTS）侧权重——语义主序干净后 FTS 小幅加成 | `mem_hybrid_search` 且 `mode=rrf` |
-| `RETRIEVAL_EXPAND_DEPTH` | `0` | 语义主序的图扩散深度：`0` = 纯语义排序（默认）；`1` = 图邻居参与语义主序（可一键回退） | 检索启用图扩散时 |
-| `TIER_FACTS` | `memory,correction,decision,plan,task,review,solution,inspiration,user_intent,character_state` | 归入事实层的记忆 type（逗号分隔）；未登记的 type 一律归事实层 | 检索与注入按 tier 过滤时 |
-| `TIER_LOGS` | `record,event,git_commit` | 归入日志层的记忆 type（逗号分隔），默认不进检索与注入池 | 检索与注入按 tier 过滤时 |
-| `DEFAULT_TIER` | `facts` | 检索与注入的默认分层；`logs` 只回日志层，空串 = 不过滤（全量历史通道） | 未显式指定 `tier` 时 |
-| `MEM_INGEST_MAX_LENGTH` | `50000` | 单条记忆 content 最大字符数，超长拒绝写入 | `mem_ingest` 写入时 |
-| `CONFLICT_SKIP_TYPES` | *（空）* | 跳过冲突检测的 type（逗号分隔），列出的 type 不再被标 `outdated` / 建 `REVISED_BY` 边；默认空 = 行为不变。用于 `task` 这类「累积关系」而非「同一事实被取代」的场景 | `mem_ingest` 写入时的冲突检测 |
-| `KNOWLEDGE_DIR` | *（可选）* | 知识库根目录（待索引的 Obsidian `.md` 文件） | 使用 `kb_index` / `build_kb_index.py` 时 |
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `REST_PORT` | `8090` | FastAPI REST 服务端口 |
+| `DASHBOARD_PORT` | `8010` | 监控面板端口 |
+| `DB_PATH` | `data/mh_memory.db` | 嵌入式 TriviumDB 数据库路径 |
+| `PALIMPSEST_API_KEY` | *（空 = 关闭）* | 可选 REST 鉴权；设置后除 `/` 外须带 Bearer / X-API-Key |
+| `LLM_BACKEND` | `deepseek` | LLM 后端：`deepseek` 或 `ollama` |
+| `DEEPSEEK_API_KEY` | *（空）* | DeepSeek 密钥（`LLM_BACKEND=deepseek` 必填） |
+| `OLLAMA_MODEL` | `deepseek-r1:7b` | `LLM_BACKEND=ollama` 时的对话模型 |
+| `EMBEDDING_PROVIDER` | *（空 = 自动探测）* | 向量后端：留空自动探测，或 `ollama` / `openai` |
+| `OLLAMA_EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | 本地 Ollama 向量模型 |
+| `EMBEDDING_API_KEY` | *（空）* | 云端向量端点密钥（配置后自动走 `openai`） |
+| `KNOWLEDGE_DIR` | *（可选）* | 知识库根目录（待索引的 Obsidian `.md` 文件） |
 
 ---
 
 ## 更换向量模型 / 重嵌全库
 
-### 为什么要重嵌？
-
-不同的 embedding 模型产生不同的向量空间——**跨模型的向量不可混用**。如果切换了 `EMBEDDING_PROVIDER`、`OLLAMA_EMBEDDING_MODEL` 或 `EMBEDDING_MODEL`，必须对库中所有节点重新生成向量（重嵌），否则新旧向量空间互相排斥，检索质量会急剧下降。
-
-### 推荐操作顺序
-
-```bash
-# 1. 体检：确认 provider / 模型 / 维度正确，embedding 服务可用
-python scripts/palimpsest_cli.py reindex --check
-
-# 2. 预览：查看将要重嵌哪些节点
-python scripts/palimpsest_cli.py reindex --dry-run
-
-# 3. 正式执行（默认断点续跑，Ctrl+C 中断后可自动续跑）
-python scripts/palimpsest_cli.py reindex --yes
-
-# 4. 验证：跑一次检索冒烟
-python scripts/palimpsest_cli.py search "测试" --top-k 3
-```
-
-常用选项：
-
-| 选项 | 说明 |
-|---|---|
-| `--only memory,record` | 只重嵌指定类型 |
-| `--skip kb_chunk,novel_chunk` | 跳过指定类型 |
-| `--batch 128` | 每 128 个节点打印进度 |
-| `--restart` | 忽略断点，从头重嵌 |
-
-### 换维度（新模型输出维度不同）
-
-如果新模型的输出维度与当前库不一致（如从 1024 维换到 768 维），**不能直接重嵌**——必须新建库。流程如下：
-
-```bash
-# 1. 导出
-python scripts/export_all_data.py
-
-# 2. 重建（新库）
-python scripts/rebuild_db.py
-
-# 3. 修改 .env 中对应维度配置
-# OLLAMA_EMBEDDING_DIM=768   或   EMBEDDING_DIM=768
-
-# 4. 重建知识库索引
-python scripts/build_kb_index.py --full
-
-# 5. 如有小说设定库
-python scripts/build_novel_index.py --source <vault路径> --full
-```
+切换 embedding 模型会改变向量空间，**必须重嵌全库**。完整操作顺序（`reindex --check` / `--dry-run` / `--yes`）与换维度的重建流程见 [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)。
 
 ---
 
 ## 自定义索引规则
 
-`build_novel_index.py` 与 `build_kb_index.py` 的扫描范围、节点 kind 分类、分块策略、payload domain 等均来自一套 **声明式 JSON 规则**（默认内置，零配置即用）。把规则同样可以从命令行显式指定：
+`build_novel_index.py` 与 `build_kb_index.py` 的扫描范围、节点 kind 分类、分块策略、payload domain 均来自一套**声明式 JSON 规则**（默认内置，零配置即用），可用 `--rules` 显式指定：
 
 ```bash
-# 显式指定规则文件（--rules）
 python scripts/build_novel_index.py --source <vault路径> --rules rules.json
 python scripts/build_kb_index.py --rules rules.json
-
-# 不传 --rules 时按以下优先级自动查找：
-#   1. <vault 根>/.palimpsest-index.json（kb 脚本为 knowledge dir 根）
-#   2. 内置默认规则
 ```
 
-**规则加载优先级**：`--rules <path>`（路径不存在会直接报错）> `<vault 根>/<legacy 文件名>`（novel 脚本兼容旧约定 `.palimpsest-novel-index.json`）> `<vault 根>/.palimpsest-index.json` > 内置默认。目录下若存在旧格式 `.palimpsest-index.yaml`，**不会解析**，仅在警告里提示改用 `.json`。
-
-**JSON 文件格式**：顶层键为 `kind_map` / `default_kind` / `chunk_strategy` / `min_chunk_len` / `max_chunk_len` / `domain` / `include` / `exclude` / `require_frontmatter_id`；未知键只产生警告（向前兼容），类型或取值非法会报错。`kind_map` 每条规则形如：
-
-```json
-[
-  { "kind": "reference", "dir_prefix": "reference" },
-  { "kind": "overview", "filename": "00-overview.md" },
-  { "kind": "archive", "glob": "archive/**/*" }
-]
-```
-
-三种匹配方式（同一条规则里可组合，多个字段 = AND）：`dir_prefix` 匹配任意层级的同名目录；`filename` 与文件名**精确相等**；`glob` 用 `fnmatch` 匹配整条相对路径。按声明顺序先匹配者胜，全不命中 → `default_kind`（默认 `"default"`，**绝不静默归并**到具体业务 kind，未命中路径会出现在统计的 `unmatched_paths` 并打印在摘要里）。
-
-完整示例见 [`examples/index-rules.example.json`](examples/index-rules.example.json)，内含通用目录名（`notes/` / `reference/` / `archive/`）演示全部字段。
+**加载优先级**：`--rules <path>`（路径不存在会报错）> `<vault 根>/<legacy 文件名>`（novel 脚本兼容旧约定 `.palimpsest-novel-index.json`）> `<vault 根>/.palimpsest-index.json` > 内置默认；旧格式 `.palimpsest-index.yaml` **不会解析**，仅在警告里提示改用 `.json`。顶层键为 `kind_map` / `default_kind` / `chunk_strategy` / `min_chunk_len` / `max_chunk_len` / `domain` / `include` / `exclude` / `require_frontmatter_id`，未知键只警告、非法取值报错。`kind_map` 每条支持 `dir_prefix` / `filename` / `glob`（同条可组合，多个字段 = AND），按声明顺序先匹配者胜，全不命中 → `default_kind`（默认 `"default"`，不静默归并，未命中路径出现在 `unmatched_paths`）。完整示例见 [`examples/index-rules.example.json`](examples/index-rules.example.json)。
 
 ---
 
@@ -472,183 +230,43 @@ python scripts/build_kb_index.py --rules rules.json
 | `task-archive` | 归档已完成任务；`--apply` 写入 markdown 并删除节点 |
 | `reindex` | 全库向量重嵌入（换 embedding 模型后使用；`--check` 体检、`--dry-run` 预览） |
 
-示例：
-
-```bash
-python scripts/palimpsest_cli.py ingest "服务监听 8090 端口" --domain work --importance 0.6
-python scripts/palimpsest_cli.py search "8090 端口" --neighbors
-python scripts/palimpsest_cli.py stats
-python scripts/palimpsest_cli.py promote            # 预览高频记忆候选
-python scripts/palimpsest_cli.py consolidate        # 预览合并候选
-python scripts/palimpsest_cli.py consolidate --apply # 合并
-```
-
 ### 区块（Blocks）
 
-`block` 是「域分组」概念：图谱按区块隔离，扩散检索只沿同区块的边，防止跨域污染。出厂内置通用区块：`task`（任务）、`kb`（知识库）、`hermes`（助手自身记忆）、`novel`（小说创作设定）、`general`（未分类兜底）。你也可以把自己的 `domain` 当作区块使用（如 `--block myproject`）。`--block` 留空则按全量模式检索。
-
-节点归属统一由 `payload.domain` 字段表达。写入记忆时通过 `--domain X` 或 `mem_ingest(domain=...)` 指定区块；`kb` 类型节点由知识库索引自动设置为 `kb`。
+`block` 是「域分组」概念：图谱按区块隔离，扩散检索只沿同区块的边，防止跨域污染。内置 `task` / `kb` / `hermes` / `novel` / `general`，也可把自己的 `domain` 当作区块（如 `--block myproject`），留空按全量模式检索。节点归属统一由 `payload.domain` 表达：写入时通过 `--domain X` 或 `mem_ingest(domain=...)` 指定，`kb` 节点由索引自动设置。
 
 ### REST API — `main.py`，端口 8090
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `GET` | `/` | 服务信息 + 版本 + 端点索引 |
-| `GET` | `/export` | 导出记忆为分页 JSON 快照（默认每页 100 条，上限 500） |
-| `GET` | `/summary` | 人类可读的记忆摘要（事件 / 角色状态 / 计划） |
-| `GET` | `/memory/{id}` | 读取单节点完整 payload |
-| `POST` | `/report` | 基于当前存储生成 LLM 分析报告（Prompt 面向小说创作 / 角色扮演场景，不是通用摘要） |
-| `DELETE` | `/memory/{id}` | 删除记忆节点（FTS 索引同步） |
-| `PUT` | `/memory/{id}` | 更新节点 payload（**合并语义**：只改传入字段，其余保留；自动同步 FTS） |
-| `PATCH` | `/memory/{id}` | 部分更新节点 payload（与 PUT 同合并语义，REST 语义更精确） |
-| `PATCH` | `/memory/{id}/vector` | 更新节点的向量（维度需一致） |
-| `POST` | `/memory/{id}/reembed` | 按当前 content 重算并写回向量（改 content 后语义漂移的补救入口，服务端自己生成向量） |
 | `POST` | `/mem/search` | 统一检索 |
-| `POST` | `/skill/search` | 技能语义检索 |
-| `POST` | `/mem/hybrid-search` | FTS5 + 向量混合检索 |
 | `POST` | `/mem/ingest` | 写入新记忆（含冲突检测 + 敏感扫描） |
-| `POST` | `/mem/link` | 创建图边 |
-| `DELETE` | `/mem/edge` | 删除图边（body：`source_id` / `target_id` / `relation`；幂等） |
-| `POST` | `/mem/recent` | 最近记忆列表（按 created_at 倒序） |
-| `GET` | `/tasks/active` | 活跃任务列表（query：`project` / `states` / `limit`；按状态优先级 → 最近触碰倒序） |
-| `POST` | `/mem/stats` | 库级盘点统计 |
 | `POST` | `/graph/neighbors` | 某节点的图谱邻居 |
-| `POST` | `/graph/communities` | Leiden 社区发现 |
-| `POST` | `/lifecycle/pre-turn` | **记忆策略**：每轮模型调用前决定召回哪些记忆，返回可注入 prompt 的文本（trivial/过短自动跳过） |
-| `POST` | `/lifecycle/post-turn` | **记忆策略**：每轮回复后决定是否沉淀、写什么内容、写哪一层（logs/facts） |
-| `POST` | `/lifecycle/session-end` | **记忆策略**：会话结束提炼要点、去重、写入 facts 层 |
-| `POST` | `/lifecycle/pre-compress` | **记忆策略**：压缩前抽取要点（只回文本，不写库） |
-| `POST` | `/lifecycle/context-enhance` | **记忆策略**：压缩前挑主题、查图谱关键链、组装注入文本（只回文本，不写库） |
+| `POST` | `/lifecycle/pre-turn` | **记忆策略**：每轮模型调用前决定召回哪些记忆，返回可注入 prompt 的文本 |
 
-> 若设置了 `PALIMPSEST_API_KEY`，除 `/` 外所有端点要求 `Authorization: Bearer <key>` 或 `X-API-Key: <key>`。
-
-示例：
-
-```bash
-curl -X POST http://127.0.0.1:8090/mem/search \
-  -H "Content-Type: application/json" \
-  -d '{"query": "架构", "scope": "all", "top_k": 5}'
-```
+> 完整 26 条路由见 [`docs/API.md`](docs/API.md)。若设置了 `PALIMPSEST_API_KEY`，除 `/` 外所有端点要求 `Authorization: Bearer <key>` 或 `X-API-Key: <key>`。
 
 ---
 
-## 测试
+## 测试与评测
 
 ```bash
-# 在仓库根目录执行
-python -m pytest tests/ -v
-```
-
-测试套件覆盖核心闭环：写入 → `mem_search` 命中 → `mem_get_full` 全文往返；图谱建边 → `graph_neighbors` / `mem_communities`；敏感扫描拒绝含密钥内容；混合检索 FTS 侧命中标记；冲突检测 / 版本链与 outdated 检索语义；`consolidate` / `promote` 干跑与幂等；PUT/PATCH 部分更新保留字段；并发与失败路径（脏 payload、embedding 不可用等）。
-
-`tests/conftest.py` 在一切导入之前将 `DB_PATH` 重定向到 **临时数据库**（并隔离知识库）—— 测试套件永远不碰生产数据库；使用确定性 fake embedder，无需在线 Ollama 即可全绿。
-
----
-
-## 应用层压测
-
-`scripts/rest_stress.py` 对 REST 服务跑端到端压测，覆盖 6 类真实使用场景：高频检索 / 批量写入 / 图谱建边与扩散 / 边界输入（空内容、超长、坏 JSON、负 top_k 等）/ 读写混合长压 / 写入后召回正确性。
-
-```bash
-# 1. 起一个测试实例（独立库 + 独立端口；脚本会写入数据，不要指向生产库）
+python -m pytest tests/ -v                                 # 在仓库根执行
 DB_PATH=/tmp/stress.db python -m uvicorn main:app --port 8091
-
-# 2. 压测（--quick 为快速档）
 python scripts/rest_stress.py --base http://127.0.0.1:8091 --seeds 200 --out report.json
-```
-
-输出 JSON 报告：每个场景的 qps、p50 / p95 / p99 延迟与错误率；另含边界用例的 HTTP 状态与正确性抽查结果（唯一标记能否召回、重复写入是否触发冲突检测）。随机种子固定（42），同样入参可复现。
-
----
-
-## 检索质量评测
-
-`eval/` 是一套**离线检索质量评测框架**：从库内真实节点反推生成题集，对四条检索路径（`fts` / `vec` / `rrf` / `cascade`）计算 Recall@K、MRR@K、nDCG@K，让「改检索」的收益与回归可量化，而不是只凭主观感受。
-
-```bash
-# 生成题集（需要 DEEPSEEK_API_KEY；--dry-run 只看分层分布，不调 API）
-venv/Scripts/python.exe eval/gen_eval_set.py --dry-run
-
-# 跑评测（默认 4 种模式、top-10；可选 --modes rrf,cascade / --limit 20）
+venv/Scripts/python.exe eval/gen_eval_set.py --dry-run     # 需要 DEEPSEEK_API_KEY
 venv/Scripts/python.exe eval/run_eval.py
 ```
 
-**只读保护**：所有脚本启动时先把真实库连同 sidecar 文件复制到 `eval/.tmp/`，全部读写落在副本上，并在跑前跑后对真实库文件算 SHA256 写进报告自证。题集与指标定义见 [`eval/README.md`](eval/README.md)。
+测试套件覆盖核心闭环：写入 → `mem_search` 命中 → `mem_get_full` 全文往返；图谱建边 → `graph_neighbors` / `mem_communities`；敏感扫描拒绝含密钥内容；混合检索 FTS 侧命中标记；冲突检测 / 版本链与 outdated 检索语义；`consolidate` / `promote` 干跑与幂等；PUT/PATCH 部分更新保留字段；并发与失败路径。`tests/conftest.py` 在导入前把 `DB_PATH` 重定向到临时库，套件永不碰生产库，用确定性 fake embedder，无需在线 Ollama 即可全绿。
 
-配套工具：
-
-- `scripts/retrieval_probe.py` —— 检索体检探针：固化已验证查询，输出 top-1 命中率与延迟基线，用于跨版本 / 跨 embedding 模型快速对比
-- `scripts/prod_entrypoint_check.py` —— 生产入口复测：直接调检索的真实实现，在两种配置下各跑一遍题集，证明配置改动确实在生产链路上生效（只读，真库 SHA256 前后校验）
-- `scripts/ab_snapshot_*.py` —— 单变量 A/B：从同一份真库快照复制两份副本，只改其中一份的变量，逐题归因谁赢谁输、赢在哪一层
+`scripts/rest_stress.py` 应用层压测覆盖 6 类真实场景（高频检索 / 批量写入 / 图谱建边与扩散 / 边界输入 / 读写混合长压 / 写入后召回正确性），输出 qps 与 p50/p95/p99。`eval/` 离线评测从库内真实节点反推题集，对 `fts` / `vec` / `rrf` / `cascade` 算 Recall@K、MRR@K、nDCG@K；脚本先把真库复制到 `eval/.tmp/` 只在副本上读写、并对真库前后算 SHA256 自证。配套工具：`scripts/retrieval_probe.py` / `scripts/prod_entrypoint_check.py` / `scripts/ab_snapshot_*.py`；题集与指标定义见 [`eval/README.md`](eval/README.md)。
 
 ---
 
 ## 项目结构
 
-```
-Palimpsest/
-├── README.md                     # 中文主版
-├── README_EN.md                  # 英文版
-├── CHANGELOG.md                  # 版本历史
-├── CONTRIBUTING.md               # 贡献指南
-├── CODE_OF_CONDUCT.md
-├── SECURITY.md
-├── LICENSE
-├── .env.example                  # 配置模板（带注释）
-├── .gitignore
-├── requirements.txt
-├── requirements-dev.txt          # 开发依赖（ruff / mypy / pytest-cov）
-├── config.py                     # 环境变量驱动配置
-├── main.py                       # FastAPI REST 入口 (:8090)
-├── mcp_server.py                 # MCP stdio 入口 (FastMCP)
-├── dashboard.html
-├── docs/                         # RELEASING.md（发版流程）/ DEPRECATIONS.md（退役计划）/ HERMES_INTEGRATION.md / refactor_plan.md
-├── core/                         # 共享引擎，无框架依赖
-│   ├── trivium_store.py          #   TriviumDB 封装（向量+图谱+文档）
-│   ├── conflict.py               #   冲突检测 / 版本链（三层防误标）
-│   ├── consolidator.py           #   近似重复记忆合并
-│   ├── stats.py                  #   库级盘点统计（mem_stats 核心）
-│   ├── promoter.py               #   高频记忆自动升级（hit_count → promote）
-│   ├── fts_index.py              #   FTS5 全文索引（trigram, fts.db）
-│   ├── reporting.py              #   LLM 生成的记忆报告
-│   ├── secret_scan.py            #   写入前敏感扫描（10 条规则）
-│   ├── startup_check.py          #   启动自检
-│   ├── task_archive.py           #   完成任务自动归档
-│   ├── utils.py
-│   └── version.py                #   版本号来自 git tag（兜底 dev）
-├── mcp_tools/                    # 17 个 MCP 工具（MCP/REST/CLI 共用）
-│   ├── __init__.py
-│   ├── _common.py                #   共享 store / mcp / 序列化助手
-│   ├── memory.py                 #   mem_* 工具
-│   ├── kb.py                     #   kb_index / kb_search
-│   ├── graph.py                  #   graph_neighbors / mem_link / mem_unlink / mem_communities
-│   ├── consolidate_tool.py       #   mem_consolidate
-│   └── stats_tool.py             #   mem_stats
-├── scripts/                      # 运维工具
-│   ├── palimpsest_cli.py         #   CLI（search/ingest/…/stats/promote）
-│   ├── dashboard.py              #   监控面板 (:8010)
-│   ├── build_kb_index.py         #   知识库分块 & 向量化
-│   ├── build_novel_index.py      #   小说设定库整文件入库（--source 指定 vault）
-│   ├── link_novel_relations.py   #   小说人物关系批量建边（dry-run/--apply）
-│   ├── check_fts_consistency.py  #   FTS 内容级对账
-│   ├── export_all_data.py        #   只读 JSON 备份导出
-│   ├── graph_edges.py            #   持久化知识图谱边
-│   ├── migrate_domain.py         #   历史字段迁移（character_name → domain）
-│   ├── rebuild_db.py             #   从导出快照重建数据库
-│   ├── reindex.py                #   全库向量重嵌入（换模型后一键重建）
-│   ├── start_rest.vbs            #   Windows 隐藏窗口 REST 启动器
-│   ├── rest_stress.py            #   REST 应用层压测（6 场景端到端）
-│   ├── retrieval_probe.py        #   检索体检探针（top-1 命中率 + 延迟基线）
-│   ├── prod_entrypoint_check.py  #   生产入口复测（真实实现 + 双配置对照）
-│   ├── ab_snapshot_*.py          #   单变量 A/B（库副本 + 逐题归因）
-│   └── tdb_stress/               #   TriviumDB 压力测试（存储层）
-├── eval/                         # 离线检索质量评测（题集 / 4 模式 / Recall·MRR·nDCG）
-├── hermes-plugin/                # Hermes 双插件（Memory Provider + Context Engine）
-├── tests/                        # pytest（conftest 隔离 + fake embedder，无需联网）
-└── data/                         # 运行时数据库（gitignore）
-    ├── mh_memory.db              #   主 TriviumDB 存储
-    └── fts.db                    #   FTS5 全文索引
-```
+`main.py`（REST 唯一写者）/ `mcp_server.py`（stdio 逃生梯）/ `config.py` → `core/`（共享引擎，无框架依赖）→ `mcp_tools/`（18 个工具，MCP/REST/CLI 共用）；另有 `scripts/` 运维脚本、`eval/` 离线评测、`hermes-plugin/` 双插件、`tests/`、`docs/`、`data/`。分层约定与完整树见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ---
 
@@ -656,28 +274,22 @@ Palimpsest/
 
 - **虚拟环境：** 每个 checkout 单独建一个（`python -m venv venv`）并 `pip install -r requirements.txt`。
 - **新增工具：** 在 `mcp_tools/` 内用共享的 `@mcp.tool()` 装饰器注册——它会立即同时出现在 MCP 服务、REST 层与 CLI 中。
-- **新增核心模块：** 保持 `core/` 不引入 FastAPI/MCP；经由 `mcp_tools/` 与 `main.py` 消费。版本号由 `core/version.py` 从 git tag 获取。
-- **改了 schema？** 重建 FTS 索引（`fts-rebuild`）与知识库索引（`build_kb_index.py`）；导出 / 重建工具在 `scripts/`。
+- **新增核心模块：** 保持 `core/` 不引入 FastAPI/MCP；经由 `mcp_tools/` 与 `main.py` 消费。
+- **改了 schema？** 重建 FTS 索引（`fts-rebuild`）与知识库索引（`build_kb_index.py`）。
 - **测试：** 保持隔离——绝不让测试指向生产数据库。
 
 提交 PR 前请先过质量门禁（与 CI 的 `lint` / `typecheck` / `test` 三个 job 一一对应）：
 
 ```bash
 python -m pytest tests/ -q                         # 测试（CI 上跑 3.10 / 3.11 / 3.12）
-ruff check .                                       # 静态检查（规则集钉在 pyproject.toml 的 [tool.ruff]）
-mypy                                               # 类型检查（当前覆盖 core/，非严格起步）
-python -m pytest --cov=core --cov=mcp_tools -q     # 覆盖率基线（暂不设门槛，用于定位缺口）
+ruff check .                                       # 静态检查（规则集钉在 pyproject.toml）
+mypy                                               # 类型检查（当前覆盖 core/）
+python -m pytest --cov=core --cov=mcp_tools -q     # 覆盖率基线
 ```
 
-开发依赖用 `pip install -r requirements-dev.txt` 安装；`ruff` 版本与 CI 对齐，避免门禁含义随版本漂移。
+文档与代码的一致性由 `scripts/readme_check.py` 检查（MCP 工具清单 / CLI 子命令 / REST 路由 / 配置项键名与默认值 / 文件引用 / 行内代码配对），CI 的 `docs` job 以 `--strict` 跑：`python scripts/readme_check.py --strict`。
 
-文档与代码的一致性由 `scripts/readme_check.py` 检查（MCP 工具清单 / CLI 子命令 / REST 路由 / 配置项键名与默认值 / 文件引用 / 行内代码配对）。CI 的 `docs` job 会以 `--strict` 跑它，本地跑法相同：
-
-```bash
-python scripts/readme_check.py --strict
-```
-
-版本发布遵循 [语义化版本](https://semver.org/lang/zh-CN/)，流程见 [RELEASING.md](docs/RELEASING.md)，历史见 [CHANGELOG.md](CHANGELOG.md)。字段 / 接口的弃用与退役计划见 [DEPRECATIONS.md](docs/DEPRECATIONS.md)。
+版本发布遵循 [语义化版本](https://semver.org/lang/zh-CN/)，流程见 [RELEASING.md](docs/RELEASING.md)，历史见 [CHANGELOG.md](CHANGELOG.md)，弃用 / 退役计划见 [DEPRECATIONS.md](docs/DEPRECATIONS.md)。
 
 ---
 
