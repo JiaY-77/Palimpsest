@@ -16,6 +16,7 @@ from core.bitemporal import stamp_new_fact, time_fields
 from core.conflict import resolve_conflict
 from core.db_health import check_db_health, health_hint
 from core.fts_index import index_node, search_fts_status
+from core.policy import check_ingest
 from core.secret_scan import SecretScanError
 from core.trivium_store import domain_in_block, node_domain
 from core.utils import _to_float
@@ -175,28 +176,39 @@ def _post_ingest_side_effects(store, node_id: int, content: str, now: float) -> 
     return secret_hint, node_domain(payload)
 
 
-def _build_ingest_result(node_id, domain_out: str, conflict: dict, linked_kb_ids: list[int], secret_hint: list) -> str:
-    """组装 mem_ingest 的返回 JSON（含 outdated 修订链提示）。"""
+def _build_ingest_result(
+    node_id,
+    domain_out: str,
+    conflict: dict,
+    linked_kb_ids: list[int],
+    secret_hint: list,
+    policy_warnings: list | None = None,
+) -> str:
+    """组装 mem_ingest 的返回 JSON（含 outdated 修订链提示 + 策略告警）。"""
     outdated_ids = conflict["outdated_ids"]
     related_ids = conflict["related_ids"]
+    # 冲突检测阶段（core.conflict）产生的策略告警 + 入口阶段的告警合并
+    all_warnings = list(conflict.get("policy_warnings", [])) + list(policy_warnings or [])
 
     suggestion = ""
     if outdated_ids:
         ids = ", ".join(str(i) for i in outdated_ids)
         suggestion = f"旧记忆 id={ids} 已标记 outdated（REVISED_BY 链），若涉及固定记忆（MEMORY.md）请同步更新"
-    return _to_json(
-        {
-            "stored": True,
-            "node_id": node_id,
-            "domain": domain_out,
-            "conflict_found": bool(outdated_ids),
-            "outdated_ids": outdated_ids,
-            "related_ids": related_ids,
-            "linked_kb_ids": linked_kb_ids,
-            "secret_hint": secret_hint,
-            "suggestion": suggestion,
-        }
-    )
+    payload = {
+        "stored": True,
+        "node_id": node_id,
+        "domain": domain_out,
+        "conflict_found": bool(outdated_ids),
+        "outdated_ids": outdated_ids,
+        "related_ids": related_ids,
+        "linked_kb_ids": linked_kb_ids,
+        "secret_hint": secret_hint,
+        "suggestion": suggestion,
+    }
+    # 仅在有告警时加字段，避免污染既有严格断言
+    if all_warnings:
+        payload["policy_warnings"] = all_warnings
+    return _to_json(payload)
 
 
 @mcp.tool()
@@ -208,18 +220,13 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5, doma
     返回 linked_kb_ids 便于追溯关联的知识库块。
     """
     now = time.time()
-    # ---- 入口校验：空内容 / 超长内容 拒绝写入（在嵌入与扫描前拦截）----
-    content_stripped = (content or "").strip()
-    if not content_stripped:
-        return _to_json({"stored": False, "node_id": None, "error": "内容不能为空"})
-    if len(content_stripped) > Config.MEM_INGEST_MAX_LENGTH:
-        return _to_json(
-            {
-                "stored": False,
-                "node_id": None,
-                "error": f"内容超长：{len(content_stripped)} 字符，上限 {Config.MEM_INGEST_MAX_LENGTH} 字符",
-            }
-        )
+    # ---- 入口校验（write-guard policy）：空内容 / 超长 / 分级上限 ----
+    # 契约见 core/policy.py；空内容与超长无论何种模式都硬拒（沿用原语义），
+    # 分级上限在 warn 模式只记 warning 不拒。
+    policy_res = check_ingest(content, type, domain)
+    if not policy_res["ok"]:
+        return _to_json({"stored": False, "node_id": None, "error": policy_res["error"]})
+    policy_warnings: list[str] = list(policy_res["warnings"])
     emb = store.embed_text(content)
 
     # ---- v1.1 知识关联检测：只读查询，留在事务外做 ----
@@ -271,7 +278,7 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5, doma
             logger.error("写入失败后健康探测不通过：%s", health.get("error"))
         return _to_json(payload)
 
-    return _build_ingest_result(node_id, domain_out, conflict, linked_kb_ids, secret_hint)
+    return _build_ingest_result(node_id, domain_out, conflict, linked_kb_ids, secret_hint, policy_warnings)
 
 
 @mcp.tool()

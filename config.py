@@ -86,6 +86,23 @@ class Config:
     # 单条记忆 content 最大字符数，超长拒绝写入（防超大 payload 拖垮库）
     MEM_INGEST_MAX_LENGTH = int(os.getenv("MEM_INGEST_MAX_LENGTH", str(50_000)))
 
+    # ---- 写入口约束护栏（write-guard policy，见 core/policy.py）----
+    # 模式：warn（默认，只记日志不改行为）/ enforce（真正拦截）。
+    # 默认 warn——攒一阶段数据后再显式开 enforce；非法值回退 warn。
+    POLICY_MODE = os.getenv("POLICY_MODE", "warn").strip().lower()
+    # 受保护 type（逗号分隔）：命中即不参与自动覆盖（enforce 模式下）。
+    # 默认 rule——治理规则类节点不应被自动冲突检测标 outdated。
+    POLICY_PROTECTED_TYPES = frozenset(
+        t.strip() for t in os.getenv("POLICY_PROTECTED_TYPES", "rule").split(",") if t.strip()
+    )
+    # 按 type 分级的软上限（形如 "task:20000,plan:80000"）。默认空 = 不启用。
+    POLICY_TYPE_LIMITS = os.getenv("POLICY_TYPE_LIMITS", "")
+    # 核心记忆（facts tier）总字符上限；0 = 不限。
+    POLICY_MAX_CORE_TOTAL = int(os.getenv("POLICY_MAX_CORE_TOTAL", "0"))
+    # 配置人工闸门：仅当此环境变量为 1 时，运行时策略覆盖才被接受。
+    # agent 侧写工具不暴露改策略入口——策略只能改 .env / 重启生效。
+    PALIMPSEST_POLICY_UPDATE = os.getenv("PALIMPSEST_POLICY_UPDATE", "") == "1"
+
     # ---- 混合检索 RRF（魔法数字配置化）----
     # Reciprocal Rank Fusion 标准 k 值：单侧命中也算贡献
     RRF_K = float(os.getenv("RRF_K", "60.0"))
