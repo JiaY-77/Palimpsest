@@ -48,6 +48,7 @@
 | `POLICY_MAX_CORE_TOTAL` | `0` | 核心记忆（facts tier）总字符上限；`0` = 不限 | — |
 | `PALIMPSEST_POLICY_UPDATE` | *（空）* | 配置人工闸门：仅当为 `1` 时接受运行时策略覆盖；agent 侧工具不暴露改策略入口，策略只能改 `.env` / 重启生效 | — |
 | `CONFLICT_SKIP_TYPES` | *（空）* | 跳过冲突检测的 type（逗号分隔），列出的 type 不再被标 `outdated` / 建 `REVISED_BY` 边；默认空 = 行为不变。用于 `task` 这类「累积关系」而非「同一事实被取代」的场景 | `mem_ingest` 写入时的冲突检测 |
+| `CONFLICT_TIME_WINDOW` | *（空）* | 启用 bi-temporal 时间窗冲突判定：相似但世界时间窗不重叠的事实（如「十年前住北京」≠「现在住上海」）不判为互相取代。默认关 = 行为逐字节不变（高风险语义变更，验证后再开） | `mem_ingest` 写入时的冲突检测 |
 | `KNOWLEDGE_DIR` | *（可选）* | 知识库根目录（待索引的 Obsidian `.md` 文件） | 使用 `kb_index` / `build_kb_index.py` 时 |
 
 ## 更换向量模型 / 重嵌全库

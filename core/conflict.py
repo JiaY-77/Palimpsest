@@ -13,7 +13,7 @@
 import logging
 
 from config import Config
-from core.bitemporal import mark_superseded
+from core.bitemporal import mark_superseded, windows_overlap
 from core.policy import check_protected_overwrite, get_policy_mode, is_protected
 from core.trivium_store import node_domain
 
@@ -90,6 +90,14 @@ def resolve_conflict(store, embedding, node_id, tx=None, db=None, new_payload=No
             continue
         # 过完所有门后分档：
         if score > 0.75:
+            # 时间窗判定（bi-temporal 三期，core/bitemporal.windows_overlap）：
+            # 相似但不重叠的两条事实是「不同时期的真相」（如「十年前住北京」≠
+            # 「现在住上海」），不判为「同一事实被取代」→ 不标 outdated，归入
+            # related_ids。默认关闭（CONFLICT_TIME_WINDOW=false = 行为不变）。
+            # 语义判定在前，策略门（只读保护）在后，两者独立。
+            if Config.CONFLICT_TIME_WINDOW and not windows_overlap(new_payload, old_payload):
+                related_ids.append(old_id)
+                continue
             # 只读保护门（write-guard policy，core/policy.py）：
             # 受保护节点（type=rule 或 payload.protected=True）不参与自动覆盖。
             # warn 模式：照常标 outdated + 建边，但记 policy_warnings（攒数据）；
