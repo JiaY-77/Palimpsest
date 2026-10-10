@@ -24,8 +24,8 @@ import sys
 from collections import Counter
 
 sys.path.insert(0, ".")
-from core.bitemporal import FACT_TYPES, INVALID_AT, VALID_AT, windows_overlap  # noqa: E402
-from core.trivium_store import node_domain  # noqa: E402
+from core.bitemporal import FACT_TYPES, INVALID_AT, VALID_AT, windows_overlap
+from core.trivium_store import node_domain
 
 
 def main():
@@ -57,16 +57,16 @@ def main():
         with __import__("contextlib").suppress(Exception):
             s._acquire().close()
 
-    print(f"# 回放对照：时间窗冲突判定影响评估")
+    print("# 回放对照：时间窗冲突判定影响评估")
     print(f"扫描事实类节点：{len(facts)} 条（上限 {args.limit}）\n")
 
     # 统计时间字段覆盖率
     has_valid = sum(1 for f in facts if f["p"].get(VALID_AT) is not None)
     has_invalid = sum(1 for f in facts if f["p"].get(INVALID_AT) is not None)
-    print(f"## 时间字段覆盖率")
-    print(f"- 有 valid_at：{has_valid}/{len(facts)} ({100*has_valid/max(1,len(facts)):.0f}%)")
-    print(f"- 有 invalid_at：{has_invalid}/{len(facts)} ({100*has_invalid/max(1,len(facts)):.0f}%)")
-    print(f"- **缺 valid_at 的节点**（新逻辑下恒判重叠，行为不变）：{len(facts)-has_valid}\n")
+    print("## 时间字段覆盖率")
+    print(f"- 有 valid_at：{has_valid}/{len(facts)} ({100 * has_valid / max(1, len(facts)):.0f}%)")
+    print(f"- 有 invalid_at：{has_invalid}/{len(facts)} ({100 * has_invalid / max(1, len(facts)):.0f}%)")
+    print(f"- **缺 valid_at 的节点**（新逻辑下恒判重叠，行为不变）：{len(facts) - has_valid}\n")
 
     # 按 (type, domain) 分组，组内两两比较时间窗
     groups = {}
