@@ -530,6 +530,7 @@ class MemSearchRequest(BaseModel):
     block: str = ""
     domain_boost: str = ""  # 加性软加权：对 node_domain == domain_boost 的候选加分
     tier: str = "facts"  # 记忆分层：facts(默认) | logs | ""(不过滤，改动前行为)
+    as_of: float | None = None  # bi-temporal 历史视图：按该时间点回看事实是否为真
 
 
 class SkillSearchRequest(BaseModel):
@@ -558,6 +559,7 @@ class MemHybridSearchRequest(BaseModel):
     include_outdated: bool = False
     block: str = ""
     tier: str = "facts"  # 记忆分层：facts(默认) | logs | ""(不过滤，改动前行为)
+    as_of: float | None = None  # bi-temporal 历史视图
 
 
 class MemLinkRequest(BaseModel):
@@ -588,6 +590,7 @@ class GraphNeighborsRequest(BaseModel):
 class MemRecentRequest(BaseModel):
     domain: str = ""
     limit: int = 10
+    as_of: float | None = None  # bi-temporal 历史视图：按该时间点回看事实是否为真
 
 
 class GraphCommunitiesRequest(BaseModel):
@@ -621,6 +624,7 @@ def mem_search(req: MemSearchRequest):
             include_outdated=req.include_outdated,
             domain_boost=req.domain_boost,
             tier=req.tier,
+            as_of=req.as_of,
         )
     )
 
@@ -646,6 +650,7 @@ def mem_hybrid_search(req: MemHybridSearchRequest):
             block=req.block,
             include_outdated=req.include_outdated,
             tier=req.tier,
+            as_of=req.as_of,
         )
     )
 
@@ -736,7 +741,7 @@ def mem_recent(req: MemRecentRequest):
 
     核心逻辑见 mcp_tools.memory.mem_recent（复用同一实现，不复制）。
     """
-    return _as_json(_mcp_mem_recent(domain=req.domain, limit=req.limit))
+    return _as_json(_mcp_mem_recent(domain=req.domain, limit=req.limit, as_of=req.as_of))
 
 
 @app.post("/mem/stats")

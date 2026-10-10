@@ -12,7 +12,7 @@ import threading
 import time
 
 from config import Config
-from core.bitemporal import stamp_new_fact, time_fields
+from core.bitemporal import is_valid_at, stamp_new_fact, time_fields
 from core.conflict import resolve_conflict
 from core.db_health import check_db_health, health_hint
 from core.fts_index import index_node, search_fts_status
@@ -43,26 +43,35 @@ DEFAULT_TIER = Config.DEFAULT_TIER
 
 
 @mcp.tool()
-def mem_retrieve(query: str, domain: str = "", top_k: int = 5, include_outdated: bool = False) -> str:
+def mem_retrieve(
+    query: str, domain: str = "", top_k: int = 5, include_outdated: bool = False, as_of: float | None = None
+) -> str:
     """
     语义检索记忆：返回 150 字摘要 + meta（绝不返回全文，省 token 的关键设计）。
     全文请用 mem_get_full 按 id 单独取。
     v4.0 outdated 语义：默认只回当前有效节点（status != "outdated"）；
     include_outdated=True 时返回全部（历史可追溯通道）。
+    as_of 非空时按 bi-temporal 时间窗回看（valid_at <= as_of 且未在 as_of 前
+    invalid_at），以时间窗为准、不看当前 status；为空 = 原行为不变。
     """
     emb = store.embed_text(query)
     # v1.1 拉宽召回：与 mem_search 一致，top_k*3 召回再过滤，避免 kb_chunk 挤占名额导致记忆条数凑不满
+    # as_of 历史视图：底层拉全量（含 outdated），时间窗过滤决定去留
     results = store.search_similar(
         emb,
         top_k=max(top_k * 3, 30),
         expand_depth=getattr(Config, "RETRIEVAL_EXPAND_DEPTH", 0),
-        include_outdated=include_outdated,
+        include_outdated=include_outdated or (as_of is not None),
     )
     items = []
     for r in results:
         payload = r.get("payload", {}) or {}
         # v4.0 outdated 语义：默认跳过被取代的旧版本，展位 include_outdated=True 保留
-        if not include_outdated and payload.get("status") == "outdated":
+        # as_of 非空时以时间窗为准（不看 status），见 core.bitemporal.is_valid_at
+        if as_of is None:
+            if not include_outdated and payload.get("status") == "outdated":
+                continue
+        elif not is_valid_at(payload, as_of):
             continue
         # domain 过滤：只保留指定角色/域的记忆（domain 正式字段，character_name 兼容镜像已退役）
         if domain and node_domain(payload) != (domain or "").strip().lower():
@@ -282,7 +291,7 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5, doma
 
 
 @mcp.tool()
-def mem_recent(domain: str = "", limit: int = 10) -> str:
+def mem_recent(domain: str = "", limit: int = 10, as_of: float | None = None) -> str:
     """最近记忆列表：按 created_at 倒序（时间戳缺失时退化为按 id 倒序，即插入顺序）
 
     A3 升级：带 domain 时 TQL FIND 替代 iter_payloads 全遍历（O(logN) vs O(N)）。
@@ -291,6 +300,8 @@ def mem_recent(domain: str = "", limit: int = 10) -> str:
     0.8.5 修复 #32 后 MATCH 可全量返回（含 LIMIT pushdown），故统一走 TQL 获取，
     排序仍留 Python——TQL ORDER BY 会把缺失 created_at 排最前，与
     (created_at or 0, id) 双键倒序语义不一致，不可下推。
+    as_of 非空时按 bi-temporal 时间窗回看（valid_at <= as_of 且未在 as_of 前
+    invalid_at）；为空 = 原行为不变。
     """
     domain_val = (domain or "").strip().lower()
     raw = []  # list[(nid, payload)]
@@ -335,6 +346,9 @@ def mem_recent(domain: str = "", limit: int = 10) -> str:
             if db is not None:
                 with contextlib.suppress(Exception):
                     db.close()
+    # as_of 历史视图：按时间窗过滤（as_of 为空时 is_valid_at 恒 True，无副作用）
+    if as_of is not None:
+        raw = [(nid, pl) for nid, pl in raw if is_valid_at(pl, as_of)]
     items = [
         {
             "id": nid,
@@ -657,6 +671,7 @@ def _mem_search_impl(
     include_outdated: bool = False,
     domain_boost: str = "",
     tier: str = DEFAULT_TIER,
+    as_of: float | None = None,
 ) -> dict:
     """
     mem_search 的核心实现（返回 dict，供 mem_search 工具复用）。
@@ -680,12 +695,15 @@ def _mem_search_impl(
         return {"results": [], "scope": scope, "hint": "查询内容不能为空"}
     emb = store.embed_text(query)
     # 一次向量检索，拉宽召回再按 scope 过滤截断，保证过滤后仍有足够结果
+    # as_of 历史视图：底层必须拉全量（含 outdated），再由时间窗过滤决定去留——
+    # 否则「当时为真、现在 outdated」的节点在检索上游就被滤掉，as_of 看不见它们。
+    _fetch_outdated = include_outdated or (as_of is not None)
     results = store.search_similar(
         emb,
         top_k=max(top_k * 3, 30),
         expand_depth=getattr(Config, "RETRIEVAL_EXPAND_DEPTH", 0),
         block=block,
-        include_outdated=include_outdated,
+        include_outdated=_fetch_outdated,
     )
     items = []
     for r in results:
@@ -694,7 +712,13 @@ def _mem_search_impl(
         is_kb = ptype == "kb_chunk"
         # v4.0 outdated 语义：默认跳过被取代的旧版本（不区分类型；kb_chunk 若被标
         # outdated 同样过滤），显式 include_outdated=True 时保留（历史可追溯）。
-        if not include_outdated and payload.get("status") == "outdated":
+        # bi-temporal as_of 历史视图：as_of 非空时以「时间窗」为准决定去留——
+        # 当时为真的节点应返回，哪怕它现在 status=outdated（这正是一期
+        # 「按时间点回看」的价值）。故 as_of 模式下跳过基于当前 status 的过滤。
+        if as_of is None:
+            if not include_outdated and payload.get("status") == "outdated":
+                continue
+        elif not is_valid_at(payload, as_of):
             continue
         # 记忆分层（tier）：后置视图过滤，与 scope/domain/block 并列。
         # tier="" 时 _tier_matches 恒 True，逐条等价于改动前行为（回归红线）。
@@ -766,6 +790,7 @@ def mem_search(
     include_outdated: bool = False,
     domain_boost: str = "",
     tier: str = DEFAULT_TIER,
+    as_of: float | None = None,
 ) -> str:
     """
     统一检索入口：记忆 + 知识库混合检索。
@@ -791,6 +816,10 @@ def mem_search(
         git_commit，约占活跃节点四成）从检索池摘出；tier="logs" 只回日志层；
         tier=""（空串）不过滤，等价于改动前行为（显式历史通道）。
         kb_chunk / novel_chunk 不入本体系，走 scope 隔离；未登记 type 一律归 facts。
+    v6.0 bi-temporal as_of 历史视图：as_of（数值时间戳）非空时，按「该时刻事实是否
+        为真」（valid_at <= as_of 且未在 as_of 前 invalid_at）过滤，以时间窗为准、
+        不看当前 status——当时为真的节点即使现已被标 outdated 也会返回。as_of 为空
+        = 原行为不变。
     """
     return _to_json(
         _mem_search_impl(
@@ -805,6 +834,7 @@ def mem_search(
             include_outdated=include_outdated,
             domain_boost=domain_boost,
             tier=tier,
+            as_of=as_of,
         )
     )
 
@@ -823,6 +853,7 @@ def _sem_candidate_items(
     block: str,
     include_outdated: bool = False,
     tier: str = DEFAULT_TIER,
+    as_of: float | None = None,
 ) -> list:
     """语义候选：复用 _mem_search_impl 宽松召回（top_k*3），按 score 降序排名。"""
     sem = _mem_search_impl(
@@ -835,13 +866,20 @@ def _sem_candidate_items(
         block=block,
         include_outdated=include_outdated,
         tier=tier,
+        as_of=as_of,
     )
     items = sem.get("results", [])
     return sorted(items, key=lambda it: it.get("score", 0.0), reverse=True)
 
 
 def _fts_only_item(
-    node_id: int, scope: str, domain: str, block: str, include_outdated: bool = False, tier: str = DEFAULT_TIER
+    node_id: int,
+    scope: str,
+    domain: str,
+    block: str,
+    include_outdated: bool = False,
+    tier: str = DEFAULT_TIER,
+    as_of: float | None = None,
 ):
     """FTS 命中但语义未命中的节点：按 payload 补全 mem_search 同构条目。
 
@@ -855,7 +893,11 @@ def _fts_only_item(
     ptype = payload.get("type", "")
     is_kb = ptype == "kb_chunk"
     # v4.0 outdated 语义：FTS-only 侧与语义侧保持一致，默认过滤旧版本
-    if not include_outdated and payload.get("status") == "outdated":
+    # as_of 非空时以时间窗为准（不看 status），与语义侧口径一致
+    if as_of is None:
+        if not include_outdated and payload.get("status") == "outdated":
+            return None
+    elif not is_valid_at(payload, as_of):
         return None
     # v5.0 tier：FTS-only 侧同样受分层约束，否则日志层会从 FTS 路漏回结果集
     if not _tier_matches(ptype, tier):
@@ -932,6 +974,7 @@ def _hybrid_rrf(
     block: str,
     include_outdated: bool = False,
     tier: str = DEFAULT_TIER,
+    as_of: float | None = None,
 ) -> tuple[list, dict]:
     """RRF 融合：语义排名 + FTS 排名的 reciprocal rank 求和（k=60）。
 
@@ -942,7 +985,7 @@ def _hybrid_rrf(
     避免「通道挂了」被误读成「确实没命中」。
     """
     sem_items = _sem_candidate_items(
-        query, scope, domain, domain_bias, top_k, block, include_outdated=include_outdated, tier=tier
+        query, scope, domain, domain_bias, top_k, block, include_outdated=include_outdated, tier=tier, as_of=as_of
     )
     fts, fts_status = search_fts_status(query, limit=fts_limit)
     if fts_status == "degraded":
@@ -963,7 +1006,7 @@ def _hybrid_rrf(
     for nid, score, fts_hit_flag, sem_hit_flag in ranked:
         item = by_id.get(nid)
         if item is None:
-            item = _fts_only_item(nid, scope, domain, block, include_outdated=include_outdated, tier=tier)
+            item = _fts_only_item(nid, scope, domain, block, include_outdated=include_outdated, tier=tier, as_of=as_of)
             if item is None:
                 continue
         item = dict(item)
@@ -989,6 +1032,7 @@ def _hybrid_cascade(
     block: str,
     include_outdated: bool = False,
     tier: str = DEFAULT_TIER,
+    as_of: float | None = None,
 ) -> tuple[list, dict]:
     """级联：FTS 粗筛候选集 → 向量精排（只留交集）→ 不足 top_k 从剩余语义补足。
 
@@ -1002,7 +1046,7 @@ def _hybrid_cascade(
         logger.warning("混合检索降级：FTS 通道不可用（query=%r），级联退化为纯语义", query[:60])
     fts_ids = {r.get("node_id") for r in fts if r.get("node_id") is not None}
     sem_items = _sem_candidate_items(
-        query, scope, domain, domain_bias, top_k, block, include_outdated=include_outdated, tier=tier
+        query, scope, domain, domain_bias, top_k, block, include_outdated=include_outdated, tier=tier, as_of=as_of
     )
 
     in_candidate = [it for it in sem_items if it.get("id") in fts_ids]
@@ -1037,6 +1081,7 @@ def _hybrid_search_impl(
     block: str = "",
     include_outdated: bool = False,
     tier: str = DEFAULT_TIER,
+    as_of: float | None = None,
 ) -> dict:
     """
     mem_hybrid_search 的核心实现（返回 dict，供 mem_hybrid_search 工具复用）。
@@ -1064,11 +1109,29 @@ def _hybrid_search_impl(
     try:
         if mode == "cascade":
             items, channels = _hybrid_cascade(
-                query, scope, domain, domain_bias, top_k, fts_limit, block, include_outdated=include_outdated, tier=tier
+                query,
+                scope,
+                domain,
+                domain_bias,
+                top_k,
+                fts_limit,
+                block,
+                include_outdated=include_outdated,
+                tier=tier,
+                as_of=as_of,
             )
         else:
             items, channels = _hybrid_rrf(
-                query, scope, domain, domain_bias, top_k, fts_limit, block, include_outdated=include_outdated, tier=tier
+                query,
+                scope,
+                domain,
+                domain_bias,
+                top_k,
+                fts_limit,
+                block,
+                include_outdated=include_outdated,
+                tier=tier,
+                as_of=as_of,
             )
         result = {"results": items, "scope": scope, "mode": mode, "channels": channels}
         if domain_bias:
@@ -1096,6 +1159,7 @@ def mem_hybrid_search(
     block: str = "",
     include_outdated: bool = False,
     tier: str = DEFAULT_TIER,
+    as_of: float | None = None,
 ) -> str:
     """
     混合检索：FTS5 精确检索 + 语义向量检索的融合排序。
@@ -1109,6 +1173,8 @@ def mem_hybrid_search(
         （历史可追溯通道）。
     v5.0 记忆分层（tier）：同 mem_search——"facts"（默认）只回事实层 / "logs" 只回日志层 /
         ""（空串）不过滤（等价改动前行为）。语义侧与 FTS-only 侧同时受约束。
+    v6.0 bi-temporal as_of：非空时按时间窗回看（语义侧与 FTS-only 侧同口径），
+        以时间窗为准、不看当前 status；为空 = 原行为不变。
     """
     return _to_json(
         _hybrid_search_impl(
@@ -1124,5 +1190,6 @@ def mem_hybrid_search(
             block,
             include_outdated,
             tier,
+            as_of,
         )
     )

@@ -100,3 +100,30 @@ def time_fields(payload: dict) -> dict:
         if val is not None:
             out[key] = val
     return out
+
+
+def is_valid_at(payload: dict, as_of: float | None) -> bool:
+    """在时间点 ``as_of`` 回看时，该事实是否「当时为真」（as_of 历史视图判据）。
+
+    一条事实在 ``as_of`` 时刻为真，当且仅当::
+
+        valid_at <= as_of   AND   (invalid_at 缺失 或 invalid_at > as_of)
+
+    - ``as_of`` 为 None → 恒返回 True（关闭 as_of，调用方按原行为处理）。
+    - 非事实类型（kb_chunk / record 等）没有世界时间语义 → 恒 True（不受
+      as_of 影响，避免静默丢弃）。
+    - 字段缺失兜底（历史数据无时间字段）：
+        * ``valid_at`` 缺失 → 视为「一直在为真」→ 不过滤（保守，宁多回不丢）；
+        * ``invalid_at`` 缺失 → 视为「仍为真」→ 通过。
+    """
+    if as_of is None:
+        return True
+    if not is_fact_type(payload):
+        return True
+    valid_at = payload.get(VALID_AT)
+    if valid_at is not None and valid_at > as_of:
+        # as_of 早于事实开始为真之时 → 当时还不为真
+        return False
+    invalid_at = payload.get(INVALID_AT)
+    # 事实在 as_of 之前（或恰在那一刻）已停止为真 → 当时不为真
+    return not (invalid_at is not None and invalid_at <= as_of)
