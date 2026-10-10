@@ -181,9 +181,9 @@ def test_hybrid_search_impl_exposes_channels(monkeypatch):
 def test_check_path_ascii_ascii_ok(tmp_path, monkeypatch):
     """全 ASCII 路径 → ok=True，detail 提示均为 ASCII。"""
     import core.doctor as doctor
-    from mcp_tools import store
+    from config import Config
 
-    monkeypatch.setattr(store, "db_path", str(tmp_path / "data" / "mh.db"))
+    monkeypatch.setattr(Config, "DB_PATH", str(tmp_path / "data" / "mh.db"))
     ok, detail, fix = doctor._check_path_ascii()
     assert ok
     assert "ASCII" in detail
@@ -193,11 +193,12 @@ def test_check_path_ascii_ascii_ok(tmp_path, monkeypatch):
 def test_check_path_ascii_non_ascii_writable_ok(tmp_path, monkeypatch):
     """非 ASCII 路径但可正常读写 → ok=True（只提示，不误报为故障）。"""
     import core.doctor as doctor
-    from mcp_tools import store
+    from config import Config
 
     zh_dir = tmp_path / "中文目录"
     zh_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(store, "db_path", str(zh_dir / "mh.db"))
+    # _check_path_ascii 内部经 TriviumStore() 读 Config.DB_PATH，故 patch 该源
+    monkeypatch.setattr(Config, "DB_PATH", str(zh_dir / "mh.db"))
 
     ok, detail, fix = doctor._check_path_ascii()
     assert ok, f"非 ASCII 但可写应通过，实际 detail={detail}"
@@ -208,11 +209,11 @@ def test_check_path_ascii_non_ascii_writable_ok(tmp_path, monkeypatch):
 def test_check_path_ascii_non_ascii_unwritable_fails(tmp_path, monkeypatch):
     """非 ASCII 路径不可写 → ok=False 并给出改英文目录的修复方向。"""
     import core.doctor as doctor
-    from mcp_tools import store
+    from config import Config
 
     zh_dir = tmp_path / "中文目录"
     zh_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(store, "db_path", str(zh_dir / "mh.db"))
+    monkeypatch.setattr(Config, "DB_PATH", str(zh_dir / "mh.db"))
 
     real_open = open
 
