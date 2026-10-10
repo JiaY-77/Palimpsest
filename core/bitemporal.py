@@ -127,3 +127,31 @@ def is_valid_at(payload: dict, as_of: float | None) -> bool:
     invalid_at = payload.get(INVALID_AT)
     # 事实在 as_of 之前（或恰在那一刻）已停止为真 → 当时不为真
     return not (invalid_at is not None and invalid_at <= as_of)
+
+
+def windows_overlap(new_payload: dict, old_payload: dict) -> bool:
+    """两条事实的世界时间窗是否重叠（时间窗冲突判定，降低误标）。
+
+    时间窗为 ``[valid_at, invalid_at)``；``invalid_at`` 缺失 = 仍为真（+∞）。
+    重叠判据::
+
+        new_valid_at < old_invalid_at  AND  old_valid_at < new_invalid_at
+
+    - 重叠 → 同一时间说了不同的事 → 可能是真矛盾（调用方据此标 outdated）。
+    - 不重叠 → 不同时期的事实（如「十年前住北京」≠「现在住上海」）→ 不矛盾。
+
+    保守兜底：任一方缺 ``valid_at``（历史数据无时间字段）→ 视为「一直为真」，
+    其窗与任何事实都重叠 → 返回 ``True``（宁放过、不静默改变既有判定）。
+    """
+    new_valid = new_payload.get(VALID_AT)
+    old_valid = old_payload.get(VALID_AT)
+    # 缺 valid_at：视为 -∞ 开始，与任何窗都重叠
+    if new_valid is None or old_valid is None:
+        return True
+    new_invalid = new_payload.get(INVALID_AT)  # None = +∞
+    old_invalid = old_payload.get(INVALID_AT)  # None = +∞
+    # new_valid < old_invalid（old 仍为真时视为 +∞，条件恒成立）
+    if old_invalid is not None and new_valid >= old_invalid:
+        return False
+    # old_valid < new_invalid（new 仍为真时视为 +∞，条件恒成立）
+    return not (new_invalid is not None and old_valid >= new_invalid)

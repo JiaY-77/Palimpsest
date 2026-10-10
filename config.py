@@ -116,6 +116,12 @@ class Config:
     #   例：CONFLICT_SKIP_TYPES=task
     CONFLICT_SKIP_TYPES = frozenset(t.strip() for t in os.getenv("CONFLICT_SKIP_TYPES", "").split(",") if t.strip())
 
+    # ---- 冲突检测：时间窗判定（bi-temporal 三期，高风险，默认关）----
+    # 开启后：相似度 >0.75 的候选，若其世界时间窗与新事实「不重叠」，则不判为
+    # 「同一事实被取代」（不标 outdated）——如「十年前住北京」≠「现在住上海」。
+    # 默认 false = 行为完全不变（高风险语义变更的稳妥默认，验证后再开）。
+    CONFLICT_TIME_WINDOW = os.getenv("CONFLICT_TIME_WINDOW", "").strip().lower() in ("1", "true", "yes", "on")
+
     # 语义主序的图扩散深度：0 = 纯语义排序（默认；实测 R@5 0.7542）
     # 1 = 原行为（图邻居参与语义主序，实测 R@5 0.5000；可一键回退）
     RETRIEVAL_EXPAND_DEPTH = int(os.getenv("RETRIEVAL_EXPAND_DEPTH", "0"))
