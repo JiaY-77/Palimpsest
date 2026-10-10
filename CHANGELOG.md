@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-10-10
+
 ### 新增
 
 - **事实时间维度（bi-temporal）：记忆开始记录「事实何时为真」**：此前 Palimpsest 只记 `created_at`（记录何时写入系统）。知识有时效性——事实会变真、也会不再为真，只有系统时间就无法回答「三个月前它认为这条配置是什么」。现引入与系统时间正交的**世界时间**维度，仅作用于事实类节点（`memory` / `task` / `plan`）：写入时自动补 `valid_at`（事实开始为真，缺省=写入时刻，显式传入不被覆盖）；高相似冲突命中、旧节点被标 `outdated` 时补 `invalid_at`（=取代者的 `valid_at`）与 `expired_at`（=本次系统标记时刻，仅首次写入）。`kb_chunk` 与历史留痕类型豁免。检索结果新增 `meta.times` 透出时间字段；新增 MCP 工具 `mem_fact_history`——沿 `REVISED_BY` 出边与**反向边**（`TriviumStore.get_incoming_edges` 新封装）返回单条事实的完整时间线与取代关系（它取代了谁 / 谁取代了它）。详见 [`docs/BITEMPORAL.md`](docs/BITEMPORAL.md)。
@@ -361,7 +363,8 @@
 
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
-[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.5.0...HEAD
+[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.6.0...HEAD
+[2.6.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.6.0
 [2.5.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.5.0
 [2.4.1]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.4.1
 [2.4.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.4.0
