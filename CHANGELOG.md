@@ -6,6 +6,18 @@
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-10-10
+
+### 新增
+
+- **写入口约束护栏（write-guard policy）**：在统一写入口（`mem_ingest`，REST `/mem/ingest` 转调同一实现）上加一层策略校验，防三类问题：①**只读节点保护**——受保护节点（`type` 属 `POLICY_PROTECTED_TYPES`，默认 `rule`，或 `payload.protected=True`）不被自动冲突检测标 `outdated` / 建 `REVISED_BY` 边；②**按 type 分级的软上限**（`POLICY_TYPE_LIMITS`）；③**配置人工闸门**（`PALIMPSEST_POLICY_UPDATE`）。默认 `POLICY_MODE=warn`——只记日志与结果字段 `policy_warnings`，**不改变任何写行为**（攒证据后再显式开 `enforce`）。见 `core/policy.py`。
+- **`as_of` 历史视图查询（bi-temporal 第二阶段）**：`mem_search` / `mem_retrieve` / `mem_hybrid_search` / `mem_recent` 新增 `as_of` 参数（数值时间戳），按时间点回看「那一刻它认为什么为真」。判据 `valid_at <= as_of AND (invalid_at 缺失 或 invalid_at > as_of)`，**以时间窗为准、不看当前 `status`**——当时为真、现已被标 `outdated` 的节点会被返回（这正是历史视图的价值）。`as_of` 为空时行为完全不变。见 [`docs/BITEMPORAL.md`](docs/BITEMPORAL.md)。
+- **时间窗冲突判定（bi-temporal 第三阶段，默认关闭）**：相似度 > 0.75 的两条事实若世界时间窗**不重叠**（如「十年前住北京」≠「现在住上海」），不再判为「同一事实被取代」。由 `CONFLICT_TIME_WINDOW` 控制，**默认 `false`**（高风险语义变更，验证后再开）。附带 `scripts/replay_time_window.py` 可在既有库上只读评估影响面。
+
+### 修复
+
+- **`test_bitemporal` 的 `valid_at` 断言不再假设单调时钟**：`time.time()` 在 Windows 底层为 `GetSystemTimeAsFileTime`，分辨率约 15.6ms 且不保证单调，两次取钟可能出现极小的回退（实测全量跑时出现 2.4e-7s 步退），令断言偶发假红。现按系统时钟分辨率留容差。
+
 ## [2.6.1] - 2026-10-10
 
 ### 修复
@@ -369,7 +381,8 @@
 
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
-[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.6.1...HEAD
+[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.7.0...HEAD
+[2.7.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.7.0
 [2.6.1]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.6.1
 [2.6.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.6.0
 [2.5.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.5.0
