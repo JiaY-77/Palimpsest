@@ -14,6 +14,7 @@ import logging
 
 from config import Config
 from core.bitemporal import mark_superseded
+from core.policy import check_protected_overwrite, get_policy_mode, is_protected
 from core.trivium_store import node_domain
 
 logger = logging.getLogger(__name__)
@@ -48,15 +49,16 @@ def resolve_conflict(store, embedding, node_id, tx=None, db=None, new_payload=No
 
     outdated_ids: list[int] = []
     related_ids: list[int] = []
+    policy_warnings: list[str] = []
     # 第 0 层：类型白名单——record/event/correction/git_commit/review 等
     # 历史留痕类型完全跳过冲突检测
     if new_type not in ("memory", "task", "plan"):
-        return {"outdated_ids": outdated_ids, "related_ids": related_ids}
+        return {"outdated_ids": outdated_ids, "related_ids": related_ids, "policy_warnings": policy_warnings}
     # 第 0b 层：按 type 显式豁免（CONFLICT_SKIP_TYPES，issue #50）。
     # task 这类「累积关系」不是「同一事实被取代」：连续写入相似措辞的独立任务时，
     # 旧任务会被误标 outdated 并从默认检索中消失。默认空集 = 行为完全不变。
     if new_type in Config.CONFLICT_SKIP_TYPES:
-        return {"outdated_ids": outdated_ids, "related_ids": related_ids}
+        return {"outdated_ids": outdated_ids, "related_ids": related_ids, "policy_warnings": policy_warnings}
 
     if tx is not None:
         similar = _similar_hits(db, embedding)
@@ -88,6 +90,17 @@ def resolve_conflict(store, embedding, node_id, tx=None, db=None, new_payload=No
             continue
         # 过完所有门后分档：
         if score > 0.75:
+            # 只读保护门（write-guard policy，core/policy.py）：
+            # 受保护节点（type=rule 或 payload.protected=True）不参与自动覆盖。
+            # warn 模式：照常标 outdated + 建边，但记 policy_warnings（攒数据）；
+            # enforce 模式：跳过该节点，不标 outdated、不建边。
+            if is_protected(old_payload):
+                warn_msg = check_protected_overwrite(old_payload)
+                if warn_msg:
+                    policy_warnings.append(warn_msg)
+                    logger.warning("policy: %s (node_id=%s)", warn_msg, old_id)
+                if get_policy_mode() == "enforce":
+                    continue
             # 判定同一事实被取代：保留原字段，仅把 status 标记为 outdated
             old_payload["status"] = "outdated"
             # bi-temporal（世界时间）：旧事实自新事实的 valid_at 起不再为真，
@@ -104,7 +117,7 @@ def resolve_conflict(store, embedding, node_id, tx=None, db=None, new_payload=No
         else:
             # 仅话题相关：只记入 related_ids，不标 outdated、不建边
             related_ids.append(old_id)
-    return {"outdated_ids": outdated_ids, "related_ids": related_ids}
+    return {"outdated_ids": outdated_ids, "related_ids": related_ids, "policy_warnings": policy_warnings}
 
 
 def _similar_hits(db, embedding: list[float]) -> list[dict]:
