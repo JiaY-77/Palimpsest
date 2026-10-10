@@ -13,6 +13,7 @@
 import logging
 
 from config import Config
+from core.bitemporal import mark_superseded
 from core.trivium_store import node_domain
 
 logger = logging.getLogger(__name__)
@@ -89,6 +90,9 @@ def resolve_conflict(store, embedding, node_id, tx=None, db=None, new_payload=No
         if score > 0.75:
             # 判定同一事实被取代：保留原字段，仅把 status 标记为 outdated
             old_payload["status"] = "outdated"
+            # bi-temporal（世界时间）：旧事实自新事实的 valid_at 起不再为真，
+            # 并在本次系统标记时刻进入历史。非事实类型自动跳过，见 core.bitemporal。
+            mark_superseded(old_payload, new_payload.get("valid_at"))
             if tx is not None:
                 tx.update_payload(old_id, old_payload)
                 # 新记忆 -> 旧记忆 的修订关系

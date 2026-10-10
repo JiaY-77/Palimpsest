@@ -12,6 +12,7 @@ import threading
 import time
 
 from config import Config
+from core.bitemporal import stamp_new_fact, time_fields
 from core.conflict import resolve_conflict
 from core.db_health import check_db_health, health_hint
 from core.fts_index import index_node, search_fts_status
@@ -233,6 +234,9 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5, doma
         "created_at": now,
         "linked_from": linked_kb_ids,
     }
+    # bi-temporal：新事实补 valid_at（世界时间 = 事实开始为真之时；缺省=写入时刻）。
+    # 非事实类型（kb_chunk / record 等）自动跳过，见 core.bitemporal。
+    stamp_new_fact(node_data, now)
 
     # ---- 事务化写入链路（2026-08-29 止血加事务）----
     # 「insert（含 created_at）+ resolve_conflict 标脏」整体包进单事务，任一步
@@ -559,6 +563,64 @@ def mem_version_history(domain: str = "hermes", full_content: bool = False, offs
     )
 
 
+@mcp.tool()
+def mem_fact_history(node_id: int) -> str:
+    """
+    单条事实的时间线：返回该节点的 bi-temporal 时间字段，以及
+    「它取代了谁」（沿 REVISED_BY 出边）与「谁取代了它」（沿反向边）。
+
+    与 mem_version_history 的区别：后者按 domain 找最新 event 并整条链列出，
+    面向「版本日志」；本工具面向**任意一条事实**，回答「这条记忆的演变」——
+    这正是 bi-temporal 的反向索引（谁失效了谁）的检索入口。
+
+    返回 JSON：{found, node_id, times:{valid_at,invalid_at,expired_at,created_at},
+    superseded:[…], superseded_by:[…]}。每项为 {id, content_summary, times}。
+    """
+    node = store.get_node(node_id)
+    if not node:
+        return _to_json({"found": False, "node_id": node_id, "error": "节点不存在"})
+    payload = node.get("payload", {}) or {}
+
+    def _brief(nid: int) -> dict | None:
+        n = store.get_node(nid)
+        if not n:
+            return None
+        p = n.get("payload", {}) or {}
+        return {
+            "id": nid,
+            "content_summary": _shorten(p.get("content", ""), 80),
+            "times": time_fields(p),
+        }
+
+    # 出边 REVISED_BY：本节点 → 被它取代的旧节点
+    superseded = []
+    for edge in store.get_edges(node_id):
+        if (getattr(edge, "label", "") or "").upper() == "REVISED_BY":
+            brief = _brief(edge.target_id)
+            if brief:
+                superseded.append(brief)
+
+    # 反向边：谁指向本节点（新版本 → 本节点）＝ 取代了本节点的更新事实
+    superseded_by = []
+    for edge in store.get_incoming_edges(node_id):
+        if (getattr(edge, "label", "") or "").upper() == "REVISED_BY":
+            brief = _brief(edge.source_id)
+            if brief:
+                superseded_by.append(brief)
+
+    return _to_json(
+        {
+            "found": True,
+            "node_id": node_id,
+            "type": payload.get("type", ""),
+            "status": payload.get("status", ""),
+            "times": time_fields(payload),
+            "superseded": superseded,
+            "superseded_by": superseded_by,
+        }
+    )
+
+
 # ---- 记忆分层（tier）：检索侧视图，不改存储、不迁数据 ----
 # 常量（TIER_FACTS / TIER_LOGS / DEFAULT_TIER）已在文件顶部从 config.py 读取；
 # 此处仅保留判定函数。facts = 事实层（默认检索与注入池）；logs = 日志层；
@@ -654,6 +716,10 @@ def _mem_search_impl(
             "status": payload.get("status", ""),
             "domain": node_domain(payload),
         }
+        # bi-temporal：世界时间字段随结果透出（无则不加，保持 meta 精简）
+        _times = time_fields(payload)
+        if _times:
+            meta["times"] = _times
         if is_kb:
             meta["source_path"] = payload.get("source_path", "")
             meta["title"] = payload.get("title", "")
@@ -801,6 +867,10 @@ def _fts_only_item(
         "status": payload.get("status", ""),
         "domain": node_domain(payload),
     }
+    # bi-temporal：世界时间字段随结果透出（无则不加，保持 meta 精简）
+    _times = time_fields(payload)
+    if _times:
+        meta["times"] = _times
     if is_kb:
         meta["source_path"] = payload.get("source_path", "")
         meta["title"] = payload.get("title", "")

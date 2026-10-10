@@ -663,6 +663,16 @@ class TriviumStore:
         with self._acquire() as db:
             return db.get_edges(node_id)
 
+    def get_incoming_edges(self, node_id: int) -> list:
+        """获取节点的**入边**列表（Edge 对象，含 label/source_id/weight）。
+
+        与 get_edges（出边）相对，是 bi-temporal 反向索引的底层支撑：
+        「谁取代了我」＝ 指向本节点的 REVISED_BY 入边。底层 triviumdb 提供
+        get_incoming_edges，这里做薄封装把它接出来（与 get_edges 对称）。
+        """
+        with self._acquire() as db:
+            return db.get_incoming_edges(node_id)
+
     def get_node(self, node_id: int) -> dict[str, Any] | None:
         """获取单个节点的详细信息（包含向量）"""
         with self._acquire() as db:

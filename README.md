@@ -28,6 +28,7 @@ Palimpsest 是一个 **本地优先的嵌入式长期记忆系统**，将 **语�
 - 🔗 **图谱扩散召回** —— 节点由**加权边**（`RELATED_TO` / `REVISED_BY` / `CAUSES` / `REFERS_TO`）相连，BFS 沿边扩散，按最强边截断、弱边过滤、可按「块」隔离防跨域污染
 - 🕸️ **社区发现** —— 内置 Leiden 聚类，一键把记忆库分成主题簇，回答「记忆库里都有哪些圈子」
 - 🔄 **冲突检测与版本链** —— 高相似（score > 0.75）判为同一事实被取代，旧版标 `outdated` 并经 `REVISED_BY` 链向新版；中相似只记 `related_ids`；type / domain 双隔离防跨类误标
+- 🕰️ **事实时间维度（bi-temporal）** —— 事实类记忆写入时记 `valid_at`（世界时间：开始为真之时），被取代时补 `invalid_at`（不再为真）与 `expired_at`（系统标为历史）；与 `created_at`（记录时间）正交，检索结果随 `meta.times` 透出，`mem_fact_history` 可查单条事实的完整时间线与取代关系。详见 [docs/BITEMPORAL.md](docs/BITEMPORAL.md)
 - 🛡️ **写入前敏感扫描** —— 按 10 条正则规则扫描：强规则（API Key / 令牌 / 私钥 / SSH Key / Bearer 等 8 条）命中即拒写，弱规则（身份证 / 手机号 2 条）仅放行并打 `secret_hint` 供审计（详见 [`SECURITY.md`](SECURITY.md)）
 - 🧹 **容量合并与记忆盘点** —— `mem_consolidate` 合并近似重复（≥ 0.85、保护高价值），`mem_stats` 盘点类型 / 域 / 重要度 / 时间 / 图谱 / 热点 / tier 分层
 - ⏫ **高频记忆自动升级** —— 检索命中计数（`hit_count`），`promote` 把反复被用到的记忆升权打标（dry-run 预览、幂等可逆）
@@ -180,7 +181,7 @@ python scripts/build_kb_index.py --rules rules.json
 
 ## 使用
 
-### MCP 工具（18 个）— `mcp_tools/*`
+### MCP 工具（19 个）— `mcp_tools/*`
 
 | 工具 | 说明 |
 |---|---|
@@ -194,6 +195,7 @@ python scripts/build_kb_index.py --rules rules.json
 | `mem_review` | 最近 N 天的周期性回顾 + 治理候选（高价值升级 / outdated 清理 / 低价值）；`tier`（默认 `facts`）作用于 `recent_ingests`：`logs` 只回日志层、`""` 不过滤 |
 | `mem_stats` | 库级盘点：类型 / 域 / 重要度 / 时间 / 图谱分布 + 热点节点；`tiers` 分节按检索侧 tier 语义分组（facts / logs / unclassified）并输出实际生效的 `TIER_FACTS` / `TIER_LOGS` 清单 |
 | `mem_version_history` | 沿 `REVISED_BY` 链展开，查看事实演化过程 |
+| `mem_fact_history` | **单条事实的时间线**：返回其 bi-temporal 时间字段（`valid_at` / `invalid_at` / `expired_at` / `created_at`）与取代关系（它取代了谁 / 谁取代了它） |
 | `mem_consolidate` | 近似重复检测；dry-run 预览或 apply 合并 |
 | `mem_communities` | Leiden 社区发现：把记忆库聚成主题簇，回答「有哪些圈子」 |
 | `kb_index` | 将知识库 `.md` 文件索引为 `kb_chunk` 节点（向量化） |

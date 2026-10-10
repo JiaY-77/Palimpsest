@@ -29,6 +29,7 @@ Palimpsest is a **local-first embedded long-term memory system** that fuses **se
 - 🔗 **Knowledge-graph recall.** Nodes connected by **weighted edges** (`RELATED_TO` / `REVISED_BY` / `CAUSES` / `REFERS_TO`); BFS expansion prunes to the strongest edges, filters weak edges, and can be scoped to one domain "block" to prevent cross-domain pollution.
 - 🕸️ **Community detection.** Built-in Leiden clustering splits the store into topical clusters — answering "what circles exist in my memory?"
 - 🔄 **Conflict detection & version chains.** High similarity (score > 0.75) means the same fact was superseded: the old record is marked `outdated` and linked `REVISED_BY` to its replacement; medium similarity only records `related_ids`; type / domain isolation prevents cross-category mistakes.
+- 🕰️ **Fact time dimension (bi-temporal).** Fact-type memories record `valid_at` (world time: when the fact became true) on write, and gain `invalid_at` (no longer true) plus `expired_at` (marked historical by the system) when superseded — orthogonal to `created_at` (recording time). Surfaced as `meta.times` in search results, and `mem_fact_history` returns a single fact's full timeline and supersede relations. See [docs/BITEMPORAL.md](docs/BITEMPORAL.md).
 - 🛡️ **Pre-write secret scan.** 10 regex rules: a **strong-rule** match (API keys / tokens / private keys / SSH keys / bearer tokens — 8 rules) **rejects the write**, while a **weak-rule** match (ID cards / phone numbers — 2 rules) is **let through and flagged `secret_hint`** for audit (see [`SECURITY.md`](SECURITY.md)).
 - 🧹 **Consolidation & memory stats.** `mem_consolidate` collapses near-duplicates (≥ 0.85, protecting high-value nodes); `mem_stats` reports type / domain / importance / time / graph / hot spots / tier distributions.
 - ⏫ **Auto-promotion of hot memories.** Retrieval hits are counted (`hit_count`); `promote` raises and tags frequently-used memories (dry-run first, idempotent, reversible).
@@ -181,7 +182,7 @@ python scripts/build_kb_index.py --rules rules.json
 
 ## Usage
 
-### MCP tools (18) — `mcp_tools/*`
+### MCP tools (19) — `mcp_tools/*`
 
 | Tool | Description |
 |---|---|
@@ -195,6 +196,7 @@ python scripts/build_kb_index.py --rules rules.json
 | `mem_review` | Periodic recap of the last N days plus governance candidates (high-value upgrades / outdated cleanup / low-value); `tier` (default `facts`) scopes `recent_ingests`: `logs` returns only the logs tier, `""` disables filtering |
 | `mem_stats` | Store-wide statistics: type / domain / importance / time / graph distributions + hot nodes; the `tiers` section groups types by retrieval-tier semantics (facts / logs / unclassified) and lists the effective `TIER_FACTS` / `TIER_LOGS` classification |
 | `mem_version_history` | Walk the `REVISED_BY` chain to show how a fact evolved |
+| `mem_fact_history` | **Timeline of a single fact**: its bi-temporal fields (`valid_at` / `invalid_at` / `expired_at` / `created_at`) plus supersede relations (what it superseded / what superseded it) |
 | `mem_consolidate` | Near-duplicate detection; dry-run preview or apply merge |
 | `mem_communities` | Leiden community detection: cluster the store into topical groups |
 | `kb_index` | Index knowledge-base `.md` files into `kb_chunk` nodes (vectorized) |

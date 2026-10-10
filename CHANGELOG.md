@@ -8,6 +8,8 @@
 
 ### 新增
 
+- **事实时间维度（bi-temporal）：记忆开始记录「事实何时为真」**：此前 Palimpsest 只记 `created_at`（记录何时写入系统）。知识有时效性——事实会变真、也会不再为真，只有系统时间就无法回答「三个月前它认为这条配置是什么」。现引入与系统时间正交的**世界时间**维度，仅作用于事实类节点（`memory` / `task` / `plan`）：写入时自动补 `valid_at`（事实开始为真，缺省=写入时刻，显式传入不被覆盖）；高相似冲突命中、旧节点被标 `outdated` 时补 `invalid_at`（=取代者的 `valid_at`）与 `expired_at`（=本次系统标记时刻，仅首次写入）。`kb_chunk` 与历史留痕类型豁免。检索结果新增 `meta.times` 透出时间字段；新增 MCP 工具 `mem_fact_history`——沿 `REVISED_BY` 出边与**反向边**（`TriviumStore.get_incoming_edges` 新封装）返回单条事实的完整时间线与取代关系（它取代了谁 / 谁取代了它）。详见 [`docs/BITEMPORAL.md`](docs/BITEMPORAL.md)。
+  分期说明：本次为**第一阶段「存字段 + 反向索引」**；`as_of` 历史视图查询与时间窗冲突判定属后续阶段，不在本 PR 范围（不改动现有冲突判定语义，历史节点无字段走原行为）。
 - **混合检索通道降级留痕**：RRF / 级联融合在某路检索不可用时本就静默退回另一路，但「FTS 通道挂了」与「确实没命中」在结果上无法区分——检索质量下降不留痕迹。现 `core.fts_index.search_fts_status()` 返回 `(rows, status)`，把通道状态分为 `ok`（查询正常执行，空结果即真无命中）/ `empty`（空查询）/ `degraded`（索引文件不存在或查询抛异常）；`search_fts()` 保留为只取 rows 的向后兼容包装。`_hybrid_rrf` / `_hybrid_cascade` 改用前者，FTS 降级时记 warning 并在对外结果里新增 `channels` 字段（如 `{"semantic": "ok", "fts": "degraded"}`），调用方可据此判断降级。
 - **`doctor` 新增「运行时路径字符集」预检（第 8 项）**：同类项目在中文/非 ASCII 用户名路径下会因底层图库扩展创建文件失败而开箱即崩（且报错误导为 "Access is denied"）。Palimpsest 实测在该场景正常，但仍做一次预检——关键路径（数据目录 / FTS 索引目录）含非 ASCII 字符时只**提示风险**（`ok=True`），仅当路径实测不可写才判失败并给出「改用英文目录」的修复方向。
 
