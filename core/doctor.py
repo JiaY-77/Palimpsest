@@ -16,9 +16,14 @@
 """
 
 # 维度校验复用 core.dims 的实现（避免两份漂移）
+import logging
+import os
+
 from config import Config
 from core.dims import get_db_dim
 from core.startup_check import run_startup_check
+
+logger = logging.getLogger(__name__)
 
 
 def _check_dimension_consistency():
@@ -88,6 +93,68 @@ def _check_dimension_consistency():
         False,
         f"维度不匹配: 当前 provider 实测 {actual_dim} 维，库实际 {db_dim} 维",
         fix,
+    )
+
+
+def _check_path_ascii():
+    """运行时路径非 ASCII 预检。
+
+    背景：同类项目（如 Cognee）在**中文/非 ASCII 用户名**下会因底层 C/C++ 图库
+    扩展在非 ASCII 目录创建文件失败而开箱即崩（报错误导为 "Access is denied"）。
+    Palimpsest 实测在此场景正常，但仍做一次预检：
+
+    - 运行时发现关键路径含非 ASCII 字符时**不报错**（ok=True），只提示风险 +
+      给出「可选：把数据目录指向纯英文路径」的缓解建议；
+    - 若检测到路径**无法写入**（真正的硬故障），则 ok=False 并给出修复方向。
+
+    返回 (ok, detail, fix)。内部永不抛异常。
+    """
+    from core.trivium_store import TriviumStore
+
+    try:
+        store = TriviumStore()
+        db_path = str(store.db_path)
+    except Exception as e:  # noqa: BLE001 —— 取路径失败交由汇总提示
+        return (False, f"无法获取数据目录路径: {e}", "")
+
+    # 收集关键运行时路径（数据目录 + 依赖的索引目录）
+    data_dir = os.path.dirname(db_path)
+    paths = {"数据目录": data_dir}
+    try:
+        from core.fts_index import _db_path as _fts_db_path
+
+        paths["FTS 索引"] = os.path.dirname(str(_fts_db_path()))
+    except Exception as e:  # noqa: BLE001 —— FTS 路径不可得时不阻断主判定，记录原因即可
+        logger.debug("无法解析 FTS 索引目录，跳过该项预检: %s", e)
+
+    non_ascii = {name: p for name, p in paths.items() if not p.isascii()}
+    if not non_ascii:
+        return (True, f"关键路径均为 ASCII（{data_dir}）", "")
+
+    # 非 ASCII 路径存在：验证可写性（这才是硬故障的唯一判据）
+    unwritable = []
+    for name, p in paths.items():
+        try:
+            os.makedirs(p, exist_ok=True)
+            probe = os.path.join(p, ".palimpsest_write_probe")
+            with open(probe, "w", encoding="utf-8") as fh:
+                fh.write("ok")
+            os.remove(probe)
+        except Exception as e:  # noqa: BLE001 —— 逐路径收集不可写原因
+            unwritable.append(f"{name}({p}): {e}")
+
+    detail_paths = "；".join(f"{name}={p}" for name, p in non_ascii.items())
+    if unwritable:
+        return (
+            False,
+            f"非 ASCII 路径不可写: {' | '.join(unwritable)}",
+            "把数据目录指向纯英文路径：在 .env 设置 DB_PATH=<英文目录>/mh_memory.db "
+            "与 KNOWLEDGE_DIR=<英文目录>/kb，然后重启服务",
+        )
+    return (
+        True,
+        f"非 ASCII 路径可正常读写（{detail_paths}），已实测通过；如遇依赖报错可改用英文目录",
+        "",
     )
 
 
@@ -162,6 +229,17 @@ def run_doctor() -> dict:
     checks.append(
         {
             "name": "domain 字段迁移状态",
+            "ok": ok,
+            "detail": detail,
+            "fix": fix,
+        }
+    )
+
+    # 第四阶段：运行时路径非 ASCII 预检（中文用户名环境下的依赖兼容性风险）
+    ok, detail, fix = _check_path_ascii()
+    checks.append(
+        {
+            "name": "运行时路径字符集",
             "ok": ok,
             "detail": detail,
             "fix": fix,

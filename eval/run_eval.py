@@ -153,7 +153,7 @@ def _run_vec(query: str, top_k: int, _store: TriviumStore, tier: str = DEFAULT_T
 
 
 def _run_rrf(query: str, top_k: int, store: TriviumStore, tier: str = DEFAULT_TIER) -> tuple[list[int], list[float]]:
-    results = _hybrid_rrf(
+    results, _channels = _hybrid_rrf(
         query,
         scope="all",
         domain="",
@@ -172,7 +172,7 @@ def _run_rrf(query: str, top_k: int, store: TriviumStore, tier: str = DEFAULT_TI
 def _run_cascade(
     query: str, top_k: int, store: TriviumStore, tier: str = DEFAULT_TIER
 ) -> tuple[list[int], list[float]]:
-    results = _hybrid_cascade(
+    results, _channels = _hybrid_cascade(
         query,
         scope="all",
         domain="",

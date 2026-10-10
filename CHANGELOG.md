@@ -6,6 +6,11 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **混合检索通道降级留痕**：RRF / 级联融合在某路检索不可用时本就静默退回另一路，但「FTS 通道挂了」与「确实没命中」在结果上无法区分——检索质量下降不留痕迹。现 `core.fts_index.search_fts_status()` 返回 `(rows, status)`，把通道状态分为 `ok`（查询正常执行，空结果即真无命中）/ `empty`（空查询）/ `degraded`（索引文件不存在或查询抛异常）；`search_fts()` 保留为只取 rows 的向后兼容包装。`_hybrid_rrf` / `_hybrid_cascade` 改用前者，FTS 降级时记 warning 并在对外结果里新增 `channels` 字段（如 `{"semantic": "ok", "fts": "degraded"}`），调用方可据此判断降级。
+- **`doctor` 新增「运行时路径字符集」预检（第 8 项）**：同类项目在中文/非 ASCII 用户名路径下会因底层图库扩展创建文件失败而开箱即崩（且报错误导为 "Access is denied"）。Palimpsest 实测在该场景正常，但仍做一次预检——关键路径（数据目录 / FTS 索引目录）含非 ASCII 字符时只**提示风险**（`ok=True`），仅当路径实测不可写才判失败并给出「改用英文目录」的修复方向。
+
 ### 修复
 
 - **技能索引在技能目录缺失时会清空全库技能节点**：`scripts/build_skill_index.py` 的 `_skill_files()` 对不存在的目录返回空列表，`build()` 随即以空 `known_paths` 执行孤儿清理，把库中**全部** `skill_chunk` 节点当作「源文件已删除」删光——一次 `HERMES_HOME` 指向不存在的目录即可静默清空技能检索。现在技能目录缺失一律 fail-fast（抛 `SkillsDirNotFoundError`，CLI 以退出码 2 结束并提示 `--skills-dir` / `HERMES_HOME` / `HERMES_PROFILE`），仅在目录真实存在并通过扫描时才执行孤儿清理；「目录存在但没有 SKILL.md」仍按合法空目录处理。
