@@ -61,6 +61,29 @@ Palimpsest 原本只记一个时间：`created_at`——这条记录**何时被�
   其中 `superseded_by` 走的是**反向边**（`get_incoming_edges`）：谁指向了本节点——即「谁取代了我」。这正是「谁失效了谁」的反向索引，与既有的 `REVISED_BY` 出边（我取代了谁）互为镜像。
 - **整链视图**：`mem_version_history` 仍按 domain 沿 `REVISED_BY` 链展开（面向版本日志）。
 
+### `as_of` 历史视图（第二阶段）
+
+按时间点 `T` 回看「那一刻它认为什么」。`mem_search` / `mem_retrieve` / `mem_hybrid_search` / `mem_recent` 均支持 `as_of`（数值时间戳）参数。
+
+一条事实在 `T` 时刻为真，当且仅当：
+
+```
+valid_at <= T   AND   (invalid_at 缺失 或 invalid_at > T)
+```
+
+**以时间窗为准，不看当前 `status`**——这是历史视图的价值所在：`T` 在过去时，后来被标 `outdated` 的节点在当时仍是有效的，`as_of` 会把它返回（`include_outdated` 的 status 判据让位给时间窗）。
+
+兜底（历史数据无时间字段）：
+
+- `valid_at` 缺失 → 视为「一直在为真」→ 不过滤（保守，宁多回不丢）；
+- `invalid_at` 缺失 → 视为「仍为真」→ 通过。
+
+`as_of` 为空 → 完全走原行为（回归红线）。非事实类型（`kb_chunk` / `record` 等）不受 `as_of` 影响。
+
+```json
+POST /mem/search {"query": "配置项 X 的取值", "as_of": 1790000000.0}
+```
+
 ## 实现位置
 
 | 关注点 | 位置 |
@@ -70,12 +93,13 @@ Palimpsest 原本只记一个时间：`created_at`——这条记录**何时被�
 | 被取代补 `invalid_at` / `expired_at` | `core/conflict.py`（`resolve_conflict`） |
 | 反向边查询 | `core/trivium_store.py`（`get_incoming_edges`） |
 | 单条时间线工具 | `mcp_tools/memory.py`（`mem_fact_history`） |
+| `as_of` 时间窗判据 | `core/bitemporal.py`（`is_valid_at`） |
+| `as_of` 检索过滤 | `mcp_tools/memory.py`（`_mem_search_impl` 等） |
 
 ## 范围与后续
 
-本次是**第一阶段：存字段 + 反向索引**。后续阶段（尚未实现）：
+**第一阶段**（已实现）：存字段 + 反向索引。**第二阶段**（已实现）：`as_of` 历史视图。后续阶段（尚未实现）：
 
-- **`as_of` 查询**：按时间点回看「那一刻它认为什么」。
 - **时间窗冲突判定**：两条事实的时间窗不重叠就不算矛盾（如「十年前住北京」≠「现在住上海」），降低误报。
 
 历史数据无时间字段，迁移只能为 `null`——不追溯回填（自动从文本抽时间不可靠）。缺失时间字段的节点走原有行为，不受影响。
