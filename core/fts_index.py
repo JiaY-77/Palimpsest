@@ -147,15 +147,34 @@ def search_fts(query: str, limit: int = 10) -> list[dict]:
     """
     全文搜索。trigram 分词器（>=3字符且不含双引号）+ LIKE 兜底。
     返回 [{'node_id': int, 'content': str}]；异常/空查询返回空列表。
+
+    这是 `search_fts_status()` 的向后兼容包装，只取结果、丢弃通道状态。
+    需要区分「真的没命中」与「通道降级（索引缺失/查询异常）」时，
+    改用 `search_fts_status()`。
+    """
+    return search_fts_status(query, limit=limit)[0]
+
+
+def search_fts_status(query: str, limit: int = 10) -> tuple[list[dict], str]:
+    """
+    全文搜索（带通道状态）。返回 `(rows, status)`：
+
+    - `"ok"`       —— 查询正常执行（rows 可能为空，表示确实无命中）
+    - `"empty"`    —— 空查询，未执行检索（契约上与 ok 区分，便于调用方判断）
+    - `"degraded"` —— 通道不可用：索引文件不存在，或查询抛异常
+
+    背景：混合检索（RRF / 级联）会在某路不可用时静默退回另一路，
+    若 FTS 通道挂了却与「无命中」无法区分，检索质量下降不会留痕。
+    本函数让调用方能把降级如实透出（见 `_hybrid_rrf` / `_hybrid_cascade`）。
     """
     query = (query or "").strip()
     if not query:
-        return []
+        return [], "empty"
     path = _db_path()
     # 只读连接（mode=ro）：检索不建表、不创建 fts.db、不拿写锁。
     # 索引文件不存在 → 直接空结果，绝不让「搜一下」把索引文件建出来。
     if not os.path.exists(path):
-        return []
+        return [], "degraded"
     conn = None
     try:
         conn = sqlite3.connect(pathlib.Path(os.path.abspath(path)).as_uri() + "?mode=ro", uri=True)
@@ -185,11 +204,11 @@ def search_fts(query: str, limit: int = 10) -> list[dict]:
                 "SELECT node_id, content FROM mem_fts WHERE content LIKE ? LIMIT ?",
                 (pattern, int(limit)),
             ).fetchall()
-        return [{"node_id": r[0], "content": (r[1] or "")[:120]} for r in rows]
+        return [{"node_id": r[0], "content": (r[1] or "")[:120]} for r in rows], "ok"
     except Exception as e:  # noqa: BLE001 —— 全文检索失败返回空列表查询侧天然降级
         # 契约：不抛异常，只降级成空结果；debug 级别带上异常类型便于排查。
         logger.debug("FTS 检索失败，返回空列表：%s", type(e).__name__)
-        return []
+        return [], "degraded"
     finally:
         if conn is not None:
             conn.close()

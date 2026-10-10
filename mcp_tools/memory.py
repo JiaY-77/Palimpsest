@@ -14,7 +14,7 @@ import time
 from config import Config
 from core.conflict import resolve_conflict
 from core.db_health import check_db_health, health_hint
-from core.fts_index import index_node, search_fts
+from core.fts_index import index_node, search_fts_status
 from core.secret_scan import SecretScanError
 from core.trivium_store import domain_in_block, node_domain
 from core.utils import _to_float
@@ -855,15 +855,21 @@ def _hybrid_rrf(
     block: str,
     include_outdated: bool = False,
     tier: str = DEFAULT_TIER,
-) -> list:
+) -> tuple[list, dict]:
     """RRF 融合：语义排名 + FTS 排名的 reciprocal rank 求和（k=60）。
 
     两个排名都是 0-based；单侧命中也计入 rrf；按 rrf 降序取 top_k。
+
+    返回 `(items, channels)`，其中 channels 记录各检索通道状态
+    （`fts` / `semantic`），FTS 通道降级时如实标出并在日志留痕，
+    避免「通道挂了」被误读成「确实没命中」。
     """
     sem_items = _sem_candidate_items(
         query, scope, domain, domain_bias, top_k, block, include_outdated=include_outdated, tier=tier
     )
-    fts = search_fts(query, limit=fts_limit)
+    fts, fts_status = search_fts_status(query, limit=fts_limit)
+    if fts_status == "degraded":
+        logger.warning("混合检索降级：FTS 通道不可用（query=%r），结果仅来自语义通道", query[:60])
 
     ranked = _rrf_fuse(
         [it.get("id") for it in sem_items if it.get("id") is not None],
@@ -892,7 +898,8 @@ def _hybrid_rrf(
         merged.append(item)
         if len(merged) >= top_k:
             break
-    return merged
+    channels = {"semantic": "ok" if sem_items else "empty", "fts": fts_status}
+    return merged, channels
 
 
 def _hybrid_cascade(
@@ -905,12 +912,17 @@ def _hybrid_cascade(
     block: str,
     include_outdated: bool = False,
     tier: str = DEFAULT_TIER,
-) -> list:
+) -> tuple[list, dict]:
     """级联：FTS 粗筛候选集 → 向量精排（只留交集）→ 不足 top_k 从剩余语义补足。
 
     候选集为空时退化为纯语义结果；兜底条目 fts_hit=False 如实标记未过 FTS 粗筛。
+
+    返回 `(items, channels)`；FTS 通道降级（索引缺失/查询异常）与
+    「粗筛确实无命中」是两种不同情况，后者才是设计内的退化，前者需要留痕。
     """
-    fts = search_fts(query, limit=fts_limit)
+    fts, fts_status = search_fts_status(query, limit=fts_limit)
+    if fts_status == "degraded":
+        logger.warning("混合检索降级：FTS 通道不可用（query=%r），级联退化为纯语义", query[:60])
     fts_ids = {r.get("node_id") for r in fts if r.get("node_id") is not None}
     sem_items = _sem_candidate_items(
         query, scope, domain, domain_bias, top_k, block, include_outdated=include_outdated, tier=tier
@@ -931,7 +943,8 @@ def _hybrid_cascade(
         it["meta"] = meta
         it["score"] = round(_to_float(it.get("score"), 0.0), 4)
         items.append(it)
-    return items
+    channels = {"semantic": "ok" if sem_items else "empty", "fts": fts_status}
+    return items, channels
 
 
 def _hybrid_search_impl(
@@ -973,14 +986,14 @@ def _hybrid_search_impl(
     fts_limit = max(1, int(fts_limit or 0))
     try:
         if mode == "cascade":
-            items = _hybrid_cascade(
+            items, channels = _hybrid_cascade(
                 query, scope, domain, domain_bias, top_k, fts_limit, block, include_outdated=include_outdated, tier=tier
             )
         else:
-            items = _hybrid_rrf(
+            items, channels = _hybrid_rrf(
                 query, scope, domain, domain_bias, top_k, fts_limit, block, include_outdated=include_outdated, tier=tier
             )
-        result = {"results": items, "scope": scope, "mode": mode}
+        result = {"results": items, "scope": scope, "mode": mode, "channels": channels}
         if domain_bias:
             result["bias"] = domain_bias
         if include_neighbors:

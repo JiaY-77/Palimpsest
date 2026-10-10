@@ -34,7 +34,7 @@ Palimpsest is a **local-first embedded long-term memory system** that fuses **se
 - ⏫ **Auto-promotion of hot memories.** Retrieval hits are counted (`hit_count`); `promote` raises and tags frequently-used memories (dry-run first, idempotent, reversible).
 - ⏳ **Memory lifecycle.** Time decay (`MEMORY_DECAY_FACTOR`) fades stale memories in ranking without touching storage; `kb_chunk` is exempt; `outdated` versions leave ordinary retrieval.
 - 📁 **Task auto-archiving.** Completed tasks are written to markdown archives under the knowledge base, then deleted — dry-run first, `apply` to commit.
-- ✅ **Deployment doctor.** `doctor` checks critical files / storage / FTS / dependencies / Embedding reachability and vector-dimension consistency, printing an actionable fix per failure (`--json` for machines).
+- ✅ **Deployment doctor.** `doctor` checks critical files / storage / FTS / dependencies / Embedding reachability / vector-dimension consistency / runtime path charset, printing an actionable fix per failure (`--json` for machines).
 - ✂️ **Token-efficient by design.** Retrieval returns a **150-char summary + metadata**, never full text; full content is fetched on demand.
 - 🗂️ **Memory tiering (`tier`).** A retrieval-side view, no data movement: by default only the facts tier (`memory` / `correction` / `decision` / `plan` / `task`, …) is returned, keeping the logs tier (`record` / `event` / `git_commit`) out; `tier="logs"` returns only logs, `tier=""` restores the full pool.
 - 🔐 **Optional API-key auth.** Off by default; setting `PALIMPSEST_API_KEY` requires a Bearer / X-API-Key header on REST — for LAN / trusted-network deployments.
@@ -226,7 +226,7 @@ python scripts/build_kb_index.py --rules rules.json
 | `ingest-git` | Index recent git commits as `git_commit` nodes (idempotent) |
 | `fts-rebuild` | Rebuild the full FTS5 index |
 | `fts-search "QUERY"` | Raw FTS5 search (trigram substring) |
-| `doctor` | Deployment health check: critical files / storage / FTS / dependencies / Embedding / vector-dimension consistency, with an actionable fix per failure (`--json`) |
+| `doctor` | Deployment health check: critical files / storage / FTS / dependencies / Embedding / vector-dimension consistency / runtime path charset, with an actionable fix per failure (`--json`) |
 | `startup-check` | Run the startup self-check (lightweight subset of `doctor`; exit code 1 on failure) |
 | `task-archive` | Archive completed task nodes; `--apply` writes markdown and deletes the node |
 | `reindex` | Re-embed the whole store after switching embedding models (`--check` health check, `--dry-run` preview) |

@@ -76,19 +76,23 @@ def test_hybrid_rrf_expand_depth_config(monkeypatch):
     # 也 monkeypatch embed_text 返回假向量
     monkeypatch.setattr(store, "embed_text", lambda q: [0.0] * 4)
 
-    # monkeypatch search_fts 返回空
-    monkeypatch.setattr("mcp_tools.memory.search_fts", lambda q, limit=10: [])
+    # monkeypatch search_fts_status 返回空（含通道状态，与生产调用签名一致）
+    monkeypatch.setattr("mcp_tools.memory.search_fts_status", lambda q, limit=10: ([], "ok"))
 
     # --- 场景 A：默认配置 expand_depth=0 ---
     monkeypatch.setattr(Config, "RETRIEVAL_EXPAND_DEPTH", 0)
     from mcp_tools.memory import _hybrid_rrf
 
-    _hybrid_rrf("test query", "all", "", "", top_k=5, fts_limit=10, block="", include_outdated=False)
+    _items, _channels = _hybrid_rrf(
+        "test query", "all", "", "", top_k=5, fts_limit=10, block="", include_outdated=False
+    )
     assert captured.get("expand_depth") == 0, f"默认配置下 expand_depth 应为 0，实际: {captured.get('expand_depth')}"
 
     # --- 场景 B：手动设为 1 ---
     monkeypatch.setattr(Config, "RETRIEVAL_EXPAND_DEPTH", 1)
-    _hybrid_rrf("test query", "all", "", "", top_k=5, fts_limit=10, block="", include_outdated=False)
+    _items, _channels = _hybrid_rrf(
+        "test query", "all", "", "", top_k=5, fts_limit=10, block="", include_outdated=False
+    )
     assert captured.get("expand_depth") == 1, (
         f"配置 RETRIEVAL_EXPAND_DEPTH=1 后 expand_depth 应为 1，实际: {captured.get('expand_depth')}"
     )

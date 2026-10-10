@@ -33,7 +33,7 @@ Palimpsest 是一个 **本地优先的嵌入式长期记忆系统**，将 **语�
 - ⏫ **高频记忆自动升级** —— 检索命中计数（`hit_count`），`promote` 把反复被用到的记忆升权打标（dry-run 预览、幂等可逆）
 - ⏳ **记忆生命周期** —— 时间衰减加权（`MEMORY_DECAY_FACTOR`）在排序中淡化陈旧记忆而不动存储；`kb_chunk` 豁免；`outdated` 旧版默认不参与普通检索
 - 📁 **任务自动归档** —— 完成任务自动写成 markdown 归档至知识库归档目录后删除节点——先 `dry-run` 预览，`apply` 提交
-- ✅ **部署体检** —— `doctor` 一键体检关键文件 / 存储 / FTS / 依赖 / Embedding 可达性与向量维度一致性，每个失败项给出修复命令（`--json` 机器可读）
+- ✅ **部署体检** —— `doctor` 一键体检关键文件 / 存储 / FTS / 依赖 / Embedding 可达性 / 向量维度一致性 / 运行时路径字符集，每个失败项给出修复命令（`--json` 机器可读）
 - ✂️ **省 token 设计** —— 检索默认只返回 **150 字摘要 + 元数据**，完整内容按需二次拉取
 - 🗂️ **记忆分层（`tier`）** —— 检索侧轻量视图，不迁数据：默认只取事实层（`memory` / `correction` / `decision` / `plan` / `task` 等），把日志层（`record` / `event` / `git_commit`）从默认检索与注入池摘出；`tier="logs"` 只取日志层、`tier=""` 回到全量
 - 🔐 **可选 API Key 鉴权** —— 默认关闭；设置 `PALIMPSEST_API_KEY` 后 REST 层要求 Bearer / X-API-Key，适合局域网受信部署
@@ -225,7 +225,7 @@ python scripts/build_kb_index.py --rules rules.json
 | `ingest-git` | 将近期 git 提交索引为 `git_commit` 节点（幂等） |
 | `fts-rebuild` | 重建完整 FTS5 索引 |
 | `fts-search "QUERY"` | 原始 FTS5 搜索（trigram 子串） |
-| `doctor` | 部署体检：关键文件 / 存储 / FTS / 依赖 / Embedding / 向量维度一致性，失败项给出修复命令（`--json` 机器可读） |
+| `doctor` | 部署体检：关键文件 / 存储 / FTS / 依赖 / Embedding / 向量维度一致性 / 运行时路径字符集，失败项给出修复命令（`--json` 机器可读） |
 | `startup-check` | 运行启动自检（`doctor` 的轻量子集，失败时退出码 1） |
 | `task-archive` | 归档已完成任务；`--apply` 写入 markdown 并删除节点 |
 | `reindex` | 全库向量重嵌入（换 embedding 模型后使用；`--check` 体检、`--dry-run` 预览） |
