@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [2.6.1] - 2026-10-10
+
+### 修复
+
+- **`mem_fact_history` 补上 REST 路由与包导出**：2.6.0 引入的 `mem_fact_history` 只注册了 MCP 工具，缺 `mcp_tools/__init__.py` 的公共导出与 REST 路由 —— 前者让 `main.py` 按名导入失败，后者让 HTTP 调用返回 404，违背「三接口、一核心」（MCP / REST / CLI 共用同一套底层工具）。现补 `POST /mem/fact-history`（复用 MCP 实现，不复制逻辑）、包导出与 `root()` 端点索引，并用 `tests/test_fact_history_route.py` 锁定「REST 与 MCP 返回同构」「路由已入端点索引」两条契约。
+
 ## [2.6.0] - 2026-10-10
 
 ### 新增
@@ -363,7 +369,8 @@
 
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
-[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.6.0...HEAD
+[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.6.1...HEAD
+[2.6.1]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.6.1
 [2.6.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.6.0
 [2.5.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.5.0
 [2.4.1]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.4.1

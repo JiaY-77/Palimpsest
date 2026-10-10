@@ -6,7 +6,7 @@ Palimpsest 的 REST 服务由 `main.py` 提供，默认监听 `127.0.0.1:8090`�
 python -m uvicorn main:app --host 127.0.0.1 --port 8090
 ```
 
-> README 只列常用端点；本页是完整清单（26 条）。若设置了 `PALIMPSEST_API_KEY`，
+> README 只列常用端点；本页是完整清单（27 条）。若设置了 `PALIMPSEST_API_KEY`，
 > 除 `/` 外所有端点要求 `Authorization: Bearer <key>` 或 `X-API-Key: <key>`。
 
 ## REST API — `main.py`，端口 8090
@@ -29,6 +29,7 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8090
 | `POST` | `/mem/ingest` | 写入新记忆（含冲突检测 + 敏感扫描） |
 | `POST` | `/mem/link` | 创建图边 |
 | `DELETE` | `/mem/edge` | 删除图边（body：`source_id` / `target_id` / `relation`；幂等） |
+| `POST` | `/mem/fact-history` | 单条事实的 bi-temporal 时间线与取代关系（body：`node_id`） |
 | `POST` | `/mem/recent` | 最近记忆列表（按 created_at 倒序） |
 | `GET` | `/tasks/active` | 活跃任务列表（query：`project` / `states` / `limit`；按状态优先级 → 最近触碰倒序） |
 | `POST` | `/mem/stats` | 库级盘点统计 |

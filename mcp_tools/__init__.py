@@ -16,6 +16,7 @@ from mcp_tools.consolidate_tool import mem_consolidate
 from mcp_tools.graph import graph_neighbors, mem_communities, mem_link
 from mcp_tools.kb import kb_index, kb_search
 from mcp_tools.memory import (
+    mem_fact_history,
     mem_get_full,
     mem_hybrid_search,
     mem_ingest,
@@ -36,6 +37,7 @@ __all__ = [
     "mcp",
     "mem_communities",
     "mem_consolidate",
+    "mem_fact_history",
     "mem_get_full",
     "mem_hybrid_search",
     "mem_ingest",
