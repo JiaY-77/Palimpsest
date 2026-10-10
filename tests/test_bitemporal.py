@@ -162,7 +162,12 @@ def test_mem_ingest_stamps_valid_at(iso_store):
     assert res["stored"] is True
     payload = iso_store.get_node(res["node_id"])["payload"]
     assert "valid_at" in payload
-    assert before <= payload["valid_at"] <= time.time() + 1
+    # time.time() 不保证单调（Windows 底层 GetSystemTimeAsFileTime，分辨率
+    # 约 15.6ms，且可能被系统时钟同步微调回退），故不能假设跨调用的
+    # before <= valid_at <= after 严格成立——用系统时钟分辨率为容差，
+    # 断言「valid_at 落在本次写入的时刻附近」这一真实意图。
+    clock_slack = time.get_clock_info("time").resolution or 0.02
+    assert before - clock_slack <= payload["valid_at"] <= time.time() + clock_slack
     assert payload.get("created_at") is not None
 
 
