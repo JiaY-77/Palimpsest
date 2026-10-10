@@ -71,6 +71,9 @@ from mcp_tools import (
     mem_communities as _mcp_mem_communities,
 )
 from mcp_tools import (
+    mem_fact_history as _mcp_mem_fact_history,
+)
+from mcp_tools import (
     mem_hybrid_search as _mcp_mem_hybrid_search,
 )
 from mcp_tools import (
@@ -265,6 +268,7 @@ def root():
             "/mem/ingest",
             "/mem/link",
             "/mem/edge",
+            "/mem/fact-history",
             "/mem/recent",
             "/tasks/active",
             "/graph/neighbors",
@@ -592,6 +596,10 @@ class GraphCommunitiesRequest(BaseModel):
     with_summary: bool = True
 
 
+class MemFactHistoryRequest(BaseModel):
+    node_id: int
+
+
 def _as_json(text: str):
     try:
         return json.loads(text)
@@ -711,6 +719,15 @@ def graph_communities(req: GraphCommunitiesRequest):
             with_summary=req.with_summary,
         )
     )
+
+
+@app.post("/mem/fact-history")
+def mem_fact_history(req: MemFactHistoryRequest):
+    """单条事实的时间线（只读）：bi-temporal 时间字段 + 取代关系（双向）。
+
+    核心逻辑见 mcp_tools.memory.mem_fact_history（复用同一实现，不复制）。
+    """
+    return _as_json(_mcp_mem_fact_history(req.node_id))
 
 
 @app.post("/mem/recent")
