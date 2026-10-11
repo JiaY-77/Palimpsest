@@ -8,7 +8,7 @@ Pa·limp·sest: *a writing surface that is overwritten again and again while old
 
 | | |
 |---|---|
-| Version | v2.7.0 |
+| Version | v2.8.0 |
 | Python | 3.10+ |
 | License | MIT |
 | Storage | TriviumDB 0.8.8 (vector + graph + document, embedded) |
@@ -269,7 +269,11 @@ The suite covers the core loop: write → `mem_search` hit → `mem_get_full` ro
 
 ## Project structure
 
-`main.py` (the REST single writer) / `mcp_server.py` (stdio escape hatch) / `config.py` → `core/` (framework-free shared engine) → `mcp_tools/` (18 tools, shared by MCP/REST/CLI); plus `scripts/` ops tooling, `eval/` offline evaluation, `hermes-plugin/` dual plugins, `tests/`, `docs/`, `data/`. Layering rules and the full tree are in [CONTRIBUTING.md](CONTRIBUTING.md).
+`main.py` (the REST single writer) / `mcp_server.py` (stdio escape hatch) / `config.py` → `core/` (framework-free shared engine) → `mcp_tools/` (19 tools, shared by MCP/REST/CLI); plus `scripts/` ops tooling, `eval/` offline evaluation, `hermes-plugin/` dual plugins, `tests/`, `docs/`, `data/`. Layering rules and the full tree are in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+**Graph edges:** `scripts/build_structural_edges.py` adds edges from six sources (same-source grouping `PART_OF` / chunk order `NEXT` / skill affinity `SKILL_RELATED_TO` / novel relations `RELATED_TO` / Markdown links `WIKI_LINK` / session time-chain `FOLLOWS` and name mentions `MENTIONS`). It is **read-only dry-run by default**, printing a predicted impact report; pass `--apply` to write (batches can be reverted precisely with `--rollback`). `build_kb_index.py` / `build_skill_index.py` rebuild edges automatically after reindexing; disable with `PALIMPSEST_BUILD_EDGES=0`.
+
+**Governance views:** besides retrieval panels, `scripts/dashboard.py` offers three read-only views — conflict chain (superseded nodes and their revision chain), decay curve (ranked by time decay × importance), and graph scale (isolation rate and edge-label distribution).
 
 ---
 

@@ -8,7 +8,7 @@
 
 > _Palimpsest_：拉丁语，原指「重写的羊皮纸」——旧字迹被覆写抹去，却又在岁月里重新透出。我们把这个意象搬进记忆里：**新的事实覆盖旧的事实，但旧迹永不真正丢失**——每次改写都通过一条有迹可循的 **版本链**（`REVISED_BY`）连接，新旧记忆可查可溯。
 
-[![Version](https://img.shields.io/badge/Version-v2.7.0-4c6ef5.svg)](/)
+[![Version](https://img.shields.io/badge/Version-v2.8.0-4c6ef5.svg)](/)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Backends](https://img.shields.io/badge/Backends-DeepSeek%E2%80%A2Ollama-6f42c1.svg)](/)
@@ -268,7 +268,11 @@ venv/Scripts/python.exe eval/run_eval.py
 
 ## 项目结构
 
-`main.py`（REST 唯一写者）/ `mcp_server.py`（stdio 逃生梯）/ `config.py` → `core/`（共享引擎，无框架依赖）→ `mcp_tools/`（18 个工具，MCP/REST/CLI 共用）；另有 `scripts/` 运维脚本、`eval/` 离线评测、`hermes-plugin/` 双插件、`tests/`、`docs/`、`data/`。分层约定与完整树见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+`main.py`（REST 唯一写者）/ `mcp_server.py`（stdio 逃生梯）/ `config.py` → `core/`（共享引擎，无框架依赖）→ `mcp_tools/`（19 个工具，MCP/REST/CLI 共用）；另有 `scripts/` 运维脚本、`eval/` 离线评测、`hermes-plugin/` 双插件、`tests/`、`docs/`、`data/`。分层约定与完整树见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+**图谱建边：** `scripts/build_structural_edges.py` 从六个来源为图谱补边（同源分组 `PART_OF` / 切片顺序 `NEXT` / 技能相关 `SKILL_RELATED_TO` / 小说关系 `RELATED_TO` / Markdown 双链 `WIKI_LINK` / 会话时序链 `FOLLOWS` 与名称提及 `MENTIONS`）。**默认只读 dry-run** 并打印影响面预测，确认后加 `--apply` 落库（批次清单可 `--rollback` 精确回滚）。`build_kb_index.py` / `build_skill_index.py` 重建索引后会自动补边，可用 `PALIMPSEST_BUILD_EDGES=0` 关闭。
+
+**治理可视化：** `scripts/dashboard.py` 除检索面板外，另提供三块只读视图——冲突链（被取代节点与修订链）、遗忘曲线（按时间衰减 × 重要度排序）、图谱规模（孤立率与边标签分布）。
 
 ---
 
