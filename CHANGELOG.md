@@ -6,6 +6,21 @@
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-10-11
+
+### 新增
+
+- **结构化建边器（图谱自动成边）**：新增 `scripts/build_structural_edges.py`，从六个来源为图谱补边——①`source_path` 同源分组（`PART_OF`）②`chunk_index` 顺序（`NEXT`）③技能间相关性（`SKILL_RELATED_TO`）④小说关系（`RELATED_TO`，解析关系文档）⑤Markdown 双链（`WIKI_LINK`）⑥**会话/时序链（`FOLLOWS`）**与**名称提及（`MENTIONS`）**。支持 `--apply` / `--rollback`（批次清单落在 `data/edge_batches/`，可精确回滚）与 `--batch-id`；同一次运行内以单连接批量读写（实测 apply 从 4m40s 降至 **0.9s**）。**只读 dry-run 是默认行为**——先看预测影响面再决定是否落库。
+- **建边自动化：索引重建后自动补边**：`build_kb_index.py` / `build_skill_index.py` 收尾自动调用建边器（可用 `PALIMPSEST_BUILD_EDGES=0` 关闭）。此前索引重建会新建节点但不连边，「重建完图是散的」需要人工记得补跑。
+- **`FOLLOWS` 会话链与 `MENTIONS` 名称提及两类新边源**：会话链按 `created_at` 切分（间隔 ≤ `SESSION_GAP_SECONDS`，默认 1800s）为相邻节点建有向边，**限同 domain**（跨域的时间相邻只是巧合，实测 135 条跨域对无语义关联）；无 `created_at` 的节点回退 `commit_time`（`git_commit` 类型只有日期字符串，此前整类节点均为孤岛）。`MENTIONS` 由名称词典匹配而生。落地后生产库孤立率 **60.6% → 16.6%**（有边节点 609 → 1291）。
+- **治理可视化面板（Dashboard）**：新增三块只读面板——**冲突链**（被取代节点与其修订链）、**遗忘曲线**（按 `0.95^(days/30) × importance` 排序的活跃记忆）、**图谱规模**（节点数 / 有边节点 / 孤立率 / 平均出度 / 边标签分布）。走既有 `GET /export` 分页 + 30 秒内存缓存，不改动写入路径。
+- **检索融合预留第三路（实体锚定路）**：`_rrf_fuse()` 扩展为可接受第三个排名列表与权重（`ent_ids` / `w_ent`），**默认关闭**（`w_ent=0`），行为与两路版本逐位一致；同时把散落的「outdated / as_of 可见性判据」抽为 `_visible()`，供后续各检索路共用。为实体锚定检索预留接口，不含行为变更。
+
+### 修复
+
+- **会话链的收录范围与时间戳回退**：初版会话链只收录日志类节点，导致 `memory`（92% 无出边）与 `correction`（86%）几乎全为孤岛；改为收录除知识库切片外的全部带时间戳节点。另加**同 domain 约束**（时间相邻 ≠ 相关）与 `commit_time` 回退（`git_commit` 无 `created_at`）。见上「新增」第三条。
+- **写策略的分级上限此前从未生效**：`POLICY_TYPE_LIMITS` 默认值为空，护栏的第三项（按 type 分级上限）实际处于关闭状态，warn 模式上线后零告警。现按实测内容长度分布配置默认值（`record`/`memory` 8000、`task` 10000、`plan`/`novel_chunk` 12000、`kb_chunk` 8000；取各类型 p90 的 3–5 倍），实测生产库 1551 个节点**零超限**。`POLICY_MODE` 仍为 `warn`——本次只让此前静默的策略项变为可观测。
+
 ## [2.7.0] - 2026-10-10
 
 ### 新增
@@ -381,8 +396,8 @@
 
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
-[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.7.0...HEAD
-[2.7.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.7.0
+[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.8.0...HEAD
+[2.8.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.8.0
 [2.6.1]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.6.1
 [2.6.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.6.0
 [2.5.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.5.0
