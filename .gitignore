@@ -70,6 +70,9 @@ _task_*.md
 scripts/_t[0-9]*.py
 scripts/tdb_stress/_*.py
 
+# 本地临时探针/工作区（含个人数据的定位工具、一次性验证脚本，不入库）
+tmp/
+
 # 压测工作区的临时产物
 scripts/tdb_stress/results/
 scripts/tdb_stress/patches/

@@ -294,3 +294,113 @@ def test_session_chain_and_mentions_sources(iso_db):
         with contextlib.suppress(OSError):
             (_REPO_ROOT / "data" / "edge_batches" / f"{batch_id}.json").unlink()
         shutil.rmtree(empty_dir, ignore_errors=True)
+
+
+def _run_edges(iso_db, batch_id):
+    """跑一次建边器（apply），返回可用的 label 统计函数。"""
+    mod = _load_module()
+    empty_dir = tempfile.mkdtemp(prefix="palimpsest_edges_empty_")
+    sys.argv = [
+        "x",
+        "--db",
+        iso_db,
+        "--apply",
+        "--batch-id",
+        batch_id,
+        "--skills-dir",
+        empty_dir,
+        "--vault-dir",
+        empty_dir,
+    ]
+    try:
+        assert mod.main() == 0
+    finally:
+        shutil.rmtree(empty_dir, ignore_errors=True)
+
+
+def _edge_pairs(iso_db):
+    """返回 {(src, tgt, label)} 当前库中的边。"""
+    s = _open_store(iso_db)
+    out = set()
+    with s._acquire() as db:
+        for nid in db.all_node_ids():
+            for e in db.get_edges(nid) or []:
+                out.add((nid, getattr(e, "target_id", None), str(getattr(e, "label", "") or "")))
+    return out
+
+
+def test_session_chain_skips_cross_domain(iso_db):
+    """同 domain 才建 FOLLOWS；跨 domain 的时间相邻是巧合，必须跳过。"""
+    old = Config.DB_PATH
+    batch_id = f"pytest-xdom-{uuid.uuid4().hex[:8]}"
+    old_argv = sys.argv
+    try:
+        store = _open_store(iso_db)
+        base = 1_800_000_000.0
+        # A、B 同 domain 相邻 100s → 期望 A→B FOLLOWS
+        a = store.insert_node(
+            {"type": "record", "content": "A 同域一", "domain": "hermes", "importance": 0.5},
+            store.embed_text("A 同域一"),
+        )
+        store.update_payload(a, {"created_at": base})
+        b = store.insert_node(
+            {"type": "record", "content": "B 同域二", "domain": "hermes", "importance": 0.5},
+            store.embed_text("B 同域二"),
+        )
+        store.update_payload(b, {"created_at": base + 100})
+        # C 与 B 相邻 100s 但 domain 不同 → 期望 不建 B→C
+        c = store.insert_node(
+            {"type": "record", "content": "C 跨域三", "domain": "workdocs", "importance": 0.5},
+            store.embed_text("C 跨域三"),
+        )
+        store.update_payload(c, {"created_at": base + 200})
+        with contextlib.suppress(Exception):
+            store._acquire().close()
+
+        _run_edges(iso_db, batch_id)
+        pairs = _edge_pairs(iso_db)
+        follows = {(s, t) for s, t, lab in pairs if lab == "FOLLOWS"}
+        assert (a, b) in follows, f"同 domain 相邻未建边: {follows}"
+        assert (b, c) not in follows, f"跨 domain 竟建了边: {follows}"
+    finally:
+        sys.argv = old_argv
+        Config.DB_PATH = old
+        with contextlib.suppress(OSError):
+            (_REPO_ROOT / "data" / "edge_batches" / f"{batch_id}.json").unlink()
+
+
+def test_session_chain_uses_commit_time_fallback(iso_db):
+    """git_commit 没有 created_at，只有 commit_time（日期字符串）——也要能接入会话链。"""
+    old = Config.DB_PATH
+    batch_id = f"pytest-ct-{uuid.uuid4().hex[:8]}"
+    old_argv = sys.argv
+    try:
+        store = _open_store(iso_db)
+        ids = []
+        # 同一天的两次提交（commit_time 只到日期精度，真实库中同天多 commit 常见）
+        for i in range(2):
+            nid = store.insert_node(
+                {
+                    "type": "git_commit",
+                    "content": f"feat: 提交{i}",
+                    "commit_time": "2026-08-24",
+                    "importance": 0.5,
+                },
+                store.embed_text(f"feat: 提交{i}"),
+            )
+            # 与 created_at 同理：insert_node 的 payload 默认不含 commit_time，
+            # 须显式补写，否则测不到回退逻辑。
+            store.update_payload(nid, {"commit_time": "2026-08-24"})
+            ids.append(nid)
+        with contextlib.suppress(Exception):
+            store._acquire().close()
+
+        _run_edges(iso_db, batch_id)
+        pairs = _edge_pairs(iso_db)
+        follows = {(s, t) for s, t, lab in pairs if lab == "FOLLOWS"}
+        assert (ids[0], ids[1]) in follows, f"commit_time 回退未生效: {follows}"
+    finally:
+        sys.argv = old_argv
+        Config.DB_PATH = old
+        with contextlib.suppress(OSError):
+            (_REPO_ROOT / "data" / "edge_batches" / f"{batch_id}.json").unlink()
