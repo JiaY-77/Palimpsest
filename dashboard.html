@@ -38,6 +38,13 @@ td{color:#2d3436}
 .candidate .score{color:#e17055;font-size:.8rem}
 .candidate .content{font-size:.8rem;color:#636e72;margin-top:6px}
 .separator{height:1px;background:#eee;margin:10px 0}
+.bar{height:8px;border-radius:4px;background:#dfe6e9;overflow:hidden}
+.bar>span{display:block;height:100%;background:#0984e3}
+.bar.warn>span{background:#e17055}
+.chip{display:inline-block;padding:2px 8px;border-radius:10px;font-size:.72rem;background:#f1f2f6;color:#57606f;margin:0 4px 0 0}
+.chain{font-size:.82rem;color:#636e72;margin-top:6px;background:#fafbfc;border:1px solid #dfe6e9;border-radius:6px;padding:8px}
+.chain .arrow{color:#0984e3;font-weight:700}
+.muted{color:#b2bec3;font-size:.8rem}
 .toast{position:fixed;bottom:20px;right:20px;background:#2d3436;color:#fff;padding:12px 20px;border-radius:8px;font-size:.85rem;display:none;z-index:999}
 </style>
 </head>
@@ -62,6 +69,26 @@ td{color:#2d3436}
 <div class="card">
 <h2>最近记忆</h2>
 <div id="recentArea"><div class="loading">加载中…</div></div>
+</div>
+
+<!-- 冲突消解链 -->
+<div class="card">
+<h2>冲突消解链</h2>
+<p style="font-size:.85rem;color:#636e72;margin-bottom:8px">被新版本取代（已过期）的记忆；点「查看链」看谁取代了它 / 它取代了谁。</p>
+<div id="conflictsArea"><div class="loading">加载中…</div></div>
+</div>
+
+<!-- 遗忘曲线 -->
+<div class="card">
+<h2>遗忘曲线</h2>
+<p style="font-size:.85rem;color:#636e72;margin-bottom:8px">有效分 = 0.95<sup>天数/30</sup> × 重要性（知识块豁免）。以下是衰减最严重的活跃记忆。</p>
+<div id="decayArea"><div class="loading">加载中…</div></div>
+</div>
+
+<!-- 图谱规模 -->
+<div class="card">
+<h2>图谱规模</h2>
+<div id="graphArea"><div class="loading">加载中…</div></div>
 </div>
 
 <!-- 合并治理 -->
@@ -215,9 +242,123 @@ async function doApply() {
     }
 }
 
+// ---- 冲突消解链 ----
+async function loadConflicts() {
+    try {
+        var d = await fetchJSON('/api/mem/conflicts?limit=20');
+        if (!d.nodes || !d.nodes.length) {
+            document.getElementById('conflictsArea').innerHTML = '<div class="empty">没有被取代的记忆</div>';
+            return;
+        }
+        var html = '<div class="muted" style="margin-bottom:6px">共 ' + d.total + ' 条已过期节点</div>';
+        html += '<table><tr><th>ID</th><th>类型</th><th>已过期</th><th>内容摘要</th><th></th></tr>';
+        for (var i = 0; i < d.nodes.length; i++) {
+            var n = d.nodes[i];
+            html += '<tr><td>' + n.id + '</td><td>' + tag(n.type) + '</td><td>' + fmtTime(n.created_at) + '</td>'
+                 +  '<td>' + truncate(n.content, 70) + '</td>'
+                 +  '<td><button class="btn-outline" onclick="loadChain(' + n.id + ')">查看链</button></td></tr>';
+        }
+        html += '</table><div id="chainArea"></div>';
+        document.getElementById('conflictsArea').innerHTML = html;
+    } catch(e) {
+        document.getElementById('conflictsArea').innerHTML = '<div class="empty">加载失败: ' + e.message + '</div>';
+    }
+}
+
+async function loadChain(nodeId) {
+    var el = document.getElementById('chainArea');
+    el.innerHTML = '<div class="loading">加载链…</div>';
+    try {
+        var d = await fetchJSON('/api/mem/conflict-chain?node_id=' + nodeId);
+        if (!d.found) {
+            el.innerHTML = '<div class="chain">节点 ' + nodeId + ' 不存在</div>';
+            return;
+        }
+        var html = '<div class="chain"><b>节点 ' + d.node_id + '</b> (' + (d.type || '—') + ' / ' + (d.status || '—') + '，创建于 ' + fmtTime((d.times||{}).created_at) + ')';
+        var sup = d.superseded || [];
+        var by = d.superseded_by || [];
+        if (!sup.length && !by.length) {
+            html += '<div class="muted" style="margin-top:6px">无 REVISED_BY 关联边</div>';
+        }
+        for (var i = 0; i < by.length; i++) {
+            html += '<div style="margin-top:6px">' + d.node_id + ' <span class="arrow">←被取代←</span> ' + by[i].id + '：' + truncate(by[i].content_summary, 90) + '</div>';
+        }
+        for (var j = 0; j < sup.length; j++) {
+            html += '<div style="margin-top:6px">' + d.node_id + ' <span class="arrow">→取代→</span> ' + sup[j].id + '：' + truncate(sup[j].content_summary, 90) + '</div>';
+        }
+        html += '</div>';
+        el.innerHTML = html;
+    } catch(e) {
+        el.innerHTML = '<div class="chain">链加载失败: ' + e.message + '</div>';
+    }
+}
+
+// ---- 遗忘曲线 ----
+async function loadDecay() {
+    try {
+        var d = await fetchJSON('/api/mem/decay?limit=20');
+        if (!d.nodes || !d.nodes.length) {
+            document.getElementById('decayArea').innerHTML = '<div class="empty">暂无活跃记忆</div>';
+            return;
+        }
+        var html = '<div class="muted" style="margin-bottom:6px">参与衰减的活跃记忆共 ' + d.total + ' 条</div>';
+        html += '<table><tr><th>ID</th><th>类型</th><th>重要性</th><th>年龄(天)</th><th>有效分</th><th>内容摘要</th></tr>';
+        for (var i = 0; i < d.nodes.length; i++) {
+            var n = d.nodes[i];
+            var pct = Math.max(0, Math.min(1, n.effective)) * 100;
+            html += '<tr><td>' + n.id + '</td><td>' + tag(n.type) + '</td><td>' + n.importance.toFixed(2) + '</td>'
+                 +  '<td>' + n.age_days + '</td>'
+                 +  '<td><div style="min-width:90px"><span style="font-size:.8rem;color:#e17055">' + n.effective.toFixed(3) + '</span>'
+                 +  '<div class="bar warn"><span style="width:' + pct.toFixed(1) + '%"></span></div></div></td>'
+                 +  '<td>' + truncate(n.content, 60) + '</td></tr>';
+        }
+        html += '</table>';
+        document.getElementById('decayArea').innerHTML = html;
+    } catch(e) {
+        document.getElementById('decayArea').innerHTML = '<div class="empty">加载失败: ' + e.message + '</div>';
+    }
+}
+
+// ---- 图谱规模 ----
+async function loadGraph() {
+    try {
+        var d = await fetchJSON('/api/mem/graph');
+        var html = '<div class="stats">';
+        html += '<div class="stat-item"><div class="stat-num">' + d.total_nodes + '</div><div class="stat-label">节点总数</div></div>';
+        html += '<div class="stat-item"><div class="stat-num">' + d.total_edges + '</div><div class="stat-label">边总数</div></div>';
+        html += '<div class="stat-item"><div class="stat-num">' + (d.edge_coverage * 100).toFixed(1) + '%</div><div class="stat-label">有边节点占比</div></div>';
+        html += '<div class="stat-item"><div class="stat-num">' + (d.isolated_rate * 100).toFixed(1) + '%</div><div class="stat-label">孤立率（' + d.isolated_nodes + ' 个）</div></div>';
+        html += '<div class="stat-item"><div class="stat-num">' + d.avg_outdegree + '</div><div class="stat-label">平均出度</div></div>';
+        html += '</div>';
+        var labels = d.edge_labels || {};
+        var keys = Object.keys(labels);
+        if (keys.length) {
+            html += '<div style="margin-top:12px">';
+            for (var i = 0; i < keys.length; i++) {
+                html += '<span class="chip">' + keys[i] + ' · ' + labels[keys[i]] + '</span>';
+            }
+            html += '</div>';
+        } else {
+            html += '<div class="muted" style="margin-top:10px">无边类型统计</div>';
+        }
+        document.getElementById('graphArea').innerHTML = html;
+    } catch(e) {
+        document.getElementById('graphArea').innerHTML = '<div class="empty">加载失败: ' + e.message + '</div>';
+    }
+}
+
+function fmtTime(ts) {
+    if (!ts) return '—';
+    var d = new Date(ts * 1000);
+    return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+
 // ---- 初始化 ----
 loadStats();
 loadRecent();
+loadConflicts();
+loadDecay();
+loadGraph();
 </script>
 </body>
 </html>
