@@ -15,6 +15,7 @@ Palimpsest Dashboard — 独立 FastAPI 服务
 """
 
 import os
+import time
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -27,6 +28,66 @@ app = FastAPI(title="Palimpsest Dashboard")
 REST_BASE_URL = (os.getenv("PALIMPSEST_BASE_URL") or f"http://127.0.0.1:{Config.REST_PORT}").rstrip("/")
 
 DASHBOARD_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dashboard.html")
+
+# 面板 2/3 需要全量 (id, payload) 遍历，但 dashboard 是纯客户端、不直接开库，
+# 只能经 REST /export 分页拉取。全库 ~1500 节点 4 页，实测 <1s；加个极短 TTL
+# 缓存避免同一页面渲染时重复扫描。只读、内存内，不写任何库。
+_EXPORT_CACHE = {"at": 0.0, "nodes": []}
+_EXPORT_TTL = 30.0
+# 知识库切片豁免遗忘曲线（与检索侧一致：kb_chunk 是知识、不参与衰减）
+_KB_EXEMPT_TYPES = {"kb_chunk", "skill_chunk", "novel_chunk"}
+
+
+def _to_float(value, default: float = 0.0) -> float:
+    """payload 里的数字多为字符串（如 "0.95"），统一兜底转换，脏值回退默认。"""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _scan_nodes() -> list:
+    """分页遍历 REST ``GET /export?include_payload=true``，返回带 payload 的节点列表。
+
+    只读。短 TTL 缓存（30s）：面板刷新不重复扫库。
+    """
+    now = time.time()
+    if _EXPORT_CACHE["nodes"] and (now - _EXPORT_CACHE["at"]) < _EXPORT_TTL:
+        return _EXPORT_CACHE["nodes"]
+
+    nodes = []
+    page = 1
+    while True:
+        data = _rest("GET", "/export", params={"page": page, "page_size": 500, "include_payload": "true"})
+        if not isinstance(data, dict):
+            break
+        nodes.extend(data.get("memories") or [])
+        total_pages = data.get("total_pages") or 1
+        if page >= total_pages:
+            break
+        page += 1
+        if page > 200:  # 防御：异常情况下不死循环
+            break
+
+    _EXPORT_CACHE["nodes"] = nodes
+    _EXPORT_CACHE["at"] = now
+    return nodes
+
+
+def _node_view(item: dict) -> dict:
+    """把 /export 的一条记录压成面板用的精简视图。"""
+    payload = item.get("payload")
+    if not isinstance(payload, dict):
+        payload = item if isinstance(item, dict) else {}
+    return {
+        "id": item.get("id"),
+        "type": payload.get("type", ""),
+        "domain": payload.get("domain", ""),
+        "importance": _to_float(payload.get("importance"), 0.0),
+        "created_at": _to_float(payload.get("created_at"), 0.0),
+        "status": payload.get("status", ""),
+        "content": (payload.get("content") or "")[:140],
+    }
 
 
 def _rest(method: str, path: str, **kwargs) -> object:
@@ -141,6 +202,85 @@ async def consolidate_apply():
         status_code=501,
         detail=("合并功能暂不可用：REST 尚未提供 consolidate 端点。见 /api/consolidate/preview 的说明。"),
     )
+
+
+@app.get("/api/mem/conflicts")
+async def mem_conflicts(limit: int = 20):
+    """冲突消解链：近期被取代（status=outdated）的记忆列表。
+
+    只读：扫 ``/export`` 取全部 outdated 节点，按 created_at 倒序。
+    """
+    nodes = [_node_view(n) for n in _scan_nodes()]
+    outdated = [n for n in nodes if n["status"] == "outdated"]
+    outdated.sort(key=lambda n: n["created_at"], reverse=True)
+    return {"total": len(outdated), "nodes": outdated[:limit]}
+
+
+@app.get("/api/mem/conflict-chain")
+async def mem_conflict_chain(node_id: int):
+    """某条记忆的版本链（代理 REST ``POST /mem/fact-history``）：谁取代了它 / 它取代了谁。"""
+    data = _rest("POST", "/mem/fact-history", json={"node_id": node_id})
+    return data if isinstance(data, dict) else {"found": False, "node_id": node_id}
+
+
+@app.get("/api/mem/decay")
+async def mem_decay(limit: int = 20):
+    """遗忘曲线：按 ``0.95^(days/30) × importance`` 算有效分，列出衰减最严重的活跃记忆。
+
+    只读。知识库切片（kb_chunk/skill_chunk/novel_chunk）豁免，不参与衰减。
+    """
+    now = time.time()
+    nodes = [_node_view(n) for n in _scan_nodes()]
+    scored = []
+    for n in nodes:
+        if n["status"] != "active":
+            continue
+        if n["type"] in _KB_EXEMPT_TYPES:
+            continue
+        if n["created_at"] <= 0:
+            continue
+        days = (now - n["created_at"]) / 86400.0
+        effective = (0.95 ** (days / 30.0)) * n["importance"]
+        scored.append(
+            {
+                "id": n["id"],
+                "type": n["type"],
+                "domain": n["domain"],
+                "importance": round(n["importance"], 3),
+                "age_days": round(days, 1),
+                "effective": round(effective, 4),
+                "content": n["content"],
+            }
+        )
+    scored.sort(key=lambda n: n["effective"])
+    return {"total": len(scored), "nodes": scored[:limit]}
+
+
+@app.get("/api/mem/graph")
+async def mem_graph():
+    """图谱规模：节点数 / 有边节点占比 / 孤立率 / 各边类型计数（代理 REST ``POST /mem/stats``）。
+
+    只读。``/mem/stats`` 已带 ``graph`` 分节；孤立率由总节点数与有边节点数推出。
+    """
+    data = _rest("POST", "/mem/stats")
+    if not isinstance(data, dict):
+        data = {}
+    totals = data.get("totals") if isinstance(data.get("totals"), dict) else {}
+    graph = data.get("graph") if isinstance(data.get("graph"), dict) else {}
+
+    total_nodes = totals.get("total_nodes", 0) or 0
+    nodes_with_edges = graph.get("nodes_with_edges", 0) or 0
+    isolated = max(total_nodes - nodes_with_edges, 0)
+    return {
+        "total_nodes": total_nodes,
+        "nodes_with_edges": nodes_with_edges,
+        "isolated_nodes": isolated,
+        "isolated_rate": round(isolated / total_nodes, 4) if total_nodes else 0.0,
+        "edge_coverage": round(nodes_with_edges / total_nodes, 4) if total_nodes else 0.0,
+        "total_edges": graph.get("total_edges", 0),
+        "avg_outdegree": graph.get("avg_outdegree", 0),
+        "edge_labels": graph.get("label_dist_top10", {}),
+    }
 
 
 if __name__ == "__main__":
