@@ -171,29 +171,42 @@ def _rollback(batch_id: str) -> int:
     return 0
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--db", default="data/mh_memory.db")
-    ap.add_argument("--apply", action="store_true", help="真正写入（默认 dry-run）")
-    ap.add_argument("--rollback", metavar="BATCH_ID", help="按 batch_id 回滚该批次写入的边")
-    ap.add_argument("--skills-dir", default=None, help="技能目录（默认自动解析）")
-    ap.add_argument("--vault-dir", default=None, help="Obsidian 知识库目录（默认 KNOWLEDGE_DIR）")
-    args = ap.parse_args()
+def build_edges(
+    store,
+    skills_dir: str | None = None,
+    vault_dir: str | None = None,
+    apply: bool = False,
+    batch_id: str | None = None,
+    report: bool = False,
+) -> dict:
+    """从显式结构字段推算并（可选）写入图谱边。
 
-    global SKILLS_DIR, VAULT_DIR
-    if args.skills_dir:
-        SKILLS_DIR = os.path.abspath(args.skills_dir)
-    if args.vault_dir:
-        VAULT_DIR = os.path.abspath(args.vault_dir)
+    返回 dict，至少含这些键：
+        nodes            int   全库节点数
+        candidates       int   去重后候选边数
+        created          int   实际写入边数（apply=False 时为 0）
+        skipped          int   已存在而跳过的边数
+        base_with_edge   int   建边前「有边节点」数
+        pred_with_edge   int   建边后预测/实际「有边节点」数
+        batch_id         str|None  apply=True 时生成的批次 id
+        manifest         str|None  apply=True 时批次清单路径
 
-    if args.rollback:
-        _set_db(args.db)
-        return _rollback(args.rollback)
+    store 由调用方传入：本函数不调用 _set_db、不写 os.environ["DB_PATH"]、
+    不实例化 TriviumStore。skills_dir / vault_dir 为 None 时沿用模块级
+    SKILLS_DIR / VAULT_DIR 的当前值（CLI 的 --skills-dir/--vault-dir 已在
+    main 里覆盖过这两个全局变量）。report=False 只返回统计、不打印。
+    """
 
-    db_path = _set_db(args.db)
-    store = TriviumStore(read_only=not args.apply)
+    def out(msg: str) -> None:
+        if report:
+            print(msg)
 
-    BATCH_ID = f"structural-{time.strftime('%Y%m%d-%H%M%S')}"
+    skills = SKILLS_DIR if skills_dir is None else skills_dir
+    vault = VAULT_DIR if vault_dir is None else vault_dir
+
+    if apply and batch_id is None:
+        batch_id = f"structural-{time.strftime('%Y%m%d-%H%M%S')}"
+    manifest: str | None = None
 
     ids, nodes, existing = _load_graph(store)
 
@@ -205,9 +218,9 @@ def main() -> int:
     base_with_edge = {n for n, v in deg.items() if v > 0}
     base_out = len(existing)
 
-    print("=== 结构化建边 dry-run 报告 ===")
-    print(f"库: {db_path}   节点数: {len(ids)}")
-    print(
+    out("=== 结构化建边 dry-run 报告 ===")
+    out(f"库: {Config.DB_PATH}   节点数: {len(ids)}")
+    out(
         f"\n[基线] 有边节点: {len(base_with_edge)} "
         f"({len(base_with_edge) / len(ids) * 100:.1f}%)   总出边: {base_out}   "
         f"孤立: {len(ids) - len(base_with_edge)} "
@@ -236,7 +249,7 @@ def main() -> int:
                 src1_nodes.add(nid)
                 src1_nodes.add(hub)
                 src1_edges += 1
-    print(
+    out(
         f"\n[源 1 source_path]     候选边: {src1_edges}   涉及节点: {len(src1_nodes)}"
         f"   分组: {len(sp_groups)} (多节点组 {sum(1 for v in sp_groups.values() if len(v) > 1)})"
     )
@@ -254,7 +267,7 @@ def main() -> int:
             cand_nodes.add(a)
             cand_nodes.add(b)
             src2_edges += 1
-    print(
+    out(
         f"[源 2 chunk_index]     候选边: {src2_edges}   涉及节点: "
         f"{len({s for s, _, t in cand if t == 'NEXT'}) + len({d for _, d, t in cand if t == 'NEXT'})}"
     )
@@ -272,7 +285,7 @@ def main() -> int:
             sk_nodes[str(nm).strip()] = nid
 
     skill_files = [
-        f for f in glob.glob(SKILLS_DIR + "/**/SKILL.md", recursive=True) if ".archive" not in f.replace("\\", "/")
+        f for f in glob.glob(skills + "/**/SKILL.md", recursive=True) if ".archive" not in f.replace("\\", "/")
     ]
     src3_edges = 0
     unresolved_skills: list[str] = []
@@ -298,7 +311,7 @@ def main() -> int:
                 src3_edges += 2
             else:
                 unresolved_skills.append(f"{name}->{tgt_name}")
-    print(
+    out(
         f"[源 3 技能相关]         候选边: {src3_edges}   涉及技能: {len(sk_nodes)}   "
         f"未解析: {len(unresolved_skills)} {unresolved_skills[:5]}"
     )
@@ -329,12 +342,12 @@ def main() -> int:
                     unresolved_chars.append(s)
                 if t not in char_nodes:
                     unresolved_chars.append(t)
-        print(
+        out(
             f"[源 4 小说关系]         候选边: {src4_edges}   解析成功: {matched}/{len(rels)}   "
             f"未解析: {len(set(unresolved_chars))} {sorted(set(unresolved_chars))[:6]}"
         )
     else:
-        print("[源 4 小说关系]         (文件不存在，跳过)")
+        out("[源 4 小说关系]         (文件不存在，跳过)")
 
     # ── 源 5：Obsidian 双链 ───────────────────────────────────────────
     src5_edges = 0
@@ -348,13 +361,13 @@ def main() -> int:
         if sp:
             path_to_nodes.setdefault(str(sp).replace("\\", "/"), []).append(nid)
 
-    if os.path.isdir(VAULT_DIR):
-        mds = glob.glob(VAULT_DIR + "/**/*.md", recursive=True)
+    if os.path.isdir(vault):
+        mds = glob.glob(vault + "/**/*.md", recursive=True)
         link_re = re.compile(r"\[\[([^\]\|#]+)(?:[#\|][^\]]*)?\]\]")
         total_links = 0
         # 文档级：源文档枢纽 -> 目标文档枢纽，每个 (源文档,目标文档) 只建 1 条
         for f in mds:
-            rel = os.path.relpath(f, VAULT_DIR).replace("\\", "/")
+            rel = os.path.relpath(f, vault).replace("\\", "/")
             src_hub = sp_hub.get(rel)
             if src_hub is None:
                 continue
@@ -382,7 +395,7 @@ def main() -> int:
                 else:
                     unresolved_links.append(tgt_name)
         src5_edges = src5_ok
-        print(
+        out(
             f"[源 5 双链]            候选边: {src5_edges}   解析成功: {src5_ok}/{total_links}   "
             f"未解析目标: {len(set(unresolved_links))} {sorted(set(unresolved_links))[:6]}"
         )
@@ -399,7 +412,7 @@ def main() -> int:
                 if nm in content and sk_nodes.get(nm) != nid and char_nodes.get(nm) != nid:
                     src6_est += 1
                     break  # 每节点最多计 1
-    print(f"[源 6 名称提及]         候选边(估): {src6_est}   (词典 {len(mention_names)} 名称，仅统计)")
+    out(f"[源 6 名称提及]         候选边(估): {src6_est}   (词典 {len(mention_names)} 名称，仅统计)")
 
     # ── 汇总 ──────────────────────────────────────────────────────────
     # 源 6（名称提及）未进 cand；dry-run 的孤立率预测只算可写库的结构边，
@@ -412,8 +425,8 @@ def main() -> int:
     predicted = base_with_edge | all_touched
     iso = len(ids) - len(predicted)
 
-    print(f"\n[合计] 候选边(去重): {len(uniq)}   (未去重 {len(cand)})")
-    print(
+    out(f"\n[合计] 候选边(去重): {len(uniq)}   (未去重 {len(cand)})")
+    out(
         f"[预测] 有边节点: {len(predicted)} ({len(predicted) / len(ids) * 100:.1f}%)   "
         f"孤立率: {iso / len(ids) * 100:.1f}%   (基线 {len(base_with_edge) / len(ids) * 100:.1f}%"
         f" → 目标 <30~40%)"
@@ -424,16 +437,12 @@ def main() -> int:
     for s, d, _ in uniq:
         deg2[s] += 1
         deg2[d] += 1
-    print("\n[按预测度 top10]")
+    out("\n[按预测度 top10]")
     for nid, cnt in deg2.most_common(10):
         t = _title_of(nodes.get(nid, {})) or str(nodes.get(nid, {}).get("content", ""))[:30]
-        print(f"  {cnt:4d}  {nodes.get(nid, {}).get('type', '?'):12s} {t}")
+        out(f"  {cnt:4d}  {nodes.get(nid, {}).get('type', '?'):12s} {t}")
 
     # ── 写库（仅 --apply）─────────────────────────────────────────────
-    if not args.apply:
-        print("\n[安全] dry-run 模式，未写入任何数据 ✓")
-        return 0
-
     # Bug 2：逐条 _edge_exists() 都要 get_edges(src) 全量遍历，915 条 × 全库边
     # 会跑到超时。改为一次性预取所有 (src,dst,label) 建成集合，之后 O(1) 查重。
     # （`existing` 已由 _load_graph 单连接取回，这里直接复用，不再重复开库。）
@@ -450,6 +459,8 @@ def main() -> int:
             if (s, d, t.upper()) in existing:
                 skipped += 1
                 continue
+            if not apply:  # dry-run：只统计，不写库
+                continue
             w = W_OF.get(t, 0.8)
             try:
                 db.link(s, d, label=t, weight=w)
@@ -457,19 +468,59 @@ def main() -> int:
                 created += 1
                 written.append({"src": s, "dst": d, "type": t, "weight": w})
             except Exception as ex:  # noqa: BLE001
-                print(f"  建边失败 {s}->{d} ({t}): {ex}")
+                out(f"  建边失败 {s}->{d} ({t}): {ex}")
 
-    # 记录批次清单（供 --rollback）
-    manifest_dir = os.path.join(_PROJECT_ROOT, "data", "edge_batches")
-    os.makedirs(manifest_dir, exist_ok=True)
-    manifest = os.path.join(manifest_dir, f"{BATCH_ID}.json")
-    with open(manifest, "w", encoding="utf-8") as fh:
-        json.dump(written, fh, ensure_ascii=False)
+    if apply:
+        # 记录批次清单（供 --rollback）
+        manifest_dir = os.path.join(_PROJECT_ROOT, "data", "edge_batches")
+        os.makedirs(manifest_dir, exist_ok=True)
+        manifest = os.path.join(manifest_dir, f"{batch_id}.json")
+        with open(manifest, "w", encoding="utf-8") as fh:
+            json.dump(written, fh, ensure_ascii=False)
 
-    print(f"\n[apply] batch_id = {BATCH_ID}")
-    print(f"[apply] 已建: {created} 条 | 已存在跳过: {skipped} 条")
-    print(f"[apply] 批次清单: {manifest}")
-    print(f"[回滚] venv/Scripts/python.exe scripts/build_structural_edges.py --rollback {BATCH_ID}")
+        out(f"\n[apply] batch_id = {batch_id}")
+        out(f"[apply] 已建: {created} 条 | 已存在跳过: {skipped} 条")
+        out(f"[apply] 批次清单: {manifest}")
+        out(f"[回滚] venv/Scripts/python.exe scripts/build_structural_edges.py --rollback {batch_id}")
+
+    return {
+        "nodes": len(ids),
+        "candidates": len(uniq),
+        "created": created,
+        "skipped": skipped,
+        "base_with_edge": len(base_with_edge),
+        "pred_with_edge": len(predicted),
+        "batch_id": batch_id if apply else None,
+        "manifest": manifest,
+    }
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--db", default="data/mh_memory.db")
+    ap.add_argument("--apply", action="store_true", help="真正写入（默认 dry-run）")
+    ap.add_argument("--rollback", metavar="BATCH_ID", help="按 batch_id 回滚该批次写入的边")
+    ap.add_argument("--batch-id", default=None, help="指定本批次 id（默认自动生成时间戳；供测试与自动化定位）")
+    ap.add_argument("--skills-dir", default=None, help="技能目录（默认自动解析）")
+    ap.add_argument("--vault-dir", default=None, help="Obsidian 知识库目录（默认 KNOWLEDGE_DIR）")
+    args = ap.parse_args()
+
+    global SKILLS_DIR, VAULT_DIR
+    if args.skills_dir:
+        SKILLS_DIR = os.path.abspath(args.skills_dir)
+    if args.vault_dir:
+        VAULT_DIR = os.path.abspath(args.vault_dir)
+
+    if args.rollback:
+        _set_db(args.db)
+        return _rollback(args.rollback)
+
+    _set_db(args.db)
+    store = TriviumStore(read_only=not args.apply)
+
+    build_edges(store, apply=args.apply, report=True, batch_id=args.batch_id)
+    if not args.apply:
+        print("\n[安全] dry-run 模式，未写入任何数据 ✓")
     return 0
 
 
