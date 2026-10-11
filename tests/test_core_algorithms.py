@@ -105,6 +105,39 @@ def test_rrf_skips_none_ids():
     assert 1 in nids and 2 in nids
 
 
+def test_rrf_entity_lane_default_is_byte_identical():
+    """golden：不传实体路时，结果与两路版本逐位一致（第三路默认关闭）。"""
+    f = _rrf()
+    sem = [7, 9, 8, None, 3]
+    fts = [7, 5, 3]
+    base = f(sem, fts, top_k=10, k=60.0, w_sem=1.0, w_fts=1.0)
+    # 显式传 ent_ids=None 与 w_ent=0，必须与不传完全一致
+    same = f(sem, fts, top_k=10, k=60.0, w_sem=1.0, w_fts=1.0, ent_ids=None, w_ent=0.0)
+    assert base == same
+
+
+def test_rrf_entity_lane_contributes():
+    """实体路（第三路）参与打分：solo 节点凭实体路进入结果。"""
+    f = _rrf()
+    # 节点 42 只在实体路出现（rank 0）；w_ent=1.0 时应得 1/60 分并进入结果
+    ranked = f([1], [2], top_k=10, k=60.0, w_sem=1.0, w_fts=1.0, ent_ids=[42], w_ent=1.0)
+    nids = [r[0] for r in ranked]
+    assert 42 in nids, ranked
+    score_42 = {r[0]: r[1] for r in ranked}[42]
+    assert abs(score_42 - (1.0 / 60.0)) < 1e-9
+    # 实体路命中不改 fts_hit/sem_hit 标记（两路标记语义不变）
+    flags_42 = {r[0]: (r[2], r[3]) for r in ranked}[42]
+    assert flags_42 == (False, False)
+
+
+def test_rrf_entity_lane_weight_zero_ignored():
+    """w_ent=0 时即便传了实体路也不计分（等价于关闭）。"""
+    f = _rrf()
+    with_ent_zero = f([1], [2], top_k=10, k=60.0, ent_ids=[42], w_ent=0.0)
+    without_ent = f([1], [2], top_k=10, k=60.0)
+    assert with_ent_zero == without_ent
+
+
 # ---------------------------------------------------------------------------
 # 3. 冲突检测分级：resolve_conflict（轻量 fake store）
 # ---------------------------------------------------------------------------

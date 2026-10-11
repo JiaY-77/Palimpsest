@@ -66,12 +66,9 @@ def mem_retrieve(
     items = []
     for r in results:
         payload = r.get("payload", {}) or {}
-        # v4.0 outdated 语义：默认跳过被取代的旧版本，展位 include_outdated=True 保留
-        # as_of 非空时以时间窗为准（不看 status），见 core.bitemporal.is_valid_at
-        if as_of is None:
-            if not include_outdated and payload.get("status") == "outdated":
-                continue
-        elif not is_valid_at(payload, as_of):
+        # v4.0 outdated 语义：默认跳过被取代的旧版本，include_outdated=True 保留；
+        # as_of 非空时以时间窗为准（不看 status）——判据集中在 _visible()，多路共用。
+        if not _visible(payload, include_outdated=include_outdated, as_of=as_of):
             continue
         # domain 过滤：只保留指定角色/域的记忆（domain 正式字段，character_name 兼容镜像已退役）
         if domain and node_domain(payload) != (domain or "").strip().lower():
@@ -844,6 +841,19 @@ def mem_search(
 # RRF 标准 k（见 Config.RRF_K）：单侧命中也算贡献；每项 meta 标出 fts_hit / sem_hit 来源。
 
 
+def _visible(payload: dict, include_outdated: bool = False, as_of: float | None = None) -> bool:
+    """节点可见性判据（语义路 / 实体路共用，保证多路过滤口径一致）。
+
+    v4.0 outdated 语义：默认跳过被取代的旧版本（status == "outdated"）；
+    include_outdated=True 时保留；as_of 非空时以时间窗为准（不看 status），
+    见 core.bitemporal.is_valid_at。内联版本散落在若干处，此处集中一处，
+    行为与既有内联判断逐位一致。
+    """
+    if as_of is None:
+        return not (not include_outdated and payload.get("status") == "outdated")
+    return is_valid_at(payload, as_of)
+
+
 def _sem_candidate_items(
     query: str,
     scope: str,
@@ -933,7 +943,14 @@ def _fts_only_item(
 
 
 def _rrf_fuse(
-    sem_ids: list, fts_ids: list, top_k: int, k: float = 60.0, w_sem: float = 1.0, w_fts: float = 1.0
+    sem_ids: list,
+    fts_ids: list,
+    top_k: int,
+    k: float = 60.0,
+    w_sem: float = 1.0,
+    w_fts: float = 1.0,
+    ent_ids: list | None = None,
+    w_ent: float = 0.0,
 ) -> list:
     """纯 RRF 融合打分（不碰库，供单测与 _hybrid_rrf 复用）。
 
@@ -942,6 +959,11 @@ def _rrf_fuse(
     k 为标准 reciprocal rank 常数（默认 60）。
     w_sem / w_fts：两侧权重，语义侧累加 w_sem/(k+rank)，FTS 侧累加
     w_fts/(k+rank)；默认 1.0 / 1.0 与原等权行为逐位一致。
+
+    ent_ids / w_ent：可选的**第三路（实体锚定路）**排名与权重。
+    ent_ids=None（默认）时行为与两路版本逐位一致；w_ent=0 时该路不计分。
+    实体路的命中标记单独给出（meta.hit 由调用方自行组装），此处保持
+    返回结构不变以免破坏既有调用方。
 
     返回按 RRF 分降序的 [(node_id, rrf_score, fts_hit, sem_hit), ...] 直至 top_k。
     """
@@ -958,6 +980,11 @@ def _rrf_fuse(
             continue
         rrf[nid] = rrf.get(nid, 0.0) + w_fts / (k + rank)
         fts_hit.add(nid)
+    if ent_ids and w_ent:
+        for rank, nid in enumerate(ent_ids):
+            if nid is None:
+                continue
+            rrf[nid] = rrf.get(nid, 0.0) + w_ent / (k + rank)
     return [
         (nid, score, nid in fts_hit, nid in sem_hit)
         for nid, score in sorted(rrf.items(), key=lambda kv: kv[1], reverse=True)
