@@ -95,8 +95,20 @@ class Config:
     POLICY_PROTECTED_TYPES = frozenset(
         t.strip() for t in os.getenv("POLICY_PROTECTED_TYPES", "rule").split(",") if t.strip()
     )
-    # 按 type 分级的软上限（形如 "task:20000,plan:80000"）。默认空 = 不启用。
-    POLICY_TYPE_LIMITS = os.getenv("POLICY_TYPE_LIMITS", "")
+    # 按 type 分级的软上限（形如 "task:20000,plan:80000"）。
+    # 默认值按**实测内容长度分布**设定（2026-10-11 生产库 1550 节点统计）：
+    # 上限取各类型当前 p90 的 3-5 倍，既不误伤正常写入，又能拦住异常膨胀
+    # （如把整篇文档塞进一条 memory）。
+    #   record  p90=1220 max=2300  -> 8000
+    #   memory  p90= 729 max=2201  -> 8000
+    #   task    p90=2155 max=2743  -> 10000（任务卡随进度累积，留足余量）
+    #   plan    p90=2224 max=3153  -> 12000（方案文档天然长）
+    #   kb_chunk p90= 856 max=1308 -> 8000（知识库切片）
+    #   novel_chunk p90=1827 max=3118 -> 12000（小说段落长）
+    POLICY_TYPE_LIMITS = os.getenv(
+        "POLICY_TYPE_LIMITS",
+        "record:8000,memory:8000,task:10000,plan:12000,kb_chunk:8000,novel_chunk:12000",
+    )
     # 核心记忆（facts tier）总字符上限；0 = 不限。
     POLICY_MAX_CORE_TOTAL = int(os.getenv("POLICY_MAX_CORE_TOTAL", "0"))
     # 配置人工闸门：仅当此环境变量为 1 时，运行时策略覆盖才被接受。

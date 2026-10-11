@@ -118,6 +118,42 @@ def test_check_protected_overwrite():
     assert check_protected_overwrite({"type": "memory"}) is None
 
 
+def test_default_type_limits_are_configured_and_parse():
+    """默认分级上限必须**非空且可解析**——空值等于护栏第三项完全没启用。
+
+    默认值取自实测内容长度分布；这里只锁「配置在位 + 格式合法」，
+    不锁具体数字（数字会随数据增长调整，锁死反而制造假失败）。
+    """
+    from core.policy import _parse_type_limits
+
+    limits = _parse_type_limits(Config.POLICY_TYPE_LIMITS)
+    assert limits, "POLICY_TYPE_LIMITS 默认值不应为空"
+    for t in ("record", "memory", "task", "plan", "kb_chunk", "novel_chunk"):
+        assert t in limits, f"缺少 {t} 的默认上限"
+        assert limits[t] > 0
+
+
+def test_default_type_limits_do_not_reject_normal_sized_content():
+    """默认上限必须宽于常见内容——正常写入不能被新默认值误伤。
+
+    取各类型实测 p90 的量级（数百到数千字符）作为「正常写入」样本。
+    """
+    from core import policy
+
+    cases = [
+        ("record", 1_500),
+        ("memory", 1_000),
+        ("task", 2_500),
+        ("plan", 3_000),
+        ("kb_chunk", 1_500),
+    ]
+    for node_type, size in cases:
+        r = policy.check_ingest("x" * size, node_type, "")
+        assert r["ok"] is True, f"{node_type} 长度 {size} 被默认上限拒绝: {r}"
+        # 且不应产生「超过软上限」告警
+        assert not any("软上限" in w for w in r["warnings"]), f"{node_type} {size} 触发误告警"
+
+
 # ---------------------------------------------------------------------------
 # 独立库 fixture（B / C 段用）
 # ---------------------------------------------------------------------------
