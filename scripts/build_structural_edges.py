@@ -88,7 +88,9 @@ W_SKILL = 1.0
 W_NOVEL = 0.8
 W_WIKI = 1.0
 W_MENTION = 0.6
-W_FOLLOWS = 0.6
+# FOLLOWS 是「时间相邻」的弱信号（时间相邻 ≠ 必然相关）：只作弱边，避免
+# 时间巧合在检索排序里被当成强关系。已加同 domain 约束进一步降噪。
+W_FOLLOWS = 0.3
 
 # 会话切分：created_at 间隔 <= 此值（秒）视为同一次会话，序邻两节点建 FOLLOWS 边
 SESSION_GAP_SECONDS = 1800
@@ -406,28 +408,70 @@ def build_edges(
         )
 
     # ── 源 5b：会话/时序链（FOLLOWS）───────────────────────────────────
-    # 小帕没有 session_id 字段；用 created_at 时间切分——同一次会话里
-    # 相邻创建的日志类节点之间建有向边（早 → 晚），间隔 <= SESSION_GAP_SECONDS。
+    # 小帕没有 session_id 字段；用 created_at 时间切分——同一段时间里
+    # 相邻创建的节点之间建有向边（早 → 晚），间隔 <= SESSION_GAP_SECONDS。
+    # 收录范围＝除知识库/技能切片（kb_chunk/skill_chunk/novel_chunk，它们靠
+    # PART_OF/NEXT 成组）之外、且带 created_at 的所有节点。**早期只收日志类
+    # 造成 memory/correction 全是孤岛**（实测：memory 92%、correction 86% 无出边，
+    # 而 Gate0 评测集金标多是这两类）——时间序本身就是会话信号，与 type 无关。
+    #
+    # **只连同 domain**（2026-10-11 收紧）：时间相邻 ≠ 相关，跨 domain 的
+    # 相邻只是时间巧合（实测 153/839 条跨域，如 workdocs↔hermes 毫无语义关系）。
+    # 同 domain 的相邻则多为真信号（连续版本日志、同批工作记录，抽样核验过）。
+    # 宁可少连（孤立率回升），不引入噪声边。
+    _CHUNK_TYPES = {"kb_chunk", "skill_chunk", "novel_chunk"}
+
+    def _ts_of(p: dict):
+        """节点时间戳：优先 created_at（float）；缺失时回退 commit_time。
+
+        git_commit 节点没有 created_at，只有 commit_time，且是**日期字符串**
+        （形如 '2026-08-26'）——实测 23/23 因此进不了会话链、全是孤岛。
+        这里不引入新依赖：日期字符串走 strptime 当天 0 点。
+        """
+        ts = p.get("created_at")
+        if isinstance(ts, (int, float)):
+            return float(ts)
+        ct = p.get("commit_time")
+        if isinstance(ct, (int, float)):
+            return float(ct)
+        if isinstance(ct, str) and ct.strip():
+            for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y/%m/%d"):
+                try:
+                    import datetime as _dt
+
+                    return _dt.datetime.strptime(ct.strip()[:19], fmt).timestamp()
+                except ValueError:
+                    continue
+        return None
+
     log_nodes: list[tuple[float, int]] = []
     for nid, p in nodes.items():
-        if p.get("type") in LOG_TYPES or p.get("type") == "task":
-            ca = p.get("created_at")
-            if isinstance(ca, (int, float)):
-                log_nodes.append((float(ca), nid))
+        if p.get("type") in _CHUNK_TYPES:
+            continue
+        ts = _ts_of(p)
+        if ts is not None:
+            log_nodes.append((ts, nid))
     log_nodes.sort(key=lambda x: x[0])
     src5b_edges = 0
+    src5b_skipped_cross = 0
     src5b_nodes: set[int] = set()
     for i in range(len(log_nodes) - 1):
         t_a, a = log_nodes[i]
         t_b, b = log_nodes[i + 1]
-        if (t_b - t_a) <= SESSION_GAP_SECONDS and a != b:
-            cand.append((a, b, "FOLLOWS"))
-            src5b_nodes.add(a)
-            src5b_nodes.add(b)
-            src5b_edges += 1
+        if (t_b - t_a) > SESSION_GAP_SECONDS or a == b:
+            continue
+        dom_a = nodes[a].get("domain") or ""
+        dom_b = nodes[b].get("domain") or ""
+        if dom_a != dom_b:  # 跨域时间巧合，不建边
+            src5b_skipped_cross += 1
+            continue
+        cand.append((a, b, "FOLLOWS"))
+        src5b_nodes.add(a)
+        src5b_nodes.add(b)
+        src5b_edges += 1
     out(
         f"[源 5b 会话链]          候选边: {src5b_edges}   涉及节点: {len(src5b_nodes)}   "
-        f"(间隔 <= {SESSION_GAP_SECONDS}s)"
+        f"(间隔 <= {SESSION_GAP_SECONDS}s，同 domain；跨域跳过 {src5b_skipped_cross})"
     )
 
     # ── 源 6：名称提及（MENTIONS，写入）───────────────────────────────
