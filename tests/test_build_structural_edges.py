@@ -217,3 +217,80 @@ def test_apply_is_idempotent(iso_db):
             with contextlib.suppress(OSError):
                 (_REPO_ROOT / "data" / "edge_batches" / f"{bid}.json").unlink()
         shutil.rmtree(empty_dir, ignore_errors=True)
+
+
+def test_session_chain_and_mentions_sources(iso_db):
+    """源 5b 会话链（FOLLOWS）+ 源 6 名称提及（MENTIONS）能真建边。"""
+    mod = _load_module()
+    old = Config.DB_PATH
+    empty_dir = tempfile.mkdtemp(prefix="palimpsest_edges_empty_")
+    old_argv = sys.argv
+    batch_id = f"pytest-m2-{uuid.uuid4().hex[:8]}"
+    try:
+        store = _open_store(iso_db)
+        # 一个技能节点，供 MENTIONS 命中
+        store.insert_node(
+            {
+                "type": "skill_chunk",
+                "name": "opencode",
+                "content": "skill opencode body",
+                "domain": "hermes",
+                "importance": 0.5,
+            },
+            store.embed_text("skill opencode"),
+        )
+        # 3 个 record 节点：created_at 相邻 100s（< 1800）→ 期望 2 条 FOLLOWS；
+        # 其中一条内容含「opencode」→ 期望 1 条 MENTIONS。
+        # 注意：insert_node 的 payload 里 created_at 默认 None（且 extra_fields 不会覆盖已存在键），
+        # 所以必须插入后显式 update_payload 补时间戳（见 tests/test_mem_stats.py 的既有做法）。
+        base_ts = 1_800_000_000.0
+        for i, content in enumerate(
+            [
+                "第一条 普通记录",
+                "第二条 提到了 opencode 技能",
+                "第三条 普通记录",
+            ]
+        ):
+            nid = store.insert_node(
+                {"type": "record", "content": content, "domain": "hermes", "importance": 0.5},
+                store.embed_text(content),
+            )
+            store.update_payload(nid, {"created_at": base_ts + i * 100})
+        with contextlib.suppress(Exception):
+            store._acquire().close()
+
+        def _labels():
+            s = _open_store(iso_db)
+            with s._acquire() as db:
+                labs = []
+                for nid in db.all_node_ids():
+                    for e in db.get_edges(nid) or []:
+                        labs.append(str(getattr(e, "label", "") or ""))
+                return labs
+
+        before = _labels()
+        assert "FOLLOWS" not in before and "MENTIONS" not in before
+
+        sys.argv = [
+            "x",
+            "--db",
+            iso_db,
+            "--apply",
+            "--batch-id",
+            batch_id,
+            "--skills-dir",
+            empty_dir,
+            "--vault-dir",
+            empty_dir,
+        ]
+        assert mod.main() == 0
+
+        after = _labels()
+        assert after.count("FOLLOWS") >= 2, f"会话链未建边: {after}"
+        assert after.count("MENTIONS") >= 1, f"名称提及未建边: {after}"
+    finally:
+        sys.argv = old_argv
+        Config.DB_PATH = old
+        with contextlib.suppress(OSError):
+            (_REPO_ROOT / "data" / "edge_batches" / f"{batch_id}.json").unlink()
+        shutil.rmtree(empty_dir, ignore_errors=True)
