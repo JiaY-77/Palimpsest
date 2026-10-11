@@ -453,6 +453,18 @@ def main() -> None:
     print(f"模式: {'全量刷新' if args.full else '增量更新（mtime 对比）'}")
     build(skills_dir=skills_dir, full=args.full)
 
+    try:
+        import os as _os
+
+        if _os.environ.get("PALIMPSEST_BUILD_EDGES", "1") != "0":
+            from core.trivium_store import TriviumStore as _TS
+            from scripts.build_structural_edges import build_edges
+
+            er = build_edges(_TS(), apply=True, report=True)
+            print(f"[建边] 新建 {er['created']} 条，跳过 {er['skipped']} 条（batch={er['batch_id']}）")
+    except Exception as _e:  # noqa: BLE001
+        print(f"[建边] 跳过（{_e}）")
+
 
 if __name__ == "__main__":
     main()

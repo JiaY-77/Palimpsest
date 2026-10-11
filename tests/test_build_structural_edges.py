@@ -20,6 +20,7 @@ import os
 import shutil
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 
 import pytest
@@ -127,12 +128,16 @@ def test_apply_creates_edges_and_rollback_restores(iso_db):
         assert out_of_doc in base_isolated, "新库中该节点应无任何边"
 
         # 跑 main()（apply），把库指到临时库、目录指到空目录
+        # 用唯一 batch_id：避免并发/顺序交错时按 batches[-1] 取到别的测试的清单（曾 flaky）
         empty_dir = tempfile.mkdtemp(prefix="palimpsest_edges_empty_")
+        batch_id = f"pytest-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         argv = [
             "build_structural_edges.py",
             "--db",
             iso_db,
             "--apply",
+            "--batch-id",
+            batch_id,
             "--skills-dir",
             empty_dir,
             "--vault-dir",
@@ -153,10 +158,9 @@ def test_apply_creates_edges_and_rollback_restores(iso_db):
         # 无 source_path 的节点不参与结构建边 → 始终孤立（脚本正确行为，不是漏建）
         assert out_of_doc in applied_isolated
 
-        # 找到批次清单，执行 rollback
-        batches = sorted((_REPO_ROOT / "data" / "edge_batches").glob("structural-*.json"))
-        assert batches, "apply 未写出批次清单"
-        batch_id = batches[-1].stem
+        # 用自己那唯一条清单执行 rollback
+        manifest = _REPO_ROOT / "data" / "edge_batches" / f"{batch_id}.json"
+        assert manifest.exists(), "apply 未写出批次清单"
 
         sys.argv = ["build_structural_edges.py", "--db", iso_db, "--rollback", batch_id]
         try:
@@ -170,10 +174,10 @@ def test_apply_creates_edges_and_rollback_restores(iso_db):
         assert set(restored_isolated) == set(base_isolated)
     finally:
         Config.DB_PATH = old
-        # 清理本测试写出的批次清单
-        for f in (_REPO_ROOT / "data" / "edge_batches").glob("structural-*.json"):
-            with contextlib.suppress(OSError):
-                f.unlink()
+        # 只清理本测试这一次的批次清单（不要 glob 删光——那会误删生产库/其他测试的清单）
+        with contextlib.suppress(OSError):
+            (_REPO_ROOT / "data" / "edge_batches" / f"{batch_id}.json").unlink()
+        shutil.rmtree(empty_dir, ignore_errors=True)
 
 
 def test_apply_is_idempotent(iso_db):
@@ -182,6 +186,8 @@ def test_apply_is_idempotent(iso_db):
     old = Config.DB_PATH
     empty_dir = tempfile.mkdtemp(prefix="palimpsest_edges_empty_")
     old_argv = sys.argv
+    b1 = f"pytest-idem1-{uuid.uuid4().hex[:8]}"
+    b2 = f"pytest-idem2-{uuid.uuid4().hex[:8]}"
     try:
         store = _open_store(iso_db)
         _mk_doc(store, "doc_c.md", 3)
@@ -196,16 +202,18 @@ def test_apply_is_idempotent(iso_db):
                     total += len(db.get_edges(nid) or [])
                 return total
 
-        sys.argv = ["x", "--db", iso_db, "--apply", "--skills-dir", empty_dir, "--vault-dir", empty_dir]
+        base = ["x", "--db", iso_db, "--apply", "--skills-dir", empty_dir, "--vault-dir", empty_dir]
+        sys.argv = [*base, "--batch-id", b1]
         assert mod.main() == 0
         first = _edge_count()
+        sys.argv = [*base, "--batch-id", b2]
         assert mod.main() == 0
         second = _edge_count()
         assert first == second, "重复 apply 产生了重复边（幂等性被破坏）"
     finally:
         sys.argv = old_argv
         Config.DB_PATH = old
-        for f in (_REPO_ROOT / "data" / "edge_batches").glob("structural-*.json"):
+        for bid in (b1, b2):
             with contextlib.suppress(OSError):
-                f.unlink()
+                (_REPO_ROOT / "data" / "edge_batches" / f"{bid}.json").unlink()
         shutil.rmtree(empty_dir, ignore_errors=True)
