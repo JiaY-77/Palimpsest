@@ -88,6 +88,10 @@ W_SKILL = 1.0
 W_NOVEL = 0.8
 W_WIKI = 1.0
 W_MENTION = 0.6
+W_FOLLOWS = 0.6
+
+# 会话切分：created_at 间隔 <= 此值（秒）视为同一次会话，序邻两节点建 FOLLOWS 边
+SESSION_GAP_SECONDS = 1800
 
 # 边类型 -> 权重（写库时用）
 W_OF = {
@@ -96,6 +100,7 @@ W_OF = {
     "SKILL_RELATED_TO": W_SKILL,
     "WIKI_LINK": W_WIKI,
     "MENTIONS": W_MENTION,
+    "FOLLOWS": W_FOLLOWS,
 }
 
 
@@ -400,23 +405,60 @@ def build_edges(
             f"未解析目标: {len(set(unresolved_links))} {sorted(set(unresolved_links))[:6]}"
         )
 
-    # ── 源 6：名称提及（仅统计）───────────────────────────────────────
+    # ── 源 5b：会话/时序链（FOLLOWS）───────────────────────────────────
+    # 小帕没有 session_id 字段；用 created_at 时间切分——同一次会话里
+    # 相邻创建的日志类节点之间建有向边（早 → 晚），间隔 <= SESSION_GAP_SECONDS。
+    log_nodes: list[tuple[float, int]] = []
+    for nid, p in nodes.items():
+        if p.get("type") in LOG_TYPES or p.get("type") == "task":
+            ca = p.get("created_at")
+            if isinstance(ca, (int, float)):
+                log_nodes.append((float(ca), nid))
+    log_nodes.sort(key=lambda x: x[0])
+    src5b_edges = 0
+    src5b_nodes: set[int] = set()
+    for i in range(len(log_nodes) - 1):
+        t_a, a = log_nodes[i]
+        t_b, b = log_nodes[i + 1]
+        if (t_b - t_a) <= SESSION_GAP_SECONDS and a != b:
+            cand.append((a, b, "FOLLOWS"))
+            src5b_nodes.add(a)
+            src5b_nodes.add(b)
+            src5b_edges += 1
+    out(
+        f"[源 5b 会话链]          候选边: {src5b_edges}   涉及节点: {len(src5b_nodes)}   "
+        f"(间隔 <= {SESSION_GAP_SECONDS}s)"
+    )
+
+    # ── 源 6：名称提及（MENTIONS，写入）───────────────────────────────
     mention_names = set(sk_nodes) | set(char_nodes)
     mention_names |= {_title_of(p) for p in nodes.values() if _title_of(p)}
     mention_names = {n for n in mention_names if n and len(n) >= 2}
-    src6_est = 0
+    src6_edges = 0
+    src6_unresolved: set[str] = set()
     for nid, p in nodes.items():
         if p.get("type") in LOG_TYPES or p.get("type") == "task":
             content = str(p.get("content") or "")
             for nm in mention_names:
-                if nm in content and sk_nodes.get(nm) != nid and char_nodes.get(nm) != nid:
-                    src6_est += 1
-                    break  # 每节点最多计 1
-    out(f"[源 6 名称提及]         候选边(估): {src6_est}   (词典 {len(mention_names)} 名称，仅统计)")
+                if nm not in content:
+                    continue
+                tgt = sk_nodes.get(nm)
+                if tgt is None:
+                    tgt = char_nodes.get(nm)
+                if tgt is None:
+                    src6_unresolved.add(nm)
+                    continue
+                if tgt == nid:  # 自指跳过
+                    continue
+                cand.append((nid, tgt, "MENTIONS"))
+                src6_edges += 1
+    out(
+        f"[源 6 名称提及]         候选边: {src6_edges}   词典 {len(mention_names)} 名称   "
+        f"未解析: {len(src6_unresolved)}"
+    )
 
     # ── 汇总 ──────────────────────────────────────────────────────────
-    # 源 6（名称提及）未进 cand；dry-run 的孤立率预测只算可写库的结构边，
-    # 故按 uniq 推导涉及节点，避免高估。
+    # 全部边源（含源 5b 会话链、源 6 MENTIONS）均已进 cand；去重后推导涉及节点。
     uniq = {(s, d, t) for s, d, t in cand}
     all_touched: set[int] = set()
     for s, d, _ in uniq:
