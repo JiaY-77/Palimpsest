@@ -24,22 +24,31 @@
 
 Palimpsest 是一个 **本地优先的嵌入式长期记忆系统**，将 **语义向量检索（Vector Search）、加权知识图谱（Knowledge Graph）与全文检索（Full-Text Retrieval）** 三合一，把 AI 助手的跨会话记忆统一存放、管理、演化在一座本地数据库里。目标是成为 **AI 助手的「记忆底座」**——让每一次对话的收获都不再随会话关闭而烟消云散，而是**可检索、可关联、可演进**：
 
-- 🗃️ **混合检索** —— 语义向量（cosine）与 FTS5 全文索引（`trigram` 分词，支持中文子串）经 RRF 或级联融合，命中标注来源 `fts_hit` / `sem_hit`
-- 🔗 **图谱扩散召回** —— 节点由**加权边**（`RELATED_TO` / `REVISED_BY` / `CAUSES` / `REFERS_TO`）相连，BFS 沿边扩散，按最强边截断、弱边过滤、可按「块」隔离防跨域污染
-- 🕸️ **社区发现** —— 内置 Leiden 聚类，一键把记忆库分成主题簇，回答「记忆库里都有哪些圈子」
-- 🔄 **冲突检测与版本链** —— 高相似（score > 0.75）判为同一事实被取代，旧版标 `outdated` 并经 `REVISED_BY` 链向新版；中相似只记 `related_ids`；type / domain 双隔离防跨类误标
-- 🕰️ **事实时间维度（bi-temporal）** —— 事实类记忆写入时记 `valid_at`（世界时间：开始为真之时），被取代时补 `invalid_at`（不再为真）与 `expired_at`（系统标为历史）；与 `created_at`（记录时间）正交，检索结果随 `meta.times` 透出，`mem_fact_history` 可查单条事实的完整时间线与取代关系。详见 [docs/BITEMPORAL.md](docs/BITEMPORAL.md)
-- 🛡️ **写入前敏感扫描** —— 按 10 条正则规则扫描：强规则（API Key / 令牌 / 私钥 / SSH Key / Bearer 等 8 条）命中即拒写，弱规则（身份证 / 手机号 2 条）仅放行并打 `secret_hint` 供审计（详见 [`SECURITY.md`](SECURITY.md)）
-- 🧹 **容量合并与记忆盘点** —— `mem_consolidate` 合并近似重复（≥ 0.85、保护高价值），`mem_stats` 盘点类型 / 域 / 重要度 / 时间 / 图谱 / 热点 / tier 分层
-- ⏫ **高频记忆自动升级** —— 检索命中计数（`hit_count`），`promote` 把反复被用到的记忆升权打标（dry-run 预览、幂等可逆）
-- ⏳ **记忆生命周期** —— 时间衰减加权（`MEMORY_DECAY_FACTOR`）在排序中淡化陈旧记忆而不动存储；`kb_chunk` 豁免；`outdated` 旧版默认不参与普通检索
-- 📁 **任务自动归档** —— 完成任务自动写成 markdown 归档至知识库归档目录后删除节点——先 `dry-run` 预览，`apply` 提交
-- ✅ **部署体检** —— `doctor` 一键体检关键文件 / 存储 / FTS / 依赖 / Embedding 可达性 / 向量维度一致性 / 运行时路径字符集，每个失败项给出修复命令（`--json` 机器可读）
+这是一套机制清单，不是功能堆砌——每一项都能在代码里找到出处（详见各节链接）。
+
+**检索**
+- 🗃️ **混合检索** —— 语义向量（cosine）× FTS5 全文（`trigram` 分词，支持中文子串），经 RRF 或级联融合，命中标注来源
+- 🔗 **图谱扩散召回** —— 节点由加权边（`RELATED_TO` / `REVISED_BY` / `CAUSES` / `REFERS_TO`）相连，BFS 沿边扩散，可按「块」隔离防跨域污染
+- 🕸️ **社区发现** —— 内置 Leiden 聚类，把记忆库分成主题簇
 - ✂️ **省 token 设计** —— 检索默认只返回 **150 字摘要 + 元数据**，完整内容按需二次拉取
-- 🗂️ **记忆分层（`tier`）** —— 检索侧轻量视图，不迁数据：默认只取事实层（`memory` / `correction` / `decision` / `plan` / `task` 等），把日志层（`record` / `event` / `git_commit`）从默认检索与注入池摘出；`tier="logs"` 只取日志层、`tier=""` 回到全量
-- 🔐 **可选 API Key 鉴权** —— 默认关闭；设置 `PALIMPSEST_API_KEY` 后 REST 层要求 Bearer / X-API-Key，适合局域网受信部署
-- 🎯 **三接口、一核心** —— MCP（stdio 与 streamable-http）、FastAPI REST、完整 CLI 共用同一套底层工具，行为永不割裂；REST 在 `/mcp` 同时暴露 MCP 端点，可与 MCP 客户端共进程运行
-- 🧠 **Hermes 双插件换脑** —— Memory Provider（语义召回 + 自动沉淀）+ Context Engine（压缩前图谱提炼），一行命令激活，记忆跨会话不丢
+
+**记忆演化**
+- 🔄 **冲突检测与版本链** —— 高相似（score > 0.75）判为同一事实被取代，旧版标 `outdated` 并经 `REVISED_BY` 链向新版；type / domain 双隔离防跨类误标
+- 🕰️ **事实时间维度（bi-temporal）** —— 另记 `valid_at`（开始为真）与 `invalid_at`（不再为真），与 `created_at` 正交；`mem_fact_history` 查单条事实完整时间线。详见 [docs/BITEMPORAL.md](docs/BITEMPORAL.md)
+
+**治理**
+- 🧹 **容量合并与记忆盘点** —— `mem_consolidate` 合并近似重复（≥ 0.85、保护高价值），`mem_stats` 盘点类型 / 域 / 重要度 / 图谱 / tier 分层
+- ⏫ **高频记忆自动升级** —— 检索命中计数（`hit_count`），`promote` 把反复被用到的记忆升权打标（dry-run 预览、幂等可逆）
+- ⏳ **记忆生命周期** —— 时间衰减加权（`MEMORY_DECAY_FACTOR`，默认 `0.95`）淡化陈旧记忆而不动存储；`kb_chunk` 豁免
+- 📁 **任务自动归档** —— 完成任务写成 markdown 归档至知识库后删除节点（先 dry-run 预览）
+- 🗂️ **记忆分层（`tier`）** —— 检索侧轻量视图，不迁数据：默认只取事实层，把日志层（`record` / `event` / `git_commit`）从默认检索与注入池摘出
+- 🛡️ **写入前敏感扫描** —— 10 条正则：强规则（API Key / 令牌 / 私钥等 8 条）命中即拒写，弱规则（身份证 / 手机号）放行并打标（详见 [`SECURITY.md`](SECURITY.md)）
+
+**部署**
+- ✅ **部署体检** —— `doctor` 一键体检关键文件 / 存储 / FTS / 依赖 / Embedding / 向量维度 / 运行时路径字符集，失败项给出修复命令
+- 🔐 **可选 API Key 鉴权** —— 默认关闭；设置 `PALIMPSEST_API_KEY` 后 REST 层要求 Bearer / X-API-Key
+- 🎯 **三接口、一核心** —— MCP（stdio 与 streamable-http）、FastAPI REST、完整 CLI 共用同一套底层工具，行为永不割裂
+- 🧠 **双插件换脑** —— 为 Hermes 提供 Memory Provider + Context Engine，一行命令激活（见下节「接入示例」）
 
 ---
 
@@ -53,7 +62,26 @@ Palimpsest 是一个 **本地优先的嵌入式长期记忆系统**，将 **语�
 
 ---
 
-## 给 Hermes 用户：把它变成你的记忆插件
+## 记忆优势：为什么不是「又一个向量库」
+
+市面上的记忆方案（LangGraph Store、AutoGen Memory 等）大多解决「**存得下、找得到**」。Palimpsest 在此基础上多解决一层：**记忆会变，而且必须说得清它怎么变**。
+
+| 能力 | 常见做法 | Palimpsest |
+|---|---|---|
+| **改写可溯** | 新值覆盖旧值，旧值消失 | 旧版标 `outdated`，经 `REVISED_BY` 版本链指回新值——**覆而不失，改写可溯** |
+| **事实有时效** | 只有「何时写入」（`created_at`） | **bi-temporal**：另记「事实何时为真」（`valid_at` / `invalid_at`），`as_of` 可回看「三个月前它认为什么为真」 |
+| **跨类不误判** | 相似即合并 | **type + domain 双隔离**——「用户偏好」不会因措辞相近而吃掉「项目决策」 |
+| **有只读底线** | 任何节点都可能被自动取代 | 写入口护栏：`type=rule` 或 `protected=True` 的节点**不被自动冲突检测取代** |
+| **降级不静默** | 某路检索挂了，静默退回另一路 | 返回 `channels` 字段（如 `{"fts": "degraded"}`），**质量下降有痕迹** |
+| **治理可逆** | 合并 / 升级一经执行无法回退 | `consolidate` / `promote` 默认 dry-run 预览、幂等、可精确回滚 |
+
+这些机制回答的是同一个问题：**当记忆从「一条记录」变成「一段演化史」，你怎么保证它说得清、回得去、不误伤。** 完整设计见 [`docs/BITEMPORAL.md`](docs/BITEMPORAL.md) 与 [`SECURITY.md`](SECURITY.md)。
+
+---
+
+## 接入示例：以 Hermes 为例
+
+Palimpsest 是**通用记忆底座**——MCP 标准协议对外，任何支持 MCP 的客户端都能接入（REST 与 CLI 亦同）。下面以 **Hermes** 为例，展示「自动召回 + 会话沉淀」怎么接：
 
 Palimpsest 为 Hermes 提供**双插件**：**Memory Provider**（记忆读写）+ **Context Engine**（上下文压缩前提炼），源码在 [`hermes-plugin/`](./hermes-plugin/README.md)，含 hooks `on_session_end`（会话结束提炼要点）与 `on_pre_compress`（压缩前图谱提炼）。
 
@@ -65,6 +93,8 @@ hermes config set context.engine palimpsest-graph
 ```
 
 激活后每轮对话自动：经 REST `:8090` 检索相关历史、高信号事实启发式沉淀、会话结束沉淀要点、压缩前图谱提炼；并提供 `palimpsest_search` / `palimpsest_ingest` / `palimpsest_link` / `palimpsest_graph` 等工具供 agent 主动调用。注意：REST 服务需**常驻运行**（如 `scripts/start_rest.vbs`）；自动沉淀是**启发式**判断，求「快、稳、不花钱」而非「聪明」。
+
+> **其他接入方式**：MCP 客户端直连 `http://127.0.0.1:8090/mcp/`（与 REST 共进程）；或直接调用 REST / CLI——三者共用同一套底层工具，行为永不割裂。
 
 ---
 
