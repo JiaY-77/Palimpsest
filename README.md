@@ -85,6 +85,12 @@ source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+### 硬件要求
+
+**没有独显也能跑。** 本地默认向量模型 `qwen3-embedding:0.6b` 在纯 CPU 上实测端到端检索 209 ms（稳定均值）、索引约 92–296 ms/条——对「对话间隙检索一次记忆」这个使用方式毫无感知。三种硬件档位（纯 CPU / 核显 / 独显）的完整实测数据、复现方式与档位强制手段见 [`docs/HARDWARE.md`](docs/HARDWARE.md)。
+
+不想装 Ollama 的用户直接走**路径 A（云端 key）**即可，本机零额外依赖。**本地部署的门槛在安装动作，不在硬件性能**——后者已有实测数据证明不构成门槛。
+
 ### 路径 A：云端 key，最快跑起来（无需 Ollama）
 
 ```bash
