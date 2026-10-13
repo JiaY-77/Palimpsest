@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [2.9.1] - 2026-10-13
+
+### 修复
+
+- **显式取代（`replaces`）对非白名单类型无效**：`replaces` 此前在「类型白名单」检查**之后**处理，导致 `record` / `correction` / `event` 等类型即使显式声明也无法被取代（白名单本意只约束**自动相似判定**，却把调用方的显式指令一并挡掉）。现将显式取代提前到白名单之前——类型白名单与 `CONFLICT_SKIP_TYPES` 只作用于自动路径。
+
 ## [2.9.0] - 2026-10-13
 
 ### 新增
@@ -410,7 +416,8 @@
 
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
-[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.9.0...HEAD
+[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.9.1...HEAD
+[2.9.1]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.9.1
 [2.9.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.9.0
 [2.8.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.8.0
 [2.6.1]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.6.1
