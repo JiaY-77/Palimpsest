@@ -130,6 +130,28 @@ def test_replaces_respects_gates_kb_chunk_not_superseded(iso_store):
     assert iso_store.get_node(kb_id)["payload"].get("status") != "outdated"
 
 
+def test_replaces_works_for_non_whitelisted_type(iso_store):
+    """显式 replaces 不受「自动检测类型白名单」限制：record 也能被显式取代。
+
+    类型白名单（memory/task/plan）只约束**自动相似判定**；显式指令应当生效，
+    否则 record / correction / event 等类型永远无法被显式取代。
+    """
+    r1 = _get(memory_tool.mem_ingest(content="旧记录：版本一", type="record", domain="cs"))
+    old_id = r1["node_id"]
+
+    r2 = _get(
+        memory_tool.mem_ingest(
+            content="新记录：版本二（修正版）",
+            type="record",
+            domain="cs",
+            replaces=str(old_id),
+        )
+    )
+    assert r2["stored"] is True, r2
+    assert old_id in r2["outdated_ids"], r2
+    assert iso_store.get_node(old_id)["payload"].get("status") == "outdated"
+
+
 def test_legacy_auto_supersede_opt_in(iso_store, monkeypatch):
     """CONFLICT_AUTO_SUPERSEDE=true 时回退到旧行为：相似度 >0.75 自动标 outdated。"""
     monkeypatch.setattr(Config, "CONFLICT_AUTO_SUPERSEDE", True, raising=False)

@@ -59,10 +59,6 @@ def resolve_conflict(
     outdated_ids: list[int] = []
     related_ids: list[int] = []
     policy_warnings: list[str] = []
-    # 第 0 层：类型白名单——record/event/correction/git_commit/review 等
-    # 历史留痕类型完全跳过冲突检测
-    if new_type not in ("memory", "task", "plan"):
-        return {"outdated_ids": outdated_ids, "related_ids": related_ids, "policy_warnings": policy_warnings}
 
     def _load_old(old_id: int) -> dict:
         """取旧节点 payload（事务模式走已打开连接，非事务走 store）。"""
@@ -109,7 +105,9 @@ def resolve_conflict(
         outdated_ids.append(old_id)
 
     # ---- 来源一：显式取代（replaces）——不论相似度，显式声明即取代 ----
-    # 显式意图优先于自动策略，故置于 CONFLICT_SKIP_TYPES 检查之前。
+    # 显式意图优先于自动策略：本段置于「类型白名单」与「CONFLICT_SKIP_TYPES」之前——
+    # 白名单 / skip 只约束**自动相似判定**，不该吃掉调用方的显式指令，否则
+    # record / correction / event 等非白名单类型永远无法被显式取代。
     explicit_ids = {int(r) for r in (replaces or []) if r is not None}
     explicit_ids.discard(node_id)
     for rid in sorted(explicit_ids):
@@ -119,6 +117,11 @@ def resolve_conflict(
         if not _passes_gates(old_payload):
             continue
         _supersede(rid, old_payload)
+
+    # 第 0 层：类型白名单——record/event/correction/git_commit/review 等历史留痕
+    # 类型跳过**自动**冲突检测（上面的显式 replaces 不受此限）。
+    if new_type not in ("memory", "task", "plan"):
+        return {"outdated_ids": outdated_ids, "related_ids": related_ids, "policy_warnings": policy_warnings}
 
     # 第 0b 层：按 type 显式豁免（CONFLICT_SKIP_TYPES，issue #50）——只约束自动相似判定。
     # task 这类「累积关系」不是「同一事实被取代」：连续写入相似措辞的独立任务时，
