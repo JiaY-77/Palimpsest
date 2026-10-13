@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [2.10.1] - 2026-10-14
+
+### 修复
+
+- **知识关联回填会建出错误边**：`payload.linked_from` 存的是**写入当时**的切片 id，而索引重建会重新分配 id——实测生产库 **40% 的旧 id 已漂移**（其中 119 条直接指向非切片节点）。建边器「源 7」原先直接信任这些 id，回填时会建出「记忆 → 毫不相干节点」的错边。现改为**复核**：目标须**仍是切片类型**（`kb_chunk`/`novel_chunk`/`skill_chunk`）**且**原判据仍成立（源 / 目标自带向量的 cosine > 0.35）才建边。实测生产库候选从 297 降为 **165**，132 条漂移被拒；回填后 165 条 REFERENCES 边**全部指向 `kb_chunk`**。这也恢复了建边器「绝不依赖节点 id」的既有原则。
+
 ## [2.10.0] - 2026-10-14
 
 ### 新增
@@ -422,7 +428,8 @@
 
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
-[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.10.0...HEAD
+[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.10.1...HEAD
+[2.10.1]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.10.1
 [2.10.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.10.0
 [2.9.1]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.9.1
 [2.9.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.9.0

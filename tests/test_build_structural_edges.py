@@ -409,34 +409,57 @@ def test_session_chain_uses_commit_time_fallback(iso_db):
 def test_references_source_links_linked_from(iso_db):
     """源 7：把 payload.linked_from 落成 REFERENCES 边——记忆 → 知识切片图上有路。
 
-    回归背景：mem_ingest 的知识关联检测只把切片 id 写进 payload.linked_from，
-    **从不建图边**，实测「记忆 → 知识切片」的边为 0 —— 知识切片不会被记忆引用。
+    回归背景：①mem_ingest 的知识关联检测只把切片 id 写进 payload.linked_from，
+    **从不建图边**，实测「记忆 → 知识切片」的边为 0；②索引重建会重分配 id，
+    linked_from 里的旧 id 可能已漂移（实测 40%）—— 故源 7 必须复核：目标须仍是
+    切片类型**且**原语义关联仍成立，才建边。
     """
     old = Config.DB_PATH
     batch_id = f"pytest-refs-{uuid.uuid4().hex[:8]}"
     old_argv = sys.argv
     try:
         store = _open_store(iso_db)
-        kb_ids = _mk_doc(store, "kb/note.md", 2)
+        text = "Palimpsest 知识关联 REFERENCES 建边验证"
+        kb_hit = store.insert_node(
+            {
+                "type": "kb_chunk",
+                "content": text,
+                "domain": "kb",
+                "source_path": "kb/a.md",
+                "importance": 0.5,
+            },
+            store.embed_text(text),
+        )
+        # 语义不符的目标（英文，与中文源几乎无 2-gram 重叠）——不应建边
+        far_text = "unrelated cooking recipe tomato egg"
+        kb_far = store.insert_node(
+            {
+                "type": "kb_chunk",
+                "content": far_text,
+                "domain": "kb",
+                "source_path": "kb/b.md",
+                "importance": 0.5,
+            },
+            store.embed_text(far_text),
+        )
         mem_id = store.insert_node(
             {
                 "type": "memory",
                 "domain": "hermes",
-                "content": "一条引用了知识切片的记忆",
+                "content": text,
                 "importance": 0.6,
-                "linked_from": [kb_ids[0], kb_ids[1], 999999],  # 第三个目标不存在
+                "linked_from": [kb_hit, kb_far, 999999],  # 第三个目标不存在
             },
-            store.embed_text("一条引用了知识切片的记忆"),
+            store.embed_text(text),
         )
         with contextlib.suppress(Exception):
             store._acquire().close()
 
         _run_edges(iso_db, batch_id)
-        pairs = _edge_pairs(iso_db)
-        refs = {(s, t) for s, t, lab in pairs if lab == "REFERENCES"}
-        assert (mem_id, kb_ids[0]) in refs, f"linked_from 未落成 REFERENCES 边: {refs}"
-        assert (mem_id, kb_ids[1]) in refs
-        # 目标不存在 → 跳过，不建悬空边
+        refs = {(s, t) for s, t, lab in _edge_pairs(iso_db) if lab == "REFERENCES"}
+        assert (mem_id, kb_hit) in refs, f"linked_from 未落成 REFERENCES 边: {refs}"
+        # 语义不符 / 目标不存在 → 都不建边（防 id 漂移与悬空边）
+        assert (mem_id, kb_far) not in refs, f"语义不符的目标不应建边: {refs}"
         assert not any(t == 999999 for _s, t in refs), refs
     finally:
         sys.argv = old_argv
