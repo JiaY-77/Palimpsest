@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-10-13
+
 ### 新增
 
 - **显式取代（`mem_ingest` 的 `replaces` 参数）**：取代改由调用方显式声明——`replaces="<id>,<id>"`（兼容中文逗号）列出的旧节点无条件标 `outdated` 并建 `REVISED_BY` 修订链，**不论相似度**。语义判断由写入方（agent / LLM）给出，不经阈值推断。REST `/mem/ingest` 同步支持 `replaces` 字段。
@@ -408,7 +410,8 @@
 
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
-[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.8.0...HEAD
+[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.9.0...HEAD
+[2.9.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.9.0
 [2.8.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.8.0
 [2.6.1]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.6.1
 [2.6.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.6.0
