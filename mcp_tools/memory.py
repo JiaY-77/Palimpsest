@@ -128,7 +128,9 @@ def _find_linked_kb_ids(emb: list[float]) -> list[int]:
     return linked
 
 
-def _insert_with_conflict(store, node_data: dict, emb: list[float]) -> tuple[int, dict]:
+def _insert_with_conflict(
+    store, node_data: dict, emb: list[float], replaces: list[int] | None = None
+) -> tuple[int, dict]:
     """事务化写入 + 冲突检测标脏，返回 (node_id, conflict)。
 
     「insert（含 created_at）+ resolve_conflict 标脏」整体包进单事务：任一步抛异常
@@ -137,6 +139,9 @@ def _insert_with_conflict(store, node_data: dict, emb: list[float]) -> tuple[int
     与「按该 id 写入」必须原子，否则两个线程会挑到同一个 next_id。跨进程不必
     靠这把锁 —— triviumdb 以独占写模式打开库文件，第二个写进程在构造时即抛
     `Database locked`，走不到分配 ID 这一步（详见 core/trivium_store.py）。
+
+    replaces：显式取代的旧节点 id 列表（透传给 resolve_conflict）——占位符，
+    细节见 core.conflict.resolve_conflict。
 
     返回前显式关闭连接释放库锁：后续 FTS 同步 / 读回节点都经 store._acquire()
     重开，若不关闭会触发 "Database locked"（同库双连接）。
@@ -151,7 +156,7 @@ def _insert_with_conflict(store, node_data: dict, emb: list[float]) -> tuple[int
                 # insert_node_tx 已把 created_at 透传进 payload（事务模式下新节点不可
                 # 读回，避免 tx.update_payload 整包覆盖）；此处仅做冲突检测标脏。
                 node_id = store.insert_node_tx(tx, node_data, emb, next_id=next_id)
-                conflict = resolve_conflict(store, emb, node_id, tx=tx, db=db, new_payload=node_data)
+                conflict = resolve_conflict(store, emb, node_id, tx=tx, db=db, new_payload=node_data, replaces=replaces)
         with contextlib.suppress(Exception):
             db.close()
         db = None
@@ -218,10 +223,25 @@ def _build_ingest_result(
 
 
 @mcp.tool()
-def mem_ingest(content: str, type: str = "memory", importance: float = 0.5, domain: str = "", source: str = "") -> str:
+def mem_ingest(
+    content: str,
+    type: str = "memory",
+    importance: float = 0.5,
+    domain: str = "",
+    source: str = "",
+    replaces: str = "",
+) -> str:
     """
-    写入新记忆；自动冲突检测：与库中 score > 0.4 的相似旧记忆标记为 outdated，
-    并建立 新记忆 --REVISED_BY--> 旧记忆 的修订链。
+    写入新记忆。取代默认**不自动发生**——只有显式声明（replaces）才标旧记忆 outdated：
+
+      - ``replaces``（可选）：逗号分隔的旧节点 id（兼容中文逗号）。列出的节点若存在
+        且通过 type/domain 门，即无条件标 outdated 并建立
+        ``新记忆 --REVISED_BY--> 旧记忆`` 的修订链。**语义判断由调用方给出**，不依赖阈值。
+      - 未声明 replaces 时：与库中相似度 >0.4 的旧记忆只记入 ``related_ids``（话题相关
+        提示），**不标 outdated**——「相似」不等于「同一事实被取代」，避免同主题互补
+        内容被误吞。
+      - 旧「相似度 >0.75 自动取代」行为仅在 ``CONFLICT_AUTO_SUPERSEDE=true`` 时启用
+        （默认关闭，过渡兼容开关）。
     v1.1：新增知识关联检测——score > 0.35 的 kb_chunk 记入 payload.linked_from，
     返回 linked_kb_ids 便于追溯关联的知识库块。
     """
@@ -234,6 +254,13 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5, doma
         return _to_json({"stored": False, "node_id": None, "error": policy_res["error"]})
     policy_warnings: list[str] = list(policy_res["warnings"])
     emb = store.embed_text(content)
+
+    # 显式取代声明：解析逗号分隔的 id 串（兼容中文逗号 / 空白），非法片段忽略。
+    replace_ids: list[int] = []
+    for token in (replaces or "").replace("，", ",").split(","):
+        token = token.strip()
+        if token.isdigit():
+            replace_ids.append(int(token))
 
     # ---- v1.1 知识关联检测：只读查询，留在事务外做 ----
     linked_kb_ids = _find_linked_kb_ids(emb)
@@ -259,7 +286,7 @@ def mem_ingest(content: str, type: str = "memory", importance: float = 0.5, doma
     secret_hint: list = []
     domain_out = ""
     try:
-        node_id, conflict = _insert_with_conflict(store, node_data, emb)
+        node_id, conflict = _insert_with_conflict(store, node_data, emb, replace_ids)
         # 事务已提交，连接已在 helper 内释放（避免后续重开撞 Database locked）
         secret_hint, domain_out = _post_ingest_side_effects(store, node_id, content, now)
     except SecretScanError as e:

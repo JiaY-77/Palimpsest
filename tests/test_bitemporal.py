@@ -31,7 +31,14 @@ import time
 
 import pytest
 
+from config import Config
 from core.trivium_store import TriviumStore
+
+
+@pytest.fixture(autouse=True)
+def _enable_legacy_auto_supersede(monkeypatch):
+    """本模块以「自动取代」为前置验证 bi-temporal 时间字段（该路径现为 opt-in）。"""
+    monkeypatch.setattr(Config, "CONFLICT_AUTO_SUPERSEDE", True, raising=False)
 
 
 @pytest.fixture

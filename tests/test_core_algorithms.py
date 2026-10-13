@@ -11,6 +11,20 @@
 隔离原则：纯函数直接测；需要 store 的用「手写假对象」记录调用，不新增依赖。
 """
 
+import pytest
+
+from config import Config
+
+
+@pytest.fixture(autouse=True)
+def _enable_legacy_auto_supersede(monkeypatch):
+    """本模块的冲突分级用例验证的是「自动相似取代」路径（现为 opt-in）。
+
+    CONFLICT_AUTO_SUPERSEDE 默认关闭——取代只由显式 replaces 触发；本模块专门
+    验证旧「相似度 >0.75 自动标 outdated」的分级行为，故显式开启该开关。
+    """
+    monkeypatch.setattr(Config, "CONFLICT_AUTO_SUPERSEDE", True, raising=False)
+
 
 # ---------------------------------------------------------------------------
 # 1. 时间衰减：_days_since_created（纯函数）

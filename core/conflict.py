@@ -20,13 +20,22 @@ from core.trivium_store import node_domain
 logger = logging.getLogger(__name__)
 
 
-def resolve_conflict(store, embedding, node_id, tx=None, db=None, new_payload=None) -> dict:
+def resolve_conflict(
+    store, embedding, node_id, tx=None, db=None, new_payload=None, replaces: list[int] | None = None
+) -> dict:
     """查找与本次写入相似的旧记忆并分级处理，返回 {"outdated_ids": […], "related_ids": […]}
 
     逻辑与 mem_ingest 内联版一致（embedding 由调用方传入，此处不再 embed）：
-    - outdated_ids：score > 0.75 且通过 type/domain 门的旧节点，标 outdated + 建 REVISED_BY 边；
-    - related_ids：0.4 < score <= 0.75 且通过 type/domain 门的旧节点，只记入返回，
-      不标 outdated、不建边。
+    - outdated_ids：被判定「同一事实被取代」的旧节点，标 outdated + 建 REVISED_BY 边；
+    - related_ids：话题相关但不算取代的旧节点，只记入返回，不标 outdated、不建边。
+
+    **取代的两个来源**（取代不再仅凭相似度自动发生）：
+    1. **显式声明**（`replaces`）：调用方列出要取代的旧节点 id，只要存在且通过
+       type/domain 门即无条件标 outdated——语义判断由调用方（LLM/agent）给出，
+       不依赖阈值。显式意图优先于自动策略（在 CONFLICT_SKIP_TYPES 之前处理）。
+    2. **自动相似判定**（仅当 `Config.CONFLICT_AUTO_SUPERSEDE=true`）：相似度 >0.75
+       且过门 → 标 outdated（旧行为，作为过渡兼容开关）。默认关闭——此时 >0.4 的
+       相似候选一律记入 related_ids，不再自动标 outdated，避免同主题互补内容误吞。
 
     事务模式（tx 非空）：供 mem_ingest 事务化链路使用，写操作（标脏/建边）落在
     传入的事务句柄 tx 上（tx.update_payload / tx.link），读操作（查找相似、取旧
@@ -54,7 +63,64 @@ def resolve_conflict(store, embedding, node_id, tx=None, db=None, new_payload=No
     # 历史留痕类型完全跳过冲突检测
     if new_type not in ("memory", "task", "plan"):
         return {"outdated_ids": outdated_ids, "related_ids": related_ids, "policy_warnings": policy_warnings}
-    # 第 0b 层：按 type 显式豁免（CONFLICT_SKIP_TYPES，issue #50）。
+
+    def _load_old(old_id: int) -> dict:
+        """取旧节点 payload（事务模式走已打开连接，非事务走 store）。"""
+        if tx is not None:
+            old_node = db.get(old_id)
+            return dict(old_node.payload or {}) if old_node else {}
+        old_node = store.get_node(old_id)
+        return old_node.get("payload", {}) if old_node else {}
+
+    def _passes_gates(old_payload: dict) -> bool:
+        """第 2/3 层门：type 隔离（同类、非 kb_chunk）+ domain 隔离（跨域不互标）。"""
+        old_type = old_payload.get("type")
+        # 沿用原有排除：kb_chunk 只供 kb_search 检索，不参与记忆冲突检测
+        if old_type != new_type or old_type == "kb_chunk":
+            return False
+        old_domain = node_domain(old_payload)
+        # general（含未分类空域，node_domain 兜底）不隔离，通用节点可被任何域修订
+        return not (new_domain != old_domain and new_domain != "general" and old_domain != "general")
+
+    def _supersede(old_id: int, old_payload: dict) -> None:
+        """判定同一事实被取代：保留原字段，仅把 status 标记为 outdated + 建 REVISED_BY。"""
+        # 只读保护门（write-guard policy，core/policy.py）：
+        # 受保护节点（type=rule 或 payload.protected=True）不参与自动覆盖。
+        # warn 模式：照常标 outdated + 建边，但记 policy_warnings（攒数据）；
+        # enforce 模式：跳过该节点，不标 outdated、不建边。
+        if is_protected(old_payload):
+            warn_msg = check_protected_overwrite(old_payload)
+            if warn_msg:
+                policy_warnings.append(warn_msg)
+                logger.warning("policy: %s (node_id=%s)", warn_msg, old_id)
+            if get_policy_mode() == "enforce":
+                return
+        old_payload["status"] = "outdated"
+        # bi-temporal（世界时间）：旧事实自新事实的 valid_at 起不再为真，
+        # 并在本次系统标记时刻进入历史。非事实类型自动跳过，见 core.bitemporal。
+        mark_superseded(old_payload, new_payload.get("valid_at"))
+        if tx is not None:
+            tx.update_payload(old_id, old_payload)
+            # 新记忆 -> 旧记忆 的修订关系
+            tx.link(node_id, old_id, "REVISED_BY")
+        else:
+            store.update_payload(old_id, old_payload)
+            store.create_edge(node_id, old_id, "REVISED_BY")
+        outdated_ids.append(old_id)
+
+    # ---- 来源一：显式取代（replaces）——不论相似度，显式声明即取代 ----
+    # 显式意图优先于自动策略，故置于 CONFLICT_SKIP_TYPES 检查之前。
+    explicit_ids = {int(r) for r in (replaces or []) if r is not None}
+    explicit_ids.discard(node_id)
+    for rid in sorted(explicit_ids):
+        old_payload = _load_old(rid)
+        if not old_payload:
+            continue
+        if not _passes_gates(old_payload):
+            continue
+        _supersede(rid, old_payload)
+
+    # 第 0b 层：按 type 显式豁免（CONFLICT_SKIP_TYPES，issue #50）——只约束自动相似判定。
     # task 这类「累积关系」不是「同一事实被取代」：连续写入相似措辞的独立任务时，
     # 旧任务会被误标 outdated 并从默认检索中消失。默认空集 = 行为完全不变。
     if new_type in Config.CONFLICT_SKIP_TYPES:
@@ -64,64 +130,36 @@ def resolve_conflict(store, embedding, node_id, tx=None, db=None, new_payload=No
         similar = _similar_hits(db, embedding)
     else:
         similar = store.search_similar(embedding, top_k=3, expand_depth=0, apply_decay=False)
+
+    auto_supersede = bool(getattr(Config, "CONFLICT_AUTO_SUPERSEDE", False))
     for r in similar:
         old_id = r.get("id")
         score = float(r.get("score", 0.0))
         # 第 1 层：score <= 0.4 视为无关，直接跳过（不参与任何标记）
         if old_id is None or old_id == node_id or score <= 0.4:
             continue
-        if tx is not None:
-            old_node = db.get(old_id)
-            old_payload = dict(old_node.payload or {}) if old_node else {}
-        else:
-            old_node = store.get_node(old_id)
-            old_payload = old_node.get("payload", {}) if old_node else {}
+        # 已由显式取代处理过的节点不再重复判定
+        if old_id in explicit_ids:
+            continue
+        old_payload = _load_old(old_id)
         if not old_payload:
             continue
-        # 第 2 层：type 隔离——跨 type 绝不互标
-        old_type = old_payload.get("type")
-        # 沿用原有排除：kb_chunk 只供 kb_search 检索，不参与记忆冲突检测
-        if old_type != new_type or old_type == "kb_chunk":
+        if not _passes_gates(old_payload):
             continue
-        # 第 3 层：domain 隔离——双方都非 general 且不同则跨域绝不互标；
-        # general（含未分类空域，node_domain 兜底）不隔离，通用节点可被任何域修订
-        old_domain = node_domain(old_payload)
-        if new_domain != old_domain and new_domain != "general" and old_domain != "general":
+        # 自动取代关闭（默认）：相似只提示相关，不标 outdated
+        if not auto_supersede:
+            related_ids.append(old_id)
             continue
-        # 过完所有门后分档：
+        # 自动取代开启：仅此路径保留「相似度 >0.75 = 同一事实被取代」的旧行为
         if score > 0.75:
             # 时间窗判定（bi-temporal 三期，core/bitemporal.windows_overlap）：
             # 相似但不重叠的两条事实是「不同时期的真相」（如「十年前住北京」≠
             # 「现在住上海」），不判为「同一事实被取代」→ 不标 outdated，归入
             # related_ids。默认关闭（CONFLICT_TIME_WINDOW=false = 行为不变）。
-            # 语义判定在前，策略门（只读保护）在后，两者独立。
             if Config.CONFLICT_TIME_WINDOW and not windows_overlap(new_payload, old_payload):
                 related_ids.append(old_id)
                 continue
-            # 只读保护门（write-guard policy，core/policy.py）：
-            # 受保护节点（type=rule 或 payload.protected=True）不参与自动覆盖。
-            # warn 模式：照常标 outdated + 建边，但记 policy_warnings（攒数据）；
-            # enforce 模式：跳过该节点，不标 outdated、不建边。
-            if is_protected(old_payload):
-                warn_msg = check_protected_overwrite(old_payload)
-                if warn_msg:
-                    policy_warnings.append(warn_msg)
-                    logger.warning("policy: %s (node_id=%s)", warn_msg, old_id)
-                if get_policy_mode() == "enforce":
-                    continue
-            # 判定同一事实被取代：保留原字段，仅把 status 标记为 outdated
-            old_payload["status"] = "outdated"
-            # bi-temporal（世界时间）：旧事实自新事实的 valid_at 起不再为真，
-            # 并在本次系统标记时刻进入历史。非事实类型自动跳过，见 core.bitemporal。
-            mark_superseded(old_payload, new_payload.get("valid_at"))
-            if tx is not None:
-                tx.update_payload(old_id, old_payload)
-                # 新记忆 -> 旧记忆 的修订关系
-                tx.link(node_id, old_id, "REVISED_BY")
-            else:
-                store.update_payload(old_id, old_payload)
-                store.create_edge(node_id, old_id, "REVISED_BY")
-            outdated_ids.append(old_id)
+            _supersede(old_id, old_payload)
         else:
             # 仅话题相关：只记入 related_ids，不标 outdated、不建边
             related_ids.append(old_id)

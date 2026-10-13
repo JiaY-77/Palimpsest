@@ -17,6 +17,20 @@ outdated 检索语义测试（v4.0，2026-09-05 产品决策）
 import json
 import uuid
 
+import pytest
+
+from config import Config
+
+
+@pytest.fixture(autouse=True)
+def _enable_legacy_auto_supersede(monkeypatch):
+    """本模块以「同内容写两次触发取代」为前置，验证 outdated 的检索语义。
+
+    取代默认不再自动发生（只由显式 replaces 触发）；此处开启 CONFLICT_AUTO_SUPERSEDE
+    以沿用旧前置。显式 replaces 路径由 tests/test_conflict_supersede.py 覆盖。
+    """
+    monkeypatch.setattr(Config, "CONFLICT_AUTO_SUPERSEDE", True, raising=False)
+
 
 def _ns():
     return f"odf_{uuid.uuid4().hex[:10]}"
