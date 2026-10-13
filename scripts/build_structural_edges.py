@@ -11,6 +11,7 @@
   5. Obsidian [[双链]]（WIKI_LINK）
   6. 名称提及（MENTIONS）—— 仅统计
   7. 知识关联（REFERENCES）—— 记忆 payload.linked_from → 知识/小说/技能切片
+     （**复核 id 漂移**：目标须仍是切片类型且原语义关联仍成立才建边）
 
 治本设计（防「重建后边丢失」）：
   - **绝不依赖节点 id**：一切按 source_path / 名称定位端点；
@@ -82,6 +83,10 @@ SKILLS_DIR = _DEFAULT_SKILLS_DIR
 VAULT_DIR = _DEFAULT_VAULT_DIR
 NOVEL_RELATIONS = os.path.join(_PROJECT_ROOT, "_novel_relations.json")
 LOG_TYPES = {"record", "event", "git_commit", "review"}
+# 切片类节点（知识 / 小说 / 技能）：源 7 只在这类节点上建 REFERENCES 边
+SLICE_TYPES = {"kb_chunk", "novel_chunk", "skill_chunk"}
+# 源 7 的关联阈值：与写入路径 mem_ingest._find_linked_kb_ids 的 0.35 保持一致
+LINK_MIN_SCORE = 0.35
 
 W_PART_OF = 0.8
 W_NEXT = 0.7
@@ -121,6 +126,22 @@ def _title_of(p: dict) -> str:
     return ""
 
 
+def _vectors_similar(a, b, threshold: float = LINK_MIN_SCORE) -> bool:
+    """两向量 cosine 是否 > threshold。
+
+    源 7 的「原判据复核」：`linked_from` 里的 id 可能已漂移，用它确认这条
+    「记忆 ↔ 切片」关联**现在**仍成立，才建边。缺向量 → False（不建）。
+    """
+    if not a or not b:
+        return False
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(x * x for x in b) ** 0.5
+    if not na or not nb:
+        return False
+    return (dot / (na * nb)) > threshold
+
+
 def _load_graph(store: TriviumStore):
     """单连接一次取回全部节点 payload 与全部出边。
 
@@ -129,13 +150,15 @@ def _load_graph(store: TriviumStore):
     ≈ 4600 次开关库，单次 ~50ms 就是 4 分钟（实测撞 --apply 超时）。
     这里在一个 `_acquire()` 内完成全部读取：实测 1540 节点取边 0.00s、取 payload 0.05s。
 
-    返回 (ids, nodes, edges)：
-      ids   : list[int] 全节点 id
-      nodes : {nid: payload_dict}
-      edges : {(src, dst, label_upper)} 全库出边集合（供查重与基线度统计）
+    返回 (ids, nodes, vectors, edges)：
+      ids     : list[int] 全节点 id
+      nodes   : {nid: payload_dict}
+      vectors : {nid: list[float]} 节点向量（源 7 复核 id 漂移用；同连接内取，零额外开库）
+      edges   : {(src, dst, label_upper)} 全库出边集合（供查重与基线度统计）
     """
     ids: list[int] = []
     nodes: dict[int, dict] = {}
+    vectors: dict[int, list] = {}
     edges: set[tuple[int, int, str]] = set()
     with store._acquire() as db:
         ids = list(db.all_node_ids())
@@ -143,13 +166,15 @@ def _load_graph(store: TriviumStore):
             node = db.get(nid)
             if node is not None:
                 nodes[nid] = node.payload or {}
+                if node.vector:
+                    vectors[nid] = list(node.vector)
             for e in db.get_edges(nid) or []:
                 tgt = getattr(e, "target_id", None)
                 if tgt is None:
                     continue
                 lab = str(getattr(e, "label", "") or "").upper()
                 edges.add((int(nid), int(tgt), lab))
-    return ids, nodes, edges
+    return ids, nodes, vectors, edges
 
 
 # ── 主流程 ────────────────────────────────────────────────────────────
@@ -221,7 +246,7 @@ def build_edges(
         batch_id = f"structural-{time.strftime('%Y%m%d-%H%M%S')}"
     manifest: str | None = None
 
-    ids, nodes, existing = _load_graph(store)
+    ids, nodes, vectors, existing = _load_graph(store)
 
     # 基线（用已取回的边集，不再逐节点开连接）
     deg = collections.Counter()
@@ -508,14 +533,14 @@ def build_edges(
     )
 
     # ── 源 7：知识关联（REFERENCES）────────────────────────────────────
-    # mem_ingest 写入记忆时按语义相似度（>0.35）记录 payload.linked_from =
-    # [知识/小说/技能切片 id]，但此前**只写 payload、从不建图边** —— 结果图谱上
-    # 「记忆 → 知识切片」完全不可达（实测此类边为 0），知识切片不会被记忆引用。
-    # 本源把 linked_from 落成 REFERENCES 边，使图检索 / 邻居扩散能到达知识切片。
-    # 端点直接用 id（linked_from 存的就是节点 id），仅校验目标仍存在。
+    # payload.linked_from 记的是**写入当时**的切片 id；索引重建会重新分配 id ——
+    # 实测 40% 的旧 id 已指向别的节点（其中 119 条直接指向非切片）。所以这里
+    # **不直接信任 id**：目标是切片类型 **且**用原判据复核（源/目标自带向量的
+    # cosine > LINK_MIN_SCORE）才建边。判据与写入路径一致，且不看 id 是否漂移。
+    slice_ids = {nid for nid, p in nodes.items() if p.get("type") in SLICE_TYPES}
     src7_edges = 0
+    src7_stale = 0
     src7_missing = 0
-    src7_self = 0
     for nid, p in nodes.items():
         refs = p.get("linked_from")
         if not refs:
@@ -526,15 +551,15 @@ def build_edges(
             except (TypeError, ValueError):
                 src7_missing += 1
                 continue
-            if tgt == nid:
-                src7_self += 1
-                continue
-            if tgt not in nodes:  # 目标已不存在（被清理 / 重建后 id 变化）
+            if tgt == nid or tgt not in nodes:
                 src7_missing += 1
+                continue
+            if tgt not in slice_ids or not _vectors_similar(vectors.get(nid), vectors.get(tgt)):
+                src7_stale += 1  # id 已漂移（指向非切片 / 语义已不符）
                 continue
             cand.append((nid, tgt, "REFERENCES"))
             src7_edges += 1
-    out(f"[源 7 知识关联]         候选边: {src7_edges}   缺失目标: {src7_missing}   自指: {src7_self}")
+    out(f"[源 7 知识关联]         候选边: {src7_edges}   id 漂移/非切片跳过: {src7_stale}   缺失/非法: {src7_missing}")
 
     # ── 汇总 ──────────────────────────────────────────────────────────
     # 全部边源（含源 5b 会话链、源 6 MENTIONS、源 7 REFERENCES）均已进 cand；去重后推导涉及节点。
