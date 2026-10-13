@@ -544,6 +544,8 @@ class MemIngestRequest(BaseModel):
     importance: float = 0.5
     domain: str = ""
     source: str = ""
+    # 显式取代：逗号分隔的旧节点 id。取代默认不自动发生，仅显式声明才标 outdated。
+    replaces: str = ""
 
 
 class MemHybridSearchRequest(BaseModel):
@@ -663,6 +665,7 @@ def mem_ingest(req: MemIngestRequest):
         importance=req.importance,
         domain=req.domain,
         source=req.source,
+        replaces=req.replaces,
     )
     # 校验类拒绝（空内容 / 超长）：REST 侧映射为 422，返回友好 message；
     # 其余 stored:false（如事务失败/secret 强拒，不携带 node_id 键）仍按 JSON 原样返回，不改语义。

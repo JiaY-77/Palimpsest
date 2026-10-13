@@ -31,6 +31,13 @@ import pytest
 
 from config import Config
 
+
+@pytest.fixture(autouse=True)
+def _enable_legacy_auto_supersede(monkeypatch):
+    """本模块以「自动取代」为前置验证只读保护门（该路径现为 opt-in）。"""
+    monkeypatch.setattr(Config, "CONFLICT_AUTO_SUPERSEDE", True, raising=False)
+
+
 # ---------------------------------------------------------------------------
 # A. 纯函数契约
 # ---------------------------------------------------------------------------

@@ -31,8 +31,16 @@ _REPO_ROOT = __import__("pathlib").Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+import pytest  # noqa: E402
+
 from config import Config  # noqa: E402
 from core import conflict as _conflict  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _enable_legacy_auto_supersede(monkeypatch):
+    """本模块验证的是「自动相似取代」路径下的 type 豁免行为（该路径现为 opt-in）。"""
+    monkeypatch.setattr(Config, "CONFLICT_AUTO_SUPERSEDE", True, raising=False)
 
 
 class _Result:

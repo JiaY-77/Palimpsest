@@ -25,6 +25,16 @@ import pytest
 
 from config import Config
 
+
+@pytest.fixture(autouse=True)
+def _enable_legacy_auto_supersede(monkeypatch):
+    """本模块专门验证 CONFLICT_TIME_WINDOW，而该判定只在自动取代路径下生效。
+
+    CONFLICT_AUTO_SUPERSEDE 默认关闭，故此处显式开启，使时间窗判定可被触发。
+    """
+    monkeypatch.setattr(Config, "CONFLICT_AUTO_SUPERSEDE", True, raising=False)
+
+
 # ---------------------------------------------------------------------------
 # A. 纯函数契约
 # ---------------------------------------------------------------------------

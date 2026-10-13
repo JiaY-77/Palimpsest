@@ -134,6 +134,15 @@ class Config:
     # 默认 false = 行为完全不变（高风险语义变更的稳妥默认，验证后再开）。
     CONFLICT_TIME_WINDOW = os.getenv("CONFLICT_TIME_WINDOW", "").strip().lower() in ("1", "true", "yes", "on")
 
+    # ---- 冲突检测：自动取代开关（默认关闭 = 取代只由显式声明触发）----
+    # 关闭（默认）：写入口不再仅凭相似度把旧记忆标 outdated——相似候选一律记入
+    #   related_ids（话题相关提示），取代只经 mem_ingest 的显式 replaces 声明发生。
+    #   理由：中文同主题文本相似度天然高，「相似」不等于「同一事实被取代」，
+    #   仅凭阈值会把同主题互补内容误吞（越认真沉淀越容易被互相标 outdated）。
+    # 开启：回退到旧行为——相似度 >0.75 且过 type/domain 门的旧节点自动标 outdated。
+    #   作为过渡兼容开关，验证期可一键回退。
+    CONFLICT_AUTO_SUPERSEDE = os.getenv("CONFLICT_AUTO_SUPERSEDE", "").strip().lower() in ("1", "true", "yes", "on")
+
     # 语义主序的图扩散深度：0 = 纯语义排序（默认；实测 R@5 0.7542）
     # 1 = 原行为（图邻居参与语义主序，实测 R@5 0.5000；可一键回退）
     RETRIEVAL_EXPAND_DEPTH = int(os.getenv("RETRIEVAL_EXPAND_DEPTH", "0"))
