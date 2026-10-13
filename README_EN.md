@@ -23,24 +23,37 @@ Pa·limp·sest: *a writing surface that is overwritten again and again while old
 
 ## Features
 
-Palimpsest is a **local-first embedded long-term memory system** that fuses **semantic vector search, a weighted knowledge graph, and full-text retrieval** into one local database. Its goal is to be the **memory backbone for an AI assistant** — so every conversation's gains are **searchable, linkable, and evolvable** instead of vanishing when the session closes:
+Palimpsest is a **local-first embedded long-term memory system** that fuses **semantic vector search, a weighted knowledge graph, and full-text retrieval** into one local database. Its goal is to be the **memory backbone for an AI assistant** — so every conversation's gains are **searchable, linkable, and evolvable** instead of vanishing when the session closes.
 
-- 🗃️ **Hybrid retrieval.** Semantic vectors (cosine) fused with an FTS5 full-text index (`trigram` tokenizer for Chinese substrings) via RRF or a cascade; hits are labeled `fts_hit` / `sem_hit`.
-- 🔗 **Knowledge-graph recall.** Nodes connected by **weighted edges** (`RELATED_TO` / `REVISED_BY` / `CAUSES` / `REFERS_TO`); BFS expansion prunes to the strongest edges, filters weak edges, and can be scoped to one domain "block" to prevent cross-domain pollution.
-- 🕸️ **Community detection.** Built-in Leiden clustering splits the store into topical clusters — answering "what circles exist in my memory?"
-- 🔄 **Conflict detection & version chains.** High similarity (score > 0.75) means the same fact was superseded: the old record is marked `outdated` and linked `REVISED_BY` to its replacement; medium similarity only records `related_ids`; type / domain isolation prevents cross-category mistakes.
-- 🕰️ **Fact time dimension (bi-temporal).** Fact-type memories record `valid_at` (world time: when the fact became true) on write, and gain `invalid_at` (no longer true) plus `expired_at` (marked historical by the system) when superseded — orthogonal to `created_at` (recording time). Surfaced as `meta.times` in search results, and `mem_fact_history` returns a single fact's full timeline and supersede relations. See [docs/BITEMPORAL.md](docs/BITEMPORAL.md).
-- 🛡️ **Pre-write secret scan.** 10 regex rules: a **strong-rule** match (API keys / tokens / private keys / SSH keys / bearer tokens — 8 rules) **rejects the write**, while a **weak-rule** match (ID cards / phone numbers — 2 rules) is **let through and flagged `secret_hint`** for audit (see [`SECURITY.md`](SECURITY.md)).
-- 🧹 **Consolidation & memory stats.** `mem_consolidate` collapses near-duplicates (≥ 0.85, protecting high-value nodes); `mem_stats` reports type / domain / importance / time / graph / hot spots / tier distributions.
-- ⏫ **Auto-promotion of hot memories.** Retrieval hits are counted (`hit_count`); `promote` raises and tags frequently-used memories (dry-run first, idempotent, reversible).
-- ⏳ **Memory lifecycle.** Time decay (`MEMORY_DECAY_FACTOR`) fades stale memories in ranking without touching storage; `kb_chunk` is exempt; `outdated` versions leave ordinary retrieval.
-- 📁 **Task auto-archiving.** Completed tasks are written to markdown archives under the knowledge base, then deleted — dry-run first, `apply` to commit.
-- ✅ **Deployment doctor.** `doctor` checks critical files / storage / FTS / dependencies / Embedding reachability / vector-dimension consistency / runtime path charset, printing an actionable fix per failure (`--json` for machines).
+This is a list of mechanisms, not a pile of features — every entry traces back to code (see the linked docs).
+
+**Retrieval**
+
+- 🗃️ **Hybrid retrieval.** Semantic vectors (cosine) fused with an FTS5 full-text index (`trigram` tokenizer for Chinese substrings) via RRF or a cascade; hits are labeled by source.
+- 🔗 **Knowledge-graph recall.** Nodes connected by weighted edges (`RELATED_TO` / `REVISED_BY` / `CAUSES` / `REFERS_TO`); BFS expansion, scopeable to one domain "block" to prevent cross-domain pollution.
+- 🕸️ **Community detection.** Built-in Leiden clustering splits the store into topical clusters.
 - ✂️ **Token-efficient by design.** Retrieval returns a **150-char summary + metadata**, never full text; full content is fetched on demand.
-- 🗂️ **Memory tiering (`tier`).** A retrieval-side view, no data movement: by default only the facts tier (`memory` / `correction` / `decision` / `plan` / `task`, …) is returned, keeping the logs tier (`record` / `event` / `git_commit`) out; `tier="logs"` returns only logs, `tier=""` restores the full pool.
-- 🔐 **Optional API-key auth.** Off by default; setting `PALIMPSEST_API_KEY` requires a Bearer / X-API-Key header on REST — for LAN / trusted-network deployments.
-- 🎯 **Three interfaces, one core.** MCP (stdio and streamable-http), FastAPI REST, and a full CLI reuse the same tools, so behavior never drifts; REST also exposes an MCP endpoint at `/mcp` so a client can share the process.
-- 🧠 **Swap Hermes memory with two plugins.** A Memory Provider (semantic recall + auto-sedimentation) plus a Context Engine (graph distillation before compression) — one command each, memory survives across sessions.
+
+**Memory evolution**
+
+- 🔄 **Conflict detection & version chains.** High similarity (score > 0.75) means the same fact was superseded: the old record is marked `outdated` and linked `REVISED_BY` to its replacement; type / domain isolation prevents cross-category mistakes.
+- 🕰️ **Fact time dimension (bi-temporal).** Records `valid_at` (when the fact became true) and `invalid_at` (when it stopped being true), orthogonal to `created_at`; `mem_fact_history` returns a single fact's full timeline. See [docs/BITEMPORAL.md](docs/BITEMPORAL.md).
+
+**Governance**
+
+- 🧹 **Consolidation & memory stats.** `mem_consolidate` collapses near-duplicates (≥ 0.85, protecting high-value nodes); `mem_stats` reports type / domain / importance / graph / tier distributions.
+- ⏫ **Auto-promotion of hot memories.** Retrieval hits are counted (`hit_count`); `promote` raises and tags frequently-used memories (dry-run first, idempotent, reversible).
+- ⏳ **Memory lifecycle.** Time decay (`MEMORY_DECAY_FACTOR`, default `0.95`) fades stale memories in ranking without touching storage; `kb_chunk` is exempt.
+- 📁 **Task auto-archiving.** Completed tasks are written to markdown archives under the knowledge base, then deleted (dry-run first).
+- 🗂️ **Memory tiering (`tier`).** A retrieval-side view, no data movement: by default only the facts tier is returned, keeping the logs tier (`record` / `event` / `git_commit`) out.
+- 🛡️ **Pre-write secret scan.** 10 regex rules: a strong-rule match (API keys / tokens / private keys — 8 rules) **rejects the write**, while a weak-rule match (ID cards / phone numbers) is let through and flagged (see [`SECURITY.md`](SECURITY.md)).
+
+**Deployment**
+
+- ✅ **Deployment doctor.** `doctor` checks critical files / storage / FTS / dependencies / Embedding / vector-dimension consistency / runtime path charset, printing an actionable fix per failure.
+- 🔐 **Optional API-key auth.** Off by default; setting `PALIMPSEST_API_KEY` requires a Bearer / X-API-Key header on REST.
+- 🎯 **Three interfaces, one core.** MCP (stdio and streamable-http), FastAPI REST, and a full CLI reuse the same tools, so behavior never drifts.
+- 🧠 **Dual Hermes plugins.** A Memory Provider plus a Context Engine for Hermes, enabled in one command (see the integration example below).
 
 ---
 
@@ -54,7 +67,26 @@ It fits four scenarios: **long-term companion / personal assistant** (Hermes & c
 
 ---
 
-## For Hermes users: turn it into your memory plugin
+## Memory advantages: why not just another vector store
+
+Most memory layers (LangGraph Store, AutoGen Memory, and similar) answer "can you store it, can you find it". Palimpsest answers one more question on top: **memory changes, and you have to be able to say exactly how.**
+
+| Capability | Common approach | Palimpsest |
+|---|---|---|
+| **Traceable rewrites** | The new value overwrites the old one; the old is gone | The old record is marked `outdated` and linked back via a `REVISED_BY` chain — **overwritten, never lost** |
+| **Facts with a validity period** | Only "when it was written" (`created_at`) | **bi-temporal**: also records "when the fact was true" (`valid_at` / `invalid_at`), so `as_of` can answer "what did it believe three months ago" |
+| **No cross-category collisions** | Similar text gets merged | **type + domain isolation** — a user preference cannot swallow a project decision just because the wording is close |
+| **A read-only floor** | Any record can be auto-superseded | Write-entry guard: nodes with `type=rule` or `protected=True` are **never auto-superseded** |
+| **Degradation is visible** | One retrieval lane dies; the fallback is silent | Results carry a `channels` field (e.g. `{"fts": "degraded"}`) — **quality loss leaves a trace** |
+| **Reversible governance** | Merges and promotions cannot be undone | `consolidate` / `promote` default to dry-run, are idempotent, and can be rolled back precisely |
+
+These mechanisms all answer the same question: **once memory stops being "a record" and becomes "a history", how do you keep it accountable, reversible, and non-destructive.** Full design in [`docs/BITEMPORAL.md`](docs/BITEMPORAL.md) and [`SECURITY.md`](SECURITY.md).
+
+---
+
+## Integration example: using Hermes
+
+Palimpsest is a **general-purpose memory backend** — it speaks standard MCP, so any MCP-capable client can connect (REST and CLI work the same way). Below, **Hermes** serves as the worked example of "auto-recall + session sedimentation":
 
 Palimpsest ships **both plugins** for Hermes' memory provider / context engine slots: a **Memory Provider** (read/write) and a **Context Engine** (pre-compression distillation). Source lives in [`hermes-plugin/`](./hermes-plugin/README.md), with hooks `on_session_end` (session-end distillation) and `on_pre_compress` (graph distillation before compression).
 
@@ -66,6 +98,8 @@ hermes config set context.engine palimpsest-graph
 ```
 
 Once active, every turn automatically queries REST `:8090` for relevant history, heuristically sediments high-signal facts, distils at session end, and distils the graph before compression; it also exposes `palimpsest_search` / `palimpsest_ingest` / `palimpsest_link` / `palimpsest_graph` for the agent to call. Note: the REST service must **stay running** (e.g. `scripts/start_rest.vbs`); auto-sedimentation is **heuristic** — fast, stable, cost-free over clever.
+
+> **Other integration paths**: point an MCP client straight at `http://127.0.0.1:8090/mcp/` (sharing the REST process), or call REST / CLI directly — all three share the same underlying tools, so behavior never drifts.
 
 ---
 
@@ -85,6 +119,12 @@ python -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
+
+### Hardware requirements
+
+**No discrete GPU required.** The default local embedding model `qwen3-embedding:0.6b` was measured on a **pure CPU** setup at 209 ms end-to-end retrieval (stable mean) and ~92–296 ms per item when indexing — imperceptible for a memory lookup between conversation turns. Full measurements for all three tiers (pure CPU / integrated GPU / discrete GPU), reproduction commands, and how to pin a tier are in [`docs/HARDWARE.md`](docs/HARDWARE.md).
+
+If you would rather not install Ollama at all, take **Path A (cloud key)** — zero extra local dependencies. **The real cost of local deployment is the install step, not hardware performance**, which the measurements show is not a barrier.
 
 ### Path A: Cloud API key — fastest start (no Ollama)
 
@@ -247,7 +287,7 @@ python scripts/build_kb_index.py --rules rules.json
 | `POST` | `/graph/neighbors` | Graph neighbors of a node |
 | `POST` | `/lifecycle/pre-turn` | **Memory strategy**: decide which memories to recall before each model call; returns text ready to inject into the prompt |
 
-> The full 26 routes are in [`docs/API.md`](docs/API.md). If `PALIMPSEST_API_KEY` is set, every route except `/` requires `Authorization: Bearer <key>` or `X-API-Key: <key>`.
+> The full 27 routes are in [`docs/API.md`](docs/API.md). If `PALIMPSEST_API_KEY` is set, every route except `/` requires `Authorization: Bearer <key>` or `X-API-Key: <key>`.
 
 ---
 
