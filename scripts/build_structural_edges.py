@@ -1,15 +1,16 @@
 """结构化建边器：从显式结构化字段推算/写入图谱边。
 
-背景：生产库 88% 节点是孤岛。本脚本从 6 类显式关系补边：
+背景：生产库 88% 节点是孤岛。本脚本从 7 类显式关系补边：
   dry-run（默认）只统计不写库；--apply 才真正写入（带 batch_id 可回滚）。
 
-6 类边源：
+7 类边源：
   1. source_path 文档枢纽边（PART_OF）—— 同文档节点的聚合
   2. chunk_index 文档内顺序边（PREV/NEXT）—— 同文档 chunk 的先后
   3. 技能 related_skills（SKILL_RELATED_TO）—— 从技能 md 的 YAML 头读
   4. _novel_relations.json 人物关系
   5. Obsidian [[双链]]（WIKI_LINK）
   6. 名称提及（MENTIONS）—— 仅统计
+  7. 知识关联（REFERENCES）—— 记忆 payload.linked_from → 知识/小说/技能切片
 
 治本设计（防「重建后边丢失」）：
   - **绝不依赖节点 id**：一切按 source_path / 名称定位端点；
@@ -91,6 +92,10 @@ W_MENTION = 0.6
 # FOLLOWS 是「时间相邻」的弱信号（时间相邻 ≠ 必然相关）：只作弱边，避免
 # 时间巧合在检索排序里被当成强关系。已加同 domain 约束进一步降噪。
 W_FOLLOWS = 0.3
+# REFERENCES = 「记忆 → 知识切片」的语义关联（由 mem_ingest 的知识关联检测写入
+# payload.linked_from，阈值 0.35）：是语义相似信号，比显式结构边（PART_OF /
+# WIKI_LINK，1.0）弱，但比时间相邻（FOLLOWS，0.3）强。
+W_REFERENCES = 0.7
 
 # 会话切分：created_at 间隔 <= 此值（秒）视为同一次会话，序邻两节点建 FOLLOWS 边
 SESSION_GAP_SECONDS = 1800
@@ -103,6 +108,7 @@ W_OF = {
     "WIKI_LINK": W_WIKI,
     "MENTIONS": W_MENTION,
     "FOLLOWS": W_FOLLOWS,
+    "REFERENCES": W_REFERENCES,
 }
 
 
@@ -501,8 +507,37 @@ def build_edges(
         f"未解析: {len(src6_unresolved)}"
     )
 
+    # ── 源 7：知识关联（REFERENCES）────────────────────────────────────
+    # mem_ingest 写入记忆时按语义相似度（>0.35）记录 payload.linked_from =
+    # [知识/小说/技能切片 id]，但此前**只写 payload、从不建图边** —— 结果图谱上
+    # 「记忆 → 知识切片」完全不可达（实测此类边为 0），知识切片不会被记忆引用。
+    # 本源把 linked_from 落成 REFERENCES 边，使图检索 / 邻居扩散能到达知识切片。
+    # 端点直接用 id（linked_from 存的就是节点 id），仅校验目标仍存在。
+    src7_edges = 0
+    src7_missing = 0
+    src7_self = 0
+    for nid, p in nodes.items():
+        refs = p.get("linked_from")
+        if not refs:
+            continue
+        for tgt in refs:
+            try:
+                tgt = int(tgt)
+            except (TypeError, ValueError):
+                src7_missing += 1
+                continue
+            if tgt == nid:
+                src7_self += 1
+                continue
+            if tgt not in nodes:  # 目标已不存在（被清理 / 重建后 id 变化）
+                src7_missing += 1
+                continue
+            cand.append((nid, tgt, "REFERENCES"))
+            src7_edges += 1
+    out(f"[源 7 知识关联]         候选边: {src7_edges}   缺失目标: {src7_missing}   自指: {src7_self}")
+
     # ── 汇总 ──────────────────────────────────────────────────────────
-    # 全部边源（含源 5b 会话链、源 6 MENTIONS）均已进 cand；去重后推导涉及节点。
+    # 全部边源（含源 5b 会话链、源 6 MENTIONS、源 7 REFERENCES）均已进 cand；去重后推导涉及节点。
     uniq = {(s, d, t) for s, d, t in cand}
     all_touched: set[int] = set()
     for s, d, _ in uniq:

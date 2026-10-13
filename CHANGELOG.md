@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [2.10.0] - 2026-10-14
+
+### 新增
+
+- **「记忆 → 知识切片」关联边（`REFERENCES`）**：`mem_ingest` 的知识关联检测此前只把命中的切片 id 写进 `payload.linked_from`（写进去之后无任何读取方，返回节点时还会被剥掉）——图谱上从无对应边，「记忆 → 知识切片」完全不可达，**知识切片不会被记忆引用**（实测生产库该类边为 0；图谱里 `kb_chunk` 只与其它 `kb_chunk` 相连）。现在：①写入时即时落成 `REFERENCES` 边（best-effort、同三元组幂等，失败仅告警）；②`scripts/build_structural_edges.py` 新增「源 7 知识关联」，历史数据用 `--apply` 回填、重建索引时自动补边。图检索与邻居扩散由此可到达知识切片。
+
 ## [2.9.1] - 2026-10-13
 
 ### 修复
@@ -416,7 +422,8 @@
 
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
-[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.9.1...HEAD
+[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.10.0...HEAD
+[2.10.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.10.0
 [2.9.1]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.9.1
 [2.9.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.9.0
 [2.8.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.8.0

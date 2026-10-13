@@ -404,3 +404,42 @@ def test_session_chain_uses_commit_time_fallback(iso_db):
         Config.DB_PATH = old
         with contextlib.suppress(OSError):
             (_REPO_ROOT / "data" / "edge_batches" / f"{batch_id}.json").unlink()
+
+
+def test_references_source_links_linked_from(iso_db):
+    """源 7：把 payload.linked_from 落成 REFERENCES 边——记忆 → 知识切片图上有路。
+
+    回归背景：mem_ingest 的知识关联检测只把切片 id 写进 payload.linked_from，
+    **从不建图边**，实测「记忆 → 知识切片」的边为 0 —— 知识切片不会被记忆引用。
+    """
+    old = Config.DB_PATH
+    batch_id = f"pytest-refs-{uuid.uuid4().hex[:8]}"
+    old_argv = sys.argv
+    try:
+        store = _open_store(iso_db)
+        kb_ids = _mk_doc(store, "kb/note.md", 2)
+        mem_id = store.insert_node(
+            {
+                "type": "memory",
+                "domain": "hermes",
+                "content": "一条引用了知识切片的记忆",
+                "importance": 0.6,
+                "linked_from": [kb_ids[0], kb_ids[1], 999999],  # 第三个目标不存在
+            },
+            store.embed_text("一条引用了知识切片的记忆"),
+        )
+        with contextlib.suppress(Exception):
+            store._acquire().close()
+
+        _run_edges(iso_db, batch_id)
+        pairs = _edge_pairs(iso_db)
+        refs = {(s, t) for s, t, lab in pairs if lab == "REFERENCES"}
+        assert (mem_id, kb_ids[0]) in refs, f"linked_from 未落成 REFERENCES 边: {refs}"
+        assert (mem_id, kb_ids[1]) in refs
+        # 目标不存在 → 跳过，不建悬空边
+        assert not any(t == 999999 for _s, t in refs), refs
+    finally:
+        sys.argv = old_argv
+        Config.DB_PATH = old
+        with contextlib.suppress(OSError):
+            (_REPO_ROOT / "data" / "edge_batches" / f"{batch_id}.json").unlink()
