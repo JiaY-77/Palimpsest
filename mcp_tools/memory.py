@@ -167,16 +167,36 @@ def _insert_with_conflict(
                 db.close()
 
 
-def _post_ingest_side_effects(store, node_id: int, content: str, now: float) -> tuple[list, str]:
+def _link_kb_references(store, node_id: int, kb_ids: list[int]) -> None:
+    """为「记忆 → 知识切片」建 REFERENCES 图边（best-effort，同三元组幂等）。
+
+    与 scripts/build_structural_edges.py 的「源 7 知识关联」同源：写入时即时建边，
+    历史数据回填 / 重建后修复由建边器负责，两条路径都幂等，不会重复建边。
+    此前 `linked_from` 只落在 payload、**从不建边**，导致图谱上「记忆 → 知识切片」
+    完全不可达（知识切片不会被记忆引用）。
+    """
+    for kid in kb_ids:
+        try:
+            store.create_edge(node_id, kid, "REFERENCES")
+        except Exception as e:  # noqa: BLE001 —— 建边失败仅告警，主写入已提交
+            logger.warning("知识关联建边失败 %s->%s: %s", node_id, kid, e)
+
+
+def _post_ingest_side_effects(
+    store, node_id: int, content: str, now: float, linked_kb_ids: list[int] | None = None
+) -> tuple[list, str]:
     """事务提交后的收尾，返回 (secret_hint, domain)。
 
     - FTS 全文索引同步（混合检索依赖；失败仅 warning，主写入已提交，可 fts-rebuild 兜底）
+    - 知识关联建边：把 linked_from 的切片 id 落成 REFERENCES 图边（同样 best-effort）
     - 读回已提交节点取 secret_hint（弱规则命中标记），并补写缺失的 created_at
     """
     try:
         index_node(node_id, content)
     except Exception as e:  # noqa: BLE001 —— 写入后 FTS 索引失败仅告警主链已提交
         logger.warning("FTS 索引同步失败 node=%s: %s", node_id, e)
+
+    _link_kb_references(store, node_id, linked_kb_ids or [])
 
     node = store.get_node(node_id)
     payload = node.get("payload", {}) if node else {}
@@ -288,7 +308,7 @@ def mem_ingest(
     try:
         node_id, conflict = _insert_with_conflict(store, node_data, emb, replace_ids)
         # 事务已提交，连接已在 helper 内释放（避免后续重开撞 Database locked）
-        secret_hint, domain_out = _post_ingest_side_effects(store, node_id, content, now)
+        secret_hint, domain_out = _post_ingest_side_effects(store, node_id, content, now, linked_kb_ids)
     except SecretScanError as e:
         # 强规则拒绝：事务回滚（未写任何节点），返回 stored:False
         return _to_json({"stored": False, "error": str(e), "rules": e.rules})
