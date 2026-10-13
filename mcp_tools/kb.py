@@ -45,11 +45,20 @@ def kb_search(query: str, top_k: int = 5) -> str:
     if not query:
         return _to_json({"results": [], "hint": "查询内容不能为空"})
     emb = store.embed_text(query)
-    results = store.search_similar(emb, top_k=top_k, expand_depth=getattr(Config, "RETRIEVAL_EXPAND_DEPTH", 0))
+    # 候选池隔离：知识库块在库里是少数派（记忆/技能节点远多于 kb_chunk），
+    # 同池竞争时会被挤出候选窗口，过滤后返回空——即使知识库已建索引。
+    # 把过滤条件下推到检索层（payload_filter），只在 kb_chunk 子集内排序，
+    # 噪声再多也不影响召回。与 skill_search 同款修法（见 mcp_tools/skill.py）。
+    results = store.search_similar(
+        emb,
+        top_k=max(int(top_k), 1),
+        expand_depth=getattr(Config, "RETRIEVAL_EXPAND_DEPTH", 0),
+        payload_filter={"type": "kb_chunk"},
+    )
     items = []
     for r in results:
         payload = r.get("payload", {}) or {}
-        # 只保留知识库块，过滤记忆节点
+        # 下推过滤已保证子集隔离，此处保留防御性校验（与检索契约一致）
         if payload.get("type") != "kb_chunk":
             continue
         items.append(
