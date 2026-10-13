@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions & usage help
+    url: https://github.com/JiaY-77/Palimpsest/discussions
+    about: Ask questions, share setups, and discuss ideas here instead of opening an issue.
+  - name: Security report
+    url: https://github.com/JiaY-77/Palimpsest/security/advisories/new
+    about: Please report security vulnerabilities privately, not in a public issue.
+  - name: Documentation
+    url: https://github.com/JiaY-77/Palimpsest#readme
+    about: Setup, configuration, and usage are documented in the README.
