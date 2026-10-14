@@ -57,6 +57,7 @@ hermes config set context.engine palimpsest-graph
 | `PALIMPSEST_PREFETCH_SCOPE` | `memory` | 注入召回范围（`memory`/`all`/`kb`；`all` 含知识库切片） |
 | `PALIMPSEST_AUTO_INGEST` | `true` | 是否自动沉淀；`false` 时仅保留 4 个手动工具 |
 | `PALIMPSEST_GRAPH_TOPICS` | `3` | 压缩前图谱提炼的主题数（1-5） |
+| `PALIMPSEST_GRAPH_TIMEOUT` | `8` | 压缩前图谱增强的整条链路耗时预算（秒） |
 
 ## 验证
 

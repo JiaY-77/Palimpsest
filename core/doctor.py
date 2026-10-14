@@ -8,6 +8,7 @@
   ①~⑤  复用 run_startup_check()（关键文件 / Store 初始化 / FTS5 / 依赖 / Embedding）
   ⑥     向量维度一致性（实测 embedding 维度 vs 库实际维度，复用 core.dims 逻辑）
   ⑦     domain 字段迁移状态（无 domain 但有 character_name 的历史兼容镜像存量）
+  ⑧     运行时路径字符集（中文用户名等非 ASCII 路径下的依赖兼容性风险）
 
 设计原则：
   - 单项失败不中断（embedding 不可用时其余检查项仍全部执行并展示）

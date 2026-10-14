@@ -183,7 +183,7 @@ On Windows, `scripts/start_rest.vbs` launches REST in a hidden window (e.g. at l
 
 ## Configuration
 
-All configuration is read from environment variables (a `.env` file is loaded automatically via `python-dotenv`); see `.env.example` for a commented template. Below are the essentials to get running — the full 36-key table is in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+All configuration is read from environment variables (a `.env` file is loaded automatically via `python-dotenv`); see `.env.example` for a commented template. Below are the essentials to get running — the full 43-key table is in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
 
 | Variable | Default | Description |
 |---|---|---|

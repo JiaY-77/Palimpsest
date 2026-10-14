@@ -2,7 +2,7 @@
 
 > 本文档面向 **Hermes 用户**：把 Hermes 的默认记忆层替换为 Palimpsest，实现中文语义召回、知识图谱、记忆分层与自动沉淀。全文分七步，**每步都有验证方法**，照做即可完成接入。
 >
-> 适用版本：Palimpsest v2.1.0 · Hermes 任意支持 memory provider / context engine 插槽的版本。
+> 适用版本：Palimpsest v2.10.1 · Hermes 任意支持 memory provider / context engine 插槽的版本。
 
 ---
 
@@ -16,6 +16,12 @@
 | 自动沉淀 | 每轮对话中 | 检测到强信号（纠正/偏好/决策/规则）时写入记忆库 |
 | 会话提炼 | 会话结束时 | 把本轮要点整理成一条结构化记忆 |
 | 压缩前提炼 | 上下文压缩前 | 用 Palimpsest 图谱提炼关键链，喂给压缩阶段 |
+
+> **架构说明（v2.5.0 起）**：上表四个环节对应 Palimpsest 的**宿主无关 lifecycle 端点** ——
+> `pre-turn` / `post-turn` / `session-end` / `pre-compress`。判定逻辑（什么值得记、记哪一层、
+> 何时召回、怎么去重）都在本体 `core/strategy.py` 内，每个决策返回 `decision_log` 以便审计；
+> Hermes 插件只是**纯传输层**（不含任何阈值与正则）。因此记忆能力不绑定 Hermes ——
+> 任何 Agent 宿主都能用同一组端点接入。
 
 ---
 
@@ -170,8 +176,10 @@ EMBEDDING_DIM=1024
 | `PALIMPSEST_PREFETCH_NEIGHBORS` | `false` | 注入是否附带图谱邻居（记忆域图近无边，默认关） |
 | `PALIMPSEST_PREFETCH_MIN_SCORE` | `0.3` | 注入最低相关度门槛（低于此分不注入） |
 | `PALIMPSEST_PREFETCH_TIER` | `facts` | 注入只取事实层（`facts` / `logs` / 空串=不过滤） |
+| `PALIMPSEST_PREFETCH_SCOPE` | `memory` | 注入召回范围：`memory`（默认，只召回记忆）/ `all`（含知识库切片）/ `kb` |
 | `PALIMPSEST_AUTO_INGEST` | `true` | 自动沉淀开关；`false` 时只保留手动工具 |
 | `PALIMPSEST_GRAPH_TOPICS` | `3` | 压缩前图谱提炼的主题数（1–5） |
+| `PALIMPSEST_GRAPH_TIMEOUT` | `8` | 压缩前图谱增强的整条链路耗时预算（秒） |
 
 **验证第五步**：无需专门验证，配置项由第四步/第六步的验证间接覆盖。
 

@@ -178,7 +178,7 @@ Windows 下 `scripts/start_rest.vbs` 可隐藏窗口启动 REST 服务（如开�
 
 ## 配置
 
-所有配置均从环境变量读取（`.env` 由 `python-dotenv` 自动加载），完整带注释模板见 `.env.example`。以下是新用户必配项，完整配置表（36 项）见 [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)。
+所有配置均从环境变量读取（`.env` 由 `python-dotenv` 自动加载），完整带注释模板见 `.env.example`。以下是新用户必配项，完整配置表（43 项）见 [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)。
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
