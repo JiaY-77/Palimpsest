@@ -274,6 +274,8 @@ def root():
             "/graph/neighbors",
             "/graph/communities",
             "/mem/stats",
+            "/mem/consolidate",
+            "/doctor",
             "/lifecycle/pre-turn",
             "/lifecycle/post-turn",
             "/lifecycle/session-end",
@@ -605,6 +607,11 @@ class MemFactHistoryRequest(BaseModel):
     node_id: int
 
 
+class MemConsolidateRequest(BaseModel):
+    threshold: float = 0.85
+    max_importance: float = 0.8
+
+
 def _as_json(text: str):
     try:
         return json.loads(text)
@@ -758,6 +765,35 @@ def mem_stats():
     stats = compute_stats(_get_store())
     stats.pop("elapsed_ms", None)
     return stats
+
+
+@app.post("/mem/consolidate")
+def mem_consolidate(req: MemConsolidateRequest):
+    """只读预览：不修改任何节点。dry-run 合并候选报告（不接受 apply，写操作不暴露）。
+
+    核心逻辑见 core.consolidator.consolidate（dry_run=True）。
+    """
+    from core.consolidator import consolidate
+
+    return consolidate(
+        _get_store(),
+        dry_run=True,
+        sim_threshold=req.threshold,
+        max_importance=req.max_importance,
+    )
+
+
+@app.get("/doctor")
+def doctor():
+    """只读体检。
+
+    已知说明：run_doctor() 内部会走一次 run_startup_check()，后者会自己开一次库连接；
+    在同一进程内串行调用是安全的（store 是「每操作开-关库」不常驻），
+    但若将来 _get_store() 改成常驻持锁，必须重新评估。
+    """
+    from core.doctor import run_doctor
+
+    return run_doctor()
 
 
 @app.get("/tasks/active")
