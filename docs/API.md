@@ -6,7 +6,7 @@ Palimpsest 的 REST 服务由 `main.py` 提供，默认监听 `127.0.0.1:8090`�
 python -m uvicorn main:app --host 127.0.0.1 --port 8090
 ```
 
-> README 只列常用端点；本页是完整清单（29 条）。若设置了 `PALIMPSEST_API_KEY`，
+> README 只列常用端点；本页是完整清单。若设置了 `PALIMPSEST_API_KEY`，
 > 除 `/` 外所有端点要求 `Authorization: Bearer <key>` 或 `X-API-Key: <key>`。
 
 ## REST API — `main.py`，端口 8090

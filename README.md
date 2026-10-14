@@ -282,7 +282,7 @@ python scripts/build_kb_index.py --rules rules.json
 | `POST` | `/graph/neighbors` | 某节点的图谱邻居 |
 | `POST` | `/lifecycle/pre-turn` | **记忆策略**：每轮模型调用前决定召回哪些记忆，返回可注入 prompt 的文本 |
 
-> 完整 27 条路由见 [`docs/API.md`](docs/API.md)。若设置了 `PALIMPSEST_API_KEY`，除 `/` 外所有端点要求 `Authorization: Bearer <key>` 或 `X-API-Key: <key>`。
+> 完整路由清单见 [`docs/API.md`](docs/API.md)。若设置了 `PALIMPSEST_API_KEY`，除 `/` 外所有端点要求 `Authorization: Bearer <key>` 或 `X-API-Key: <key>`。
 
 ---
 
