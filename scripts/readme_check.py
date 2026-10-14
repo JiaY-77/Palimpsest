@@ -753,8 +753,8 @@ def run_checks(root: Path) -> list[Report]:
         check_rest_routes(root),
         check_route_index(root),
         check_config_keys(root),
-        check_doc_versions(root),        # 新增
-        check_plugin_env_keys(root),     # 新增
+        check_doc_versions(root),  # 新增
+        check_plugin_env_keys(root),  # 新增
         check_file_references(root),
         check_inline_code(root),
         check_placeholder_marks(root),
