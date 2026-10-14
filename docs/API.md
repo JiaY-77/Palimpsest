@@ -26,7 +26,7 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8090
 | `POST` | `/mem/search` | 统一检索 |
 | `POST` | `/skill/search` | 技能语义检索 |
 | `POST` | `/mem/hybrid-search` | FTS5 + 向量混合检索 |
-| `POST` | `/mem/ingest` | 写入新记忆（含冲突检测 + 敏感扫描） |
+| `POST` | `/mem/ingest` | 写入新记忆（含冲突检测 + 敏感扫描；`replaces` 字段显式声明取代） |
 | `POST` | `/mem/link` | 创建图边 |
 | `DELETE` | `/mem/edge` | 删除图边（body：`source_id` / `target_id` / `relation`；幂等） |
 | `POST` | `/mem/fact-history` | 单条事实的 bi-temporal 时间线与取代关系（body：`node_id`） |

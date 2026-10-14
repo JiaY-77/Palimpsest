@@ -33,7 +33,7 @@ Palimpsest 是一个 **本地优先的嵌入式长期记忆系统**，将 **语�
 - ✂️ **省 token 设计** —— 检索默认只返回 **150 字摘要 + 元数据**，完整内容按需二次拉取
 
 **记忆演化**
-- 🔄 **冲突检测与版本链** —— 高相似（score > 0.75）判为同一事实被取代，旧版标 `outdated` 并经 `REVISED_BY` 链向新版；type / domain 双隔离防跨类误标
+- 🔄 **冲突检测与版本链** —— 取代由写入方**显式声明**（`mem_ingest(replaces=...)`，**不论相似度**）：被取代的旧版标 `outdated` 并经 `REVISED_BY` 链向新版；**默认不因相似度自动取代**（相似候选只记入 `related_ids` 作相关提示，`CONFLICT_AUTO_SUPERSEDE` 可开启旧行为）；type / domain 双隔离防跨类误标
 - 🕰️ **事实时间维度（bi-temporal）** —— 另记 `valid_at`（开始为真）与 `invalid_at`（不再为真），与 `created_at` 正交；`mem_fact_history` 查单条事实完整时间线。详见 [docs/BITEMPORAL.md](docs/BITEMPORAL.md)
 
 **治理**
@@ -56,7 +56,7 @@ Palimpsest 是一个 **本地优先的嵌入式长期记忆系统**，将 **语�
 
 绝大多数 AI 应用同时面临三类数据能力割裂：跨会话记忆每次从零开始、知识库只能关键词匹配、记忆无序堆积越用越乱。Palimpsest 用 **一个本地内核** 同时解决「检索、关联、演进」三件事，避免在向量库、文档库、图谱库之间搬运与同步。
 
-「记忆不丢」的一个例子：你告诉助手「服务监听 8090 端口」，后来设计变更又说「端口改为 8095」。旧记忆不会被粗暴覆盖——它被标记 `outdated`，通过 `REVISED_BY` 指向新版本，版本链查询随时能展开这条链，看清这个事实**如何一步步演变成今天的样子**。这就是 Palimpsest：覆而不失，改写可溯。
+「记忆不丢」的一个例子：你告诉助手「服务监听 8090 端口」，后来设计变更又说「端口改为 8095」。这次改写由写入方显式声明取代（`replaces`）——旧记忆不会被粗暴覆盖，它被标记 `outdated`，通过 `REVISED_BY` 指向新版本，版本链查询随时能展开这条链，看清这个事实**如何一步步演变成今天的样子**。这就是 Palimpsest：覆而不失，改写可溯。
 
 它适合四类场景：**长期陪伴 / 个人助理**（Hermes 等）把每轮对话自动召回、强信号自动沉淀，压缩前图谱再提炼一次；**知识库语义化**（Obsidian）把多年 Vault 切片向量化，搜索从关键词碰运气变成语义相关 + 图谱邻居；**创作设定库**（小说 / 世界观）整文件入库并批量建边，配合社区发现看清设定关系；**记忆治理**用敏感扫描、冲突检测、容量合并、时间衰减与 `promote`，让记忆库越用越清晰。
 
@@ -71,7 +71,7 @@ Palimpsest 是一个 **本地优先的嵌入式长期记忆系统**，将 **语�
 | **改写可溯** | 新值覆盖旧值，旧值消失 | 旧版标 `outdated`，经 `REVISED_BY` 版本链指回新值——**覆而不失，改写可溯** |
 | **事实有时效** | 只有「何时写入」（`created_at`） | **bi-temporal**：另记「事实何时为真」（`valid_at` / `invalid_at`），`as_of` 可回看「三个月前它认为什么为真」 |
 | **跨类不误判** | 相似即合并 | **type + domain 双隔离**——「用户偏好」不会因措辞相近而吃掉「项目决策」 |
-| **有只读底线** | 任何节点都可能被自动取代 | 写入口护栏：`type=rule` 或 `protected=True` 的节点**不被自动冲突检测取代** |
+| **有只读底线** | 相似即自动取代，节点可能被悄悄换掉 | 默认**不自动取代**任何节点（取代须显式声明 `replaces`）；即便开启自动模式，`type=rule` / `protected=True` 的节点也不被取代 |
 | **降级不静默** | 某路检索挂了，静默退回另一路 | 返回 `channels` 字段（如 `{"fts": "degraded"}`），**质量下降有痕迹** |
 | **治理可逆** | 合并 / 升级一经执行无法回退 | `consolidate` / `promote` 默认 dry-run 预览、幂等、可精确回滚 |
 
@@ -225,7 +225,7 @@ python scripts/build_kb_index.py --rules rules.json
 | `mem_hybrid_search` | 混合检索：FTS5 + 向量；`mode=rrf`（k=60）或 `cascade`；同样支持 `domain_boost` 域软加权与 `tier` 分层；命中标注 `fts_hit` / `sem_hit` |
 | `mem_retrieve` | 语义检索，返回 150 字摘要 + 元数据（绝不返回全文） |
 | `mem_get_full` | 按 ID 拉取节点完整内容 |
-| `mem_ingest` | 写入新记忆——含冲突检测、`REVISED_BY` 版本链、敏感扫描、长度护栏 |
+| `mem_ingest` | 写入新记忆——含冲突检测（取代默认**由写入方显式声明**：`replaces="<id>,<id>"` 标旧节点 `outdated` 并建 `REVISED_BY` 修订链）、敏感扫描、长度护栏 |
 | `mem_recent` | 最近的记忆（新的在前） |
 | `tasks_active` | 活跃任务列表（`type=task` & `status=active`）：按 `project` / 状态集过滤，`doing > blocked > todo` → 最近触碰倒序排序；默认排除 `legacy=true` 的老节点 |
 | `mem_review` | 最近 N 天的周期性回顾 + 治理候选（高价值升级 / outdated 清理 / 低价值）；`tier`（默认 `facts`）作用于 `recent_ingests`：`logs` 只回日志层、`""` 不过滤 |
@@ -278,7 +278,7 @@ python scripts/build_kb_index.py --rules rules.json
 |---|---|---|
 | `GET` | `/` | 服务信息 + 版本 + 端点索引 |
 | `POST` | `/mem/search` | 统一检索 |
-| `POST` | `/mem/ingest` | 写入新记忆（含冲突检测 + 敏感扫描） |
+| `POST` | `/mem/ingest` | 写入新记忆（含冲突检测 + 敏感扫描；`replaces` 字段显式声明取代） |
 | `POST` | `/graph/neighbors` | 某节点的图谱邻居 |
 | `POST` | `/lifecycle/pre-turn` | **记忆策略**：每轮模型调用前决定召回哪些记忆，返回可注入 prompt 的文本 |
 
