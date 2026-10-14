@@ -298,7 +298,7 @@ venv/Scripts/python.exe eval/run_eval.py
 
 测试套件覆盖核心闭环：写入 → `mem_search` 命中 → `mem_get_full` 全文往返；图谱建边 → `graph_neighbors` / `mem_communities`；敏感扫描拒绝含密钥内容；混合检索 FTS 侧命中标记；冲突检测 / 版本链与 outdated 检索语义；`consolidate` / `promote` 干跑与幂等；PUT/PATCH 部分更新保留字段；并发与失败路径。`tests/conftest.py` 在导入前把 `DB_PATH` 重定向到临时库，套件永不碰生产库，用确定性 fake embedder，无需在线 Ollama 即可全绿。
 
-`scripts/rest_stress.py` 应用层压测覆盖 6 类真实场景（高频检索 / 批量写入 / 图谱建边与扩散 / 边界输入 / 读写混合长压 / 写入后召回正确性），输出 qps 与 p50/p95/p99。`eval/` 离线评测从库内真实节点反推题集，对 `fts` / `vec` / `rrf` / `cascade` 算 Recall@K、MRR@K、nDCG@K；脚本先把真库复制到 `eval/.tmp/` 只在副本上读写、并对真库前后算 SHA256 自证。配套工具：`scripts/retrieval_probe.py` / `scripts/prod_entrypoint_check.py` / `scripts/ab_snapshot_*.py`；题集与指标定义见 [`eval/README.md`](eval/README.md)。
+`scripts/rest_stress.py` 应用层压测覆盖 6 类真实场景（高频检索 / 批量写入 / 图谱建边与扩散 / 边界输入 / 读写混合长压 / 写入后召回正确性），输出 qps 与 p50/p95/p99。`eval/` 离线评测从库内真实节点反推题集，对 `fts` / `vec` / `rrf` / `cascade` 算 Recall@K、MRR@K、nDCG@K；脚本先把真库复制到 `eval/.tmp/` 只在副本上读写、并对真库前后算 SHA256 自证。配套工具：`scripts/retrieval_probe.py` / `scripts/prod_entrypoint_check.py` / `scripts/ab_snapshot_*.py`；题集与指标定义见 [`eval/README.md`](eval/README.md)；**完整评测体系（题集怎么造 · 指标怎么定义 · 结果怎么读）与汇总结论**——含一次消融实验：把排序从「乘性硬加权」改为「ε 级加性软加权」后，记忆层 Recall@5 由 0.263 提升到 0.684——见 [`docs/RETRIEVAL_QUALITY.md`](docs/RETRIEVAL_QUALITY.md)。
 
 ---
 
