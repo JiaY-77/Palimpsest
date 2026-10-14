@@ -36,7 +36,7 @@ This is a list of mechanisms, not a pile of features — every entry traces back
 
 **Memory evolution**
 
-- 🔄 **Conflict detection & version chains.** High similarity (score > 0.75) means the same fact was superseded: the old record is marked `outdated` and linked `REVISED_BY` to its replacement; type / domain isolation prevents cross-category mistakes.
+- 🔄 **Conflict detection & version chains.** Superseding is **declared explicitly** by the writer (`mem_ingest(replaces=...)`, **regardless of similarity**): the old record is marked `outdated` and linked `REVISED_BY` to its replacement. By default nothing is auto-superseded on similarity alone — similar candidates are only recorded as `related_ids` hints (`CONFLICT_AUTO_SUPERSEDE` restores the old behaviour); type / domain isolation prevents cross-category mistakes.
 - 🕰️ **Fact time dimension (bi-temporal).** Records `valid_at` (when the fact became true) and `invalid_at` (when it stopped being true), orthogonal to `created_at`; `mem_fact_history` returns a single fact's full timeline. See [docs/BITEMPORAL.md](docs/BITEMPORAL.md).
 
 **Governance**
@@ -61,7 +61,7 @@ This is a list of mechanisms, not a pile of features — every entry traces back
 
 Most AI apps suffer from three split data capabilities: session memory starting from zero, keyword-only knowledge bases, and memory piles that grow messier over time. Palimpsest solves "retrieve, relate, evolve" with **one local core**, avoiding shuttling data between a vector store, a document store, and a graph store.
 
-A "memory that doesn't disappear" example: you tell the assistant "the service listens on 8090", then a design change says "the port is now 8095". The old memory is not overwritten — it is marked `outdated` and linked via `REVISED_BY` to the new version, so the version chain always shows how the fact evolved. This is Palimpsest: overwritten but never lost, rewritable and traceable.
+A "memory that doesn't disappear" example: you tell the assistant "the service listens on 8090", then a design change says "the port is now 8095". This rewrite is declared explicitly by the writer (`replaces`), so the old memory is not overwritten — it is marked `outdated` and linked via `REVISED_BY` to the new version, so the version chain always shows how the fact evolved. This is Palimpsest: overwritten but never lost, rewritable and traceable.
 
 It fits four scenarios: **long-term companion / personal assistant** (Hermes & co.) auto-recalls each turn, auto-sediments high-signal facts, and distills the graph before compression; **making a knowledge base semantic** (Obsidian) slices and vectorizes years of notes so search returns semantically relevant hits with graph neighbors; **fiction / worldbuilding vaults** ingest whole files and bulk-create edges, with community detection revealing relationships; **memory governance** uses secret scanning, conflict detection, consolidation, time decay and `promote` to keep the store clean.
 
@@ -76,7 +76,7 @@ Most memory layers (LangGraph Store, AutoGen Memory, and similar) answer "can yo
 | **Traceable rewrites** | The new value overwrites the old one; the old is gone | The old record is marked `outdated` and linked back via a `REVISED_BY` chain — **overwritten, never lost** |
 | **Facts with a validity period** | Only "when it was written" (`created_at`) | **bi-temporal**: also records "when the fact was true" (`valid_at` / `invalid_at`), so `as_of` can answer "what did it believe three months ago" |
 | **No cross-category collisions** | Similar text gets merged | **type + domain isolation** — a user preference cannot swallow a project decision just because the wording is close |
-| **A read-only floor** | Any record can be auto-superseded | Write-entry guard: nodes with `type=rule` or `protected=True` are **never auto-superseded** |
+| **A read-only floor** | Similar text auto-supersedes; records get swapped out silently | By default **nothing is auto-superseded** (superseding must be declared via `replaces`); even with the auto mode on, nodes with `type=rule` or `protected=True` are never superseded |
 | **Degradation is visible** | One retrieval lane dies; the fallback is silent | Results carry a `channels` field (e.g. `{"fts": "degraded"}`) — **quality loss leaves a trace** |
 | **Reversible governance** | Merges and promotions cannot be undone | `consolidate` / `promote` default to dry-run, are idempotent, and can be rolled back precisely |
 
@@ -230,7 +230,7 @@ python scripts/build_kb_index.py --rules rules.json
 | `mem_hybrid_search` | Hybrid FTS5 + vector retrieval; `mode=rrf` (k=60) or `cascade`; also supports `domain_boost` and `tier`; each hit labeled `fts_hit` / `sem_hit` |
 | `mem_retrieve` | Semantic retrieval returning a 150-char summary + metadata (never full text) |
 | `mem_get_full` | Fetch the full content of a node by ID |
-| `mem_ingest` | Write a new memory — with conflict detection, `REVISED_BY` version chaining, secret scanning, and length guards |
+| `mem_ingest` | Write a new memory — conflict detection (superseding is **declared explicitly** by the writer: `replaces="<id>,<id>"` marks old nodes `outdated` and builds the `REVISED_BY` chain), secret scanning, length guards |
 | `mem_recent` | Most recent memories (newest first) |
 | `tasks_active` | Active task list (`type=task` & `status=active`): filtered by `project` / state set, sorted `doing > blocked > todo` then by last-touched desc; `legacy=true` nodes excluded by default |
 | `mem_review` | Periodic recap of the last N days plus governance candidates (high-value upgrades / outdated cleanup / low-value); `tier` (default `facts`) scopes `recent_ingests`: `logs` returns only the logs tier, `""` disables filtering |
@@ -283,7 +283,7 @@ python scripts/build_kb_index.py --rules rules.json
 |---|---|---|
 | `GET` | `/` | Service info + version + endpoint index |
 | `POST` | `/mem/search` | Unified retrieval |
-| `POST` | `/mem/ingest` | Write a new memory (conflict detection + secret scan) |
+| `POST` | `/mem/ingest` | Write a new memory (conflict detection + secret scan; a `replaces` field declares superseding) |
 | `POST` | `/graph/neighbors` | Graph neighbors of a node |
 | `POST` | `/lifecycle/pre-turn` | **Memory strategy**: decide which memories to recall before each model call; returns text ready to inject into the prompt |
 

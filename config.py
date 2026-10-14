@@ -120,7 +120,8 @@ class Config:
     RRF_K = float(os.getenv("RRF_K", "60.0"))
 
     # ---- 冲突检测：按 type 豁免（issue #50）----
-    # 冲突检测默认把 memory/task/plan 中相似度 >0.75 的旧节点标为 outdated。
+    # 冲突检测分两条路径：显式取代（replaces）无论相似度都标 outdated；自动相似判定
+    # （相似度 >0.75）自 2.9.0 起默认关闭，可由 CONFLICT_AUTO_SUPERSEDE 开启。
     # task 是累积关系而非「同一事实被取代」——连续写入两条独立任务时，
     # 旧任务会被误标并从默认检索（include_outdated=False）中消失。
     # 逗号分隔的 type 列表，列在这里的 type 完全跳过冲突检测（不标 outdated、
