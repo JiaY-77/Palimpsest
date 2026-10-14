@@ -6,6 +6,10 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **新增两个只读治理 REST 端点**（`POST /mem/consolidate`、`GET /doctor`）：供定时治理任务经 HTTP 调用，避免在常驻服务之外另开数据库连接。
+
 ### 文档
 
 - **同步 2.9.0 的冲突语义变更到用户文档**：`README.md` / `README_EN.md` 的「冲突检测与版本链」特性条目、场景示例与对比表仍在描述**已废弃的默认行为**（「相似度 > 0.75 自动取代」），`docs/BITEMPORAL.md` 的写入时序与时间窗判定一节亦未标明该路径默认关闭。现统一改为「取代由写入方显式声明（`replaces`），默认不因相似度自动取代」，并把 `replaces` 补进两份 README 与 `docs/API.md` 的 `mem_ingest` / `/mem/ingest` 条目；`config.py` 的过时注释一并修正。仅文档，无行为变更。
