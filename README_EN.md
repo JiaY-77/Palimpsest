@@ -287,7 +287,7 @@ python scripts/build_kb_index.py --rules rules.json
 | `POST` | `/graph/neighbors` | Graph neighbors of a node |
 | `POST` | `/lifecycle/pre-turn` | **Memory strategy**: decide which memories to recall before each model call; returns text ready to inject into the prompt |
 
-> The full 27 routes are in [`docs/API.md`](docs/API.md). If `PALIMPSEST_API_KEY` is set, every route except `/` requires `Authorization: Bearer <key>` or `X-API-Key: <key>`.
+> The full route list is in [`docs/API.md`](docs/API.md). If `PALIMPSEST_API_KEY` is set, every route except `/` requires `Authorization: Bearer <key>` or `X-API-Key: <key>`.
 
 ---
 
