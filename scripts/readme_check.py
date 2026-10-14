@@ -4,14 +4,17 @@
   1. MCP 工具清单   mcp_tools/*.py 的 @mcp.tool() 注册 ↔ README / README_EN 的工具表与标题数字
   2. CLI 子命令     scripts/palimpsest_cli.py 的 add_parser ↔ README / README_EN 的命令表
   3. REST 路由      main.py 的 @app.<method>(...) ↔ README / README_EN 的路由表
-  3.5 端点索引      main.py root() 的 endpoints 列表 ↔ main.py 实际注册的路由
-  4. 配置项         config.py ↔ .env.example ↔ README / README_EN 的配置表
-  5. 文件引用       三份文档中的 markdown 链接 / 反引号路径 / 项目结构树条目是否真实存在
-  6. 行内代码配对   文档正文（跳过代码块）每行的反引号必须成对
-  7. 脱敏占位符     文档正文不应出现连续星号（脱敏遗留 / 行内代码未闭合；水平分割线除外）
+  4. 端点索引       main.py root() 的 endpoints 列表 ↔ main.py 实际注册的路由
+  5. 配置项         config.py ↔ .env.example ↔ README / README_EN 的配置表
+  6. 文档版本号     CHANGELOG.md 首个已发布版本 ↔ README / README_EN / docs/HERMES_INTEGRATION.md 的版本号
+  7. 插件环境变量   hermes-plugin/*.py 实际读取的 PALIMPSEST_* ↔ 插件两份文档的配置表
+  8. 文件引用       各文档中的 markdown 链接 / 反引号路径 / 项目结构树条目是否真实存在
+  9. 行内代码配对   文档正文（跳过代码块）每行的反引号必须成对
+  10. 脱敏占位符    文档正文不应出现连续星号（脱敏遗留 / 行内代码未闭合；水平分割线除外）
 
-设计意图：版本号同步属于「引用」层，本脚本补的是「内容」层——代码加了新工具 / 新命令 / 新配置项
-而文档漏写时，靠它报出来，不靠人记。
+设计意图：版本号现已纳入本脚本检查——Hermes 集成文档的「适用版本」曾静默漂移 9 个版本
+（写 v2.1.0 而实际早已是 v2.10.1）没人发现，说明版本号不能只靠人记。本脚本仍主要补
+「内容」层：代码加了新工具 / 新命令 / 新配置项而文档漏写时，靠它报出来。
 
 用法：
     python scripts/readme_check.py              # 人类可读报告
@@ -31,7 +34,16 @@ import re
 import sys
 from pathlib import Path
 
-DOC_FILES = ("README.md", "README_EN.md", "CONTRIBUTING.md")
+DOC_FILES = (
+    "README.md",
+    "README_EN.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "docs/HERMES_INTEGRATION.md",
+    "hermes-plugin/README.md",
+)
+# 文档版本号检查的扫描范围（CHANGELOG.md 是版本号的权威来源，不参与比对）
+VERSION_CHECK_DOCS = ("README.md", "README_EN.md", "docs/HERMES_INTEGRATION.md")
 # CHANGELOG 只参与脱敏占位符检查（PLACEHOLDER_DOCS），不参与行内代码配对
 # 与文件引用检查（DOC_FILES）：历史条目会合法引用已删除 / 已重命名的文件
 # 与旧路径，纳入检查只会产生永远修不掉的历史噪音。
@@ -88,7 +100,9 @@ class Report:
 
 
 def read_text(root: Path, name: str) -> str:
-    return (root / name).read_text(encoding="utf-8")
+    """读文档正文；文档不存在时返回空串（DOC_FILES 可含本仓库可选文档）。"""
+    path = root / name
+    return path.read_text(encoding="utf-8") if path.is_file() else ""
 
 
 def section(text: str, start: str, end: str | None, required: bool = False) -> str:
@@ -310,7 +324,7 @@ def check_rest_routes(root: Path) -> Report:
     return report
 
 
-# ---- 3.5 root() 端点索引 ----
+# ---- 4. root() 端点索引 ----
 
 ENDPOINTS_BLOCK_RE = re.compile(r'"endpoints"\s*:\s*\[(.*?)\]', re.DOTALL)
 ENDPOINTS_STR_RE = re.compile(r"[\"']([^\"']*)[\"']")
@@ -343,7 +357,7 @@ def check_route_index(root: Path) -> Report:
 
 
 # ---------------------------------------------------------------------------
-# 4. 配置项（config.py ↔ .env.example ↔ README / README_EN）
+# 5. 配置项（config.py ↔ .env.example ↔ README / README_EN）
 # ---------------------------------------------------------------------------
 
 
@@ -513,7 +527,93 @@ def check_config_keys(root: Path) -> Report:
 
 
 # ---------------------------------------------------------------------------
-# 5. 文档内文件引用是否存在
+# 6. 文档版本号一致（CHANGELOG 首个已发布版本 ↔ 各文档出现的版本号）
+# ---------------------------------------------------------------------------
+
+CHANGELOG_VERSION_RE = re.compile(r"^##\s*\[(\d+\.\d+\.\d+)\]", re.MULTILINE)
+# 只认「版本声明」位置：README badge / README_EN 的 Version 行 / HERMES_INTEGRATION 的适用版本行。
+# 不能按「出现 vX.Y.Z 即比对」——文档会合法提到第三方版本（如 TriviumDB 0.8.8）
+# 与历史版本（如「v2.5.0 起」），这两类都不是「当前版本」的声明。
+VERSION_CLAIM_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(r"Version-v(\d+\.\d+\.\d+)"),  # README badge
+    re.compile(r"\|\s*Version\s*\|\s*v?(\d+\.\d+\.\d+)\s*\|"),  # README_EN 的 Version 行
+    re.compile(r"适用版本：[^\n]*?v(\d+\.\d+\.\d+)"),  # docs/HERMES_INTEGRATION.md
+)
+
+
+def current_version(root: Path) -> str | None:
+    """CHANGELOG.md 第一个已发布版本条目（跳过 ## [Unreleased]）。
+
+    不用 git describe --tags：CI 是浅克隆、没有 tag，那会永远失败。
+    """
+    changelog = root / "CHANGELOG.md"
+    if not changelog.is_file():
+        return None
+    match = CHANGELOG_VERSION_RE.search(changelog.read_text(encoding="utf-8"))
+    return match.group(1) if match else None
+
+
+def check_doc_versions(root: Path) -> Report:
+    """各文档里的语义化版本号必须与 CHANGELOG.md 首个已发布版本一致（允许 v 前缀）。"""
+    report = Report("文档版本号")
+    current = current_version(root)
+    if current is None:
+        report.info = "跳过（CHANGELOG 无版本条目）"
+        return report
+    report.info = f"{len(VERSION_CHECK_DOCS)} 份文档 · 当前版本 v{current}"
+    for doc in VERSION_CHECK_DOCS:
+        text = read_text(root, doc)
+        if not text:
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            for pattern in VERSION_CLAIM_RES:
+                for found in pattern.findall(line):
+                    if found.lstrip("v") != current.lstrip("v"):
+                        report.errors.append(
+                            f"{doc}:{lineno}: 版本号 {found} 与当前版本 {current} 不一致 —— {line.strip()[:90]}"
+                        )
+    return report
+
+
+# ---------------------------------------------------------------------------
+# 7. 插件环境变量清单（hermes-plugin 代码实际读取 ↔ 插件两份文档的配置表）
+# ---------------------------------------------------------------------------
+
+PLUGIN_CODE_FILES = ("hermes-plugin/__init__.py", "hermes-plugin/context_engine.py")
+PLUGIN_DOC_FILES = ("hermes-plugin/README.md", "docs/HERMES_INTEGRATION.md")
+PLUGIN_ENV_READ_RE = re.compile(r"os\.environ\.get\(\s*\"(PALIMPSEST_[A-Z_]+)\"")
+PLUGIN_ENV_DOC_RE = re.compile(r"^\|\s*`(PALIMPSEST_[A-Z_]+)`\s*\|", re.MULTILINE)
+
+
+def check_plugin_env_keys(root: Path) -> Report:
+    """hermes-plugin 代码真正读取的 PALIMPSEST_* 必须在两份插件文档的配置表里都出现。
+
+    反向（文档有、代码没有）只记 warning：文档可能列本体配置（如 PALIMPSEST_API_KEY），
+    那不属于插件代码，不该判红。
+    """
+    report = Report("插件环境变量")
+    code_keys: set[str] = set()
+    for src in PLUGIN_CODE_FILES:
+        path = root / src
+        if path.is_file():
+            code_keys |= set(PLUGIN_ENV_READ_RE.findall(path.read_text(encoding="utf-8")))
+    doc_union: set[str] = set()
+    for doc in PLUGIN_DOC_FILES:
+        path = root / doc
+        if not path.is_file():
+            continue
+        documented = set(PLUGIN_ENV_DOC_RE.findall(path.read_text(encoding="utf-8")))
+        doc_union |= documented
+        for key in sorted(code_keys - documented):
+            report.errors.append(f"{doc}: 配置表缺 {key}（hermes-plugin 代码里读取了该变量）")
+        for key in sorted(documented - code_keys):
+            report.warnings.append(f"{doc}: 配置表列了 {key}，hermes-plugin 代码未读取")
+    report.info = f"插件读取 {len(code_keys)} 个变量 · 文档表格 {len(doc_union)} 项"
+    return report
+
+
+# ---------------------------------------------------------------------------
+# 8. 文档内文件引用是否存在
 # ---------------------------------------------------------------------------
 
 LINK_RE = re.compile(r"\]\((?!https?://|mailto:|#)([^)\s]+)\)")
@@ -578,18 +678,20 @@ def check_file_references(root: Path) -> Report:
             if not clean or clean.startswith(("http", "#")) or is_exempt(clean):
                 continue
             checked += 1
+            doc_base = (root / doc).parent
             if "*" in clean:  # 通配引用（如 scripts/ab_snapshot_*.py）：有匹配即算存在
-                if not list(root.glob(clean)):
+                if not list(doc_base.glob(clean)) and not list(root.glob(clean)):
                     report.errors.append(f"{doc}: 通配引用无匹配文件 —— {reference}")
                 continue
-            if not (root / clean).exists():
+            candidates = [doc_base / clean, root / clean]
+            if not any(c.exists() for c in candidates):
                 report.errors.append(f"{doc}: 引用了不存在的路径 —— {reference}")
     report.info = f"检查 {checked} 处引用"
     return report
 
 
 # ---------------------------------------------------------------------------
-# 6. 行内代码（反引号）配对
+# 9. 行内代码（反引号）配对
 # ---------------------------------------------------------------------------
 
 
@@ -612,7 +714,7 @@ def check_inline_code(root: Path) -> Report:
 
 
 # ---------------------------------------------------------------------------
-# 7. 脱敏占位符残留
+# 10. 脱敏占位符残留
 # ---------------------------------------------------------------------------
 
 STAR_RUN_RE = re.compile(r"\*{3,}")
@@ -651,6 +753,8 @@ def run_checks(root: Path) -> list[Report]:
         check_rest_routes(root),
         check_route_index(root),
         check_config_keys(root),
+        check_doc_versions(root),        # 新增
+        check_plugin_env_keys(root),     # 新增
         check_file_references(root),
         check_inline_code(root),
         check_placeholder_marks(root),
