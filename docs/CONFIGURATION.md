@@ -1,7 +1,7 @@
 # 配置参考
 
 所有配置均从环境变量读取（`.env` 文件由 `python-dotenv` 自动加载），完整带注释模板见
-[`.env.example`](../.env.example)。README 只列用户必配的最小集，本页是完整配置表（36 项，含
+[`.env.example`](../.env.example)。README 只列用户必配的最小集，本页是完整配置表（43 项，含
 `config.py` 之外的 `KNOWLEDGE_DIR`）与「更换向量模型 / 重嵌全库」的操作流程。
 
 ## 配置
