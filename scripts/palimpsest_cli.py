@@ -606,11 +606,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--max-importance", type=float, default=0.8, help="高价值保护阈值（>= 此值不合并，默认 0.8）")
     sp.set_defaults(fn=cmd_consolidate)
 
-    sp = sub.add_parser("stats", help="库级盘点统计（totals/kinds/importance/time/graph/domains，只读）")
+    sp = sub.add_parser("stats", help="库级盘点统计（totals/kinds/importance/time/graph/domains/write_judgment，只读）")
     sp.add_argument(
         "--section",
         nargs="+",
-        choices=["totals", "kinds", "importance", "time", "graph", "domains"],
+        choices=["totals", "kinds", "importance", "time", "graph", "domains", "write_judgment"],
         help="只输出指定分节（可多个）；缺省全给（domains=totals 的按 domain 分布）",
     )
     sp.set_defaults(fn=cmd_stats)

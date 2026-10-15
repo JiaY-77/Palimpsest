@@ -229,7 +229,7 @@ python scripts/build_kb_index.py --rules rules.json
 | `mem_recent` | 最近的记忆（新的在前） |
 | `tasks_active` | 活跃任务列表（`type=task` & `status=active`）：按 `project` / 状态集过滤，`doing > blocked > todo` → 最近触碰倒序排序；默认排除 `legacy=true` 的老节点 |
 | `mem_review` | 最近 N 天的周期性回顾 + 治理候选（高价值升级 / outdated 清理 / 低价值）；`tier`（默认 `facts`）作用于 `recent_ingests`：`logs` 只回日志层、`""` 不过滤 |
-| `mem_stats` | 库级盘点：类型 / 域 / 重要度 / 时间 / 图谱分布 + 热点节点；`tiers` 分节按检索侧 tier 语义分组（facts / logs / unclassified）并输出实际生效的 `TIER_FACTS` / `TIER_LOGS` 清单 |
+| `mem_stats` | 库级盘点：类型 / 域 / 重要度 / 时间 / 图谱分布 + 热点节点；`tiers` 分节按检索侧 tier 语义分组（facts / logs / unclassified）并输出实际生效的 `TIER_FACTS` / `TIER_LOGS` 清单；`write_judgment` 分节汇总近 30 天写入判定观测（观测数据不进记忆库、不含记忆正文） |
 | `mem_version_history` | 沿 `REVISED_BY` 链展开，查看事实演化过程 |
 | `mem_fact_history` | **单条事实的时间线**：返回其 bi-temporal 时间字段（`valid_at` / `invalid_at` / `expired_at` / `created_at`）与取代关系（它取代了谁 / 谁取代了它） |
 | `mem_consolidate` | 近似重复检测；dry-run 预览或 apply 合并 |

@@ -234,7 +234,7 @@ python scripts/build_kb_index.py --rules rules.json
 | `mem_recent` | Most recent memories (newest first) |
 | `tasks_active` | Active task list (`type=task` & `status=active`): filtered by `project` / state set, sorted `doing > blocked > todo` then by last-touched desc; `legacy=true` nodes excluded by default |
 | `mem_review` | Periodic recap of the last N days plus governance candidates (high-value upgrades / outdated cleanup / low-value); `tier` (default `facts`) scopes `recent_ingests`: `logs` returns only the logs tier, `""` disables filtering |
-| `mem_stats` | Store-wide statistics: type / domain / importance / time / graph distributions + hot nodes; the `tiers` section groups types by retrieval-tier semantics (facts / logs / unclassified) and lists the effective `TIER_FACTS` / `TIER_LOGS` classification |
+| `mem_stats` | Store-wide statistics: type / domain / importance / time / graph distributions + hot nodes; the `tiers` section groups types by retrieval-tier semantics (facts / logs / unclassified) and lists the effective `TIER_FACTS` / `TIER_LOGS` classification; the `write_judgment` section aggregates write-time judgment observations over the last 30 days (observational data stays out of the memory store and never contains memory content) |
 | `mem_version_history` | Walk the `REVISED_BY` chain to show how a fact evolved |
 | `mem_fact_history` | **Timeline of a single fact**: its bi-temporal fields (`valid_at` / `invalid_at` / `expired_at` / `created_at`) plus supersede relations (what it superseded / what superseded it) |
 | `mem_consolidate` | Near-duplicate detection; dry-run preview or apply merge |
