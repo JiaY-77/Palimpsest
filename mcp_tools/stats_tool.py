@@ -19,6 +19,7 @@ def mem_stats() -> str:
       - importance：按区间计数（<0.4 / 0.4-0.6 / 0.6-0.8 / >=0.8）
       - time：按 created_at 月份分布
       - graph：有边节点数 / 总边数 / 边 label 分布 top10 / 平均出度 / hit_count 统计
+      - write_judgment：近 30 天写入判定观测汇总（观测数据不进记忆库、不含记忆正文）
     只读操作，不修改任何节点数据。
     """
     return _to_json(compute_stats(store))

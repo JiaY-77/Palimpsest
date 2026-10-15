@@ -16,6 +16,7 @@ from core.bitemporal import is_valid_at, stamp_new_fact, time_fields
 from core.conflict import resolve_conflict
 from core.db_health import check_db_health, health_hint
 from core.fts_index import index_node, search_fts_status
+from core.judgment_metrics import record_ingest
 from core.policy import check_ingest
 from core.secret_scan import SecretScanError
 from core.trivium_store import domain_in_block, node_domain
@@ -347,7 +348,19 @@ def mem_ingest(
             logger.error("写入失败后健康探测不通过：%s", health.get("error"))
         return _to_json(payload)
 
-    return _build_ingest_result(node_id, domain_out, conflict, linked_kb_ids, secret_hint, policy_warnings)
+    result = _build_ingest_result(node_id, domain_out, conflict, linked_kb_ids, secret_hint, policy_warnings)
+
+    # 写入判定观测（write_judgment，core/judgment_metrics.py）：仅成功路径记录；
+    # 函数内部静默降级，观测写失败绝不影响本返回值。
+    record_ingest(
+        node_id,
+        node_data["type"],
+        domain_out,
+        related_count=len(conflict.get("related_ids", [])),
+        replaced_count=len(replace_ids),
+        outdated_count=len(conflict.get("outdated_ids", [])),
+    )
+    return result
 
 
 @mcp.tool()

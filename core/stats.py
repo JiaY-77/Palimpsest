@@ -4,6 +4,8 @@ core.stats —— 库级盘点统计（记忆生命周期：mem_stats）
 回答「库里有什么 / 领域密度 / 图谱状态」：基于全部节点一次全遍历，
 汇总 totals / kinds / importance / time / graph 五类分节数据，供
 CLI（palimpsest_cli stats）、REST（POST /mem/stats）、MCP（mem_stats）三入口共用。
+另附 write_judgment 分节（core.judgment_metrics 写入判定观测，读库旁的
+judgment_metrics.jsonl 追加文件，观测数据不进记忆库、不含记忆正文）。
 
 设计：
   - 单连接单次全遍历收集所有分节数据（不做「每节各遍历一遍」），
@@ -16,13 +18,14 @@ import contextlib
 import logging
 import time
 
+from core.judgment_metrics import aggregate as aggregate_write_judgment
 from core.utils import _to_float
 
 logger = logging.getLogger(__name__)
 
 # 可选分节清单（CLI --section 可独立开关，缺省全给）：
 #   domains = totals 里的按 domain 分布（CLI 别名，compute_stats 仍归并在 totals.by_domain）
-SECTIONS = ("totals", "kinds", "importance", "time", "graph", "domains")
+SECTIONS = ("totals", "kinds", "importance", "time", "graph", "domains", "write_judgment")
 
 # importance 分布区间（左闭右开，末段含右端点）
 _IMP_BUCKETS = (
@@ -202,6 +205,9 @@ def _build_stats_result(acc: dict, start: float) -> dict:
             "hit_count_total": acc["hit_count_total"],
             "top_hit_nodes": hit_nodes[:10],
         },
+        # 写入判定观测分节（core/judgment_metrics.py）：读库旁观测文件按 30 天窗汇总；
+        # 文件缺失 / 损坏由 aggregate 静默降级，不抛异常、不阻断盘点。
+        "write_judgment": aggregate_write_judgment(),
         "elapsed_ms": round((time.time() - start) * 1000, 1),
     }
 
@@ -223,6 +229,9 @@ def compute_stats(store) -> dict:
         "time":   {"2026-08": n, ...}（created_at 为 null/0 的跳过），
         "graph":  {nodes_with_edges, total_edges, label_dist(top10),
                    avg_outdegree, hit_count_total, top_hit_nodes},
+        "write_judgment": 近 30 天写入判定观测汇总（writes / explicit_replace_rate /
+                   related_hit_rate / high_similar_unreplaced_rate / outdated_in_window /
+                   by_type / file / file_exists；观测文件缺失或损坏时降级为全 0 结构），
         "elapsed_ms": 统计耗时
       }
     """

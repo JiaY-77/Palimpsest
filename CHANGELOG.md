@@ -8,6 +8,7 @@
 
 ### 新增
 
+- **写入判定观测（`write_judgment` 分节）**：`mem_ingest` 每次成功写入后把判定数字（`related_ids` / `replaces` / `outdated_ids` 的计数）追加到库同目录的 `judgment_metrics.jsonl` 观测文件，`mem_stats` 三入口（CLI / REST / MCP）新增 `write_judgment` 分节按 30 天窗汇总（`writes` / `explicit_replace_rate` / `related_hit_rate` / `high_similar_unreplaced_rate` / `outdated_in_window` / `by_type`），用于回看「写入方有没有做写入前判定」。**观测数据不进记忆库、不含记忆正文**（只记计数与元信息，不建节点、不进检索池）；观测写入失败静默降级，绝不影响写入主流程。
 - **新增两个只读治理 REST 端点**（`POST /mem/consolidate`、`GET /doctor`）：供定时治理任务经 HTTP 调用，避免在常驻服务之外另开数据库连接。
 
 ### 文档
