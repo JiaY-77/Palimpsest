@@ -4,10 +4,16 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
-## [Unreleased]
+## [2.11.0] - 2026-10-16
 
 ### 新增
 
+- **MemoryHub 记忆包（导出 / 读取 / 入籍）**：新增一种自包含 JSON 记忆包，让记忆可以在库与库、实例与实例之间流转——**只要有本仓库，就能把包解开读取**，先当故事听，再挑着入籍。
+  - **格式**：顶层 `format: "memoryhub"` + `format_version: 1`，含 `manifest`（名称、生产者、来源库、节点 / 边计数、故事背景，以及节点与边的稳定 sha256 指纹）与 `nodes` / `edges`。
+  - **导出**：`scripts/export_all_data.py --memoryhub [--name ...] [--story ...]`（写完立即回读校验格式与节点数）。
+  - **读取（只读）**：MCP `mem_unpack` / `POST /memoryhub/unpack` / CLI `memoryhub read`——按顺序校验格式与版本，**脏包一律友好拒绝**（JSON 不合法、`format` 不符、版本不受支持、`nodes` / `edges` 非列表，都返回带 `code` 的错误对象而非抛异常），逐条扫描敏感规则与空内容记入 `issues`，最后生成人读摘要（故事 + 每节点预览）。
+  - **入籍（写回本库）**：MCP `mem_import` / `POST /memoryhub/import` / CLI `memoryhub import`——**默认只读预览**（`select` 为空时一个字节都不写，只返回可选清单与 `decision_log`）；**须显式选中**才入籍；**不沿用原 `node_id`**（新库自行分配，原 id 记入 `payload.origin_id`，来源包指纹 / 名称记入 `payload.origin_pack`）；**边只保留两端都入籍的**；**不做冲突检测**——入籍是纯新增，绝不取代本库已有记忆（避免误标 `outdated`）；逐节点原子，单条失败收集进 `failed` 后继续，不让一条坏节点毁掉整批。
+  - 权责分层保持既有约定：判定（选哪些节点、payload 如何改写）归本体 `core/strategy.decide_import`，执行落库归 `core/memoryhub.apply_import`，MCP / REST / CLI 三通道只做薄壳。
 - **写入判定观测（`write_judgment` 分节）**：`mem_ingest` 每次成功写入后把判定数字（`related_ids` / `replaces` / `outdated_ids` 的计数）追加到库同目录的 `judgment_metrics.jsonl` 观测文件，`mem_stats` 三入口（CLI / REST / MCP）新增 `write_judgment` 分节按 30 天窗汇总（`writes` / `explicit_replace_rate` / `related_hit_rate` / `high_similar_unreplaced_rate` / `outdated_in_window` / `by_type`），用于回看「写入方有没有做写入前判定」。**观测数据不进记忆库、不含记忆正文**（只记计数与元信息，不建节点、不进检索池）；观测写入失败静默降级，绝不影响写入主流程。
 - **新增两个只读治理 REST 端点**（`POST /mem/consolidate`、`GET /doctor`）：供定时治理任务经 HTTP 调用，避免在常驻服务之外另开数据库连接。
 
@@ -437,7 +443,8 @@
 
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
-[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.10.1...HEAD
+[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.11.0...HEAD
+[2.11.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.11.0
 [2.10.1]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.10.1
 [2.10.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.10.0
 [2.9.1]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.9.1
