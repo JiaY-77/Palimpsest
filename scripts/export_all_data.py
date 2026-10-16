@@ -27,9 +27,11 @@ Palimpsest 全量数据导出脚本（只读）
     data/export_backup_20260824.json  （格式 {"nodes": [...], "edges": [...]}）
 """
 
+import argparse
 import contextlib
 import json
 import os
+import time
 from collections import Counter
 
 # 确保能 import 项目 core 模块（以项目根为基准，_common 导入即把项目根注入 sys.path）
@@ -107,10 +109,56 @@ def export_via_store(store: TriviumStore) -> dict:
 
 
 # --------------------------------------------------------------------------
+def export_memoryhub(store: TriviumStore, name: str = "", story: str = "") -> str:
+    """用 MemoryHub 记忆包格式导出（自包含 JSON，含 manifest）。
+
+    与 export_via_store 的区别仅在输出形状；节点/边遍历由 core.memoryhub
+    build_pack 负责（同一 TriviumStore 实例、单连接遍历）。返回输出文件路径。
+    """
+    from core.memoryhub import build_pack, read_pack
+
+    pack = build_pack(store, name=name, story=story)
+    out_path = f"data/export_memoryhub_{time.strftime('%Y%m%d')}.json"
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(pack, f, ensure_ascii=False, indent=2)
+
+    # 回读校验：格式/版本校验通过，且节点数与内存包一致
+    back = read_pack(out_path)
+    assert back["ok"] is True, back
+    assert len(back["nodes"]) == len(pack["nodes"])
+
+    type_counter = Counter(n["payload"].get("type", "unknown") for n in pack["nodes"])
+    label_counter = Counter(e.get("label", "") for e in pack["edges"])
+    size = os.path.getsize(out_path)
+    print("\n=== MemoryHub 记忆包导出完成 ===")
+    print(f"输出文件: {out_path} ({size:,} bytes)")
+    print(f"format: {pack['format']} / format_version: {pack['format_version']}")
+    print(f"节点总数: {len(pack['nodes'])}")
+    print("各 type 数量:")
+    for t, c in sorted(type_counter.items(), key=lambda x: -x[1]):
+        print(f"  {t}: {c}")
+    print(f"边总数: {len(pack['edges'])}")
+    print("各 label 数量:")
+    for lb, c in sorted(label_counter.items(), key=lambda x: -x[1]):
+        print(f"  {lb}: {c}")
+    return out_path
+
+
+# --------------------------------------------------------------------------
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Palimpsest 全量数据导出（只读）")
+    parser.add_argument("--memoryhub", action="store_true", help="导出为 MemoryHub 记忆包格式")
+    parser.add_argument("--name", type=str, default="", help="记忆包名称（MemoryHub manifest.name）")
+    parser.add_argument("--story", type=str, default="", help="记忆包故事背景（MemoryHub manifest.story）")
+    args = parser.parse_args()
+
     store = TriviumStore()
     print(f"数据库: {store.db_path}")
     print("开始导出（只读）...")
+
+    if args.memoryhub:
+        export_memoryhub(store, name=args.name, story=args.story)
+        return
 
     mode = "TriviumStore API（单连接）"
     try:

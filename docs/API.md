@@ -28,6 +28,8 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8090
 | `POST` | `/mem/hybrid-search` | FTS5 + 向量混合检索 |
 | `POST` | `/mem/ingest` | 写入新记忆（含冲突检测 + 敏感扫描；`replaces` 字段显式声明取代） |
 | `POST` | `/mem/link` | 创建图边 |
+| `POST` | `/memoryhub/unpack` | 只读解开 MemoryHub 记忆包（body：`path` / `preview_chars`；校验格式 / 版本 + 敏感扫描 + 人读摘要） |
+| `POST` | `/memoryhub/import` | 把记忆包里的节点入籍（body：`path` / `select` / `include_secrets`；`select` 为空 = 只预览不写） |
 | `DELETE` | `/mem/edge` | 删除图边（body：`source_id` / `target_id` / `relation`；幂等） |
 | `POST` | `/mem/fact-history` | 单条事实的 bi-temporal 时间线与取代关系（body：`node_id`） |
 | `POST` | `/mem/recent` | 最近记忆列表（按 created_at 倒序） |
