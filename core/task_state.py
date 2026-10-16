@@ -497,21 +497,79 @@ def _is_handoff(payload: dict) -> bool:
     return _HANDOFF_HINT in first_line
 
 
-def _handoff_title(payload: dict) -> str:
-    """接续点的 title 摘要：content 首行去状态前缀与括号标记，截 120 字符。
+# title 摘要段落的分隔符：中点 ``·``、中文破折号 ``——``、斜杠与竖线的全/半角
+# 形态。接续点标记的「日期+主题」段与锚词段之间几乎总由这些符号隔开。
+_TITLE_SEGMENT_SPLIT_RE = re.compile(r"——|[·／/｜|]")
 
-    规则：去掉 ``[完成]`` / ``[待办]`` 这类状态前缀与 ``【…】`` / ``[…]`` 标记块
-    （复用解析层的两个括号正则），去首尾空白，超长截断到 120 字符；仍为空
-    （整行就是一个标记块的形态，如 ``【★接续点·…新会话先读这条】``）则退回
-    ``payload.task_key`` 或「接续点」。
+# 判「纯锚词段」前先剥掉的装饰：空白与常见纯符号（切段后残留的单个 ``—`` 等符号
+# 段剥完即空 → 按空段丢弃）。
+_TITLE_ANCHOR_STRIP_RE = re.compile(r"[\s·—|｜/／]+")
+
+# 接续点标记的固定锚词：切段后整段只是这些词（含 ``★`` 前缀变体）的没有信息量，
+# 一律丢弃——它们出现在**每一条**接续点上，不携带「这条是哪条」的区分度。
+_TITLE_ANCHOR_STUBS = ("★接续点", "接续点", "会话接续", "新聊天先读", "新会话先读这条")
+
+# title 摘要的截断上限。
+_TITLE_MAX_LEN = 120
+
+
+def _iter_title_fragments(first_line: str):
+    """按出现顺序交错产出首行的文本片段：括号块内容 + 块外正文。
+
+    块内（标记块的内容）与块外（正文）都可能是信息的载体（见 ``_handoff_title``
+    的「为什么」）；片段边界同时是切段边界——两个相邻块不会被空白粘连成一段
+    （``【接续点 / …新聊天先读】【2026-10-12 …主题…】`` 的锚词块与主题块各自成段）。
+    """
+    pos = 0
+    for match in _iter_mark_blocks(first_line):
+        if match.start() > pos:
+            yield first_line[pos : match.start()]
+        yield match.group(1)
+        pos = match.end()
+    if pos < len(first_line):
+        yield first_line[pos:]
+
+
+def _handoff_title(payload: dict) -> str:
+    """task 节点的 title 摘要：块内 + 块外文本切段，取信息量最大的一段。
+
+    **为什么「取信息量最大的段」而不是「先删块再取剩余」**（2026-10-16 验收
+    实测反例）：旧规则把首行里的括号块整块删掉再取剩余文本，而生产上接续点的
+    主流形态就是**整行一个块**（``【★接续点·2026-10-16 … · 新会话先读这条】``），
+    删完只剩空串 → 回退常量「接续点」，等于没补（实测 ``tasks backfill
+    --apply`` 后 4 条生产接续点的 title 仍无法互相区分）。反过来，若**只**取
+    块内容，``接续点 / … —— 2026-10-13~14 大修 · [进行中] 细节`` 这类「块 +
+    块外正文」形态又会把正文丢光、退化成 ``进行中`` 这类状态词。因此块内与块外
+    文本**都**参与切段，哪段信息量最大（最长）取哪段。
+
+    规则：
+      1. 首行按括号块切成片段（块内容 + 块外正文，按出现顺序，见
+         ``_iter_title_fragments``）；一个块都没有 → 整行就是一个片段；
+      2. 每个片段按分隔符切段（``_TITLE_SEGMENT_SPLIT_RE``：``·`` ``——``
+         ``/`` ``／`` ``｜`` ``|``）；
+      3. 丢弃空段 / 纯符号段 / 纯锚词段（``_TITLE_ANCHOR_STUBS``）；
+      4. 剩余段取**最长**的一段（长度并列取最先出现），截断到 120 字符；
+      5. 仍为空（整行只有锚词，如 ``【★接续点】``）→ 退回 ``payload.task_key``
+         → 再退回 ``"接续点"``。
+
+    回填对 ``title`` 为空的 task 节点**统一**用它补摘要（不限于接续点）：非接续
+    点没有锚词段，同一套规则自然退化成「首行原文 / 最长段」。
     """
     first_line = (payload.get("content") or "").split("\n", 1)[0]
-    cleaned = _BRACKET_RE.sub("", first_line)
-    cleaned = _FULL_BRACKET_RE.sub("", cleaned)
-    cleaned = cleaned.strip()
-    if len(cleaned) > 120:
-        cleaned = cleaned[:120]
-    return cleaned or (payload.get("task_key") or _HANDOFF_HINT)
+    segments: list[str] = []
+    for fragment in _iter_title_fragments(first_line):
+        for seg in _TITLE_SEGMENT_SPLIT_RE.split(fragment):
+            if not seg.strip():
+                continue
+            core = _TITLE_ANCHOR_STRIP_RE.sub("", seg)
+            if not core or core in _TITLE_ANCHOR_STUBS:
+                continue
+            segments.append(seg.strip())
+    # max 并列时保留最先出现的那段（严格大于才替换）
+    best = max(segments, key=len) if segments else ""
+    if len(best) > _TITLE_MAX_LEN:
+        best = best[:_TITLE_MAX_LEN]
+    return best or (payload.get("task_key") or _HANDOFF_HINT)
 
 
 def backfill_task_state(store, dry_run: bool = True) -> dict:
@@ -525,9 +583,12 @@ def backfill_task_state(store, dry_run: bool = True) -> dict:
         ``/tasks/active`` 默认不列出）；仍在跟进的状态（``todo`` / ``doing`` /
         ``blocked``）保持 legacy 缺失，**回填后即可出现在活跃任务视图里**。
       - **会话接续点**（content 首行含「接续点」，见 ``_HANDOFF_HINT``）：打
-        ``payload.kind = "handoff"`` 身份标记；``title`` 为空/缺失时补一行摘要
-        （见 ``_handoff_title``）——``list_active_tasks`` 默认排除接续点
-        （``include_handoff=True`` 可取回），排除前先补 title 便于显式取回时识别。
+        ``payload.kind = "handoff"`` 身份标记——``list_active_tasks`` 默认排除
+        接续点（``include_handoff=True`` 可取回），排除前先补 title 便于显式
+        取回时识别。
+      - **``title`` 为空/缺失的 task 节点**（含接续点与普通任务）：补一行摘要
+        （见 ``_handoff_title``）——活跃列表里空 title 同样读不出是哪条任务；
+        幂等判据相应放宽为「title 非空即就绪」。
 
     为什么这样分：``legacy`` 的语义是「历史节点，不必再看」，不是「回填过的节点」。
     把仍在做的任务一并标成 legacy，会让回填后的工作集立刻变空——恰好废掉这套
@@ -564,15 +625,17 @@ def backfill_task_state(store, dry_run: bool = True) -> dict:
             parsed += 1
         # 该节点**应该**是什么 legacy 值：不活跃状态才标 legacy
         want_legacy = state not in DEFAULT_ACTIVE_STATES
-        # 接续点判定 + 其目标形态（kind 已打且 title 已补）是否就绪
+        # 接续点判定 + title 是否已补（目标判据：title 非空即就绪——不要求它一定
+        # 出自本函数，人工改过的 title 同样算就绪）
         handoff = _is_handoff(payload)
-        handoff_done = payload.get("kind") == HANDOFF_KIND and bool((payload.get("title") or "").strip())
-        # 幂等：已是目标形态（task_state 相符且 legacy 相符；接续点还要求 kind
-        # 相符且 title 非空）→ 跳过，重跑输出 0 变更
+        title_done = bool((payload.get("title") or "").strip())
+        # 幂等：已是目标形态（task_state 相符、legacy 相符、title 非空即就绪；
+        # 接续点还要求 kind 已打）→ 跳过，重跑输出 0 变更
         if (
             payload.get("task_state") == state
             and payload.get("legacy") is want_legacy
-            and (not handoff or handoff_done)
+            and title_done
+            and (not handoff or payload.get("kind") == HANDOFF_KIND)
         ):
             already += 1
             continue
@@ -594,11 +657,12 @@ def backfill_task_state(store, dry_run: bool = True) -> dict:
             new_payload["legacy"] = False
         if state == UNKNOWN_STATE:
             new_payload["needs_review"] = True
+        # title 为空一律补摘要（接续点与普通任务同一套规则，见 ``_handoff_title``）
+        if not title_done:
+            new_payload["title"] = _handoff_title(payload)
         if handoff:
             new_payload["kind"] = HANDOFF_KIND
             handoff_count += 1
-            if not (payload.get("title") or "").strip():
-                new_payload["title"] = _handoff_title(payload)
         pending.append((nid, new_payload))
 
     if not dry_run:

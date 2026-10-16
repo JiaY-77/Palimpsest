@@ -32,6 +32,7 @@ from corpus_real_cases import EXPECTED_NONE, REAL_CORPUS
 from core.task_state import (
     HANDOFF_KIND,
     TASK_STATES,
+    _handoff_title,
     apply_task_patch,
     backfill_task_state,
     list_active_tasks,
@@ -814,14 +815,16 @@ def test_tasks_active_endpoint_include_handoff_query(iso_store):
 def test_backfill_handoff_marks_kind_and_title(iso_store):
     """回填：dry-run 只预览 → apply 打 kind + 补 title → 重跑幂等 0 变更。"""
     project = _ns()
-    # 存量形态 A：整行就是一个全角标记块（状态词嵌块内 → doing；title 提取后为空 → 退回 task_key）
+    # 存量形态 A：整行就是一个全角标记块（状态词嵌块内 → doing；title 取块内
+    # 信息量最大的段 = 日期+主题段，见 ``_handoff_title`` 的取最长段规则）
     wrapped = _iso_insert_task(
         iso_store,
         "【★接续点·2026-10-16 任务治理整理（进行中）+ 下一步外包 · 新会话先读这条】",
         project,
         task_key="T-810",
     )
-    # 存量形态 B：首行带半角状态标记（title = 去掉状态标记的首行摘要）
+    # 存量形态 B：锚词在块外正文、状态在半角块里（块外正文同样参与切段——
+    # 只取块内容会把正文丢光、退化成状态词「进行中」）
     plain = _iso_insert_task(
         iso_store,
         "接续点 / 会话接续 / 新聊天先读 —— 2026-10-13~14 大修 · [进行中] 细节见正文",
@@ -845,10 +848,12 @@ def test_backfill_handoff_marks_kind_and_title(iso_store):
     assert result["handoff"] == 2
     wp = iso_store.get_node(wrapped)["payload"]
     assert wp["kind"] == HANDOFF_KIND
-    assert wp["title"] == "T-810"  # 整行标记块去空 → 退回 task_key
+    # 整行标记块 → 块内切段，锚词段全丢，取最长 = 日期+主题段（不再是退回 task_key）
+    assert wp["title"] == "2026-10-16 任务治理整理（进行中）+ 下一步外包"
     pp = iso_store.get_node(plain)["payload"]
     assert pp["kind"] == HANDOFF_KIND
-    assert pp["title"].startswith("接续点 / 会话接续")
+    # 块外正文参与切段：锚词段丢弃后最长段 = 日期+主题段（不是状态词「进行中」）
+    assert pp["title"] == "2026-10-13~14 大修"
     assert len(pp["title"]) <= 120
     np_ = iso_store.get_node(normal)["payload"]
     assert np_.get("kind") is None, "普通任务不得被打 kind"
@@ -867,15 +872,15 @@ def test_backfill_handoff_marks_kind_and_title(iso_store):
 
 
 def test_backfill_handoff_title_truncates_at_120(iso_store):
-    """title 摘要超长截断到 120 字符。"""
+    """title 摘要超长截断到 120 字符（锚词段先丢弃，长段才是 title 主体）。"""
     project = _ns()
-    long_line = "接续点·超长叙述" + "细节" * 80  # 首行远超 120 字符
+    long_line = "接续点·超长叙述" + "细节" * 80  # 首行远超 120 字符、无括号块
     nid = _iso_insert_task(iso_store, long_line, project)
 
     backfill_task_state(iso_store, dry_run=False)
 
     title = iso_store.get_node(nid)["payload"]["title"]
-    assert title.startswith("接续点·超长叙述")
+    assert title.startswith("超长叙述")
     assert len(title) == 120
 
 
@@ -897,3 +902,100 @@ def test_handoff_exclusion_does_not_affect_mem_search(iso_store):
     hits = json.loads(mem_search(content, scope="all", top_k=5))
     ids = {h["id"] for h in hits["results"]}
     assert nid in ids, "排除逻辑不得进检索层：接续点必须仍可被 mem_search 命中"
+
+
+# ---------------------------------------------------------------------------
+# 11. title 摘要规则 —— 块内容 + 块外正文切段，取信息量最大的段
+# ---------------------------------------------------------------------------
+#
+# 旧规则「先删括号块再取剩余」在生产主流形态（整行一个块）上删完为空 →
+# title 退化成常量「接续点」，等于没补（2026-10-16 验收实测反例）。本节
+# 用生产库 4 条接续点 + 2 条普通任务的**逐字**首行锁死新规则。
+
+
+# 生产库真实接续点首行（逐字，2026-10-16 验收表）：(node_id, 首行, title 必含子串)
+REAL_HANDOFF_SHAPES = [
+    (
+        2307,
+        "【★接续点·2026-10-16 OpenCode Go 大改落地 + 思维底片评估 · 新会话先读这条】",
+        "OpenCode Go 大改落地 + 思维底片评估",
+    ),
+    (2317, "【★接续点·2026-10-16 MemoryHub 读侧落地 + 验收通过 · 新会话先读这条】", "MemoryHub 读侧落地 + 验收通过"),
+    (
+        1914,
+        "【接续点 / 会话接续 / 新聊天先读】【2026-10-12 工作台 待办级联 + 周总结删除】",
+        "工作台 待办级联 + 周总结删除",
+    ),
+    (1919, "【接续点 / 会话接续 / 新聊天先读】【2026-10-12 待办降级为普通列表项（新命令）】", "待办降级为普通列表项"),
+]
+
+
+@pytest.mark.parametrize(
+    ("node_id", "first_line", "must_contain"),
+    REAL_HANDOFF_SHAPES,
+    ids=[str(node_id) for node_id, _line, _must in REAL_HANDOFF_SHAPES],
+)
+def test_handoff_title_real_shapes(node_id, first_line, must_contain):
+    """生产库 4 条接续点逐字首行：title 必含日期+主题段，不得退化成常量。
+
+    旧「先删块」规则在这 4 条上全部退化为空串 → 回退「接续点」（或 task_key），
+    title 互相无法区分；新「取最长段」规则必须让每条认得出自己是哪条。
+    """
+    title = _handoff_title({"content": first_line})
+    assert must_contain in title, f"node={node_id} title={title!r} 应包含 {must_contain!r}"
+    assert title != "接续点", f"node={node_id} title 退化为常量「接续点」"
+    assert title != "", f"node={node_id} title 为空"
+
+
+def test_handoff_title_anchor_only_falls_back():
+    """兜底：整行只有锚词（块内/块外都没有信息量）→ 退回 task_key → 再退回「接续点」。"""
+    assert _handoff_title({"content": "【★接续点】"}) == "接续点"
+    assert _handoff_title({"content": "【★接续点·新会话先读这条】"}) == "接续点"
+    assert _handoff_title({"content": "接续点 / 会话接续 / 新聊天先读"}) == "接续点"
+    assert _handoff_title({"content": "【★接续点】", "task_key": "T-900"}) == "T-900"
+    assert _handoff_title({"content": ""}) == "接续点"
+
+
+def test_backfill_fills_empty_title_on_normal_tasks(iso_store):
+    """非接续点、title 为空的普通任务：回填后 title 非空（同一套摘要规则）。
+
+    生产库实测：活跃列表里 title 为空的普通任务（node 1899 / 2294）都是
+    「整行一个块」形态，与接续点同病——空 title 在列表里读不出是哪条任务。
+    """
+    project = _ns()
+    # 生产 node 2294 逐字首行（整行一个块、无锚词 → 规则退化到「最长段」）
+    blob = _iso_insert_task(
+        iso_store,
+        "【待办·周末和小七一起看 BOSS 直聘（主人 2026-10-15 定）】",
+        project,
+    )
+    # 「块 + 块外正文」的普通任务（无锚词，最长段 = 块外正文）
+    bracketed = _iso_insert_task(iso_store, "[todo] T-910 普通待办任务", project)
+
+    backfill_task_state(iso_store, dry_run=False)
+
+    bt = iso_store.get_node(blob)["payload"]
+    assert (bt.get("title") or "").strip(), "普通任务（整行块）回填后 title 仍为空"
+    assert "周末和小七一起看 BOSS 直聘" in bt["title"]
+    kt = iso_store.get_node(bracketed)["payload"]
+    assert kt.get("title") == "T-910 普通待办任务"
+    # 普通任务补 title 不得顺手打 kind
+    assert bt.get("kind") is None and kt.get("kind") is None
+
+
+def test_backfill_title_idempotent_rerun(iso_store):
+    """apply 后重跑 dry-run：changes 为空且 already == scanned（title 非空即就绪）。"""
+    project = _ns()
+    _iso_insert_task(
+        iso_store,
+        "【★接续点·2026-10-16 任务治理整理（进行中）+ 下一步外包 · 新会话先读这条】",
+        project,
+    )
+    _iso_insert_task(iso_store, "[doing] T-911 普通任务", project, task_state="doing")
+
+    first = backfill_task_state(iso_store, dry_run=False)
+    assert first["changes"], "首次 apply 应产生变更"
+
+    second = backfill_task_state(iso_store, dry_run=True)
+    assert second["changes"] == []
+    assert second["already"] == second["scanned"]
