@@ -502,12 +502,12 @@ def decide_import(
             seen.add(origin_id)
             selected += 1
 
-            item = node_index.get(origin_id)
-            if item is None:
+            matched = node_index.get(origin_id)
+            if matched is None:
                 _skip(origin_id, "not_found")
                 continue
 
-            item_payload = item.get("payload") or {}
+            item_payload = matched.get("payload") or {}
             if not isinstance(item_payload, dict):
                 item_payload = {}
 

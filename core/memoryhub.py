@@ -137,7 +137,7 @@ def read_pack(path) -> dict:
     if not isinstance(edges, list):
         return {"ok": False, "code": "malformed", "error": "记忆包的 edges 字段必须是列表"}
 
-    issues = []
+    issues: list = []
     type_counts: dict = {}
     for item in nodes:
         if not isinstance(item, dict):
