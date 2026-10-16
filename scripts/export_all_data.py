@@ -130,7 +130,7 @@ def export_memoryhub(store: TriviumStore, name: str = "", story: str = "") -> st
     type_counter = Counter(n["payload"].get("type", "unknown") for n in pack["nodes"])
     label_counter = Counter(e.get("label", "") for e in pack["edges"])
     size = os.path.getsize(out_path)
-    print(f"\n=== MemoryHub 记忆包导出完成 ===")
+    print("\n=== MemoryHub 记忆包导出完成 ===")
     print(f"输出文件: {out_path} ({size:,} bytes)")
     print(f"format: {pack['format']} / format_version: {pack['format_version']}")
     print(f"节点总数: {len(pack['nodes'])}")
