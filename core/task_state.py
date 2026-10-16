@@ -50,10 +50,13 @@ UNKNOWN_STATE = "unknown"
 # 只支持这一个 kind 取值，不做别的分类。
 HANDOFF_KIND = "handoff"
 
-# 会话接续点识别：``type=task`` 且 content **首行**含「接续点」。真实存量语料
-# 两种形态都靠「首行含『接续点』」覆盖：
+# 会话接续点识别：``type=task`` 且 content **首行以「接续点」作为标题词开头**
+# （跳过前导空白与若干 ``[...]`` 状态块后必须紧跟「接续点」，允许 ``【`` / ``★``
+# 装饰，见 ``_is_handoff``）。真实存量语料两种形态都命中：
 #   · ``【★接续点·2026-10-16 任务治理整理 + 下一步外包 · 新会话先读这条】``
 #   · ``接续点 / 会话接续 / 新聊天先读 —— 2026-10-13~14 大修（……）``
+# 不能只做「首行包含『接续点』」——句中提到「接续点」的真待办会被误吃
+# （生产实测两条反例，见 ``_is_handoff`` 的 docstring）。
 _HANDOFF_HINT = "接续点"
 
 # 状态关键词表：**(关键词, 规范化状态)**，元组顺序仅作**同位置并列时的兜底**
@@ -491,10 +494,35 @@ def _brief(nid: int, payload: dict, state: str | None) -> dict:
     }
 
 
+# 接续点首行判据（2026-10-16 收紧）：``^`` 锚定行首，跳过前导空白与若干
+# ``[...]`` 状态块（如 ``[完成] `` / ``[待办] ``），其后必须紧跟「接续点」
+# 标题词（允许 ``【`` / ``★`` 前缀装饰）。「接续点」只出现在**句中**的不命中。
+_HANDOFF_FIRST_LINE_RE = re.compile(r"^\s*(?:\[[^\[\]\n]*\]\s*)*【?★?接续点")
+
+
 def _is_handoff(payload: dict) -> bool:
-    """task 节点是否为会话接续点（content **首行**含「接续点」，见 ``_HANDOFF_HINT``）。"""
+    """task 节点是否为会话接续点：content **首行以「接续点」作为标题词开头**。
+
+    判据 ``_HANDOFF_FIRST_LINE_RE``：跳过首行前导的空白与若干 ``[...]`` 状态
+    块（如 ``[完成] 【★接续点…】``）后，必须紧跟「接续点」标题词（允许 ``【``
+    / ``★`` 前缀装饰）；块外正文直接以「接续点」开头（无 ``【】``）同样命中。
+    **不看「接续点」出现在句中的任何位置。**
+
+    旧判据（PR #111 初版）是「首行**包含** ``_HANDOFF_HINT``」，生产库实测
+    两条误判（都是 type=task 的活跃真待办，逐字首行）：
+
+    · ``[待办] 小帕「接续点 × 任务列表」解耦（走 PR，2026-10-16 立）``
+      ——「接续点」只出现在**句中**：本条在**讨论**接续点机制，本身是真
+      待办；包含匹配会把它打成 handoff，一条真待办就此从活跃列表隐形。
+    · ``【历史留痕·记忆同行实测 2026-10-10 第一步】（⚠️ 本条为中途状态，不是当前接续点）``
+      ——同为句中命中，且本条**自述**不是接续点。
+
+    生产实测「包含」判据在 99 条 task 里命中 60 条 handoff——过宽；收紧为
+    「标题词开头」后，只认真正的接续点形态（见 ``test_is_handoff_real_shapes``
+    的 7 条逐字用例）。
+    """
     first_line = (payload.get("content") or "").split("\n", 1)[0]
-    return _HANDOFF_HINT in first_line
+    return _HANDOFF_FIRST_LINE_RE.match(first_line) is not None
 
 
 # title 摘要段落的分隔符：中点 ``·``、中文破折号 ``——``、斜杠与竖线的全/半角
@@ -582,7 +610,8 @@ def backfill_task_state(store, dry_run: bool = True) -> dict:
         ``canceled`` / ``unknown``）才标 ``payload.legacy = True``（历史留痕，
         ``/tasks/active`` 默认不列出）；仍在跟进的状态（``todo`` / ``doing`` /
         ``blocked``）保持 legacy 缺失，**回填后即可出现在活跃任务视图里**。
-      - **会话接续点**（content 首行含「接续点」，见 ``_HANDOFF_HINT``）：打
+      - **会话接续点**（content 首行**以「接续点」作为标题词开头**，见
+        ``_is_handoff``）：打
         ``payload.kind = "handoff"`` 身份标记——``list_active_tasks`` 默认排除
         接续点（``include_handoff=True`` 可取回），排除前先补 title 便于显式
         取回时识别。
