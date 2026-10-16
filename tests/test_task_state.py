@@ -33,6 +33,7 @@ from core.task_state import (
     HANDOFF_KIND,
     TASK_STATES,
     _handoff_title,
+    _is_handoff,
     apply_task_patch,
     backfill_task_state,
     list_active_tasks,
@@ -902,6 +903,88 @@ def test_handoff_exclusion_does_not_affect_mem_search(iso_store):
     hits = json.loads(mem_search(content, scope="all", top_k=5))
     ids = {h["id"] for h in hits["results"]}
     assert nid in ids, "排除逻辑不得进检索层：接续点必须仍可被 mem_search 命中"
+
+
+# 生产库逐字首行（2026-10-16）：4 条真接续点 + 3 条「首行包含『接续点』但不在
+# 开头」的反例。旧「首行包含」判据 7 条全中（反例误中 = 真待办被打 handoff、
+# 从活跃列表隐形）；新「以标题词开头」判据只中前 4 条。
+IS_HANDOFF_REAL_SHAPES = [
+    # 真接续点：整行一个标记块（★ 前缀装饰）
+    (True, "【★接续点·2026-10-16 OpenCode Go 大改落地 + 思维底片评估 · 新会话先读这条】"),
+    # 真接续点：锚词块 + 日期主题块（两块）
+    (True, "【接续点 / 会话接续 / 新聊天先读】【2026-10-12 工作台 待办级联 + 周总结删除】"),
+    # 真接续点：块外正文直接以「接续点」开头（无 【】）
+    (True, "接续点 / 会话接续 / 新聊天先读 —— 2026-10-14 文档同步 + 委派通道大修 + 「其他 agent 记忆槽位」调研"),
+    # 真接续点：``[...]`` 前缀状态块 + 标记块
+    (True, "[完成] 【★接续点·2026-10-16 小帕任务治理整理 · 新会话先读这条】"),
+    # 反例（生产 node 2333 逐字）：「接续点」在句中——讨论机制的真待办
+    (False, "[待办] 小帕「接续点 × 任务列表」解耦（走 PR，2026-10-16 立）"),
+    # 反例（生产 node 1844 逐字）：「接续点」在句中且自述不是接续点
+    (False, "【历史留痕·记忆同行实测 2026-10-10 第一步】（⚠️ 本条为中途状态，不是当前接续点）"),
+    # 反例：普通待办（首行不含「接续点」）
+    (False, "验收用普通待办：把某件事做完"),
+]
+
+
+@pytest.mark.parametrize(
+    ("expected", "first_line"),
+    IS_HANDOFF_REAL_SHAPES,
+    ids=[
+        "handoff-wrapped-star",
+        "handoff-two-blocks",
+        "handoff-plain-text",
+        "handoff-state-prefix",
+        "real-todo-2333",
+        "self-declared-non-handoff-1844",
+        "normal-todo",
+    ],
+)
+def test_is_handoff_real_shapes(expected, first_line):
+    """7 条生产库逐字首行：只有「以接续点作为标题词开头」的才判 True。
+
+    旧「首行包含」判据把后 3 条也判成接续点——句中含「接续点」的真待办
+    （node 2333）会被打 kind=handoff 并从活跃列表隐形；自述「不是当前
+    接续点」的留痕（node 1844）同样误中。
+    """
+    got = _is_handoff({"content": first_line})
+    assert got is expected, f"首行={first_line!r} 期望 handoff={expected}，实际 {got}"
+
+
+def test_backfill_handoff_vs_real_todo(iso_store):
+    """回填联动（生产 node 2333 误判回归锁）：真接续点打 kind，句中含「接续点」的真待办不打。
+
+    生产实测：旧「首行包含」判据 99 条 task 命中 60 条 handoff、活跃三态里
+    5 条含 node 2333（真待办）——直接 apply 会让真待办隐形，因此先收紧判据。
+    """
+    project = _ns()
+    # 生产 node 2333 逐字首行：真待办（「接续点」在句中，讨论的是机制本身）
+    real_todo = _iso_insert_task(
+        iso_store,
+        "[待办] 小帕「接续点 × 任务列表」解耦（走 PR，2026-10-16 立）",
+        project,
+        task_state="todo",
+    )
+    # 生产真实接续点逐字首行：``[完成]`` 前缀块 + 标记块形态
+    handoff = _iso_insert_task(
+        iso_store,
+        "[完成] 【★接续点·2026-10-16 小帕任务治理整理 · 新会话先读这条】",
+        project,
+    )
+
+    # dry-run：changes 里真接续点 handoff=True；真待办必须 handoff=False
+    preview = backfill_task_state(iso_store, dry_run=True)
+    by_id = {c["id"]: c for c in preview["changes"]}
+    assert by_id[handoff]["handoff"] is True, "真接续点应判 handoff=True"
+    assert by_id[real_todo]["handoff"] is False, "句中含「接续点」的真待办不得判为接续点"
+
+    # apply：真接续点打 kind；真待办不得被打 kind（打上即从活跃列表隐形）
+    backfill_task_state(iso_store, dry_run=False)
+    assert iso_store.get_node(handoff)["payload"]["kind"] == HANDOFF_KIND
+    assert iso_store.get_node(real_todo)["payload"].get("kind") is None, "真待办（node 2333 形态）不得被打 kind=handoff"
+
+    # 幂等：apply 后重跑 dry-run → changes 为空
+    second = backfill_task_state(iso_store, dry_run=True)
+    assert second["changes"] == []
 
 
 # ---------------------------------------------------------------------------
