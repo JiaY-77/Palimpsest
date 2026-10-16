@@ -449,14 +449,21 @@ def _task_state_date_str() -> str:
 
 
 @mcp.tool()
-def tasks_active(project: str = "", states: str = "todo,doing,blocked", limit: int = 15) -> str:
+def tasks_active(
+    project: str = "",
+    states: str = "todo,doing,blocked",
+    limit: int = 15,
+    include_handoff: bool = False,
+) -> str:
     """活跃任务列表：``type=task`` & ``status=active`` & 状态命中，按优先级排序。
 
     参数：
       - ``project``：非空时只保留该项目（``payload.project``）的任务；
       - ``states``：逗号分隔的状态集（``todo`` / ``doing`` / ``blocked`` /
         ``done`` / ``canceled``）；非法值被忽略，全非法则回退默认三态；
-      - ``limit``：返回条数上限（``total`` 仍为过滤后总数）。
+      - ``limit``：返回条数上限（``total`` 仍为过滤后总数）；
+      - ``include_handoff``：``true`` 时同时列出会话接续点
+        （``kind=handoff`` 的跨会话交接记录），默认排除。
 
     排序：``doing > blocked > todo`` → ``last_touched_at`` 倒序 → ``importance`` 倒序。
     默认排除 ``payload.legacy = true`` 的老节点（见 CLI ``tasks backfill``）。
@@ -465,7 +472,9 @@ def tasks_active(project: str = "", states: str = "todo,doing,blocked", limit: i
     """
     from core.task_state import list_active_tasks
 
-    return _to_json(list_active_tasks(store, project=project, states=states, limit=limit))
+    return _to_json(
+        list_active_tasks(store, project=project, states=states, limit=limit, include_handoff=include_handoff)
+    )
 
 
 @mcp.tool()

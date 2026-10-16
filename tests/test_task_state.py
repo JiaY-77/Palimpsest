@@ -12,22 +12,33 @@
 隔离：conftest 已把 DB_PATH 指向 session 级临时库 + fake embedder；
 本文件断言一律按【唯一 project / 唯一 content 前缀】过滤自己插入的节点，
 不假设全库为空（其它测试文件的节点同库共存）。
+
+第 10 节（会话接续点 kind=handoff）例外：那些用例自建独立临时库
+（``iso_store``，照 test_mem_stats / test_promote 的既有模式）——回填用例
+会改写全库节点，绝不写 conftest 的共享 session 库。
 """
 
 from __future__ import annotations
 
+import contextlib
+import os
+import shutil
+import tempfile
 import uuid
 
 import pytest
 from corpus_real_cases import EXPECTED_NONE, REAL_CORPUS
 
 from core.task_state import (
+    HANDOFF_KIND,
     TASK_STATES,
+    _handoff_title,
     apply_task_patch,
     backfill_task_state,
     list_active_tasks,
     parse_task_state,
 )
+from core.trivium_store import TriviumStore
 from mcp_tools import store
 
 
@@ -364,11 +375,13 @@ def test_list_active_brief_shape():
         "aliases",
         "last_touched_at",
         "importance",
+        "kind",
     }
     assert row["task_key"] == "T-450"
     assert row["next_action"] == "补测试"
     assert row["aliases"] == ["450"]
     assert row["importance"] == 0.7
+    assert row["kind"] == ""  # 无 kind 的普通任务 → 空串（不是 None）
 
 
 # ---------------------------------------------------------------------------
@@ -665,3 +678,324 @@ def test_state_log_node_has_created_at():
     assert isinstance(log_pl["created_at"], (int, float)), (
         f"created_at 应为数值时间戳，实际是 {type(log_pl['created_at']).__name__}：{log_pl['created_at']!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 10. 会话接续点（kind=handoff）—— 默认排除 / 显式取回 / 通道透传 / 回填 / 检索
+# ---------------------------------------------------------------------------
+#
+# 隔离：本节用例全部走 iso_store（自建独立临时库）——回填用例会改写全库节点、
+# 检索用例断言精确命中，写进 conftest 共享 session 库会污染其它测试。
+# 模式照 test_mem_stats / test_promote 的既有 iso_store：改 Config.DB_PATH
+# + 重指 mcp_tools._common.store.db_path（导入时构造的模块级单例，只改
+# Config 不够）+ finally 还原。
+
+
+@pytest.fixture
+def iso_store():
+    """全新临时库上的独立 TriviumStore（与 conftest 共享库完全隔离）。"""
+    tmp = tempfile.mkdtemp(prefix="palimpsest_task_iso_")
+    from config import Config
+    from mcp_tools import store as shared_store
+
+    old_db = Config.DB_PATH
+    old_shared = shared_store.db_path
+    Config.DB_PATH = os.path.join(tmp, "iso.db")
+    shared_store.db_path = Config.DB_PATH
+    s = TriviumStore()
+    try:
+        yield s
+    finally:
+        Config.DB_PATH = old_db
+        shared_store.db_path = old_shared
+        with contextlib.suppress(Exception):
+            s._acquire().close()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _iso_insert_task(s, content: str, project: str, **extra) -> int:
+    """往 iso 库插入一个 task 域活跃节点（不走共享库单例）。"""
+    payload = {
+        "type": "task",
+        "domain": "task",
+        "character_name": "task",
+        "content": content,
+        "importance": extra.pop("importance", 0.6),
+        "project": project,
+        **extra,
+    }
+    return s.insert_node(payload, s.embed_text(content))
+
+
+def _handoff_and_normal(iso, project: str) -> tuple[int, int]:
+    """一对固定搭配：handoff 接续点 + 陪跑普通任务（同一个 project 下）。"""
+    handoff = _iso_insert_task(
+        iso,
+        "[doing] 接续点·2026-10-16 任务治理整理 · 新会话先读这条",
+        project,
+        task_state="doing",
+        kind=HANDOFF_KIND,
+    )
+    normal = _iso_insert_task(iso, "[doing] T-800 普通活跃任务", project, task_state="doing")
+    return handoff, normal
+
+
+def test_list_active_excludes_handoff_by_default(iso_store):
+    """kind=handoff 的活跃 task 默认不出现；陪跑普通任务照常出现（防一刀切假通过）。"""
+    project = _ns()
+    handoff, normal = _handoff_and_normal(iso_store, project)
+
+    data = list_active_tasks(iso_store, project=project)
+
+    ids = {it["id"] for it in data["results"]}
+    assert normal in ids, "陪跑的普通任务应照常返回（排除不能是清空列表）"
+    assert handoff not in ids, "kind=handoff 的接续点默认应被排除"
+    assert data["total"] == 1
+
+
+def test_list_active_include_handoff_opt_in(iso_store):
+    """include_handoff=True 显式取回接续点（陪跑普通任务两种情况都在）。"""
+    project = _ns()
+    handoff, normal = _handoff_and_normal(iso_store, project)
+
+    data = list_active_tasks(iso_store, project=project, include_handoff=True)
+
+    ids = {it["id"] for it in data["results"]}
+    assert handoff in ids and normal in ids
+    assert data["total"] == 2
+    # 显式取回时靠 kind 字段识别接续点
+    row = next(it for it in data["results"] if it["id"] == handoff)
+    assert row["kind"] == HANDOFF_KIND
+
+
+def test_mcp_tasks_active_include_handoff_passes_through(iso_store):
+    """MCP 工具 tasks_active：默认排除 / include_handoff=True 取回。"""
+    import json
+
+    from mcp_tools import tasks_active
+
+    project = _ns()
+    handoff, normal = _handoff_and_normal(iso_store, project)
+
+    default = json.loads(tasks_active(project=project, limit=10))
+    default_ids = {it["id"] for it in default["results"]}
+    assert handoff not in default_ids and normal in default_ids
+
+    included = json.loads(tasks_active(project=project, limit=10, include_handoff=True))
+    included_ids = {it["id"] for it in included["results"]}
+    assert handoff in included_ids and normal in included_ids
+
+
+def test_tasks_active_endpoint_include_handoff_query(iso_store):
+    """REST ``GET /tasks/active``：默认排除 / ``?include_handoff=true`` 取回。"""
+    from fastapi.testclient import TestClient
+
+    import main
+    from main import app
+
+    project = _ns()
+    handoff, normal = _handoff_and_normal(iso_store, project)
+
+    # main._store 是惰性单例（db_path 在首次构造那刻固定，可能已被其它测试
+    # 指到共享库）——测试期间显式替换成 iso 实例，结束置 None 让其按需重建
+    main._store = iso_store
+    try:
+        client = TestClient(app)
+        default = client.get("/tasks/active", params={"project": project}).json()
+        default_ids = {it["id"] for it in default["results"]}
+        assert handoff not in default_ids and normal in default_ids
+
+        included = client.get("/tasks/active", params={"project": project, "include_handoff": "true"}).json()
+        included_ids = {it["id"] for it in included["results"]}
+        assert handoff in included_ids and normal in included_ids
+    finally:
+        main._store = None
+
+
+def test_backfill_handoff_marks_kind_and_title(iso_store):
+    """回填：dry-run 只预览 → apply 打 kind + 补 title → 重跑幂等 0 变更。"""
+    project = _ns()
+    # 存量形态 A：整行就是一个全角标记块（状态词嵌块内 → doing；title 取块内
+    # 信息量最大的段 = 日期+主题段，见 ``_handoff_title`` 的取最长段规则）
+    wrapped = _iso_insert_task(
+        iso_store,
+        "【★接续点·2026-10-16 任务治理整理（进行中）+ 下一步外包 · 新会话先读这条】",
+        project,
+        task_key="T-810",
+    )
+    # 存量形态 B：锚词在块外正文、状态在半角块里（块外正文同样参与切段——
+    # 只取块内容会把正文丢光、退化成状态词「进行中」）
+    plain = _iso_insert_task(
+        iso_store,
+        "接续点 / 会话接续 / 新聊天先读 —— 2026-10-13~14 大修 · [进行中] 细节见正文",
+        project,
+    )
+    # 陪跑：普通任务不被打 kind
+    normal = _iso_insert_task(iso_store, "[doing] T-811 普通任务", project, task_state="doing")
+
+    # dry-run：只预览不写库（kind / title 都不落盘）
+    preview = backfill_task_state(iso_store, dry_run=True)
+    assert preview["dry_run"] is True
+    assert preview["handoff"] == 2
+    assert [c["id"] for c in preview["changes"] if c["handoff"]] == [wrapped, plain]
+    for nid in (wrapped, plain):
+        payload = iso_store.get_node(nid)["payload"]
+        assert "kind" not in payload, "dry-run 不得写库"
+        assert "title" not in payload, "dry-run 不得写库"
+
+    # apply：kind + title 落库
+    result = backfill_task_state(iso_store, dry_run=False)
+    assert result["handoff"] == 2
+    wp = iso_store.get_node(wrapped)["payload"]
+    assert wp["kind"] == HANDOFF_KIND
+    # 整行标记块 → 块内切段，锚词段全丢，取最长 = 日期+主题段（不再是退回 task_key）
+    assert wp["title"] == "2026-10-16 任务治理整理（进行中）+ 下一步外包"
+    pp = iso_store.get_node(plain)["payload"]
+    assert pp["kind"] == HANDOFF_KIND
+    # 块外正文参与切段：锚词段丢弃后最长段 = 日期+主题段（不是状态词「进行中」）
+    assert pp["title"] == "2026-10-13~14 大修"
+    assert len(pp["title"]) <= 120
+    np_ = iso_store.get_node(normal)["payload"]
+    assert np_.get("kind") is None, "普通任务不得被打 kind"
+
+    # 回填后：接续点默认排除、显式可取回（title 已补，取回时能认出来）
+    default_ids = {it["id"] for it in list_active_tasks(iso_store, project=project)["results"]}
+    assert wrapped not in default_ids and plain not in default_ids
+    included = {it["id"]: it for it in list_active_tasks(iso_store, project=project, include_handoff=True)["results"]}
+    assert wrapped in included and plain in included
+    assert included[plain]["title"] == pp["title"]
+
+    # 重跑幂等：第二次 changes 为空、handoff 计数为 0
+    second = backfill_task_state(iso_store, dry_run=False)
+    assert second["changes"] == []
+    assert second["handoff"] == 0
+
+
+def test_backfill_handoff_title_truncates_at_120(iso_store):
+    """title 摘要超长截断到 120 字符（锚词段先丢弃，长段才是 title 主体）。"""
+    project = _ns()
+    long_line = "接续点·超长叙述" + "细节" * 80  # 首行远超 120 字符、无括号块
+    nid = _iso_insert_task(iso_store, long_line, project)
+
+    backfill_task_state(iso_store, dry_run=False)
+
+    title = iso_store.get_node(nid)["payload"]["title"]
+    assert title.startswith("超长叙述")
+    assert len(title) == 120
+
+
+def test_handoff_exclusion_does_not_affect_mem_search(iso_store):
+    """被 tasks_active 排除的接续点，mem_search 仍能命中——排除只在查询层，不进检索层。"""
+    import json
+
+    from mcp_tools import mem_search
+
+    project = _ns()
+    content = "接续点：任务治理整理的跨会话交接，含下一步外包安排与注意事项"
+    nid = _iso_insert_task(iso_store, content, project, task_state="doing", kind=HANDOFF_KIND)
+
+    # 查询层默认排除
+    data = list_active_tasks(iso_store, project=project)
+    assert nid not in {it["id"] for it in data["results"]}
+
+    # 检索层不受影响：type=task 属 facts 层，默认 tier 检索仍应命中
+    hits = json.loads(mem_search(content, scope="all", top_k=5))
+    ids = {h["id"] for h in hits["results"]}
+    assert nid in ids, "排除逻辑不得进检索层：接续点必须仍可被 mem_search 命中"
+
+
+# ---------------------------------------------------------------------------
+# 11. title 摘要规则 —— 块内容 + 块外正文切段，取信息量最大的段
+# ---------------------------------------------------------------------------
+#
+# 旧规则「先删括号块再取剩余」在生产主流形态（整行一个块）上删完为空 →
+# title 退化成常量「接续点」，等于没补（2026-10-16 验收实测反例）。本节
+# 用生产库 4 条接续点 + 2 条普通任务的**逐字**首行锁死新规则。
+
+
+# 生产库真实接续点首行（逐字，2026-10-16 验收表）：(node_id, 首行, title 必含子串)
+REAL_HANDOFF_SHAPES = [
+    (
+        2307,
+        "【★接续点·2026-10-16 OpenCode Go 大改落地 + 思维底片评估 · 新会话先读这条】",
+        "OpenCode Go 大改落地 + 思维底片评估",
+    ),
+    (2317, "【★接续点·2026-10-16 MemoryHub 读侧落地 + 验收通过 · 新会话先读这条】", "MemoryHub 读侧落地 + 验收通过"),
+    (
+        1914,
+        "【接续点 / 会话接续 / 新聊天先读】【2026-10-12 工作台 待办级联 + 周总结删除】",
+        "工作台 待办级联 + 周总结删除",
+    ),
+    (1919, "【接续点 / 会话接续 / 新聊天先读】【2026-10-12 待办降级为普通列表项（新命令）】", "待办降级为普通列表项"),
+]
+
+
+@pytest.mark.parametrize(
+    ("node_id", "first_line", "must_contain"),
+    REAL_HANDOFF_SHAPES,
+    ids=[str(node_id) for node_id, _line, _must in REAL_HANDOFF_SHAPES],
+)
+def test_handoff_title_real_shapes(node_id, first_line, must_contain):
+    """生产库 4 条接续点逐字首行：title 必含日期+主题段，不得退化成常量。
+
+    旧「先删块」规则在这 4 条上全部退化为空串 → 回退「接续点」（或 task_key），
+    title 互相无法区分；新「取最长段」规则必须让每条认得出自己是哪条。
+    """
+    title = _handoff_title({"content": first_line})
+    assert must_contain in title, f"node={node_id} title={title!r} 应包含 {must_contain!r}"
+    assert title != "接续点", f"node={node_id} title 退化为常量「接续点」"
+    assert title != "", f"node={node_id} title 为空"
+
+
+def test_handoff_title_anchor_only_falls_back():
+    """兜底：整行只有锚词（块内/块外都没有信息量）→ 退回 task_key → 再退回「接续点」。"""
+    assert _handoff_title({"content": "【★接续点】"}) == "接续点"
+    assert _handoff_title({"content": "【★接续点·新会话先读这条】"}) == "接续点"
+    assert _handoff_title({"content": "接续点 / 会话接续 / 新聊天先读"}) == "接续点"
+    assert _handoff_title({"content": "【★接续点】", "task_key": "T-900"}) == "T-900"
+    assert _handoff_title({"content": ""}) == "接续点"
+
+
+def test_backfill_fills_empty_title_on_normal_tasks(iso_store):
+    """非接续点、title 为空的普通任务：回填后 title 非空（同一套摘要规则）。
+
+    生产库实测：活跃列表里 title 为空的普通任务（node 1899 / 2294）都是
+    「整行一个块」形态，与接续点同病——空 title 在列表里读不出是哪条任务。
+    """
+    project = _ns()
+    # 生产 node 2294 逐字首行（整行一个块、无锚词 → 规则退化到「最长段」）
+    blob = _iso_insert_task(
+        iso_store,
+        "【待办·周末和小七一起看 BOSS 直聘（主人 2026-10-15 定）】",
+        project,
+    )
+    # 「块 + 块外正文」的普通任务（无锚词，最长段 = 块外正文）
+    bracketed = _iso_insert_task(iso_store, "[todo] T-910 普通待办任务", project)
+
+    backfill_task_state(iso_store, dry_run=False)
+
+    bt = iso_store.get_node(blob)["payload"]
+    assert (bt.get("title") or "").strip(), "普通任务（整行块）回填后 title 仍为空"
+    assert "周末和小七一起看 BOSS 直聘" in bt["title"]
+    kt = iso_store.get_node(bracketed)["payload"]
+    assert kt.get("title") == "T-910 普通待办任务"
+    # 普通任务补 title 不得顺手打 kind
+    assert bt.get("kind") is None and kt.get("kind") is None
+
+
+def test_backfill_title_idempotent_rerun(iso_store):
+    """apply 后重跑 dry-run：changes 为空且 already == scanned（title 非空即就绪）。"""
+    project = _ns()
+    _iso_insert_task(
+        iso_store,
+        "【★接续点·2026-10-16 任务治理整理（进行中）+ 下一步外包 · 新会话先读这条】",
+        project,
+    )
+    _iso_insert_task(iso_store, "[doing] T-911 普通任务", project, task_state="doing")
+
+    first = backfill_task_state(iso_store, dry_run=False)
+    assert first["changes"], "首次 apply 应产生变更"
+
+    second = backfill_task_state(iso_store, dry_run=True)
+    assert second["changes"] == []
+    assert second["already"] == second["scanned"]

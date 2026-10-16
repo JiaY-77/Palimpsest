@@ -830,16 +830,19 @@ def tasks_active(
     project: str = "",
     states: str = "todo,doing,blocked",
     limit: int = 15,
+    include_handoff: bool = False,
 ):
     """活跃任务列表：``type=task`` & ``status=active`` & 状态命中，按优先级排序。
 
-    只读。参数走 query（``?project=X&states=todo,doing&limit=15``）；核心逻辑见
-    ``core.task_state.list_active_tasks``，与 MCP 工具 ``tasks_active`` 同一实现。
-    默认排除 ``payload.legacy = true`` 的老节点（老节点请先跑 CLI ``tasks backfill``）。
+    只读。参数走 query（``?project=X&states=todo,doing&limit=15&include_handoff=true``）；
+    核心逻辑见 ``core.task_state.list_active_tasks``，与 MCP 工具 ``tasks_active``
+    同一实现。默认排除 ``payload.legacy = true`` 的老节点（老节点请先跑 CLI
+    ``tasks backfill``）；``include_handoff=true`` 才列出会话接续点
+    （``kind=handoff`` 的跨会话交接记录，而非待办事项）。
     """
     from core.task_state import list_active_tasks
 
-    return list_active_tasks(_get_store(), project=project, states=states, limit=limit)
+    return list_active_tasks(_get_store(), project=project, states=states, limit=limit, include_handoff=include_handoff)
 
 
 # ---------------------------------------------------------------------------
