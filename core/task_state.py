@@ -42,6 +42,20 @@ TASK_STATES = frozenset({"todo", "doing", "blocked", "done", "canceled", "unknow
 # 回填时解析不出状态 → unknown（并打 needs_review 标记，交给人工复核）。
 UNKNOWN_STATE = "unknown"
 
+# 会话接续点的身份标记：``payload.kind == "handoff"`` 的 task 节点是「跨会话交接
+# 记录」而非待办事项。接续点必须写成 ``type=task``（写成 ``type=record`` 会落
+# logs 层，``tier=facts`` 的默认检索搜不到），但它们的状态标记常命中 doing、
+# 又多数没有 title——混进 ``list_active_tasks`` 的工作集会长期占着前排。因此
+# 查询层默认排除它们（``include_handoff=False``），显式开关可取回。
+# 只支持这一个 kind 取值，不做别的分类。
+HANDOFF_KIND = "handoff"
+
+# 会话接续点识别：``type=task`` 且 content **首行**含「接续点」。真实存量语料
+# 两种形态都靠「首行含『接续点』」覆盖：
+#   · ``【★接续点·2026-10-16 任务治理整理 + 下一步外包 · 新会话先读这条】``
+#   · ``接续点 / 会话接续 / 新聊天先读 —— 2026-10-13~14 大修（……）``
+_HANDOFF_HINT = "接续点"
+
 # 状态关键词表：**(关键词, 规范化状态)**，元组顺序仅作**同位置并列时的兜底**
 # （见 ``_match_keyword``：块内实际以「最先出现的状态词」胜出，顺序只在两个
 # 关键词起点相同时用来打破平局）。
@@ -361,13 +375,17 @@ def _write_state_log(store, node_id: int, payload: dict, previous_state, new_sta
     logger.info("任务状态日志已写入 log_node=%s -> task=%s（%s）", log_id, node_id, new_state)
 
 
-def _matches_filters(payload: dict, project: str, states: set, include_legacy: bool) -> bool:
-    """活跃任务过滤：type / status / legacy + 状态集 + 项目。"""
+def _matches_filters(
+    payload: dict, project: str, states: set, include_legacy: bool, include_handoff: bool = False
+) -> bool:
+    """活跃任务过滤：type / status / legacy / handoff + 状态集 + 项目。"""
     if payload.get("type") != "task":
         return False
     if payload.get("status") != "active":
         return False
     if not include_legacy and payload.get("legacy") is True:
+        return False
+    if not include_handoff and payload.get("kind") == HANDOFF_KIND:
         return False
     state, _ = _resolve_effective_state(payload)
     if state not in states:
@@ -419,6 +437,7 @@ def list_active_tasks(
     states=(),
     limit: int = 15,
     include_legacy: bool = False,
+    include_handoff: bool = False,
 ) -> dict:
     """列出活跃任务（``type=task`` & ``status=active`` & 状态命中）。
 
@@ -426,6 +445,8 @@ def list_active_tasks(
       空 / 全为非法值 → 回退默认 ``DEFAULT_ACTIVE_STATES``。
     - ``project``：非空时只保留 ``payload.project`` 相等的节点。
     - ``include_legacy=False``（默认）排除 ``payload.legacy is True`` 的老节点。
+    - ``include_handoff=False``（默认）排除 ``payload.kind == "handoff"`` 的会话
+      接续点（跨会话交接记录而非待办；显式传 ``True`` 可取回）。
     - 排序：状态优先级 → ``last_touched_at`` 倒序 → ``importance`` 倒序。
 
     返回 ``{"results": [...], "total": int, "states": [...]}``；
@@ -435,7 +456,7 @@ def list_active_tasks(
     items: list[dict] = []
     for nid, node in store.iter_nodes():
         payload = node.get("payload") or {}
-        if not _matches_filters(payload, project, state_set, include_legacy):
+        if not _matches_filters(payload, project, state_set, include_legacy, include_handoff):
             continue
         state, _ = _resolve_effective_state(payload)
         items.append(_brief(nid, payload, state))
@@ -466,7 +487,31 @@ def _brief(nid: int, payload: dict, state: str | None) -> dict:
         "aliases": payload.get("aliases") or [],
         "last_touched_at": payload.get("last_touched_at"),
         "importance": payload.get("importance", 0.5),
+        "kind": payload.get("kind") or "",
     }
+
+
+def _is_handoff(payload: dict) -> bool:
+    """task 节点是否为会话接续点（content **首行**含「接续点」，见 ``_HANDOFF_HINT``）。"""
+    first_line = (payload.get("content") or "").split("\n", 1)[0]
+    return _HANDOFF_HINT in first_line
+
+
+def _handoff_title(payload: dict) -> str:
+    """接续点的 title 摘要：content 首行去状态前缀与括号标记，截 120 字符。
+
+    规则：去掉 ``[完成]`` / ``[待办]`` 这类状态前缀与 ``【…】`` / ``[…]`` 标记块
+    （复用解析层的两个括号正则），去首尾空白，超长截断到 120 字符；仍为空
+    （整行就是一个标记块的形态，如 ``【★接续点·…新会话先读这条】``）则退回
+    ``payload.task_key`` 或「接续点」。
+    """
+    first_line = (payload.get("content") or "").split("\n", 1)[0]
+    cleaned = _BRACKET_RE.sub("", first_line)
+    cleaned = _FULL_BRACKET_RE.sub("", cleaned)
+    cleaned = cleaned.strip()
+    if len(cleaned) > 120:
+        cleaned = cleaned[:120]
+    return cleaned or (payload.get("task_key") or _HANDOFF_HINT)
 
 
 def backfill_task_state(store, dry_run: bool = True) -> dict:
@@ -479,6 +524,10 @@ def backfill_task_state(store, dry_run: bool = True) -> dict:
         ``canceled`` / ``unknown``）才标 ``payload.legacy = True``（历史留痕，
         ``/tasks/active`` 默认不列出）；仍在跟进的状态（``todo`` / ``doing`` /
         ``blocked``）保持 legacy 缺失，**回填后即可出现在活跃任务视图里**。
+      - **会话接续点**（content 首行含「接续点」，见 ``_HANDOFF_HINT``）：打
+        ``payload.kind = "handoff"`` 身份标记；``title`` 为空/缺失时补一行摘要
+        （见 ``_handoff_title``）——``list_active_tasks`` 默认排除接续点
+        （``include_handoff=True`` 可取回），排除前先补 title 便于显式取回时识别。
 
     为什么这样分：``legacy`` 的语义是「历史节点，不必再看」，不是「回填过的节点」。
     把仍在做的任务一并标成 legacy，会让回填后的工作集立刻变空——恰好废掉这套
@@ -490,7 +539,7 @@ def backfill_task_state(store, dry_run: bool = True) -> dict:
     （进程级 DB 访问锁），迭代中调 ``update_payload`` 会在同进程内重入取锁而自锁
     ——因此先把候选节点整体快照出来、迭代结束（连接释放）后再逐个写回。
 
-    返回 ``{dry_run, scanned, already, parsed, unknown, needs_review, legacy, changes}``；
+    返回 ``{dry_run, scanned, already, parsed, unknown, needs_review, legacy, handoff, changes}``；
     ``changes`` 为每个将变更 / 已变更节点的摘要（dry-run 预览 = 执行决策）。
     """
     scanned = 0
@@ -498,6 +547,7 @@ def backfill_task_state(store, dry_run: bool = True) -> dict:
     parsed = 0
     unknown = 0
     legacy_count = 0
+    handoff_count = 0
     changes: list[dict] = []
     pending: list[tuple[int, dict]] = []  # (node_id, 待写 payload)，迭代结束再写
 
@@ -514,8 +564,16 @@ def backfill_task_state(store, dry_run: bool = True) -> dict:
             parsed += 1
         # 该节点**应该**是什么 legacy 值：不活跃状态才标 legacy
         want_legacy = state not in DEFAULT_ACTIVE_STATES
-        # 幂等：已是目标形态（task_state 相符且 legacy 相符）→ 跳过，重跑输出 0 变更
-        if payload.get("task_state") == state and payload.get("legacy") is want_legacy:
+        # 接续点判定 + 其目标形态（kind 已打且 title 已补）是否就绪
+        handoff = _is_handoff(payload)
+        handoff_done = payload.get("kind") == HANDOFF_KIND and bool((payload.get("title") or "").strip())
+        # 幂等：已是目标形态（task_state 相符且 legacy 相符；接续点还要求 kind
+        # 相符且 title 非空）→ 跳过，重跑输出 0 变更
+        if (
+            payload.get("task_state") == state
+            and payload.get("legacy") is want_legacy
+            and (not handoff or handoff_done)
+        ):
             already += 1
             continue
         changes.append(
@@ -525,6 +583,7 @@ def backfill_task_state(store, dry_run: bool = True) -> dict:
                 "needs_review": state == UNKNOWN_STATE,
                 "legacy": want_legacy,
                 "title": _task_label(payload),
+                "handoff": handoff,
             }
         )
         new_payload = {**payload, "task_state": state}
@@ -535,6 +594,11 @@ def backfill_task_state(store, dry_run: bool = True) -> dict:
             new_payload["legacy"] = False
         if state == UNKNOWN_STATE:
             new_payload["needs_review"] = True
+        if handoff:
+            new_payload["kind"] = HANDOFF_KIND
+            handoff_count += 1
+            if not (payload.get("title") or "").strip():
+                new_payload["title"] = _handoff_title(payload)
         pending.append((nid, new_payload))
 
     if not dry_run:
@@ -549,5 +613,6 @@ def backfill_task_state(store, dry_run: bool = True) -> dict:
         "unknown": unknown,
         "needs_review": unknown,
         "legacy": legacy_count,
+        "handoff": handoff_count,
         "changes": changes,
     }

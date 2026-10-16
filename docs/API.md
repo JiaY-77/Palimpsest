@@ -33,7 +33,7 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8090
 | `DELETE` | `/mem/edge` | 删除图边（body：`source_id` / `target_id` / `relation`；幂等） |
 | `POST` | `/mem/fact-history` | 单条事实的 bi-temporal 时间线与取代关系（body：`node_id`） |
 | `POST` | `/mem/recent` | 最近记忆列表（按 created_at 倒序） |
-| `GET` | `/tasks/active` | 活跃任务列表（query：`project` / `states` / `limit`；按状态优先级 → 最近触碰倒序） |
+| `GET` | `/tasks/active` | 活跃任务列表（query：`project` / `states` / `limit` / `include_handoff`（列出会话接续点，默认 false）；按状态优先级 → 最近触碰倒序） |
 | `POST` | `/mem/stats` | 库级盘点统计 |
 | `POST` | `/graph/neighbors` | 某节点的图谱邻居 |
 | `POST` | `/graph/communities` | Leiden 社区发现 |
