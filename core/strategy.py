@@ -32,7 +32,10 @@ Palimpsest 的**记忆智能**住在这一层：判断「什么值得记、记�
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
+
+from core.secret_scan import scan_secret_classified
 
 # ---------------------------------------------------------------------------
 # 常量与规则（原 hermes-plugin/__init__.py L42-L59 下沉而来，语义不变）
@@ -414,3 +417,153 @@ def format_graph_enhancement(
     if not added:
         return ""
     return "\n".join([GRAPH_ENHANCE_HEADER, *lines])
+
+
+# MemoryHub 入籍时从 payload 剔除的本库运行时字段（保真优先，只剔这些）：
+# 命中计数 / 时间戳 / 图谱度数 / 关联来源 / 敏感标记（新库 sweep 时重算）/
+# 包内边列表 / 旧的 origin 字段（origin_id/origin_pack 由本函数重写）。
+_IMPORT_DROP_FIELDS = (
+    "hit_count",
+    "last_hit_at",
+    "num_edges",
+    "linked_from",
+    "secret_hint",
+    "edges",
+    "origin_id",
+    "origin_pack",
+)
+
+
+def decide_import(
+    pack: dict,
+    *,
+    select: list[int] | None = None,
+    include_secrets: bool = False,
+) -> dict[str, Any]:
+    """判定「把记忆包里的哪些节点入籍本库」（纯决策，不写库、不开库）。
+
+    入参 ``pack`` = ``core.memoryhub.read_pack()`` 成功返回的 dict（含
+    ``manifest`` / ``nodes`` / ``edges`` / ``issues`` / ``stats``）。
+
+    设计要点（与读侧对称）：
+      - **默认只读预览**：``select`` 为空 → 一个字节都不写，逐条记
+        ``not_selected``，调用方据此给用户看可选清单。
+      - **入籍须显式选中**：``select`` 非空时只处理被选中的原包 ``node_id``。
+      - **不沿用原 node_id**：新库自己分配 id；原 id 记进 ``payload.origin_id``，
+        来源包指纹/名字记进 ``payload.origin_pack``。
+      - **边只保留两端都入籍的**。
+      - **不做冲突检测 / 不取代本库已有记忆**——纯新增，避免误标 outdated。
+
+    逐条判定顺序（命中即停）：``not_found`` → ``empty_content`` →
+    ``secret_requires_confirm`` → ``not_active`` → 入籍。强敏感判定复用
+    ``core.secret_scan.scan_secret_classified`` 的 ``strong`` 列表，与写入路径
+    ``core.trivium_store.insert_node`` 的强拒判定保持一致。
+
+    ``select`` 里的重复 id 只处理一次（保持调用方给的顺序）；非 int 元素静默跳过
+    （既不处理也不进 ``skipped``）。
+    """
+    raw_nodes = pack.get("nodes", []) or []
+    all_nodes = [item for item in raw_nodes if isinstance(item, dict)]
+    node_index: dict[Any, dict] = {}
+    for item in all_nodes:
+        node_index.setdefault(item.get("node_id"), item)
+
+    type_counts: dict = {}
+    for item in all_nodes:
+        payload = item.get("payload") or {}
+        if not isinstance(payload, dict):
+            payload = {}
+        ntype = payload.get("type", "unknown")
+        type_counts[ntype] = type_counts.get(ntype, 0) + 1
+
+    nodes: list[dict] = []
+    skipped: list[dict] = []
+    imported_origin_ids: set = set()
+    skip_reasons: dict = {}
+    mode = "preview"
+    selected = 0
+
+    def _skip(origin_id, reason: str) -> None:
+        skipped.append({"origin_id": origin_id, "reason": reason})
+        skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+
+    if not select:
+        for item in all_nodes:
+            skipped.append({"origin_id": item.get("node_id"), "reason": "not_selected"})
+        skip_reasons["not_selected"] = len(all_nodes)
+    else:
+        mode = "import"
+        seen: set = set()
+        for origin_id in select:
+            if not isinstance(origin_id, int) or isinstance(origin_id, bool):
+                continue  # 非 int 静默跳过
+            if origin_id in seen:
+                continue
+            seen.add(origin_id)
+            selected += 1
+
+            item = node_index.get(origin_id)
+            if item is None:
+                _skip(origin_id, "not_found")
+                continue
+
+            item_payload = item.get("payload") or {}
+            if not isinstance(item_payload, dict):
+                item_payload = {}
+
+            content = item_payload.get("content")
+            if content is None or not str(content).strip():
+                _skip(origin_id, "empty_content")
+                continue
+
+            if not include_secrets and scan_secret_classified(str(content))["strong"]:
+                _skip(origin_id, "secret_requires_confirm")
+                continue
+
+            status = item_payload.get("status")
+            if status is not None and status != "active":
+                _skip(origin_id, "not_active")
+                continue
+
+            # 入籍：payload 浅拷贝 → 剔运行时字段 → 写 origin 字段
+            new_payload = dict(item_payload)
+            for key in _IMPORT_DROP_FIELDS:
+                new_payload.pop(key, None)
+            new_payload["origin_id"] = origin_id
+            manifest = pack.get("manifest", {}) or {}
+            new_payload["origin_pack"] = manifest.get("fingerprint") or manifest.get("name") or ""
+            if new_payload.get("created_at") is None:
+                new_payload["created_at"] = time.time()
+            nodes.append({"origin_id": origin_id, "payload": new_payload})
+            imported_origin_ids.add(origin_id)
+
+    edges: list[dict] = []
+    for edge in pack.get("edges", []) or []:
+        if not isinstance(edge, dict):
+            continue
+        src = edge.get("source_id")
+        tgt = edge.get("target_id")
+        if src in imported_origin_ids and tgt in imported_origin_ids:
+            edges.append(
+                {
+                    "source_origin_id": src,
+                    "target_origin_id": tgt,
+                    "label": edge.get("label", ""),
+                    "weight": edge.get("weight"),
+                }
+            )
+
+    return {
+        "nodes": nodes,
+        "skipped": skipped,
+        "edges": edges,
+        "decision_log": {
+            "mode": mode,
+            "node_total": len(all_nodes),
+            "selected": selected,
+            "to_import": len(nodes),
+            "skipped_total": len(skipped),
+            "skip_reasons": skip_reasons,
+            "type_counts": type_counts,
+        },
+    }

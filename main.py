@@ -77,6 +77,9 @@ from mcp_tools import (
     mem_hybrid_search as _mcp_mem_hybrid_search,
 )
 from mcp_tools import (
+    mem_import as _mcp_mem_import,
+)
+from mcp_tools import (
     mem_ingest as _mcp_mem_ingest,
 )
 from mcp_tools import (
@@ -87,6 +90,9 @@ from mcp_tools import (
 )
 from mcp_tools import (
     mem_search as _mcp_mem_search,
+)
+from mcp_tools import (
+    mem_unpack as _mcp_mem_unpack,
 )
 from mcp_tools import (
     skill_search as _mcp_skill_search,
@@ -267,6 +273,8 @@ def root():
             "/mem/hybrid-search",
             "/mem/ingest",
             "/mem/link",
+            "/memoryhub/unpack",
+            "/memoryhub/import",
             "/mem/edge",
             "/mem/fact-history",
             "/mem/recent",
@@ -612,6 +620,17 @@ class MemConsolidateRequest(BaseModel):
     max_importance: float = 0.8
 
 
+class MemoryHubUnpackRequest(BaseModel):
+    path: str
+    preview_chars: int = 80
+
+
+class MemoryHubImportRequest(BaseModel):
+    path: str
+    select: str = ""
+    include_secrets: bool = False
+
+
 def _as_json(text: str):
     try:
         return json.loads(text)
@@ -696,6 +715,16 @@ def mem_link(req: MemLinkRequest):
             bidirectional=req.bidirectional,
         )
     )
+
+
+@app.post("/memoryhub/unpack")
+def memoryhub_unpack(req: MemoryHubUnpackRequest):
+    return _as_json(_mcp_mem_unpack(req.path, preview_chars=req.preview_chars))
+
+
+@app.post("/memoryhub/import")
+def memoryhub_import(req: MemoryHubImportRequest):
+    return _as_json(_mcp_mem_import(req.path, select=req.select, include_secrets=req.include_secrets))
 
 
 @app.delete("/mem/edge")

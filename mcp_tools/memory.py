@@ -17,8 +17,10 @@ from core.conflict import resolve_conflict
 from core.db_health import check_db_health, health_hint
 from core.fts_index import index_node, search_fts_status
 from core.judgment_metrics import record_ingest
+from core.memoryhub import apply_import, read_pack, summarize_pack
 from core.policy import check_ingest
 from core.secret_scan import SecretScanError
+from core.strategy import decide_import
 from core.trivium_store import domain_in_block, node_domain
 from core.utils import _to_float
 from mcp_tools._common import _shorten, _to_json, mcp, store
@@ -1296,3 +1298,74 @@ def mem_hybrid_search(
             as_of,
         )
     )
+
+
+@mcp.tool()
+def mem_unpack(path: str, preview_chars: int = 80) -> str:
+    """只读解开一个 MemoryHub 记忆包（.json）：校验格式/版本、扫描敏感信息、给人读摘要。
+    不写入任何东西。path 为记忆包文件的绝对路径或相对当前工作目录的路径。"""
+    try:
+        result = read_pack(path)
+        if not result.get("ok"):
+            return _to_json(result)
+        summary = summarize_pack(result, preview_chars=preview_chars)
+        issues = result.get("issues") or []
+        summary["issue_counts"] = {
+            "secret": sum(1 for i in issues if i.get("kind") == "secret"),
+            "empty_content": sum(1 for i in issues if i.get("kind") == "empty_content"),
+            "malformed_node": sum(1 for i in issues if i.get("kind") == "malformed_node"),
+        }
+        summary["stats"] = result.get("stats", {})
+        return _to_json(summary)
+    except Exception as e:  # noqa: BLE001 —— 统一转成可读错误对象
+        return _to_json({"ok": False, "code": "unreadable", "error": str(e)[:200]})
+
+
+@mcp.tool()
+def mem_import(path: str, select: str = "", include_secrets: bool = False) -> str:
+    """把记忆包里的节点「入籍」（写回本库）。默认只读预览：select 为空时只返回可选的
+    节点清单，不写任何东西。select 为逗号分隔的原包 node_id（如 "12,15,31"，兼容中文逗号），
+    显式选中的节点才会入籍。入籍不沿用原 node_id（记入 payload.origin_id），边只保留两端
+    都入籍的。include_secrets=True 时才允许入籍命中强敏感规则的节点。"""
+    try:
+        result = read_pack(path)
+        if result.get("ok") is not True:
+            return _to_json(result)
+
+        ids: list[int] = []
+        for token in (select or "").replace("，", ",").split(","):
+            token = token.strip()
+            if token.isdigit():
+                ids.append(int(token))
+
+        plan = decide_import(result, select=ids or None, include_secrets=include_secrets)
+        manifest = result.get("manifest", {})
+
+        if plan["decision_log"]["mode"] == "preview":
+            return _to_json(
+                {
+                    "ok": True,
+                    "mode": "preview",
+                    "manifest": manifest,
+                    "nodes": summarize_pack(result)["nodes"],
+                    "decision_log": plan["decision_log"],
+                    "hint": "在 select 里填入要入籍的 node_id（逗号分隔）后重新调用",
+                }
+            )
+
+        res = apply_import(store, plan)
+        return _to_json(
+            {
+                "ok": res["ok"],
+                "mode": "import",
+                "manifest": manifest,
+                "imported": res["imported"],
+                "failed": res["failed"],
+                "edges_created": res["edges_created"],
+                "edges_failed": res["edges_failed"],
+                "skipped": plan["skipped"],
+                "decision_log": plan["decision_log"],
+            }
+        )
+    except Exception as e:  # noqa: BLE001 —— 统一转成可读错误对象
+        return _to_json({"ok": False, "code": "import_failed", "error": str(e)[:200]})

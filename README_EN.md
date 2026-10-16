@@ -222,7 +222,7 @@ python scripts/build_kb_index.py --rules rules.json
 
 ## Usage
 
-### MCP tools (19) — `mcp_tools/*`
+### MCP tools (21) — `mcp_tools/*`
 
 | Tool | Description |
 |---|---|
@@ -245,6 +245,8 @@ python scripts/build_kb_index.py --rules rules.json
 | `graph_neighbors` | BFS over the knowledge graph from a node (relation filter, depth 1–3, weak-edge filter) |
 | `mem_link` | Manually create graph edges (`RELATED_TO` / `CAUSES` / `REFERS_TO`; bidirectional by default) |
 | `mem_unlink` | Delete a graph edge (idempotent: returns `deleted=false` when absent; cleans up stray `REVISED_BY` edges) |
+| `mem_unpack` | Unpack a MemoryHub pack read-only: validate format / version, scan for secrets, produce a human-readable summary; writes nothing |
+| `mem_import` | "Naturalize" nodes from a pack into this store; read-only preview by default, only ids in `select` are written, strong-secret nodes need `include_secrets=True` |
 
 ### CLI — `scripts/palimpsest_cli.py`
 
@@ -258,6 +260,9 @@ python scripts/build_kb_index.py --rules rules.json
 | `graph --id N` | Graph neighbors of a node (`--depth`, `--relation`, `--min-weight`) |
 | `recent` | Most recent memories (`--limit`, `--domain`) |
 | `tasks` | Task-state registry (subcommands `active` / `backfill`) |
+| `memoryhub` | MemoryHub packs (subcommands `read` / `import`) |
+| `memoryhub read PATH` | Unpack a pack read-only (validate + human summary, `--preview-chars`) |
+| `memoryhub import PATH` | Naturalize pack nodes into the store (`--select 12,15,31`; empty = preview only; `--include-secrets` allows strong-secret nodes) |
 | `tasks active` | Active task list (`--project`, `--states todo,doing,blocked`, `--limit`) |
 | `tasks backfill` | Backfill `task_state` on existing task nodes (dry-run by default; `--apply` writes) |
 | `review` | Periodic recap of the last N days (`--tier facts\|logs\|''` scopes recent_ingests) |
@@ -284,6 +289,8 @@ python scripts/build_kb_index.py --rules rules.json
 | `GET` | `/` | Service info + version + endpoint index |
 | `POST` | `/mem/search` | Unified retrieval |
 | `POST` | `/mem/ingest` | Write a new memory (conflict detection + secret scan; a `replaces` field declares superseding) |
+| `POST` | `/memoryhub/unpack` | Unpack a MemoryHub pack read-only (validate + human summary) |
+| `POST` | `/memoryhub/import` | Naturalize pack nodes into the store (`select` empty = preview only; `include_secrets` allows strong-secret nodes) |
 | `POST` | `/graph/neighbors` | Graph neighbors of a node |
 | `POST` | `/lifecycle/pre-turn` | **Memory strategy**: decide which memories to recall before each model call; returns text ready to inject into the prompt |
 

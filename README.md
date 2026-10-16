@@ -217,7 +217,7 @@ python scripts/build_kb_index.py --rules rules.json
 
 ## 使用
 
-### MCP 工具（19 个）— `mcp_tools/*`
+### MCP 工具（21 个）— `mcp_tools/*`
 
 | 工具 | 说明 |
 |---|---|
@@ -240,6 +240,8 @@ python scripts/build_kb_index.py --rules rules.json
 | `graph_neighbors` | 从某节点出发对知识图谱做 BFS（关系过滤、深度 1–3、弱边过滤） |
 | `mem_link` | 手动创建图边（`RELATED_TO` / `CAUSES` / `REFERS_TO`；默认双向） |
 | `mem_unlink` | 删除图边（幂等：边不存在返回 `deleted=false`；用于清理误标产生的 `REVISED_BY` 边） |
+| `mem_unpack` | 只读解开 MemoryHub 记忆包：校验格式 / 版本、扫描敏感信息、给人读摘要；不写入任何东西 |
+| `mem_import` | 把记忆包里的节点「入籍」（写回本库）；默认只读预览，`select` 显式选中才写，`include_secrets=True` 才放行强敏感节点 |
 
 ### CLI 命令 — `scripts/palimpsest_cli.py`
 
@@ -253,6 +255,9 @@ python scripts/build_kb_index.py --rules rules.json
 | `graph --id N` | 某节点的图谱邻居（`--depth`、`--relation`、`--min-weight`） |
 | `recent` | 最近的记忆（`--limit`、`--domain`） |
 | `tasks` | 任务节点状态注册表（子命令 `active` / `backfill`） |
+| `memoryhub` | MemoryHub 记忆包（子命令 `read` / `import`） |
+| `memoryhub read PATH` | 只读解开记忆包（校验 + 人读摘要，`--preview-chars`） |
+| `memoryhub import PATH` | 把包内节点入籍（`--select 12,15,31`；为空 = 只预览不写；`--include-secrets` 放行强敏感节点） |
 | `tasks active` | 活跃任务列表（`--project`、`--states todo,doing,blocked`、`--limit`） |
 | `tasks backfill` | 存量任务节点回填 `task_state`（默认 dry-run 预览，`--apply` 才写库） |
 | `review` | 最近 N 天的周期回顾（`--tier facts\|logs\|''` 作用于 recent_ingests） |
@@ -279,6 +284,8 @@ python scripts/build_kb_index.py --rules rules.json
 | `GET` | `/` | 服务信息 + 版本 + 端点索引 |
 | `POST` | `/mem/search` | 统一检索 |
 | `POST` | `/mem/ingest` | 写入新记忆（含冲突检测 + 敏感扫描；`replaces` 字段显式声明取代） |
+| `POST` | `/memoryhub/unpack` | 只读解开 MemoryHub 记忆包（校验 + 人读摘要） |
+| `POST` | `/memoryhub/import` | 把记忆包里的节点入籍（`select` 为空 = 只预览不写；`include_secrets` 放行强敏感节点） |
 | `POST` | `/graph/neighbors` | 某节点的图谱邻居 |
 | `POST` | `/lifecycle/pre-turn` | **记忆策略**：每轮模型调用前决定召回哪些记忆，返回可注入 prompt 的文本 |
 

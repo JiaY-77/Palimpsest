@@ -211,6 +211,26 @@ def cmd_link(args):
     )
 
 
+def cmd_memoryhub_read(args):
+    print(
+        _rest_call(
+            "POST",
+            "/memoryhub/unpack",
+            {"path": args.path, "preview_chars": args.preview_chars},
+        )
+    )
+
+
+def cmd_memoryhub_import(args):
+    print(
+        _rest_call(
+            "POST",
+            "/memoryhub/import",
+            {"path": args.path, "select": args.select, "include_secrets": args.include_secrets},
+        )
+    )
+
+
 def cmd_index(args):
     # 惰性 import：mcp_tools._common 模块级会初始化库，只有本命令才需要它
     from mcp_tools import kb_index
@@ -571,6 +591,20 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--limit", type=int, default=10)
     sp.add_argument("--domain", default="")
     sp.set_defaults(fn=cmd_recent)
+
+    sp = sub.add_parser("memoryhub", help="MemoryHub 记忆包（读取 / 入籍）")
+    msub = sp.add_subparsers(dest="memoryhub_cmd", required=True)
+
+    mp = msub.add_parser("read", help="只读解开记忆包（校验 + 人读摘要）")
+    mp.add_argument("path", help="记忆包文件路径")
+    mp.add_argument("--preview-chars", type=int, default=80, help="节点预览截断字符数（默认 80）")
+    mp.set_defaults(fn=cmd_memoryhub_read)
+
+    mp = msub.add_parser("import", help="把记忆包里的节点入籍（select 为空 = 只预览不写）")
+    mp.add_argument("path", help="记忆包文件路径")
+    mp.add_argument("--select", type=str, default="", help="逗号分隔的原包 node_id，如 12,15,31")
+    mp.add_argument("--include-secrets", action="store_true", help="允许入籍命中强敏感规则的节点")
+    mp.set_defaults(fn=cmd_memoryhub_import)
 
     sp = sub.add_parser("tasks", help="任务节点状态注册表（active 查询 / backfill 回填）")
     tsub = sp.add_subparsers(dest="tasks_cmd", required=True)
