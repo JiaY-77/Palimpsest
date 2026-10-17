@@ -8,6 +8,7 @@
 
 ### 新增
 
+- **思维底片来源标记（`skeleton_kind` / `thought_origin`）**：落库的 `type="thought"` 节点 payload 新增两个互补字段，回答「这条思考从哪来」。`skeleton_kind`（**事实字段**，宿主上报）：本轮注入的思考骨架类型（`""` 未注入 / `code` / `research` / `default`），宿主插件随 `POST /lifecycle/post-turn` 上报、白名单外归空串、每轮重置（本轮未走给侧则上报空串，不残留上一轮的值）；`thought_origin`（**启发式字段**，本体判定）：按落库文本开头是否为骨架引导行判定 `skeleton` / `native` / `unknown`——起手式直接从骨架模板派生（不另立一套），全/半角标点归一后比对。**诚实边界**：宿主侧无法区分「骨架引导出的产物」与「模型原生思考」，两字段并存的贡献是**交叉核对**——kind 说「注入了什么」、origin 说「文本长得像什么」，不一致即可查出「注入了骨架但模型没照写」，单独任何一个都不声称精确归因。任何写入通道写 thought 节点都自动带 `thought_origin`（新节点无需回填）；存量节点用 `python scripts/backfill_thought_origin.py` 回填（默认 dry-run、`--apply` 才写、复跑幂等 0 变更；`skeleton_kind` 为给侧上报的事实字段，存量无从得知，不回填）。
 - **Hermes 插件侧接入（`hermes-plugin`，纯传输零判定）**：给侧注册 `pre_llm_call` 钩子——每轮 LLM 调用前向 `/lifecycle/pre-turn` 取骨架，**包一句 `<thought>` 指令前缀后返回**（注入落在 user 消息末尾，裸骨架会被当「参考资料」忽略，实测须指令引导模型才按骨架产出；包装在传输侧——骨架文本本体侧另有 REST 直调等读取方，指令只属于注入场景）。收侧 `sync_turn` 从 `messages` 里**本轮**（最后一条 `user` 之后）assistant 消息的 `reasoning` 键（Hermes 已把正文 `<thought>` 剥进去）原样还原成 `<thought>` 块拼回 `assistant_message`，让本体既有抽取直接生效；`reasoning` 无法区分「骨架引导产物」与「模型原生思考」，仅以骨架 kind 做亲和性观察（日志），不声称精确归因。全链 fail-open（不可达 / 超时 / 空骨架 → 本轮不注入，绝不打断回复）。新增配置 `PALIMPSEST_THOUGHT_SKELETON`（默认开）/ `PALIMPSEST_THOUGHT_TIMEOUT`（默认 2.0 秒）。
 
 ### 修复

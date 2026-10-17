@@ -451,3 +451,80 @@ def test_thought_not_a_protected_type():
     assert "thought" not in Config.POLICY_PROTECTED_TYPES
     assert is_protected({"type": "thought"}) is False
     assert is_protected({"type": "rule"}) is True
+
+
+# ---------------------------------------------------------------------------
+# 6. 来源标记：skeleton_kind 事实字段透传 + thought_origin 形态启发
+# ---------------------------------------------------------------------------
+
+# 骨架照写样本（引导行与 core/strategy._THOUGHT_SKELETONS["default"] 对应）。
+_THOUGHT_SKELETON_BODY = (
+    "1. 要的是什么（一句话）：确认列表页空态有没有兜住\n"
+    "2. 已知 / 未知：已核实入口存在，还没看空态分支\n"
+    "3. 值不值得记：值得\n"
+    "4. 该不该动手：先对齐"
+)
+
+# 原生思考样本（模型自带推理文本，与骨架无关；真实观测样本）。
+_THOUGHT_NATIVE_BODY = "All done. Now report to the user."
+
+
+def test_post_turn_skeleton_kind_written_to_payload(db_path):
+    """宿主上报本轮注入的骨架类型 → 事实字段进 payload；骨架照写 → 启发式判 skeleton。"""
+    client = _client()
+    r = client.post(
+        "/lifecycle/post-turn",
+        json={
+            "user_message": "今天天气不错",
+            "assistant_message": f"<thought>\n{_THOUGHT_SKELETON_BODY}\n</thought>",
+            "skeleton_kind": "default",
+        },
+    )
+    assert r.status_code == 200, r.text
+    thought = r.json()["thought"]
+    assert thought["stored"] is True
+    assert thought["skeleton_kind"] == "default"
+    assert thought["thought_origin"] == "skeleton"
+
+    got = client.get(f"/memory/{thought['node_id']}").json()
+    assert got["payload"]["skeleton_kind"] == "default"
+    assert got["payload"]["thought_origin"] == "skeleton"
+
+
+def test_post_turn_without_skeleton_kind_defaults_to_empty(db_path):
+    """老宿主不传 skeleton_kind → 空串（兼容）；payload 仍带启发式判定。"""
+    client = _client()
+    r = client.post(
+        "/lifecycle/post-turn",
+        json={
+            "user_message": "今天天气不错",
+            "assistant_message": f"<thought>\n{_THOUGHT_SKELETON_BODY}\n</thought>",
+        },
+    )
+    thought = r.json()["thought"]
+    assert thought["stored"] is True
+    assert thought["skeleton_kind"] == ""
+    got = client.get(f"/memory/{thought['node_id']}").json()
+    assert got["payload"]["skeleton_kind"] == ""
+    assert got["payload"]["thought_origin"] == "skeleton"
+
+
+def test_post_turn_cross_check_catches_unfollowed_skeleton(db_path):
+    """注入了骨架但模型没照写：事实字段与启发式字段交叉暴露差异。"""
+    client = _client()
+    r = client.post(
+        "/lifecycle/post-turn",
+        json={
+            "user_message": "今天天气不错",
+            "assistant_message": f"<thought>{_THOUGHT_NATIVE_BODY}</thought>",
+            "skeleton_kind": "code",
+        },
+    )
+    thought = r.json()["thought"]
+    assert thought["stored"] is True
+    assert thought["skeleton_kind"] == "code"
+    assert thought["thought_origin"] == "native"
+
+    got = client.get(f"/memory/{thought['node_id']}").json()
+    assert got["payload"]["skeleton_kind"] == "code"
+    assert got["payload"]["thought_origin"] == "native"

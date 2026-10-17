@@ -28,6 +28,8 @@ import sys
 import types
 from unittest.mock import patch
 
+import pytest
+
 # ---------------------------------------------------------------------------
 # Fake `agent.memory_provider` module so the plugin imports standalone.
 # ---------------------------------------------------------------------------
@@ -173,7 +175,9 @@ class TestThoughtSkeletonForwarding:
         assert payload["thought_skeleton"] is True
         assert payload["user_message"] == "帮我改一个函数"
         assert payload["session_id"] == "s1"
-        assert cap._last_skeleton_kind == "code"
+        # kind 存类级跨实例共享桶（宿主双加载：钩子实例与 sync_turn 实例不同），
+        # 键 = 请求里的 session_id。
+        assert PalimpsestMemoryProvider._skeleton_kind_by_session["s1"] == "code"
 
     def test_empty_skeleton_returns_empty_string(self):
         cap = _CapturingProvider(response={"thought_skeleton": "", "thought_skeleton_kind": ""})
@@ -229,6 +233,106 @@ class TestSyncTurnForwarding:
         cap._enabled = True
         cap._run("sync_turn", "记住这个偏好", "好的")
         assert cap.sent == []
+
+
+class TestSyncTurnSkeletonKind:
+    """sync_turn 上报本轮骨架类型（事实字段，供本体写进 thought 节点 payload）。
+
+    「文本长得像什么」的归因不在宿主侧——宿主只上报事实（本轮注入了什么），
+    本体按 content 形态另判 thought_origin，两者交叉可查「注入了骨架但没照写」。
+
+    状态是**类级跨实例**的：宿主把插件加载两次（插件加载器 + scoped memory
+    provider），``pre_llm_call`` 钩子挂实例 A、宿主 ``initialize()`` /
+    ``sync_turn()`` 调实例 B（生产实测两实例 self_id 不一致）——用例因此全部
+    跨实例构造（A 注入、B 上报），单实例语义抓不到这类丢失。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_kind_bucket(self):
+        """类级桶是全进程状态：每例前后清空——用例间不串味，也不污染既有用例。"""
+        PalimpsestMemoryProvider._skeleton_kind_by_session.clear()
+        yield
+        PalimpsestMemoryProvider._skeleton_kind_by_session.clear()
+
+    def test_kind_passes_across_instances(self):
+        """双加载：钩子在实例 A 记下 kind，实例 B 的 sync_turn 上报（跨实例不丢）。"""
+        a = _CapturingProvider(
+            response={
+                "thought_skeleton": "<thought>\n1. 要改什么 / 新增什么（一句话）：\n</thought>",
+                "thought_skeleton_kind": "code",
+            }
+        )
+        b = _CapturingProvider()
+        a._enabled = True
+        b._enabled = True
+        a._run("thought_skeleton_context", user_message="帮我改一个函数", session_id="s-inst")
+        b._run("sync_turn", "帮我改一个函数", "改好了", session_id="s-inst")
+        url, payload = b.sent[-1]
+        assert url.endswith("/lifecycle/post-turn")
+        assert payload["skeleton_kind"] == "code"
+
+    def test_kind_consumed_after_first_sync(self):
+        """取值即消费：同一会话连续两次 sync_turn，第二次必须上报空串。"""
+        a = _CapturingProvider(
+            response={
+                "thought_skeleton": "<thought>\n1. 要改什么 / 新增什么（一句话）：\n</thought>",
+                "thought_skeleton_kind": "code",
+            }
+        )
+        b = _CapturingProvider()
+        a._enabled = True
+        b._enabled = True
+        a._run("thought_skeleton_context", user_message="帮我改一个函数", session_id="s-dup")
+        b._run("sync_turn", "问题一", "回答一", session_id="s-dup")
+        b._run("sync_turn", "问题二", "回答二", session_id="s-dup")
+        _, first = b.sent[-2]
+        _, second = b.sent[-1]
+        assert first["skeleton_kind"] == "code"
+        assert second["skeleton_kind"] == ""
+
+    def test_sessions_do_not_leak_kind(self):
+        """会话隔离：s1 注入 research 后，s2 的 sync_turn 上报空串（分桶不互染）。"""
+        a = _CapturingProvider(
+            response={
+                "thought_skeleton": "<thought>\n1. 问题是什么（一句话）：\n</thought>",
+                "thought_skeleton_kind": "research",
+            }
+        )
+        b = _CapturingProvider()
+        a._enabled = True
+        b._enabled = True
+        a._run("thought_skeleton_context", user_message="调研对比一下这两个方案的可行性", session_id="s1")
+        b._run("sync_turn", "问题", "回答", session_id="s2")
+        _, payload = b.sent[-1]
+        assert payload["skeleton_kind"] == ""
+
+    def test_gate_skip_resets_kind_not_leak_previous_turn(self):
+        """本轮没走到给侧（空消息被闸）→ 桶已重置，上报空串，不残留上一轮 kind。"""
+        a = _CapturingProvider(
+            response={
+                "thought_skeleton": "<thought>\n1. 问题是什么（一句话）：\n</thought>",
+                "thought_skeleton_kind": "research",
+            }
+        )
+        b = _CapturingProvider()
+        a._enabled = True
+        b._enabled = True
+        a._run("thought_skeleton_context", user_message="调研对比一下这两个方案的可行性", session_id="s-gate")
+        a._run("thought_skeleton_context", user_message="   ", session_id="s-gate")  # 空消息：闸门直接返回
+        b._run("sync_turn", "问题", "回答", session_id="s-gate")
+        _, payload = b.sent[-1]
+        assert payload["skeleton_kind"] == ""
+
+    def test_idle_turn_reports_empty_across_instances(self):
+        """本体返回空骨架（闲聊轮）：跨实例上报空串（事实字段如实 = 未注入）。"""
+        a = _CapturingProvider(response={"thought_skeleton": "", "thought_skeleton_kind": ""})
+        b = _CapturingProvider()
+        a._enabled = True
+        b._enabled = True
+        a._run("thought_skeleton_context", user_message="帮我改一个函数", session_id="s-idle")
+        b._run("sync_turn", "问题", "回答", session_id="s-idle")
+        _, payload = b.sent[-1]
+        assert payload["skeleton_kind"] == ""
 
 
 class TestThoughtExtractionFromReasoning:

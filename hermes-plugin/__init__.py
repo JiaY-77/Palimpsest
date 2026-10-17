@@ -22,7 +22,7 @@ import json
 import logging
 import os
 import urllib.request
-from typing import Any
+from typing import Any, ClassVar
 
 from agent.memory_provider import MemoryProvider, RecallStatus
 
@@ -220,9 +220,8 @@ class PalimpsestMemoryProvider(MemoryProvider):
         self._cron_skipped = False
         self._session_id = ""
         self._last_recall: RecallStatus | None = None
-        # 给侧观测：本轮注入过骨架时记录 kind（"" / code / research / default）。
-        # 收侧只做亲和性观察，不声称精确归因（见 sync_turn 的边界说明）。
-        self._last_skeleton_kind = ""
+        # 给侧骨架 kind 不存实例属性：宿主双加载（钩子实例 A 写、sync_turn 实例 B
+        # 读）会让事实字段恒为空——存类级按 session 分桶（见给侧方法上方的桶注释）。
 
     # -- 核心生命周期 ------------------------------------------------
 
@@ -296,6 +295,17 @@ class PalimpsestMemoryProvider(MemoryProvider):
 
     # -- 思维预设层给侧（pre_llm_call 钩子） --------------------------
 
+    # 事实字段跨实例共享桶：宿主把插件加载**两次**（插件加载器一次 + scoped
+    # memory provider 一次），``pre_llm_call`` 钩子挂实例 A 上，而宿主
+    # ``initialize()`` / ``sync_turn()`` 调的是实例 B（2026-10-17 生产实测：
+    # DIAG 里钩子 self_id ≠ initialize 的 self_id）——kind 若存实例属性，给侧
+    # 写在 A、收侧从 B 读，post-turn 上报的 ``skeleton_kind`` **恒为空**（探针
+    # 实测：A._last_skeleton_kind='default' 而 payload['skeleton_kind']=''）。
+    # 改类级 dict **按 session 分桶**（同进程多会话互不污染）：给侧每轮先把本
+    # 会话键重置为空串（本轮没走给侧 = 空，闸门提前返回也一样），拿到 kind 后
+    # 写入；收侧取值即消费（pop）。
+    _skeleton_kind_by_session: ClassVar[dict[str, str]] = {}
+
     def thought_skeleton_context(self, *, user_message: Any = None, session_id: str = "", **kwargs) -> str:
         """``pre_llm_call`` 钩子回调：返回本轮思考骨架（思维预设层给侧）。
 
@@ -310,6 +320,10 @@ class PalimpsestMemoryProvider(MemoryProvider):
         fail-open：本体不可达 / 超时 / 骨架为空 → ""（热路径，宁缺毋慢，
         绝不拖慢或打断主链路）。
         """
+        # 每轮先重置本会话的桶（在一切闸门之前）：本轮没走到给侧（关闸 / cron /
+        # 空消息）时本会话键必须是空串——sync_turn 会把它作为事实字段上报，
+        # 残留上一轮的 kind 会写脏本轮节点。桶在类上（跨实例共享），见类体注释。
+        type(self)._skeleton_kind_by_session[session_id or self._session_id or ""] = ""
         # 闸门刻意**不**看 ``self._enabled``：宿主会把插件加载两次（插件加载器一次 +
         # scoped memory provider 一次），``initialize()`` 只调后者，而 ``pre_llm_call``
         # 钩子挂在前者上——用 ``_enabled`` 当闸门会让骨架**永远**不注入（2026-10-17 生产
@@ -322,7 +336,6 @@ class PalimpsestMemoryProvider(MemoryProvider):
         text = _message_text(user_message)
         if not text.strip():
             return ""
-        self._last_skeleton_kind = ""
         resp = _http_post(
             f"{self._base_url}/lifecycle/pre-turn",
             {
@@ -336,7 +349,11 @@ class PalimpsestMemoryProvider(MemoryProvider):
         if "error" in resp:
             return ""
         skeleton = str(resp.get("thought_skeleton") or "")
-        self._last_skeleton_kind = str(resp.get("thought_skeleton_kind") or "")
+        # kind 值域由本体保证（decide_thought_skeleton 只返回其骨架表的键或空串），
+        # 这里零判定纯透传、不另立校验集合（避免两处漂移）；写入跨实例共享桶。
+        type(self)._skeleton_kind_by_session[session_id or self._session_id or ""] = str(
+            resp.get("thought_skeleton_kind") or ""
+        )
         if not skeleton:
             return ""
         # 裸骨架注入 user 消息末尾只会被当「参考资料」忽略（实测）；必须包一句
@@ -363,9 +380,15 @@ class PalimpsestMemoryProvider(MemoryProvider):
         （``core/strategy.py`` extract/decide_thought_store）直接生效（A 方案，
         零改本体）。边界（如实记录）：``reasoning`` 装的是模型思考原文，可能
         是骨架引导出的预设层产物，也可能是模型自身的原生思考——两者同为
-        思维底片，但宿主侧无法精确归因；只以 ``_last_skeleton_kind`` 做
-        亲和性观察（日志记录），不写进库、不声称来源。
+        思维底片，但宿主侧无法精确归因。这里只上报**事实字段**
+        ``skeleton_kind``（本轮给侧注入的骨架类型，"" = 未注入，每轮重置）；
+        「文本长得像什么」由本体按 content 形态另判 ``thought_origin``
+        （启发式），两者交叉可查「注入了骨架但模型没照写」。
         """
+        # 取值即消费（pop，缺省空串）：即使本轮被闸掉也不残留，下一轮从空开始。
+        # kind 来自类级跨实例共享桶（宿主双加载：钩子实例 A 写、本实例 B 读），
+        # 键 = session_id or self._session_id or ""（与给侧同键）。
+        kind = type(self)._skeleton_kind_by_session.pop(session_id or self._session_id or "", "")
         if not self._enabled or not self._auto_ingest:
             return
         assistant_message = assistant_content or ""
@@ -375,8 +398,8 @@ class PalimpsestMemoryProvider(MemoryProvider):
                 assistant_message = f"{assistant_message}\n<thought>{reasoning}</thought>"
             else:
                 assistant_message = f"<thought>{reasoning}</thought>"
-            if self._last_skeleton_kind:
-                logger.debug("Palimpsest thought captured (skeleton_kind=%s)", self._last_skeleton_kind)
+            if kind:
+                logger.debug("Palimpsest thought captured (skeleton_kind=%s)", kind)
         _http_post(
             f"{self._base_url}/lifecycle/post-turn",
             {
@@ -384,6 +407,9 @@ class PalimpsestMemoryProvider(MemoryProvider):
                 "user_message": user_content,
                 "assistant_message": assistant_message,
                 "auto_ingest": self._auto_ingest,
+                # 事实字段：本轮给侧注入的骨架类型（"" = 未注入）。本体侧另有
+                # thought_origin 形态启发式（文本长得像什么），两者交叉核对。
+                "skeleton_kind": kind,
             },
         )
 
