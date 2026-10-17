@@ -69,21 +69,31 @@ def _message_text(message: Any) -> str:
 
 
 def _last_assistant_reasoning(messages: list[dict[str, Any]] | None = None) -> str:
-    """最后一条 assistant 消息的思考字段。
+    """本轮（最后一条 ``user`` 之后）最近的一段思考字段。
 
-    Hermes 把 ``<thought>`` 内容剥进最后一条 assistant 消息的 ``reasoning``
-    字段（``agent/think_scrubber.py``；落库到 state.db 同名列、UI 显示为
+    Hermes 把 ``<thought>`` 内容剥进 assistant 消息的 ``reasoning`` 字段
+    （``agent/think_scrubber.py``；落库到 state.db 同名列、UI 显示为
     Reasoning 面板）——**正文里没有**，收侧从这取。兼容
-    ``reasoning`` / ``reasoning_content`` 两种键名（不同 provider 路径
-    字段名不一）。只看最后一条 assistant——更早的思考不属于本轮。
+    ``reasoning`` / ``reasoning_content`` 两种键名（不同 provider 路径字段名不一）。
+
+    **不能只看最后一条 assistant**：一个回合里模型会有多条 assistant 消息
+    （工具循环），写思考的往往不是最后那条——末尾那条正式回答常没有 reasoning，
+    只看最后一条会让整轮思考被丢掉（2026-10-17 生产实测：给侧注入已生效、
+    框架也把思考写进了前面几条 assistant 的 reasoning，但落库 0 条）。这里从
+    末尾往前扫，遇到本轮起点（``user`` 消息）即停，取最近一段非空 reasoning。
     """
     for msg in reversed(messages or []):
-        if isinstance(msg, dict) and msg.get("role") == "assistant":
-            for key in ("reasoning", "reasoning_content"):
-                value = msg.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value.strip()
-            return ""
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role == "user":
+            break
+        if role != "assistant":
+            continue
+        for key in ("reasoning", "reasoning_content"):
+            value = msg.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
     return ""
 
 
@@ -300,7 +310,14 @@ class PalimpsestMemoryProvider(MemoryProvider):
         fail-open：本体不可达 / 超时 / 骨架为空 → ""（热路径，宁缺毋慢，
         绝不拖慢或打断主链路）。
         """
-        if not self._enabled or not self._thought_skeleton:
+        # 闸门刻意**不**看 ``self._enabled``：宿主会把插件加载两次（插件加载器一次 +
+        # scoped memory provider 一次），``initialize()`` 只调后者，而 ``pre_llm_call``
+        # 钩子挂在前者上——用 ``_enabled`` 当闸门会让骨架**永远**不注入（2026-10-17 生产
+        # 实测：register 两次得到两个实例，钩子 self_id 是未 initialize 那个、_enabled 恒 False）。
+        # 只保留「本轮要不要给」的开关 + cron 轮跳过（cron 会话宿主以 platform=cron 触发）。
+        if not self._thought_skeleton or self._cron_skipped:
+            return ""
+        if str(kwargs.get("platform") or "").strip().lower() == "cron":
             return ""
         text = _message_text(user_message)
         if not text.strip():
