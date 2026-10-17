@@ -46,6 +46,47 @@ def _http_post(url: str, payload: dict, timeout: float = 5.0) -> dict:
         return {"error": str(exc)}
 
 
+def _message_text(message: Any) -> str:
+    """从钩子 payload 的 ``user_message`` 抽纯文本（骨架判定/召回只吃文本）。
+
+    Hermes 热路径传的可能是 str，也可能是多模态 content parts（list[str|dict]，
+    文本在 ``text`` 键）；宿主 interruptions 渠道还可能出现 dict 包裹的 content。
+    只抽得出来的文本，抽不到就返回 ""。
+    """
+    if isinstance(message, str):
+        return message
+    if isinstance(message, dict) and isinstance(message.get("content"), str):
+        return message["content"]
+    if isinstance(message, (list, tuple)):
+        parts: list[str] = []
+        for item in message:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict) and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+        return "\n".join(parts)
+    return ""
+
+
+def _last_assistant_reasoning(messages: list[dict[str, Any]] | None = None) -> str:
+    """最后一条 assistant 消息的思考字段。
+
+    Hermes 把 ``<thought>`` 内容剥进最后一条 assistant 消息的 ``reasoning``
+    字段（``agent/think_scrubber.py``；落库到 state.db 同名列、UI 显示为
+    Reasoning 面板）——**正文里没有**，收侧从这取。兼容
+    ``reasoning`` / ``reasoning_content`` 两种键名（不同 provider 路径
+    字段名不一）。只看最后一条 assistant——更早的思考不属于本轮。
+    """
+    for msg in reversed(messages or []):
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            for key in ("reasoning", "reasoning_content"):
+                value = msg.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            return ""
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Tool schemas（面向模型：模型决定何时主动用；冷路径，与 lifecycle 热路径分工）
 # ---------------------------------------------------------------------------
@@ -157,10 +198,21 @@ class PalimpsestMemoryProvider(MemoryProvider):
         # 无效，只有 scope=memory 能挡住）。需要把知识库切片一并注入时显式设为 all。
         self._scope = os.environ.get("PALIMPSEST_PREFETCH_SCOPE", "memory")
         self._auto_ingest = os.environ.get("PALIMPSEST_AUTO_INGEST", "true").lower() != "false"
+        # 思维预设层给侧：每轮 LLM 调用前取思考骨架注入 user 消息（pre_llm_call 钩子）。
+        # 骨架内容与情境判定全在本体（/lifecycle/pre-turn 的 thought_skeleton 字段）；
+        # 这里只传输 + fail-open。默认开——功能价值只在开启时体现，风险由 fail-open
+        # + 短超时压住；关闸设 PALIMPSEST_THOUGHT_SKELETON=false。
+        self._thought_skeleton = os.environ.get("PALIMPSEST_THOUGHT_SKELETON", "true").lower() != "false"
+        # 骨架是热路径，宁缺毋慢：本地 REST 通常 <500ms，慢 embedding 时 fail-open
+        # 只丢骨架不丢正文。默认 2.0s，可用 PALIMPSEST_THOUGHT_TIMEOUT 调。
+        self._thought_timeout = float(os.environ.get("PALIMPSEST_THOUGHT_TIMEOUT", "2.0"))
         self._enabled = False
         self._cron_skipped = False
         self._session_id = ""
         self._last_recall: RecallStatus | None = None
+        # 给侧观测：本轮注入过骨架时记录 kind（"" / code / research / default）。
+        # 收侧只做亲和性观察，不声称精确归因（见 sync_turn 的边界说明）。
+        self._last_skeleton_kind = ""
 
     # -- 核心生命周期 ------------------------------------------------
 
@@ -232,6 +284,52 @@ class PalimpsestMemoryProvider(MemoryProvider):
     def recall_status(self) -> RecallStatus | None:
         return self._last_recall
 
+    # -- 思维预设层给侧（pre_llm_call 钩子） --------------------------
+
+    def thought_skeleton_context(self, *, user_message: Any = None, session_id: str = "", **kwargs) -> str:
+        """``pre_llm_call`` 钩子回调：返回本轮思考骨架（思维预设层给侧）。
+
+        返回非空文本时宿主会把它注入 user 消息（``agent/turn_context.py``
+        的注入点注释原文 "never the system prompt"——每轮动态、与 provider
+        的 prefill 语义无关）。骨架内容与情境判定全在本体：``POST
+        /lifecycle/pre-turn`` 带 ``thought_skeleton=True``，按当前轮情境返回
+        code / research / default 模板，闲聊 / 过短轮返回空串；这里零判定只传输。
+        非空骨架返回时包一句 ``<thought>`` 指令前缀——裸骨架落在 user 消息末尾
+        只会被当「参考资料」忽略（实测），包指令后模型才按骨架逐项产出。
+
+        fail-open：本体不可达 / 超时 / 骨架为空 → ""（热路径，宁缺毋慢，
+        绝不拖慢或打断主链路）。
+        """
+        if not self._enabled or not self._thought_skeleton:
+            return ""
+        text = _message_text(user_message)
+        if not text.strip():
+            return ""
+        self._last_skeleton_kind = ""
+        resp = _http_post(
+            f"{self._base_url}/lifecycle/pre-turn",
+            {
+                "session_id": session_id or self._session_id,
+                "user_message": text,
+                "domain": self._domain,
+                "thought_skeleton": True,
+            },
+            timeout=self._thought_timeout,
+        )
+        if "error" in resp:
+            return ""
+        skeleton = str(resp.get("thought_skeleton") or "")
+        self._last_skeleton_kind = str(resp.get("thought_skeleton_kind") or "")
+        if not skeleton:
+            return ""
+        # 裸骨架注入 user 消息末尾只会被当「参考资料」忽略（实测）；必须包一句
+        # 指令，模型才会按骨架逐项产出 <thought>。包装在传输侧而不是本体侧：
+        # 骨架文本本体侧另有多处读取方（REST 直调、CLI），指令只属于注入场景。
+        return (
+            "\n[思维底片·预设层] 回答之前，请先用 <thought> 标签写下你的结构化思考，"
+            "严格按下面的骨架逐项填写（写完整、不要跳过任何一项），然后再给出正式回答：\n" + skeleton
+        )
+
     def sync_turn(
         self,
         user_content: str,
@@ -240,15 +338,34 @@ class PalimpsestMemoryProvider(MemoryProvider):
         session_id: str = "",
         messages: list[dict[str, Any]] | None = None,
     ) -> None:
-        """每轮沉淀：转发 ``/lifecycle/post-turn``（命中判定 / importance / 分层在本体）。"""
+        """每轮沉淀：转发 ``/lifecycle/post-turn``（命中判定 / importance / 分层在本体）。
+
+        思维预设层收侧：Hermes 已把 ``<thought>`` 内容剥进最后一条 assistant
+        消息的 ``reasoning`` 字段（正文里没有），原样还原成 ``<thought>`` 块
+        拼回 ``assistant_message`` 再发——让本体的既有抽取
+        （``core/strategy.py`` extract/decide_thought_store）直接生效（A 方案，
+        零改本体）。边界（如实记录）：``reasoning`` 装的是模型思考原文，可能
+        是骨架引导出的预设层产物，也可能是模型自身的原生思考——两者同为
+        思维底片，但宿主侧无法精确归因；只以 ``_last_skeleton_kind`` 做
+        亲和性观察（日志记录），不写进库、不声称来源。
+        """
         if not self._enabled or not self._auto_ingest:
             return
+        assistant_message = assistant_content or ""
+        reasoning = _last_assistant_reasoning(messages)
+        if reasoning:
+            if assistant_message.strip():
+                assistant_message = f"{assistant_message}\n<thought>{reasoning}</thought>"
+            else:
+                assistant_message = f"<thought>{reasoning}</thought>"
+            if self._last_skeleton_kind:
+                logger.debug("Palimpsest thought captured (skeleton_kind=%s)", self._last_skeleton_kind)
         _http_post(
             f"{self._base_url}/lifecycle/post-turn",
             {
                 "session_id": session_id or self._session_id,
                 "user_message": user_content,
-                "assistant_message": assistant_content or "",
+                "assistant_message": assistant_message,
                 "auto_ingest": self._auto_ingest,
             },
         )
@@ -357,7 +474,14 @@ class PalimpsestMemoryProvider(MemoryProvider):
 
 def register(ctx) -> None:
     """注册 Palimpsest 为 Hermes memory provider + context engine 插件（双插件换脑）。"""
-    ctx.register_memory_provider(PalimpsestMemoryProvider())
+    provider = PalimpsestMemoryProvider()
+    ctx.register_memory_provider(provider)
+    try:
+        # 思维预设层给侧：每轮 LLM 调用前从本体取思考骨架注入 user 消息。
+        # 注册失败不影响 memory provider（同 context_engine 的隔离口径）。
+        ctx.register_hook("pre_llm_call", provider.thought_skeleton_context)
+    except Exception as exc:  # noqa: BLE001 — 钩子注册失败不影响记忆主链路
+        logger.debug("pre_llm_call hook registration failed: %s", exc)
     try:
         from .context_engine import PalimpsestContextEngine
 

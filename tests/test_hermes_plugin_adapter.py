@@ -5,6 +5,9 @@ forwards lifecycle events to the Palimpsest本体 lifecycle protocol and returns
 whatever the本体 decided. These tests pin the *transport* half:
 
   * ``prefetch``            -> POST /lifecycle/pre-turn      (returns inject_text)
+  * ``thought_skeleton_context``
+                            -> POST /lifecycle/pre-turn with thought_skeleton=True
+                               (returns the skeleton wrapped in a <thought> instruction)
   * ``sync_turn``           -> POST /lifecycle/post-turn
   * ``on_session_end``      -> POST /lifecycle/session-end
   * ``on_pre_compress``     -> POST /lifecycle/pre-compress  (returns points_text)
@@ -149,6 +152,48 @@ class TestPrefetchForwarding:
         cap._enabled = False
         assert cap._run("prefetch", "帮我查一下上周的会议记录") == ""
         assert cap.sent == []
+
+
+# ---------------------------------------------------------------------------
+# thought_skeleton_context -> /lifecycle/pre-turn (thought_skeleton=True)
+# ---------------------------------------------------------------------------
+
+
+class TestThoughtSkeletonForwarding:
+    def test_wraps_skeleton_with_thought_instruction(self):
+        skeleton = "- 目标：\n- 步骤：\n- 风险："
+        cap = _CapturingProvider(response={"thought_skeleton": skeleton, "thought_skeleton_kind": "code"})
+        cap._enabled = True
+        out = cap._run("thought_skeleton_context", user_message="帮我改一个函数", session_id="s1")
+        assert out.startswith("\n[思维底片·预设层]")
+        assert "<thought>" in out
+        assert out.endswith(skeleton)
+        url, payload = cap.sent[0]
+        assert url.endswith("/lifecycle/pre-turn")
+        assert payload["thought_skeleton"] is True
+        assert payload["user_message"] == "帮我改一个函数"
+        assert payload["session_id"] == "s1"
+        assert cap._last_skeleton_kind == "code"
+
+    def test_empty_skeleton_returns_empty_string(self):
+        cap = _CapturingProvider(response={"thought_skeleton": "", "thought_skeleton_kind": ""})
+        cap._enabled = True
+        assert cap._run("thought_skeleton_context", user_message="在吗") == ""
+
+    def test_error_response_returns_empty_string(self):
+        cap = _CapturingProvider(response={"error": "boom"})
+        cap._enabled = True
+        assert cap._run("thought_skeleton_context", user_message="帮我改一个函数") == ""
+
+    def test_disabled_or_env_off_returns_empty_without_request(self):
+        cap = _CapturingProvider()
+        cap._enabled = False
+        assert cap._run("thought_skeleton_context", user_message="帮我改一个函数") == ""
+        assert cap.sent == []
+        off = _CapturingProvider(PALIMPSEST_THOUGHT_SKELETON="false")
+        off._enabled = True
+        assert off._run("thought_skeleton_context", user_message="帮我改一个函数") == ""
+        assert off.sent == []
 
 
 # ---------------------------------------------------------------------------
