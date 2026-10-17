@@ -585,7 +585,7 @@ def test_put_endpoint_non_task_node_unchanged(db_path):
 
 
 # ---------------------------------------------------------------------------
-# 8. 真实存量语料回归（姐姐复核硬伤：真实语料 3/18 → 必须 ≥13/18）
+# 8. 真实存量语料回归（复核发现的硬伤：真实语料 3/18 → 必须 ≥13/18）
 # ---------------------------------------------------------------------------
 
 
@@ -601,7 +601,7 @@ def test_parse_task_state_real_corpus(node_id, content, expected, _why):
 
 
 def test_real_corpus_parse_rate_meets_bar():
-    """18 条真实语料至少 13 条解析出非 None（姐姐要求的验收线）。"""
+    """18 条真实语料至少 13 条解析出非 None（验收线）。"""
     parsed = sum(1 for _i, c, _e, _w in REAL_CORPUS if parse_task_state(c) is not None)
     total = len(REAL_CORPUS)
     assert parsed >= 13, f"真实语料解析率不足：{parsed}/{total}"
@@ -631,13 +631,13 @@ def test_parse_full_width_round_brackets_only():
 
 def test_parse_status_word_mid_line():
     """状态词在正文中间（非首行开头）也要命中。"""
-    assert parse_task_state("T073：doctor 命令 → [待办，2026-09-10 主人指令「计入小帕」]") == "todo"
+    assert parse_task_state("T-73：doctor 命令 → [待办，2026-09-10 用户指令「计入 backlog」]") == "todo"
     assert parse_task_state("普通描述文字 [阻塞] 尾部") == "blocked"
 
 
 def test_parse_long_block_with_spaces_and_punctuation():
     """超长 / 含空格 / 含全角标点的标记块能被整块取出并匹配。"""
-    assert parse_task_state("[待办，2026-09-10 主人指令「计入小帕」] content") == "todo"
+    assert parse_task_state("[待办，2026-09-10 用户指令「计入 backlog」] content") == "todo"
     assert parse_task_state("[挂账持续] token 优化") == "blocked"
 
 
@@ -651,11 +651,11 @@ def test_parse_block_internal_earliest_state_wins():
     第二类误判成 blocked——本测试锁死「按块内位置取胜出」这条规则。
     """
     # blocked 在前：别人的完成条件（落地）不能覆盖本任务的挂账
-    assert parse_task_state("T057：→ [挂账，T055 换脑落地后实施]（主人 2026-08") == "blocked"
+    assert parse_task_state("T-57：→ [挂账，T-55 换脑落地后实施]（用户 2026-08") == "blocked"
     # doing 在前：本任务进行中，后面的「挂起待续」指别的事项
     assert parse_task_state("【任务·技能库瘦身（进行中）2026-09-21 挂起待续】正文") == "doing"
     # 仅「落地」出现（本任务进展描述）→ doing（弱词仍兜底）
-    assert parse_task_state("T055：→ [第二步入落地]（换脑已激活") == "doing"
+    assert parse_task_state("T-55：→ [第二步入落地]（换脑已激活") == "doing"
     # 对称性：同一对词交换位置 → 结果随首现者改变
     assert parse_task_state("[落地后再挂账] 正文") == "doing"
     assert parse_task_state("[挂账后落地] 正文") == "blocked"
@@ -917,10 +917,10 @@ IS_HANDOFF_REAL_SHAPES = [
     # 真接续点：块外正文直接以「接续点」开头（无 【】）
     (True, "接续点 / 会话接续 / 新聊天先读 —— 2026-10-14 文档同步 + 委派通道大修 + 「其他 agent 记忆槽位」调研"),
     # 真接续点：``[...]`` 前缀状态块 + 标记块
-    (True, "[完成] 【★接续点·2026-10-16 小帕任务治理整理 · 新会话先读这条】"),
-    # 反例（生产 node 2333 逐字）：「接续点」在句中——讨论机制的真待办
-    (False, "[待办] 小帕「接续点 × 任务列表」解耦（走 PR，2026-10-16 立）"),
-    # 反例（生产 node 1844 逐字）：「接续点」在句中且自述不是接续点
+    (True, "[完成] 【★接续点·2026-10-16 Palimpsest 任务治理整理 · 新会话先读这条】"),
+    # 反例（逐字）：「接续点」在句中——讨论机制的真待办
+    (False, "[待办] Palimpsest「接续点 × 任务列表」解耦（走 PR，2026-10-16 立）"),
+    # 反例（逐字）：「接续点」在句中且自述不是接续点
     (False, "【历史留痕·记忆同行实测 2026-10-10 第一步】（⚠️ 本条为中途状态，不是当前接续点）"),
     # 反例：普通待办（首行不含「接续点」）
     (False, "验收用普通待办：把某件事做完"),
@@ -944,31 +944,31 @@ def test_is_handoff_real_shapes(expected, first_line):
     """7 条生产库逐字首行：只有「以接续点作为标题词开头」的才判 True。
 
     旧「首行包含」判据把后 3 条也判成接续点——句中含「接续点」的真待办
-    （node 2333）会被打 kind=handoff 并从活跃列表隐形；自述「不是当前
-    接续点」的留痕（node 1844）同样误中。
+    （真待办形态）会被打 kind=handoff 并从活跃列表隐形；自述「不是当前
+    接续点」的留痕同样误中。
     """
     got = _is_handoff({"content": first_line})
     assert got is expected, f"首行={first_line!r} 期望 handoff={expected}，实际 {got}"
 
 
 def test_backfill_handoff_vs_real_todo(iso_store):
-    """回填联动（生产 node 2333 误判回归锁）：真接续点打 kind，句中含「接续点」的真待办不打。
+    """回填联动（误判回归锁）：真接续点打 kind，句中含「接续点」的真待办不打。
 
     生产实测：旧「首行包含」判据 99 条 task 命中 60 条 handoff、活跃三态里
-    5 条含 node 2333（真待办）——直接 apply 会让真待办隐形，因此先收紧判据。
+    5 条含真待办——直接 apply 会让真待办隐形，因此先收紧判据。
     """
     project = _ns()
-    # 生产 node 2333 逐字首行：真待办（「接续点」在句中，讨论的是机制本身）
+    # 逐字首行：真待办（「接续点」在句中，讨论的是机制本身）
     real_todo = _iso_insert_task(
         iso_store,
-        "[待办] 小帕「接续点 × 任务列表」解耦（走 PR，2026-10-16 立）",
+        "[待办] Palimpsest「接续点 × 任务列表」解耦（走 PR，2026-10-16 立）",
         project,
         task_state="todo",
     )
     # 生产真实接续点逐字首行：``[完成]`` 前缀块 + 标记块形态
     handoff = _iso_insert_task(
         iso_store,
-        "[完成] 【★接续点·2026-10-16 小帕任务治理整理 · 新会话先读这条】",
+        "[完成] 【★接续点·2026-10-16 Palimpsest 任务治理整理 · 新会话先读这条】",
         project,
     )
 
@@ -981,7 +981,7 @@ def test_backfill_handoff_vs_real_todo(iso_store):
     # apply：真接续点打 kind；真待办不得被打 kind（打上即从活跃列表隐形）
     backfill_task_state(iso_store, dry_run=False)
     assert iso_store.get_node(handoff)["payload"]["kind"] == HANDOFF_KIND
-    assert iso_store.get_node(real_todo)["payload"].get("kind") is None, "真待办（node 2333 形态）不得被打 kind=handoff"
+    assert iso_store.get_node(real_todo)["payload"].get("kind") is None, "真待办形态不得被打 kind=handoff"
 
     # 幂等：apply 后重跑 dry-run → changes 为空
     second = backfill_task_state(iso_store, dry_run=True)
@@ -1043,14 +1043,14 @@ def test_handoff_title_anchor_only_falls_back():
 def test_backfill_fills_empty_title_on_normal_tasks(iso_store):
     """非接续点、title 为空的普通任务：回填后 title 非空（同一套摘要规则）。
 
-    生产库实测：活跃列表里 title 为空的普通任务（node 1899 / 2294）都是
+    实测：活跃列表里 title 为空的普通任务都是
     「整行一个块」形态，与接续点同病——空 title 在列表里读不出是哪条任务。
     """
     project = _ns()
-    # 生产 node 2294 逐字首行（整行一个块、无锚词 → 规则退化到「最长段」）
+    # 同形态样例（整行一个块、无锚词 → 规则退化到「最长段」）
     blob = _iso_insert_task(
         iso_store,
-        "【待办·周末和小七一起看 BOSS 直聘（主人 2026-10-15 定）】",
+        "【待办·周末去看演出（2026-10-15 定）】",
         project,
     )
     # 「块 + 块外正文」的普通任务（无锚词，最长段 = 块外正文）
@@ -1060,7 +1060,7 @@ def test_backfill_fills_empty_title_on_normal_tasks(iso_store):
 
     bt = iso_store.get_node(blob)["payload"]
     assert (bt.get("title") or "").strip(), "普通任务（整行块）回填后 title 仍为空"
-    assert "周末和小七一起看 BOSS 直聘" in bt["title"]
+    assert "周末去看演出" in bt["title"]
     kt = iso_store.get_node(bracketed)["payload"]
     assert kt.get("title") == "T-910 普通待办任务"
     # 普通任务补 title 不得顺手打 kind
@@ -1163,10 +1163,10 @@ def test_write_layer_duplicate_ingest_idempotent(iso_store):
 
 def test_write_layer_counterexample_todo_not_marked(iso_store):
     """④反例回归（保住 PR #112 的收紧）：句中含「接续点」的真待办不得被打 handoff，且仍在默认列表。"""
-    nid = _ingest_task("[待办] 小帕「接续点 × 任务列表」解耦（走 PR，2026-10-16 立）")
+    nid = _ingest_task("[待办] Palimpsest「接续点 × 任务列表」解耦（走 PR，2026-10-16 立）")
 
     payload = _iso_payload(iso_store, nid)
-    assert payload.get("kind") is None, "句中含「接续点」的真待办（node 2333 形态）不得被打 kind=handoff"
+    assert payload.get("kind") is None, "句中含「接续点」的真待办形态不得被打 kind=handoff"
 
     data = list_active_tasks(iso_store, project="")
     ids = {it["id"] for it in data["results"]}
@@ -1291,7 +1291,7 @@ def test_write_layer_apply_task_patch_fills_title(iso_store):
 
 def test_write_layer_normal_todo_gets_no_handoff_title(iso_store):
     """⑩反例：普通待办（首行不以接续点标记词开头）→ 不得被塞接续点 title。"""
-    nid = _ingest_task("[待办] 小帕「接续点 × 任务列表」解耦（走 PR，2026-10-16 立）")
+    nid = _ingest_task("[待办] Palimpsest「接续点 × 任务列表」解耦（走 PR，2026-10-16 立）")
 
     payload = _iso_payload(iso_store, nid)
     assert payload.get("kind") is None, "真待办不得被打 kind=handoff（既有回归口，PR #112 收紧成果）"

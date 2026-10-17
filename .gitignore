@@ -39,8 +39,8 @@ data/reindex_state.json.tmp
 data/reindex_state_*.json
 data/reindex_state_*.json.tmp
 
-# 个人本地测试数据（不公开）
-泷泽由佳 - 2026-04-25@17h40m44s.json
+# 个人本地测试数据（不公开；按模式忽略，不写具体文件名）
+*- 20??-??-??@*.json
 
 # 内部执行卡（不公开，仅本地工作用）
 TASK_palimpsest_*.md
