@@ -113,7 +113,7 @@ class TestSearchDomainReachesRequest:
         return payload
 
     def test_explicit_domain_is_forwarded(self):
-        payload = self._run({"query": "T001", "domain": "task"})
+        payload = self._run({"query": "T-01", "domain": "task"})
         assert payload["domain"] == "task"
 
     def test_missing_domain_falls_back_to_provider_default(self):

@@ -27,7 +27,7 @@ def _insert(payload: dict, content: str) -> int:
 def _run(query: str, domain_boost: str = "") -> dict:
     """真实调用被测函数，返回 {node_id: score}。
 
-    显式传 tier="" —— 本文件测的是 domain_boost 加权逻辑，与记忆分层（T081）无关；
+    显式传 tier="" —— 本文件测的是 domain_boost 加权逻辑，与记忆分层（T-81）无关；
     种子节点用 type=event（logs 层），若不隔离会被默认 tier="facts" 过滤掉。
     分层本身的回归在 tests/test_memory_tier.py。
     """

@@ -165,7 +165,7 @@ def test_mem_ingest_stamps_valid_at(iso_store):
 
     before = time.time()
 
-    res = json.loads(mem_ingest("bi-temporal 测试：主人喜欢深烘焙的手冲", type="memory", domain="hermes"))
+    res = json.loads(mem_ingest("bi-temporal 测试：用户喜欢深烘焙的手冲", type="memory", domain="hermes"))
     assert res["stored"] is True
     payload = iso_store.get_node(res["node_id"])["payload"]
     assert "valid_at" in payload
@@ -195,10 +195,10 @@ def test_superseded_old_node_gets_invalid_and_expired(iso_store):
 
     from mcp_tools.memory import mem_ingest
 
-    first = json.loads(mem_ingest("小帕的服务监听 8090 端口", type="memory", domain="bite_test"))
+    first = json.loads(mem_ingest("Palimpsest 的服务监听 8090 端口", type="memory", domain="bite_test"))
     old_id = first["node_id"]
     # 极高相似措辞触发 >0.75 取代
-    second = json.loads(mem_ingest("小帕的服务监听 8090 端口", type="memory", domain="bite_test"))
+    second = json.loads(mem_ingest("Palimpsest 的服务监听 8090 端口", type="memory", domain="bite_test"))
     assert second["conflict_found"], "同措辞应触发取代"
     assert old_id in second["outdated_ids"]
 

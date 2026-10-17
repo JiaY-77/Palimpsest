@@ -439,7 +439,7 @@ def build_edges(
         )
 
     # ── 源 5b：会话/时序链（FOLLOWS）───────────────────────────────────
-    # 小帕没有 session_id 字段；用 created_at 时间切分——同一段时间里
+    # Palimpsest 没有 session_id 字段；用 created_at 时间切分——同一段时间里
     # 相邻创建的节点之间建有向边（早 → 晚），间隔 <= SESSION_GAP_SECONDS。
     # 收录范围＝除知识库/技能切片（kb_chunk/skill_chunk/novel_chunk，它们靠
     # PART_OF/NEXT 成组）之外、且带 created_at 的所有节点。**早期只收日志类

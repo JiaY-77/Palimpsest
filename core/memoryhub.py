@@ -1,11 +1,11 @@
 """MemoryHub 记忆包读写
 =====================
 
-小帕（Palimpsest）的自包含 JSON 记忆包：只要有本模块就能把记忆包「解开读取」，
+Palimpsest 的自包含 JSON 记忆包：只要有本模块就能把记忆包「解开读取」，
 先当故事听，再挑着入籍（把包内节点写回本库）。
 
-名字渊源：小帕的 DB 文件就叫 ``data/mh_memory.db``（``mh`` = MemoryHub，
-主人 2024 年初的原型名）。
+名字渊源：Palimpsest 的 DB 文件就叫 ``data/mh_memory.db``（``mh`` = MemoryHub，
+用户 2024 年初的原型名）。
 
 本模块做**读侧 + 入籍落库**：
   - ``build_pack``     从 TriviumStore 产出一个自包含记忆包 dict；
