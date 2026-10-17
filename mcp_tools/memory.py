@@ -20,7 +20,7 @@ from core.judgment_metrics import record_ingest
 from core.memoryhub import apply_import, read_pack, summarize_pack
 from core.policy import check_ingest
 from core.secret_scan import SecretScanError
-from core.strategy import decide_import
+from core.strategy import THOUGHT_TYPE, decide_import, detect_thought_origin, normalize_skeleton_kind
 from core.task_state import HANDOFF_KIND, _handoff_title, _is_handoff
 from core.trivium_store import domain_in_block, node_domain
 from core.utils import _to_float
@@ -254,6 +254,7 @@ def mem_ingest(
     domain: str = "",
     source: str = "",
     replaces: str = "",
+    skeleton_kind: str = "",
 ) -> str:
     """
     写入新记忆。
@@ -290,6 +291,13 @@ def mem_ingest(
         （默认关闭，过渡兼容开关）。
     v1.1：新增知识关联检测——score > 0.35 的 kb_chunk 记入 payload.linked_from，
     返回 linked_kb_ids 便于追溯关联的知识库块。
+
+    思维底片来源标记（``type="thought"`` 专属）：``skeleton_kind`` 为给侧上报的
+    **事实字段**（本轮注入的思考骨架类型，``""`` / code / research / default，
+    白名单外归空串）；``thought_origin`` 为本工具按 content 开头形态自动判定的
+    **启发式字段**（skeleton / native / unknown，判据与诚实边界见
+    ``core.strategy.detect_thought_origin``）。任何通道写 thought 节点都自动带
+    ``thought_origin``，新节点无需回填。
     """
     now = time.time()
     # ---- 入口校验（write-guard policy）：空内容 / 超长 / 分级上限 ----
@@ -334,6 +342,13 @@ def mem_ingest(
         node_data["kind"] = HANDOFF_KIND
         if not (node_data.get("title") or "").strip():
             node_data["title"] = _handoff_title({"content": content})
+    # 思维底片来源标记（type=thought 专属，见 mem_ingest docstring）：skeleton_kind
+    # 是给侧上报的事实字段（白名单外归空串，脏值不进库）；thought_origin 是按
+    # content 形态判定的启发式字段——落库路径统一打标，任何通道写 thought 节点
+    # 都自动带值，新节点无需回填。
+    if type == THOUGHT_TYPE:
+        node_data["skeleton_kind"] = normalize_skeleton_kind(skeleton_kind)
+        node_data["thought_origin"] = detect_thought_origin(content)
     # bi-temporal：新事实补 valid_at（世界时间 = 事实开始为真之时；缺省=写入时刻）。
     # 非事实类型（kb_chunk / record 等）自动跳过，见 core.bitemporal。
     stamp_new_fact(node_data, now)

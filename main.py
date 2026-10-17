@@ -886,6 +886,9 @@ class PostTurnRequest(BaseModel):
     user_message: str
     assistant_message: str = ""
     auto_ingest: bool = True
+    # 思维预设层事实字段：本轮给侧注入的思考骨架类型（"" / code / research /
+    # default）。宿主不传 → 空串（老宿主兼容）；白名单外的值落库时归一为空串。
+    skeleton_kind: str = ""
 
 
 class SessionEndRequest(BaseModel):
@@ -950,6 +953,11 @@ def lifecycle_post_turn(req: PostTurnRequest):
 
     ``tier_distribution`` 汇总本轮**全部**写入的分层计数（此前只数用户原话
     一条；混合轮两条都计入，thought-only 轮也能从顶层看到真实写入）。
+
+    来源标记（写进 thought 节点 payload，随 ``thought`` 分节可观测）：
+    ``skeleton_kind`` 为宿主上报的**事实字段**（本轮注入的骨架类型，缺省空串）；
+    ``thought_origin`` 为本体按文本开头形态的**启发式**判定（skeleton / native /
+    unknown，非精确归因）——两者交叉可查「注入了骨架但模型没照写」。
     """
     decision = _strategy_post_turn(req.user_message, auto_ingest=req.auto_ingest)
     decision["session_id"] = req.session_id
@@ -972,7 +980,10 @@ def lifecycle_post_turn(req: PostTurnRequest):
     # 思维底片：assistant 消息里的 <thought> 段 → type="thought" / logs 层。
     # 与用户原话路径互不阻断：任一路径的入库失败不影响另一条落库。
     thought = _strategy_decide_thought_store(
-        req.assistant_message, auto_ingest=req.auto_ingest, session_id=req.session_id
+        req.assistant_message,
+        auto_ingest=req.auto_ingest,
+        session_id=req.session_id,
+        skeleton_kind=req.skeleton_kind,
     )
     thought_out: dict = {
         "found": thought["found"],
@@ -982,6 +993,8 @@ def lifecycle_post_turn(req: PostTurnRequest):
         "type": thought["type"],
         "tier": thought["tier"],
         "importance": thought["importance"],
+        "skeleton_kind": thought["skeleton_kind"],
+        "thought_origin": thought["thought_origin"],
         "decision_log": thought["decision_log"],
     }
     if thought["store"]:
@@ -991,6 +1004,7 @@ def lifecycle_post_turn(req: PostTurnRequest):
                 type=thought["type"],
                 importance=thought["importance"],
                 source=thought["source"],
+                skeleton_kind=thought["skeleton_kind"],
             )
         )
         thought_out["stored"] = bool(tingest.get("stored"))

@@ -669,6 +669,80 @@ THOUGHT_MAX_CHARS = 4000  # 底片截断上限（过程快照不是长文，远�
 THOUGHT_IMPORTANCE = 0.5  # 基础档：值得翻回来，但未经验证
 THOUGHT_IMPORTANCE_DECISIVE = 0.7  # 决断档：思考里写下了被定下的判断 / 根因
 
+# ---------------------------------------------------------------------------
+# 来源标记（skeleton_kind / thought_origin）—— 思维底片「从哪来」的两个字段
+#
+# 落库的 thought 节点带两个互补字段：
+#   - ``skeleton_kind``（事实字段）：本轮给侧**实际注入**的骨架类型（"" / code /
+#     research / default），由宿主随 post-turn 上报——只有宿主知道注入了什么。
+#   - ``thought_origin``（启发式字段）：按落库文本的**开头形态**判定
+#     （skeleton / native / unknown）——本体只看得到文本。
+#
+# 诚实边界：宿主侧无法区分「骨架引导出的产物」与「模型原生思考」（思考原文
+# 同走一个字段，两者不可辨）。字段并存的贡献在于**交叉核对**：kind 说「注入了
+# 什么」，origin 说「文本长得像什么」，两者不一致即可查出「注入了骨架但模型
+# 没照写」；单独任何一个都不声称精确归因。
+# ---------------------------------------------------------------------------
+
+THOUGHT_NOTE_PREFIX = "[思维底片]"  # 落库 content 的包裹前缀（比对前先剥掉）
+
+ORIGIN_SKELETON = "skeleton"
+ORIGIN_NATIVE = "native"
+ORIGIN_UNKNOWN = "unknown"
+
+
+def _fold_punctuation(text: str) -> str:
+    """全/半角标点与全角空格归一（形态启发式的合理鲁棒性，不追求逐字相等）。"""
+    return text.replace("（", "(").replace("）", ")").replace("：", ":").replace("\u3000", " ")
+
+
+# skeleton_kind 的合法取值 = 骨架模板的 kind 集合；白名单之外（含未知值）归空串。
+THOUGHT_SKELETON_KINDS: tuple[str, ...] = tuple(_THOUGHT_SKELETONS)
+
+# 各骨架的起手式 = 模板第二行（编号引导行），全/半角归一后缓存：与
+# _THOUGHT_SKELETONS 同源派生——模板改了判据自动跟随，不另立一套。
+_SKELETON_OPENERS_FOLDED: dict[str, str] = {
+    kind: _fold_punctuation(tpl.splitlines()[1].strip()) for kind, tpl in _THOUGHT_SKELETONS.items()
+}
+
+
+def normalize_skeleton_kind(value: str) -> str:
+    """归一 ``skeleton_kind`` 事实字段：合法 kind 之外（含空白 / 未知值）一律空串。"""
+    v = str(value or "").strip()
+    return v if v in THOUGHT_SKELETON_KINDS else ""
+
+
+def detect_thought_origin(text: str) -> str:
+    """形态启发式：按文本开头判断这条思考「长得像」哪种骨架的产物。
+
+    返回 ``"skeleton"`` / ``"native"`` / ``"unknown"``。
+
+    判据：剥掉可选的 ``[思维底片]`` 包裹前缀与前导空白后，开头是否前缀匹配
+    某个骨架模板的引导行（起手式，直接从 ``_THOUGHT_SKELETONS`` 派生，不另立
+    一套；全/半角标点与空白轻度归一后比对）。空文本 / 只有前缀 / 非字符串等
+    异常输入 → ``"unknown"``（判定所需信息不存在，不猜测）。
+
+    **诚实边界（必读）**：这是**形态启发式**，不是精确归因——宿主侧无法区分
+    「骨架引导出的产物」与「模型恰好写出同构开头的原生思考」。与事实字段
+    ``skeleton_kind``（本轮实际注入了哪类骨架）并存：kind 说「注入了什么」，
+    origin 说「文本长得像什么」，两者交叉可查「注入了骨架但模型没照写」；
+    单独任何一个都不声称精确归因。
+    """
+    try:
+        stripped = str(text or "").strip()
+    except Exception:  # noqa: BLE001 —— 异常输入按「无法判定」处理
+        return ORIGIN_UNKNOWN
+    if stripped.startswith(THOUGHT_NOTE_PREFIX):
+        stripped = stripped[len(THOUGHT_NOTE_PREFIX) :].strip()
+    if not stripped:
+        return ORIGIN_UNKNOWN
+    folded = _fold_punctuation(stripped)
+    for opener in _SKELETON_OPENERS_FOLDED.values():
+        if folded.startswith(opener):
+            return ORIGIN_SKELETON
+    return ORIGIN_NATIVE
+
+
 # 抽取正则：非贪婪 + DOTALL（思考常跨行）。非递归——嵌套时取第一个闭合段
 # （内层标记原样保留），不做深度解析。
 _THOUGHT_BLOCK_RE = re.compile(r"<thought>(.*?)</thought>", re.DOTALL)
@@ -719,6 +793,7 @@ def decide_thought_store(
     *,
     auto_ingest: bool = True,
     session_id: str = "",
+    skeleton_kind: str = "",
 ) -> dict[str, Any]:
     """判定这轮的思考底片要不要落库、怎么落（post-turn 收侧，纯决策）。
 
@@ -729,11 +804,20 @@ def decide_thought_store(
     - 决断档 ``0.7``——思考里写下决断信号（被定下的判断 / 根因 / 纠正），
       将来翻回来最值钱的那类。
 
+    来源标记（随返回值透出，由执行层写进 payload）：
+
+    - ``skeleton_kind``——事实字段：本轮给侧注入的骨架类型（宿主上报；
+      白名单外归空串，见 :func:`normalize_skeleton_kind`）；
+    - ``thought_origin``——启发式字段：按抽出的思考文本开头判定
+      （:func:`detect_thought_origin`，诚实边界见其 docstring）；无文本
+      （未命中 / 未闭合 / 空段 / 关闸）时为 ``"unknown"``。
+
     返回::
 
         {
           "store": bool, "found": bool, "content": str, "type": str,
           "tier": str, "importance": float, "source": str,
+          "skeleton_kind": str, "thought_origin": str,
           "skip_reason": str,   # "" / not_found / unclosed / empty /
                                 # too_thin / auto_ingest_off
           "decision_log": {...},
@@ -742,6 +826,7 @@ def decide_thought_store(
     ``found`` 只反映「解析到完整闭合段」（含未落库的情形，如空段 / 过短 /
     关闸），供宿主观测「模型到底写没写思考」。
     """
+    kind = normalize_skeleton_kind(skeleton_kind)
     if not auto_ingest:
         return {
             "store": False,
@@ -751,6 +836,8 @@ def decide_thought_store(
             "tier": THOUGHT_TIER,
             "importance": 0.0,
             "source": "",
+            "skeleton_kind": kind,
+            "thought_origin": ORIGIN_UNKNOWN,
             "skip_reason": "auto_ingest_off",
             "decision_log": {"reason": "auto_ingest_off"},
         }
@@ -771,6 +858,8 @@ def decide_thought_store(
             "tier": THOUGHT_TIER,
             "importance": 0.0,
             "source": "",
+            "skeleton_kind": kind,
+            "thought_origin": ORIGIN_UNKNOWN,
             "skip_reason": reason,
             "decision_log": log,
         }
@@ -786,6 +875,8 @@ def decide_thought_store(
             "tier": THOUGHT_TIER,
             "importance": 0.0,
             "source": "",
+            "skeleton_kind": kind,
+            "thought_origin": ORIGIN_UNKNOWN,
             "skip_reason": "empty",
             "decision_log": log,
         }
@@ -799,6 +890,8 @@ def decide_thought_store(
             "tier": THOUGHT_TIER,
             "importance": 0.0,
             "source": "",
+            "skeleton_kind": kind,
+            "thought_origin": detect_thought_origin(text),
             "skip_reason": "too_thin",
             "decision_log": log,
         }
@@ -807,16 +900,80 @@ def decide_thought_store(
     truncated = text[:THOUGHT_MAX_CHARS]
     note = "…[截断]" if len(text) > THOUGHT_MAX_CHARS else ""
     source = f"lifecycle:post-turn:{session_id}" if session_id else "lifecycle:post-turn"
+    origin = detect_thought_origin(text)
     log["chars"] = len(text)
     log["importance"] = importance
+    log["thought_origin"] = origin
     return {
         "store": True,
         "found": True,
-        "content": f"[思维底片] {truncated}{note}",
+        "content": f"{THOUGHT_NOTE_PREFIX} {truncated}{note}",
         "type": THOUGHT_TYPE,
         "tier": THOUGHT_TIER,
         "importance": importance,
         "source": source,
+        "skeleton_kind": kind,
+        "thought_origin": origin,
         "skip_reason": "",
         "decision_log": log,
+    }
+
+
+def backfill_thought_origin(store, dry_run: bool = True) -> dict:
+    """存量 thought 节点回填 ``thought_origin``（同一判据，不另立一套）。
+
+    只处理 ``type=thought`` 且**缺** ``thought_origin`` 键的节点：
+
+    - 幂等判据 = 键存在即视为已处理，**已有值一律不覆盖**（包括人工改过的值），
+      ``--apply`` 后复跑 0 变更；
+    - ``skeleton_kind`` 是给侧上报的事实字段，存量节点**无从得知**——不回填，
+      缺着比编造诚实；
+    - ``thought_origin`` 的判定与诚实边界见 :func:`detect_thought_origin`
+      （形态启发式，非精确归因）。
+
+    ``dry_run=True``（默认）只统计不写库；``dry_run=False`` 才落盘。
+
+    **两段式（先快照后写）**：``iter_nodes`` 在整个迭代期间持有库连接，
+    迭代中调 ``update_payload`` 会在同进程内重入取锁而自锁——因此先把候选
+    节点整体快照出来、迭代结束（连接释放）后再逐个写回（与
+    ``core.task_state.backfill_task_state`` 同款约束）。
+
+    返回 ``{dry_run, scanned, already, changed, distribution, changes}``；
+    ``distribution`` 为扫描到的全部 thought 节点按 origin 的分布（已带值的
+    按现有值计入，缺省的按将写入的值计入），复跑时分布依旧完整。
+    """
+    scanned = 0
+    already = 0
+    distribution: dict[str, int] = {
+        ORIGIN_SKELETON: 0,
+        ORIGIN_NATIVE: 0,
+        ORIGIN_UNKNOWN: 0,
+    }
+    pending: list[tuple[int, str]] = []  # (node_id, 将写入的 origin)，迭代结束再写
+
+    for nid, node in store.iter_nodes():
+        payload = node.get("payload") or {}
+        if payload.get("type") != THOUGHT_TYPE:
+            continue
+        scanned += 1
+        if "thought_origin" in payload:
+            already += 1
+            existing = str(payload.get("thought_origin") or ORIGIN_UNKNOWN)
+            distribution[existing] = distribution.get(existing, 0) + 1
+            continue
+        origin = detect_thought_origin(payload.get("content") or "")
+        distribution[origin] = distribution.get(origin, 0) + 1
+        pending.append((nid, origin))
+
+    if not dry_run:
+        for nid, origin in pending:
+            store.update_payload(nid, {"thought_origin": origin})
+
+    return {
+        "dry_run": dry_run,
+        "scanned": scanned,
+        "already": already,
+        "changed": len(pending),
+        "distribution": distribution,
+        "changes": [{"id": nid, "thought_origin": origin} for nid, origin in pending],
     }
