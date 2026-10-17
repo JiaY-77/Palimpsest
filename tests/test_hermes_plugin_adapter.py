@@ -185,15 +185,28 @@ class TestThoughtSkeletonForwarding:
         cap._enabled = True
         assert cap._run("thought_skeleton_context", user_message="帮我改一个函数") == ""
 
-    def test_disabled_or_env_off_returns_empty_without_request(self):
-        cap = _CapturingProvider()
-        cap._enabled = False
-        assert cap._run("thought_skeleton_context", user_message="帮我改一个函数") == ""
-        assert cap.sent == []
+    def test_env_off_returns_empty_without_request(self):
         off = _CapturingProvider(PALIMPSEST_THOUGHT_SKELETON="false")
         off._enabled = True
         assert off._run("thought_skeleton_context", user_message="帮我改一个函数") == ""
         assert off.sent == []
+
+    def test_injects_even_when_instance_never_initialized(self):
+        """回归：宿主把插件加载两次（插件加载器 + scoped memory provider），
+        ``initialize()`` 只调后者，``pre_llm_call`` 钩子挂在前者上——闸门若看
+        ``_enabled`` 骨架就永远不注入（2026-10-17 生产实测）。"""
+        skeleton = "- 目标：\n- 步骤："
+        cap = _CapturingProvider(response={"thought_skeleton": skeleton, "thought_skeleton_kind": "default"})
+        assert cap._enabled is False  # 从未 initialize
+        out = cap._run("thought_skeleton_context", user_message="帮我改一个函数")
+        assert out.startswith("\n[思维底片·预设层]")
+        assert out.endswith(skeleton)
+        assert cap.sent and cap.sent[0][1]["thought_skeleton"] is True
+
+    def test_cron_platform_returns_empty_without_request(self):
+        cap = _CapturingProvider(response={"thought_skeleton": "- x", "thought_skeleton_kind": "default"})
+        assert cap._run("thought_skeleton_context", user_message="跑一下每日维护", platform="cron") == ""
+        assert cap.sent == []
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +229,41 @@ class TestSyncTurnForwarding:
         cap._enabled = True
         cap._run("sync_turn", "记住这个偏好", "好的")
         assert cap.sent == []
+
+
+class TestThoughtExtractionFromReasoning:
+    """收侧取思考：本轮任意一条 assistant 的 reasoning 都算，不只看最后一条。"""
+
+    def test_takes_reasoning_from_earlier_assistant_in_same_turn(self):
+        msgs = [
+            {"role": "user", "content": "改个函数"},
+            {"role": "assistant", "content": "先看代码", "reasoning": "1. 要的是什么：改函数"},
+            {"role": "assistant", "content": "最终答案"},  # 末尾这条没有 reasoning
+        ]
+        assert _mod._last_assistant_reasoning(msgs) == "1. 要的是什么：改函数"
+
+    def test_prefers_most_recent_non_empty(self):
+        msgs = [
+            {"role": "assistant", "content": "早期", "reasoning": "早期思考"},
+            {"role": "assistant", "content": "稍后", "reasoning": "稍后思考"},
+            {"role": "assistant", "content": "末尾"},
+        ]
+        assert _mod._last_assistant_reasoning(msgs) == "稍后思考"
+
+    def test_does_not_leak_across_turns(self):
+        msgs = [
+            {"role": "assistant", "content": "上一轮", "reasoning": "上一轮的思考"},
+            {"role": "user", "content": "新问题"},
+            {"role": "assistant", "content": "答"},
+        ]
+        assert _mod._last_assistant_reasoning(msgs) == ""
+
+    def test_reasoning_content_key_compatible(self):
+        msgs = [
+            {"role": "user", "content": "问题"},
+            {"role": "assistant", "content": "答", "reasoning_content": "另一种键名"},
+        ]
+        assert _mod._last_assistant_reasoning(msgs) == "另一种键名"
 
 
 # ---------------------------------------------------------------------------
