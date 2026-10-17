@@ -567,3 +567,256 @@ def decide_import(
             "type_counts": type_counts,
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# 决策六：thought skeleton（pre-turn 给侧——思考骨架）
+#
+# 「思维预设层」的给侧：宿主每轮模型调用前来取一份思考骨架拼进 prompt，
+# 引导模型把结构化思考写在正文里（写在正文 → 可解析 → post-turn 可抽取）。
+# 比静态预设高一级的地方：骨架按当前轮的**情境**动态挑选——写代码给失败
+# 路径骨架、调研给证据/反例骨架、普通轮给通用骨架、闲聊不给。判定全在这里；
+# 骨架生成不接 LLM（那是宿主的活），只在固定模板里挑。
+# ---------------------------------------------------------------------------
+
+# 情境分类正则（关键词启发式）。对自由文本做情境归类没有结构位置可用，
+# 关键词是唯一判据；这里刻意收窄到「基本只出现在对应情境」的词，且分类
+# 结果只影响**骨架文案**（不碰召回 / 不碰写入），误分类的代价只是骨架
+# 不那么贴切，不污染任何存储。顺序：code 先于 research（调试型调研按
+# 代码情境给失败路径骨架更贴切）。
+_THOUGHT_CODE_RE = re.compile(
+    r"(代码|函数|脚本|接口|端点|模块|重构|修复|报错|堆栈|"
+    r"traceback|exception|bug|编译|部署|单元测试|测试用例)",
+    re.IGNORECASE,
+)
+_THOUGHT_RESEARCH_RE = re.compile(r"(调研|评估|对比|选型|可行性|证据|论文|文献|竞品|查证|核实)")
+
+# 骨架模板：``<thought>`` 起始标记 + 编号引导行，宿主原样拼进 prompt。
+# 模型在骨架行后续写，写出的思考天然带标记 → post-turn 的 extract_thought
+# 可解析（与 decide_thought_store 的正则对称）。
+_THOUGHT_SKELETONS: dict[str, str] = {
+    "code": (
+        "<thought>\n"
+        "1. 要改什么 / 新增什么（一句话）：\n"
+        "2. 现状核实了吗（哪些已核实、哪些还没看）：\n"
+        "3. 失败路径（哪里会坏、坏了什么表现、怎么兜住）：\n"
+        "4. 怎么验（跑什么、看到什么算数）：\n"
+        "</thought>"
+    ),
+    "research": (
+        "<thought>\n"
+        "1. 问题是什么（一句话）：\n"
+        "2. 已有证据 / 还缺什么证据：\n"
+        "3. 反例找了吗（相反结论成立会是什么样）：\n"
+        "4. 结论的证据等级（实测 / 引用来源 / 推测）：\n"
+        "</thought>"
+    ),
+    "default": (
+        "<thought>\n"
+        "1. 要的是什么（一句话）：\n"
+        "2. 已知 / 未知（还缺什么信息）：\n"
+        "3. 值不值得记（对以后的自己有没有用）：\n"
+        "4. 该不该动手（还是先对齐）：\n"
+        "</thought>"
+    ),
+}
+
+THOUGHT_SKELETON_MIN_LEN = 4  # 与召回门槛一致：过短输入没有思考可引导，不给骨架
+
+
+def decide_thought_skeleton(user_message: str, *, enabled: bool = True) -> dict[str, Any]:
+    """按当前轮情境挑一份思考骨架（纯决策，不接 LLM、不发请求）。
+
+    返回::
+
+        {"skeleton": str, "kind": str, "reason": str}
+
+    - ``kind``：``"" / "code" / "research" / "default"`` —— skeleton 为空时
+      kind 也为空（宿主可观测「为什么没给」）。
+    - trivial / 空 / 过短 / 宿主关闸（``enabled=False``）→ ``skeleton=""``：
+      闲聊轮没有思考可引导，注入骨架只是噪音。
+    """
+    if not enabled:
+        return {"skeleton": "", "kind": "", "reason": "disabled"}
+    stripped = (user_message or "").strip()
+    if not stripped:
+        return {"skeleton": "", "kind": "", "reason": "empty"}
+    if is_trivial_prompt(stripped):
+        return {"skeleton": "", "kind": "", "reason": "trivial"}
+    if len(stripped) < THOUGHT_SKELETON_MIN_LEN:
+        return {"skeleton": "", "kind": "", "reason": "too_short"}
+    if _THOUGHT_CODE_RE.search(stripped):
+        return {"skeleton": _THOUGHT_SKELETONS["code"], "kind": "code", "reason": "matched:code"}
+    if _THOUGHT_RESEARCH_RE.search(stripped):
+        return {"skeleton": _THOUGHT_SKELETONS["research"], "kind": "research", "reason": "matched:research"}
+    return {"skeleton": _THOUGHT_SKELETONS["default"], "kind": "default", "reason": "default_skeleton"}
+
+
+# ---------------------------------------------------------------------------
+# 决策七：thought 抽取（post-turn 收侧——思维底片落库）
+#
+# 「思维预设层」的收侧：assistant 消息里的 ``<thought>...</thought>`` 段是
+# 模型被骨架引导出的结构化思考（写在正文 → 宿主无需暴露原生 CoT，所有
+# 模型通用）。抽出来落库 ``type="thought"``、``tier="logs"``——过程记录，
+# 不是提炼事实；升格 facts/rule 是将来的显式治理动作，因此 thought 刻意
+# **不**进 POLICY_PROTECTED_TYPES（保持可修可删）。
+# ---------------------------------------------------------------------------
+
+THOUGHT_TYPE = "thought"
+THOUGHT_TIER = "logs"
+THOUGHT_MIN_CHARS = 20  # 短于此 = 空壳思考（模型只回吐了骨架没续写），不落库
+THOUGHT_MAX_CHARS = 4000  # 底片截断上限（过程快照不是长文，远低于通用写入上限）
+THOUGHT_IMPORTANCE = 0.5  # 基础档：值得翻回来，但未经验证
+THOUGHT_IMPORTANCE_DECISIVE = 0.7  # 决断档：思考里写下了被定下的判断 / 根因
+
+# 抽取正则：非贪婪 + DOTALL（思考常跨行）。非递归——嵌套时取第一个闭合段
+# （内层标记原样保留），不做深度解析。
+_THOUGHT_BLOCK_RE = re.compile(r"<thought>(.*?)</thought>", re.DOTALL)
+_THOUGHT_OPEN_RE = re.compile(r"<thought>")
+
+# 决断档信号：这条思考里含「被修正 / 被定下的判断 / 根因」——将来翻回来
+# 最有价值的那类（与 decide_post_turn 的纠正分档同一思路，词表按思考文本
+# 的语言习惯另配）。
+_THOUGHT_DECISIVE_RE = re.compile(r"(不对|不是这样|错了|纠正|更正|改成|改为|拍板|定案|决定了|结论是|根因)")
+
+
+def extract_thought(message: str) -> dict[str, Any]:
+    """从 assistant 消息解析 ``<thought>...</thought>`` 段（纯解析，不判价值）。
+
+    行为定义（边界样例均有测试钉住）：
+
+    - 段出现在正文**任意位置**（不要求开头）都抽得到；
+    - 多段：取**第一段**完整闭合段（一轮一条底片），``segments`` 记总数；
+    - 嵌套（段内还有 ``<thought>``）：不递归解析，取第一个闭合段原样，
+      ``nested=True`` 供观测；
+    - 未闭合（有开标记无闭标记）：``found=False, unclosed=True``——被截断的
+      思考内容不完整，保守不落库（decide_thought_store 据此拒绝）。
+    """
+    text = message or ""
+    match = _THOUGHT_BLOCK_RE.search(text)
+    if match is None:
+        return {
+            "found": False,
+            "text": "",
+            "segments": 0,
+            "nested": False,
+            "position": -1,
+            "unclosed": bool(_THOUGHT_OPEN_RE.search(text)),
+        }
+    first = match.group(1).strip()
+    return {
+        "found": True,
+        "text": first,
+        "segments": len(_THOUGHT_BLOCK_RE.findall(text)),
+        "nested": "<thought>" in first,
+        "position": match.start(),
+        "unclosed": False,
+    }
+
+
+def decide_thought_store(
+    assistant_message: str,
+    *,
+    auto_ingest: bool = True,
+    session_id: str = "",
+) -> dict[str, Any]:
+    """判定这轮的思考底片要不要落库、怎么落（post-turn 收侧，纯决策）。
+
+    落库约定：``type="thought"``、``tier="logs"``、``source`` 带生命周期来源
+    标识（``lifecycle:post-turn[:session_id]``）。importance 分两档可解释：
+
+    - 基础 ``0.5``——未经验证的过程思考；
+    - 决断档 ``0.7``——思考里写下决断信号（被定下的判断 / 根因 / 纠正），
+      将来翻回来最值钱的那类。
+
+    返回::
+
+        {
+          "store": bool, "found": bool, "content": str, "type": str,
+          "tier": str, "importance": float, "source": str,
+          "skip_reason": str,   # "" / not_found / unclosed / empty /
+                                # too_thin / auto_ingest_off
+          "decision_log": {...},
+        }
+
+    ``found`` 只反映「解析到完整闭合段」（含未落库的情形，如空段 / 过短 /
+    关闸），供宿主观测「模型到底写没写思考」。
+    """
+    if not auto_ingest:
+        return {
+            "store": False,
+            "found": False,
+            "content": "",
+            "type": THOUGHT_TYPE,
+            "tier": THOUGHT_TIER,
+            "importance": 0.0,
+            "source": "",
+            "skip_reason": "auto_ingest_off",
+            "decision_log": {"reason": "auto_ingest_off"},
+        }
+
+    parsed = extract_thought(assistant_message)
+    log: dict[str, Any] = {
+        "segments": parsed["segments"],
+        "nested": parsed["nested"],
+        "position": parsed["position"],
+    }
+    if not parsed["found"]:
+        reason = "unclosed" if parsed["unclosed"] else "not_found"
+        return {
+            "store": False,
+            "found": False,
+            "content": "",
+            "type": THOUGHT_TYPE,
+            "tier": THOUGHT_TIER,
+            "importance": 0.0,
+            "source": "",
+            "skip_reason": reason,
+            "decision_log": log,
+        }
+
+    text = parsed["text"]
+    if not text:
+        log["reason"] = "empty"
+        return {
+            "store": False,
+            "found": True,
+            "content": "",
+            "type": THOUGHT_TYPE,
+            "tier": THOUGHT_TIER,
+            "importance": 0.0,
+            "source": "",
+            "skip_reason": "empty",
+            "decision_log": log,
+        }
+    if len(text) < THOUGHT_MIN_CHARS:
+        log["reason"] = "too_thin"
+        return {
+            "store": False,
+            "found": True,
+            "content": "",
+            "type": THOUGHT_TYPE,
+            "tier": THOUGHT_TIER,
+            "importance": 0.0,
+            "source": "",
+            "skip_reason": "too_thin",
+            "decision_log": log,
+        }
+
+    importance = THOUGHT_IMPORTANCE_DECISIVE if _THOUGHT_DECISIVE_RE.search(text) else THOUGHT_IMPORTANCE
+    truncated = text[:THOUGHT_MAX_CHARS]
+    note = "…[截断]" if len(text) > THOUGHT_MAX_CHARS else ""
+    source = f"lifecycle:post-turn:{session_id}" if session_id else "lifecycle:post-turn"
+    log["chars"] = len(text)
+    log["importance"] = importance
+    return {
+        "store": True,
+        "found": True,
+        "content": f"[思维底片] {truncated}{note}",
+        "type": THOUGHT_TYPE,
+        "tier": THOUGHT_TIER,
+        "importance": importance,
+        "source": source,
+        "skip_reason": "",
+        "decision_log": log,
+    }

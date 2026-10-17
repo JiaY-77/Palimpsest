@@ -19,8 +19,11 @@ from core.strategy import (
     decide_pre_compress,
     decide_pre_turn,
     decide_session_end,
+    decide_thought_skeleton,
+    decide_thought_store,
     extract_graph_topics,
     extract_points,
+    extract_thought,
     format_graph_enhancement,
     is_near_duplicate,
     is_trivial_prompt,
@@ -371,3 +374,180 @@ class TestClampMaxTopics:
     def test_garbage_falls_back_to_default(self):
         assert clamp_max_topics("abc") == strategy.GRAPH_ENHANCE_MAX_TOPICS
         assert clamp_max_topics(None) == strategy.GRAPH_ENHANCE_MAX_TOPICS
+
+
+# ---------------------------------------------------------------------------
+# decide_thought_skeleton — pre-turn 给侧：按情境挑思考骨架（纯决策）
+# ---------------------------------------------------------------------------
+
+
+class TestDecideThoughtSkeleton:
+    def test_code_scenario_gets_failure_path_skeleton(self):
+        r = decide_thought_skeleton("帮我修复这个报错，用户说模块导入失败")
+        assert r["kind"] == "code"
+        assert r["skeleton"].startswith("<thought>")
+        assert "失败路径" in r["skeleton"]
+
+    def test_research_scenario_gets_evidence_skeleton(self):
+        r = decide_thought_skeleton("调研对比一下这两个方案的可行性")
+        assert r["kind"] == "research"
+        assert "反例" in r["skeleton"]
+
+    def test_default_scenario_gets_generic_skeleton(self):
+        r = decide_thought_skeleton("帮我安排下周的会议纪要和行程")
+        assert r["kind"] == "default"
+        assert "值不值得记" in r["skeleton"]
+
+    def test_skeletons_differ_across_scenarios(self):
+        skeletons = {
+            decide_thought_skeleton(msg)["skeleton"]
+            for msg in [
+                "修复这个报错",
+                "调研对比一下这两个方案的可行性",
+                "帮我安排下周的会议纪要和行程",
+            ]
+        }
+        assert len(skeletons) == 3  # 动态骨架的直接证据：三情境三份骨架
+
+    def test_code_takes_priority_over_research(self):
+        # 调试型调研（含报错/代码词）按代码情境给失败路径骨架更贴切
+        r = decide_thought_skeleton("调研一下这个报错的根因")
+        assert r["kind"] == "code"
+
+    def test_trivial_gets_no_skeleton(self):
+        assert decide_thought_skeleton("hi")["skeleton"] == ""
+
+    def test_empty_gets_no_skeleton(self):
+        assert decide_thought_skeleton("")["skeleton"] == ""
+
+    def test_short_input_gets_no_skeleton(self):
+        r = decide_thought_skeleton("看下")
+        assert r["skeleton"] == "" and r["reason"] == "too_short"
+
+    def test_disabled_returns_empty(self):
+        r = decide_thought_skeleton("修复这个报错", enabled=False)
+        assert r["skeleton"] == "" and r["reason"] == "disabled"
+
+
+# ---------------------------------------------------------------------------
+# extract_thought — post-turn 收侧：<thought> 段解析（纯解析）
+# ---------------------------------------------------------------------------
+
+
+class TestExtractThought:
+    def test_plain_message_not_found(self):
+        r = extract_thought("没有思考段的普通回复")
+        assert r["found"] is False
+        assert r["unclosed"] is False
+
+    def test_empty_message_not_found(self):
+        r = extract_thought("")
+        assert r["found"] is False and r["unclosed"] is False
+
+    def test_full_block_extracted(self):
+        r = extract_thought("<thought>\n1. 要的是什么：查库存占用\n</thought>正文开始")
+        assert r["found"] is True
+        assert "查库存占用" in r["text"]
+        assert r["segments"] == 1
+        assert r["position"] == 0
+
+    def test_block_in_body_middle_extracted(self):
+        msg = "先说结论没问题。\n<thought>\n1. 已核实：模块在 8090 正常监听\n</thought>\n以下是细节。"
+        r = extract_thought(msg)
+        assert r["found"] is True
+        assert r["position"] > 0
+        assert "8090" in r["text"]
+
+    def test_multiline_block_extracted(self):
+        r = extract_thought("<thought>\n1. 第一步\n2. 第二步\n</thought>")
+        assert r["found"] is True
+        assert "\n" in r["text"]
+
+    def test_multiple_blocks_first_segment_wins(self):
+        msg = "<thought>第一段完整思考内容足够长</thought> 中间正文 <thought>第二段也完整</thought>"
+        r = extract_thought(msg)
+        assert r["segments"] == 2
+        assert r["text"] == "第一段完整思考内容足够长"
+
+    def test_nested_block_takes_first_close(self):
+        msg = "<thought>外层开始 <thought>内层内容</thought> 外层尾巴</thought>"
+        r = extract_thought(msg)
+        assert r["found"] is True
+        assert r["nested"] is True
+        assert r["text"] == "外层开始 <thought>内层内容"
+
+    def test_unclosed_block_is_rejected(self):
+        r = extract_thought("开头正文 <thought>\n1. 被截断的思考没有闭合标记")
+        assert r["found"] is False
+        assert r["unclosed"] is True
+
+
+# ---------------------------------------------------------------------------
+# decide_thought_store — post-turn 收侧：思维底片落库判定（纯决策）
+# ---------------------------------------------------------------------------
+
+
+class TestDecideThoughtStore:
+    _BODY = (
+        "1. 要的是什么：核实端口占用\n"
+        "2. 已核实：服务在 8090 正常\n"
+        "3. 失败路径：占用进程没杀干净会双进程争库\n"
+        "4. 怎么验：netstat 看监听 PID"
+    )
+
+    def test_full_thought_is_stored(self):
+        r = decide_thought_store(f"<thought>\n{self._BODY}\n</thought>正文")
+        assert r["store"] is True
+        assert r["type"] == "thought"
+        assert r["tier"] == "logs"
+        assert r["content"].startswith("[思维底片]")
+        assert "端口占用" in r["content"]
+        assert r["source"] == "lifecycle:post-turn"
+        assert 0.0 < r["importance"] <= 1.0
+
+    def test_source_carries_session_id(self):
+        r = decide_thought_store(f"<thought>{self._BODY}</thought>", session_id="s42")
+        assert r["source"] == "lifecycle:post-turn:s42"
+
+    def test_no_thought_not_stored(self):
+        r = decide_thought_store("普通回复，没有思考段")
+        assert r["store"] is False
+        assert r["skip_reason"] == "not_found"
+
+    def test_unclosed_not_stored(self):
+        r = decide_thought_store("<thought>被截断的思考没有闭合标记")
+        assert r["store"] is False
+        assert r["skip_reason"] == "unclosed"
+
+    def test_empty_block_not_stored(self):
+        r = decide_thought_store("<thought>   </thought>")
+        assert r["store"] is False
+        assert r["skip_reason"] == "empty"
+
+    def test_thin_thought_not_stored(self):
+        r = decide_thought_store("<thought>嗯</thought>")
+        assert r["store"] is False
+        assert r["skip_reason"] == "too_thin"
+
+    def test_auto_ingest_off(self):
+        r = decide_thought_store(f"<thought>{self._BODY}</thought>", auto_ingest=False)
+        assert r["store"] is False
+        assert r["skip_reason"] == "auto_ingest_off"
+
+    def test_decisive_words_raise_importance(self):
+        r = decide_thought_store("<thought>核实之后结论是根因在锁竞争，拍板先加超时重试</thought>")
+        assert r["importance"] == 0.7
+
+    def test_plain_thought_keeps_base_importance(self):
+        r = decide_thought_store(f"<thought>{self._BODY}</thought>")
+        assert r["importance"] == 0.5
+
+    def test_overlong_thought_truncated(self):
+        body = "1. 很长的思考：" + "字" * 5000
+        r = decide_thought_store(f"<thought>{body}</thought>")
+        assert r["store"] is True
+        assert len(r["content"]) <= len("[思维底片] ") + strategy.THOUGHT_MAX_CHARS + len("…[截断]")
+
+    def test_found_flag_reflects_parse(self):
+        assert decide_thought_store(f"<thought>{self._BODY}</thought>")["found"] is True
+        assert decide_thought_store("普通回复")["found"] is False

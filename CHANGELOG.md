@@ -4,6 +4,16 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
+## [2.12.0] - 2026-10-17
+
+### 新增
+
+- **思维预设层（thought skeleton / 思维底片）**：让「思考」成为一等公民——宿主每轮模型调用前来取一份思考骨架拼进 prompt，引导模型把结构化思考写在正文里；每轮结束后本体把正文里的 `<thought>...</thought>` 段抽出来落库。思考从此可检索、可比对、可复用，且不依赖任何模型的原生 CoT 字段（写在正文 → 所有模型通用）。
+  - **pre-turn 给侧（`thought_skeleton`）**：`POST /lifecycle/pre-turn` 新增返回 `thought_skeleton` / `thought_skeleton_kind`——按当前轮情境**动态**挑选（写代码给失败路径骨架、调研给证据/反例骨架、普通轮给通用骨架、闲聊/过短不给），比静态预设高一级。请求侧新增 `thought_skeleton` 开关（宿主自己另有预设时可关）。骨架判定全在本体（`core/strategy.decide_thought_skeleton`），服务端不接 LLM，只在固定模板里挑。
+  - **post-turn 收侧（`thought`）**：`POST /lifecycle/post-turn` 从 `assistant_message` 抽取 `<thought>...</thought>` 段，写 `type="thought"`、`tier="logs"`（过程记录层；升格 facts/rule 留作将来的显式治理动作，`thought` 刻意不进 `POLICY_PROTECTED_TYPES`，保持可修可删），`source` 带生命周期来源标识（`lifecycle:post-turn[:session_id]`）。importance 分两档可解释：基础 0.5；思考里写下决断信号（被定下的判断 / 根因 / 纠正）→ 0.7。
+  - **抽取边界行为（均有测试钉住）**：段在正文任意位置都抽得到；多段取第一段完整闭合段（一轮一条底片，`segments` 记总数）；嵌套不递归解析（取第一个闭合段，`nested=True` 供观测）；未闭合不落库（`unclosed`）；空段 / 过短不落库（`empty` / `too_thin`）；超长截断。**不命中不落库但响应可观测**（`thought.found` / `thought.skip_reason`），入库失败同理（`ingest_failed` + error 透传），不静默吞。
+  - **与用户原话沉淀互不阻断**：post-turn 的两条落库路径（强信号 `record` 与 `thought`）相互独立，任一路径的入库失败不影响另一条落库；`tier_distribution` 从「只数用户原话一条」升级为**汇总本轮全部写入**（混合轮 `{"logs": 2}`，thought-only 轮 `{"logs": 1}`）。
+
 ## [2.11.0] - 2026-10-16
 
 ### 新增
@@ -443,7 +453,8 @@
 
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
-[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.11.0...HEAD
+[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.12.0...HEAD
+[2.12.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.12.0
 [2.11.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.11.0
 [2.10.1]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.10.1
 [2.10.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.10.0
