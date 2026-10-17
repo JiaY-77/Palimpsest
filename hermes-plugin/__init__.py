@@ -187,7 +187,7 @@ class PalimpsestMemoryProvider(MemoryProvider):
         self._domain = os.environ.get("PALIMPSEST_DOMAIN", "hermes")
         # 召回参数（传输类配置，随请求传给本体策略引擎，由本体决策如何使用）
         self._top_k = int(os.environ.get("PALIMPSEST_PREFETCH_TOP_K", "3"))
-        # 注入降噪（T081 配套）：图邻居默认关（记忆域图近乎无边，纯空转）；
+        # 注入降噪（T-81 配套）：图邻居默认关（记忆域图近乎无边，纯空转）；
         # 注入最低相关度门槛可配，默认与旧硬编码一致 0.3，可调高再砍噪音。
         self._include_neighbors = os.environ.get("PALIMPSEST_PREFETCH_NEIGHBORS", "false").lower() == "true"
         self._min_score = float(os.environ.get("PALIMPSEST_PREFETCH_MIN_SCORE", "0.3"))

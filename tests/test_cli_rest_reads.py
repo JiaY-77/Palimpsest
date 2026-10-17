@@ -224,7 +224,7 @@ def test_cmd_kb_scopes_to_kb(fake_httpx):
     from scripts.palimpsest_cli import cmd_kb
 
     class A:
-        query, top_k = "小帕", 2
+        query, top_k = "Palimpsest", 2
 
     cmd_kb(A())
     call = fake_httpx.calls[0]

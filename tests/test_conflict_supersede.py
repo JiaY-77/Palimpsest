@@ -60,7 +60,7 @@ def _get(result: str) -> dict:
 
 def test_default_write_does_not_supersede(iso_store):
     """默认：写两条相似记忆 → 都不标 outdated，旧节点只出现在 related_ids。"""
-    text = "小帕冲突语义测试片段：同一主题的互补内容"
+    text = "Palimpsest 冲突语义测试片段：同一主题的互补内容"
     r1 = _get(memory_tool.mem_ingest(content=text, type="memory", domain="cs"))
     r2 = _get(memory_tool.mem_ingest(content=text, type="memory", domain="cs"))
 

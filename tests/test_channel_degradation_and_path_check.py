@@ -63,7 +63,7 @@ def test_search_fts_status_ok_with_hits(tmp_path, monkeypatch):
     db = tmp_path / "mh.db"
     monkeypatch.setattr(Config, "DB_PATH", str(db))
     # 写入一条索引（写入口建表）
-    fts_index.index_node(1, "主人喜欢喝美式咖啡不加糖", "")
+    fts_index.index_node(1, "用户喜欢喝美式咖啡不加糖", "")
     rows, status = fts_index.search_fts_status("美式咖啡")
     assert status == "ok"
     assert any(r.get("node_id") == 1 for r in rows)

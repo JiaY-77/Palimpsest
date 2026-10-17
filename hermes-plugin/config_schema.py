@@ -82,7 +82,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             label="思考骨架",
             default="true",
             kind="bool",
-            description="每轮 LLM 调用前注入小帕按情境挑的思考骨架（思维预设层给侧）；闲聊/过短轮本体自动不给",
+            description="每轮 LLM 调用前注入 Palimpsest 按情境挑的思考骨架（思维预设层给侧）；闲聊/过短轮本体自动不给",
         ),
         ProviderField(
             key="thought_timeout",
