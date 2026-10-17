@@ -263,7 +263,7 @@ python scripts/build_kb_index.py --rules rules.json
 | `memoryhub` | MemoryHub packs (subcommands `read` / `import`) |
 | `memoryhub read PATH` | Unpack a pack read-only (validate + human summary, `--preview-chars`) |
 | `memoryhub import PATH` | Naturalize pack nodes into the store (`--select 12,15,31`; empty = preview only; `--include-secrets` allows strong-secret nodes) |
-| `tasks active` | Active task list (`--project`, `--states todo,doing,blocked`, `--limit`, `--include-handoff` to include session handoff notes) |
+| `tasks active` | Active task list (`--project`, `--states todo,doing,blocked`, `--limit`, `--include-handoff` to include session handoff notes — handoffs are marked automatically on write and are exempt from state filtering when listed) |
 | `tasks backfill` | Backfill `task_state` on existing task nodes (dry-run by default; `--apply` writes) |
 | `review` | Periodic recap of the last N days (`--tier facts\|logs\|''` scopes recent_ingests) |
 | `stats` | Store-wide statistics (totals / domains / importance / time / graph) |

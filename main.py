@@ -844,7 +844,8 @@ def tasks_active(
     核心逻辑见 ``core.task_state.list_active_tasks``，与 MCP 工具 ``tasks_active``
     同一实现。默认排除 ``payload.legacy = true`` 的老节点（老节点请先跑 CLI
     ``tasks backfill``）；``include_handoff=true`` 才列出会话接续点
-    （``kind=handoff`` 的跨会话交接记录，而非待办事项）。
+    （``kind=handoff`` 的跨会话交接记录，而非待办事项；显式列出时不受状态
+    过滤限制——接续点没有「待办状态」语义，``task_state`` 为 None 也能取回）。
     """
     from core.task_state import list_active_tasks
 

@@ -10,6 +10,10 @@
 
 - **Hermes 插件侧接入（`hermes-plugin`，纯传输零判定）**：给侧注册 `pre_llm_call` 钩子——每轮 LLM 调用前向 `/lifecycle/pre-turn` 取骨架，**包一句 `<thought>` 指令前缀后返回**（注入落在 user 消息末尾，裸骨架会被当「参考资料」忽略，实测须指令引导模型才按骨架产出；包装在传输侧——骨架文本本体侧另有 REST 直调等读取方，指令只属于注入场景）。收侧 `sync_turn` 从 `messages` 最后一条 assistant 的 `reasoning` 键（Hermes 已把正文 `<thought>` 剥进去）原样还原成 `<thought>` 块拼回 `assistant_message`，让本体既有抽取直接生效；`reasoning` 无法区分「骨架引导产物」与「模型原生思考」，仅以骨架 kind 做亲和性观察（日志），不声称精确归因。全链 fail-open（不可达 / 超时 / 空骨架 → 本轮不注入，绝不打断回复）。新增配置 `PALIMPSEST_THOUGHT_SKELETON`（默认开）/ `PALIMPSEST_THOUGHT_TIMEOUT`（默认 2.0 秒）。
 
+### 修复
+
+- **会话接续点（`kind=handoff`）在活跃任务列表里隐形**：两个根因——①`kind` 此前**只有**存量回填（`tasks backfill`）会打，回填之后经 `mem_ingest` 纯写入的接续点一律缺标记，`include_handoff=true` 也捞不回；②活跃任务过滤要求生效状态 ∈ `{todo, doing, blocked}`，接续点正文首行是标记块、解析不出状态（`task_state=None`），连显式取回也被一并挡掉（生产实测两条接续点在默认 / `include_handoff` / `include_legacy` 三条列表全隐形）。现改为：**任何写入路径**（`mem_ingest`——MCP / REST / CLI 三通道同一实现——与 `apply_task_patch`，即 `PUT /memory/{node_id}`）对 `type=task` 且 content 首行以「接续点」标题词开头的节点**自动打 `kind=handoff`**（幂等；判定复用 `_is_handoff` 首行判据，不放宽 PR #112 收紧成果——句中含「接续点」的真待办不会被误标）；`kind=handoff` 的节点在活跃任务过滤中**豁免状态判定**——显式 `include_handoff=true` 时无论 `task_state` 是否可解析都能完整取回，且不塞假状态（解析不出仍如实为 `None`）；存量回填同步修正：接续点不再因状态解析不出被标 `legacy=True`（旧逻辑会把显式取回也挡掉；修正后 `tasks backfill` 重跑幂等 0 变更）。
+
 ## [2.12.0] - 2026-10-17
 
 ### 新增
