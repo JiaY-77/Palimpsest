@@ -52,6 +52,12 @@ from core.strategy import (
     decide_session_end as _strategy_session_end,
 )
 from core.strategy import (
+    decide_thought_skeleton as _strategy_decide_thought_skeleton,
+)
+from core.strategy import (
+    decide_thought_store as _strategy_decide_thought_store,
+)
+from core.strategy import (
     extract_graph_topics as _strategy_extract_graph_topics,
 )
 from core.strategy import (
@@ -869,6 +875,8 @@ class PreTurnRequest(BaseModel):
     include_neighbors: bool = False
     tier: str = "facts"
     min_score: float = 0.0
+    # 思维预设层给侧开关（宿主自己另有预设时可关掉本体的思考骨架）。
+    thought_skeleton: bool = True
 
 
 class PostTurnRequest(BaseModel):
@@ -896,9 +904,17 @@ def lifecycle_pre_turn(req: PreTurnRequest):
 
     宿主适配器拿到 ``inject_text`` 后原样拼进 prompt（放 system / user 前缀由
     适配器按自己的上下文组装方式决定——策略只管内容与优先级）。
+
+    另返回 ``thought_skeleton`` / ``thought_skeleton_kind``（思维预设层给侧）：
+    按当前轮情境动态挑的思考骨架，宿主原样拼进 prompt 即可引导模型把结构化
+    思考写进正文（post-turn 会抽取落库）；闲聊/过短轮骨架为空串。骨架判定
+    全在本体（core/strategy.py），宿主零判定。
     """
+    skeleton = _strategy_decide_thought_skeleton(req.user_message, enabled=req.thought_skeleton)
     probe = _strategy_pre_turn(req.user_message, hits=None, top_k=req.top_k, min_score=req.min_score)
     if probe["skip"] and probe["skip_reason"] in ("trivial", "too_short"):
+        probe["thought_skeleton"] = skeleton["skeleton"]
+        probe["thought_skeleton_kind"] = skeleton["kind"]
         return probe
 
     raw = _as_json(
@@ -915,28 +931,77 @@ def lifecycle_pre_turn(req: PreTurnRequest):
     result = _strategy_pre_turn(req.user_message, hits=hits, top_k=req.top_k, min_score=req.min_score)
     result["session_id"] = req.session_id
     result["turn_index"] = req.turn_index
+    result["thought_skeleton"] = skeleton["skeleton"]
+    result["thought_skeleton_kind"] = skeleton["kind"]
     return result
 
 
 @app.post("/lifecycle/post-turn")
 def lifecycle_post_turn(req: PostTurnRequest):
-    """每轮回复后：本体决定这轮要不要沉淀、写什么、写哪层。"""
+    """每轮回复后：本体决定这轮要不要沉淀、写什么、写哪层；并抽取思考底片。
+
+    两条独立的落库路径，互不阻断（判定都在 core/strategy.py，端点只执行）：
+
+    - 用户原话强信号 → logs 层（type="record"，既有行为）；
+    - assistant 消息里的 ``<thought>`` 段 → logs 层（type="thought"，思维底片）；
+      不命中 / 未闭合 / 空段 / 过短时**不落库但可观测**（thought.skip_reason
+      区分各情形），入库失败同理（ingest_failed + error 透传），不静默吞。
+
+    ``tier_distribution`` 汇总本轮**全部**写入的分层计数（此前只数用户原话
+    一条；混合轮两条都计入，thought-only 轮也能从顶层看到真实写入）。
+    """
     decision = _strategy_post_turn(req.user_message, auto_ingest=req.auto_ingest)
     decision["session_id"] = req.session_id
     decision["turn_index"] = req.turn_index
-    if not decision.get("store"):
-        return decision
 
-    ingest = _as_json(
-        _mcp_mem_ingest(
-            decision["content"],
-            type=decision["type"],
-            importance=decision["importance"],
+    tier_dist: dict[str, int] = {}
+    if decision.get("store"):
+        ingest = _as_json(
+            _mcp_mem_ingest(
+                decision["content"],
+                type=decision["type"],
+                importance=decision["importance"],
+            )
         )
+        decision["stored"] = bool(ingest.get("stored"))
+        decision["node_id"] = ingest.get("node_id")
+        if ingest.get("stored"):
+            tier_dist[decision["tier"]] = tier_dist.get(decision["tier"], 0) + 1
+
+    # 思维底片：assistant 消息里的 <thought> 段 → type="thought" / logs 层。
+    # 与用户原话路径互不阻断：任一路径的入库失败不影响另一条落库。
+    thought = _strategy_decide_thought_store(
+        req.assistant_message, auto_ingest=req.auto_ingest, session_id=req.session_id
     )
-    decision["stored"] = bool(ingest.get("stored"))
-    decision["node_id"] = ingest.get("node_id")
-    decision["tier_distribution"] = {decision["tier"]: 1} if ingest.get("stored") else {}
+    thought_out: dict = {
+        "found": thought["found"],
+        "stored": False,
+        "node_id": None,
+        "skip_reason": thought["skip_reason"],
+        "type": thought["type"],
+        "tier": thought["tier"],
+        "importance": thought["importance"],
+        "decision_log": thought["decision_log"],
+    }
+    if thought["store"]:
+        tingest = _as_json(
+            _mcp_mem_ingest(
+                thought["content"],
+                type=thought["type"],
+                importance=thought["importance"],
+                source=thought["source"],
+            )
+        )
+        thought_out["stored"] = bool(tingest.get("stored"))
+        thought_out["node_id"] = tingest.get("node_id")
+        if not tingest.get("stored"):
+            thought_out["skip_reason"] = "ingest_failed"
+            if tingest.get("error"):
+                thought_out["error"] = tingest["error"]
+        else:
+            tier_dist[thought["tier"]] = tier_dist.get(thought["tier"], 0) + 1
+    decision["thought"] = thought_out
+    decision["tier_distribution"] = tier_dist
     return decision
 
 

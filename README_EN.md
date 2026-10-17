@@ -8,7 +8,7 @@ Pa·limp·sest: *a writing surface that is overwritten again and again while old
 
 | | |
 |---|---|
-| Version | v2.11.0 |
+| Version | v2.12.0 |
 | Python | 3.10+ |
 | License | MIT |
 | Storage | TriviumDB 0.8.8 (vector + graph + document, embedded) |
@@ -292,7 +292,7 @@ python scripts/build_kb_index.py --rules rules.json
 | `POST` | `/memoryhub/unpack` | Unpack a MemoryHub pack read-only (validate + human summary) |
 | `POST` | `/memoryhub/import` | Naturalize pack nodes into the store (`select` empty = preview only; `include_secrets` allows strong-secret nodes) |
 | `POST` | `/graph/neighbors` | Graph neighbors of a node |
-| `POST` | `/lifecycle/pre-turn` | **Memory strategy**: decide which memories to recall before each model call; returns text ready to inject into the prompt |
+| `POST` | `/lifecycle/pre-turn` | **Memory strategy + thought preset layer**: decide which memories to recall before each model call; returns text ready to inject into the prompt plus a thinking skeleton picked for the current context (`thought_skeleton`) |
 
 > The full route list is in [`docs/API.md`](docs/API.md). If `PALIMPSEST_API_KEY` is set, every route except `/` requires `Authorization: Bearer <key>` or `X-API-Key: <key>`.
 
