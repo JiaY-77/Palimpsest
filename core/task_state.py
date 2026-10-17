@@ -46,7 +46,10 @@ UNKNOWN_STATE = "unknown"
 # 记录」而非待办事项。接续点必须写成 ``type=task``（写成 ``type=record`` 会落
 # logs 层，``tier=facts`` 的默认检索搜不到），但它们的状态标记常命中 doing、
 # 又多数没有 title——混进 ``list_active_tasks`` 的工作集会长期占着前排。因此
-# 查询层默认排除它们（``include_handoff=False``），显式开关可取回。
+# 查询层默认排除它们（``include_handoff=False``），显式开关可取回（显式取回
+# 不受状态过滤限制——接续点没有「待办状态」语义）。``kind`` 由**写入层**自动打：
+# ``mem_ingest`` / ``apply_task_patch`` 在写入/更新时凡 content 首行符合
+# ``_is_handoff`` 判据即打标，存量缺标由回填补——不依赖任何一方单独补齐。
 # 只支持这一个 kind 取值，不做别的分类。
 HANDOFF_KIND = "handoff"
 
@@ -270,7 +273,12 @@ def apply_task_patch(store, node_id: int, payload_patch: dict | None = None) -> 
          c. 否则 → 从现有 content 首行解析，解析不出保持原值；
       3. 状态发生变化 → 更新 ``task_state`` + ``last_touched_at``，写一条
          ``type=record`` 日志节点并建 ``record -[LOGS]-> task`` 边；
-         状态没变（含无状态可解析）→ 只更新 ``last_touched_at``。
+         状态没变（含无状态可解析）→ 只更新 ``last_touched_at``；
+
+      4. **接续点写入层打标（幂等）**：合并后的 ``type=task`` content 若首行以
+         「接续点」标题词开头（``_is_handoff``，与 ``mem_ingest`` / 回填同源的
+         唯一识别规则）→ 自动补 ``kind=handoff``。content 改成接续点形态同样打标；
+         已是接续点的不重复写、不报错。
 
     **原子性**：状态更新与日志写入不是一个事务（triviumdb 的连接模型如此，
     见 core/trivium_store.py 的单进程写约束）。因此日志节点**先写**——日志写入
@@ -301,6 +309,11 @@ def apply_task_patch(store, node_id: int, payload_patch: dict | None = None) -> 
     merged = {**payload, **patch}
     if new_state is not None:
         merged["task_state"] = new_state
+    # 接续点写入层打标（幂等）：合并后的 content 首行以「接续点」标题词开头
+    # （``_is_handoff``——与 ``mem_ingest`` / 回填同源的唯一识别规则，PR #112
+    # 收紧过的首行判据不放宽）→ 自动补 ``kind=handoff``；已是接续点的不重复写。
+    if merged.get("type") == "task" and _is_handoff(merged):
+        merged["kind"] = HANDOFF_KIND
 
     # 状态变化先留痕：日志成功后才落状态，避免「状态已变、无留痕」。
     changed = new_state is not None and new_state != previous_state
@@ -388,11 +401,18 @@ def _matches_filters(
         return False
     if not include_legacy and payload.get("legacy") is True:
         return False
-    if not include_handoff and payload.get("kind") == HANDOFF_KIND:
+    is_handoff = payload.get("kind") == HANDOFF_KIND
+    if not include_handoff and is_handoff:
         return False
-    state, _ = _resolve_effective_state(payload)
-    if state not in states:
-        return False
+    # 接续点豁免状态判定：它没有「待办状态」语义——正文首行是接续点标记块，
+    # ``parse_task_state`` 解析不出 → 生效状态 None → 按 {todo, doing, blocked}
+    # 过滤会把 ``include_handoff=True`` 的显式取回也一并挡掉（生产 2363/2393
+    # 实测，三条列表全隐形）。豁免**不是**塞假状态：``task_state`` 仍如实反映
+    # 正文解析结果（解析不出就是 None），只是不再用它决定接续点的可见性。
+    if not is_handoff:
+        state, _ = _resolve_effective_state(payload)
+        if state not in states:
+            return False
     return not (project and str(payload.get("project") or "") != project)
 
 
@@ -610,6 +630,9 @@ def backfill_task_state(store, dry_run: bool = True) -> dict:
         ``canceled`` / ``unknown``）才标 ``payload.legacy = True``（历史留痕，
         ``/tasks/active`` 默认不列出）；仍在跟进的状态（``todo`` / ``doing`` /
         ``blocked``）保持 legacy 缺失，**回填后即可出现在活跃任务视图里**。
+        **接续点豁免**：``kind=handoff`` 的节点不打 ``legacy``（统一写 ``False``）——
+        状态解析不出来自接续点标记块、不代表任务完结，显式 ``include_handoff=True``
+        应能完整取回（见 ``_matches_filters`` 的状态豁免）。
       - **会话接续点**（content 首行**以「接续点」作为标题词开头**，见
         ``_is_handoff``）：打
         ``payload.kind = "handoff"`` 身份标记——``list_active_tasks`` 默认排除
@@ -652,17 +675,24 @@ def backfill_task_state(store, dry_run: bool = True) -> dict:
             unknown += 1
         else:
             parsed += 1
-        # 该节点**应该**是什么 legacy 值：不活跃状态才标 legacy
-        want_legacy = state not in DEFAULT_ACTIVE_STATES
         # 接续点判定 + title 是否已补（目标判据：title 非空即就绪——不要求它一定
         # 出自本函数，人工改过的 title 同样算就绪）
         handoff = _is_handoff(payload)
+        # 该节点**应该**是什么 legacy 值：不活跃状态才标 legacy。**接续点豁免**：
+        # 接续点没有「待办状态」语义，状态解析不出（unknown）不等于「任务已完结、
+        # 不必再看」；打了 kind=handoff 后默认视图已由 kind 排除，若再按 unknown
+        # 打 legacy=True，会把 include_handoff=True 的显式取回也一并挡掉——显式
+        # 开关应当能完整取回全部接续点（生产 2363/2393 回归根因之二）。
+        want_legacy = (state not in DEFAULT_ACTIVE_STATES) and not handoff
         title_done = bool((payload.get("title") or "").strip())
         # 幂等：已是目标形态（task_state 相符、legacy 相符、title 非空即就绪；
-        # 接续点还要求 kind 已打）→ 跳过，重跑输出 0 变更
+        # 接续点还要求 kind 已打）→ 跳过，重跑输出 0 变更。接续点的 legacy 判据
+        # 相应放宽为「非 True 即就绪」：豁免后 legacy 不再是接续点的语义字段，
+        # 存量若被旧逻辑打了 True 才回写 False。
+        legacy_done = payload.get("legacy") is not True if handoff else payload.get("legacy") is want_legacy
         if (
             payload.get("task_state") == state
-            and payload.get("legacy") is want_legacy
+            and legacy_done
             and title_done
             and (not handoff or payload.get("kind") == HANDOFF_KIND)
         ):

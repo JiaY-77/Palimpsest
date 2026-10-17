@@ -32,6 +32,7 @@ from corpus_real_cases import EXPECTED_NONE, REAL_CORPUS
 from core.task_state import (
     HANDOFF_KIND,
     TASK_STATES,
+    UNKNOWN_STATE,
     _handoff_title,
     _is_handoff,
     apply_task_patch,
@@ -1082,3 +1083,143 @@ def test_backfill_title_idempotent_rerun(iso_store):
     second = backfill_task_state(iso_store, dry_run=True)
     assert second["changes"] == []
     assert second["already"] == second["scanned"]
+
+
+# ---------------------------------------------------------------------------
+# 12. 写入层自动打标（mem_ingest / apply_task_patch）+ 状态过滤豁免
+#     —— 生产 2363 / 2393 回归（2026-10-17 复盘）
+# ---------------------------------------------------------------------------
+#
+# 根因一：kind=handoff 此前只有存量回填（backfill_task_state）会打——回填之后
+#   纯 ingest 进来的接续点一律缺 kind，include_handoff=True 也捞不回；
+# 根因二：_matches_filters 要求生效状态 ∈ {todo, doing, blocked}，接续点首行是
+#   标记块、解析不出状态 → 三条列表（默认 / include_handoff / include_legacy）
+#   全隐形。
+# 本节锁死两个修复：写入路径自动打标（_is_handoff 首行判据不放宽）+ 接续点豁免
+# 状态判定（豁免≠塞假状态：task_state 仍如实反映解析结果）。
+# 隔离：一律走本文件的 iso_store（独立临时库）；mem_ingest 类用例经共享单例写入，
+# iso_store 已把单例 db_path 重指到临时库（见本文件第 10 节的既有约定）。
+
+
+def _ingest_task(content: str, **kwargs) -> int:
+    """经 mem_ingest（MCP/REST/CLI 三通道的公共实现）写一个 type=task 节点。"""
+    import json
+
+    from mcp_tools import mem_ingest
+
+    res = json.loads(mem_ingest(content, type="task", domain="task", **kwargs))
+    assert res["stored"] is True, f"mem_ingest 应回执 stored=True：{res}"
+    return res["node_id"]
+
+
+def _iso_payload(iso, nid: int) -> dict:
+    return (iso.get_node(nid) or {}).get("payload") or {}
+
+
+def test_write_layer_mem_ingest_marks_handoff(iso_store):
+    """①写入层自动打标：纯 ingest 进来的接续点落库即带 kind=handoff，不依赖回填。"""
+    nid = _ingest_task("【★接续点·2026-10-17 写入层打标验证 · 新会话先读这条】")
+
+    payload = _iso_payload(iso_store, nid)
+    assert payload["kind"] == HANDOFF_KIND, "接续点必须由写入层打 kind=handoff（回填不该是唯一入口）"
+    assert payload.get("task_state") is None, "写入层不代答状态：解析不出就如实为 None"
+
+
+def test_write_layer_handoff_filtering_regression(iso_store):
+    """②状态过滤豁免：默认不出现；include_handoff=True 时 task_state=None 也完整取回（2363/2393 回归口）。"""
+    nid = _ingest_task("接续点 / 会话接续 / 新聊天先读 —— 2026-10-17 状态过滤豁免验证 · 无状态词")
+
+    data = list_active_tasks(iso_store, project="")
+    assert nid not in {it["id"] for it in data["results"]}, "kind=handoff 的接续点默认应被排除"
+
+    included = {it["id"]: it for it in list_active_tasks(iso_store, project="", include_handoff=True)["results"]}
+    assert nid in included, "include_handoff=True 时 task_state=None 的接续点必须能取回（根因二回归）"
+    assert included[nid]["kind"] == HANDOFF_KIND
+    assert included[nid]["state"] is None, "豁免不得塞假状态：行内 state 应如实为 None"
+
+
+def test_write_layer_duplicate_ingest_idempotent(iso_store):
+    """③幂等：重复 ingest 同一条接续点不报错、两份都正确打标、默认列表恒空且回填 0 变更。"""
+    content = "【★接续点·2026-10-17 重复写入幂等验证 · 新会话先读这条】"
+    first = _ingest_task(content)
+    after_first = list_active_tasks(iso_store, project="", include_handoff=True)["total"]
+
+    second = _ingest_task(content)
+    after_second = list_active_tasks(iso_store, project="", include_handoff=True)["total"]
+
+    assert isinstance(first, int) and isinstance(second, int) and first != second
+    assert after_first == 1 and after_second == 2, "重复 ingest 各落一条、计数稳定（不吞第一条也不爆重复）"
+    for nid in (first, second):
+        assert _iso_payload(iso_store, nid)["kind"] == HANDOFF_KIND, "每次写入都必须正确打标，不得产生畸形标记"
+    assert list_active_tasks(iso_store, project="")["results"] == [], "两次打标都不得把接续点漏进默认列表"
+
+    # 回填对已打标节点是终态：apply 后重跑 0 变更（写入层与回填同源判定）
+    apply_result = backfill_task_state(iso_store, dry_run=False)
+    assert apply_result["handoff"] == 2
+    rerun = backfill_task_state(iso_store, dry_run=True)
+    assert rerun["changes"] == []
+    assert rerun["already"] == rerun["scanned"] == 2
+
+
+def test_write_layer_counterexample_todo_not_marked(iso_store):
+    """④反例回归（保住 PR #112 的收紧）：句中含「接续点」的真待办不得被打 handoff，且仍在默认列表。"""
+    nid = _ingest_task("[待办] 小帕「接续点 × 任务列表」解耦（走 PR，2026-10-16 立）")
+
+    payload = _iso_payload(iso_store, nid)
+    assert payload.get("kind") is None, "句中含「接续点」的真待办（node 2333 形态）不得被打 kind=handoff"
+
+    data = list_active_tasks(iso_store, project="")
+    ids = {it["id"] for it in data["results"]}
+    assert nid in ids, "真待办应照常出现在默认活跃列表"
+    row = next(it for it in data["results"] if it["id"] == nid)
+    assert row["state"] == "todo", "[待办] 首行解析出的状态应是 todo"
+
+
+def test_write_layer_apply_task_patch_marks_handoff(iso_store):
+    """⑤更新路径：apply_task_patch（PUT /memory/{node_id} 的实现）把 content 改成接续点形态 → 自动打标。"""
+    project = _ns()
+    nid = _iso_insert_task(iso_store, "[todo] T-830 普通待办任务", project, task_state="todo")
+
+    apply_task_patch(iso_store, nid, {"content": "【★接续点·2026-10-17 改写成接续点形态 · 新会话先读这条】"})
+
+    payload = _iso_payload(iso_store, nid)
+    assert payload["kind"] == HANDOFF_KIND, "content 改成接续点形态后必须自动补 kind=handoff"
+
+    # 幂等：再改一次与打标无关的字段 → kind 不被重复写、不被清掉
+    apply_task_patch(iso_store, nid, {"importance": 0.7})
+    payload = _iso_payload(iso_store, nid)
+    assert payload["kind"] == HANDOFF_KIND
+    assert payload["importance"] == 0.7
+
+    # 可见性与 mem_ingest 路径一致：默认排除 / include_handoff 取回
+    assert nid not in {it["id"] for it in list_active_tasks(iso_store, project)["results"]}
+    included = list_active_tasks(iso_store, project, include_handoff=True)["results"]
+    assert nid in {it["id"] for it in included}
+
+
+def test_write_layer_backfill_handoff_without_state_retrievable(iso_store):
+    """③回填联动：解析不出状态的接续点回填后 legacy 不置 True，include_handoff=True 完整取回；重跑幂等。
+
+    旧逻辑会因 unknown 状态把它标 legacy=True —— kind 已把它从默认视图排除，
+    legacy 再把显式取回也挡掉，接续点就永远见不到（生产 2363/2393 回归根因之二）。
+    """
+    project = _ns()
+    handoff = _iso_insert_task(iso_store, "【★接续点·2026-10-17 回填豁免验证 · 新会话先读这条】", project)
+    normal = _iso_insert_task(iso_store, "[doing] T-831 陪跑普通任务", project, task_state="doing")
+
+    backfill_task_state(iso_store, dry_run=False)
+
+    hp = _iso_payload(iso_store, handoff)
+    assert hp["kind"] == HANDOFF_KIND
+    assert hp["task_state"] == UNKNOWN_STATE, "解析不出 → unknown（回填既有约定），可见性由 include_handoff 控制"
+    assert hp["legacy"] is False, "接续点不得因状态解析不出被标 legacy=True（会把显式取回也挡掉）"
+    assert hp["needs_review"] is True, "unknown 态维持 needs_review 标记（可以在列表里收拾，但不影响过滤）"
+
+    included_ids = {it["id"] for it in list_active_tasks(iso_store, project, include_handoff=True)["results"]}
+    assert handoff in included_ids, "include_handoff=True 必须取回回填后的接续点（2363/2393 验收口）"
+    assert normal in included_ids
+
+    # 幂等：apply 后重跑 0 变更（在临时库上验证；生产库的回填由运维窗口单独执行）
+    second = backfill_task_state(iso_store, dry_run=False)
+    assert second["changes"] == []
+    assert second["already"] == second["scanned"] == 2

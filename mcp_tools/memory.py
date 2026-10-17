@@ -21,6 +21,7 @@ from core.memoryhub import apply_import, read_pack, summarize_pack
 from core.policy import check_ingest
 from core.secret_scan import SecretScanError
 from core.strategy import decide_import
+from core.task_state import HANDOFF_KIND, _is_handoff
 from core.trivium_store import domain_in_block, node_domain
 from core.utils import _to_float
 from mcp_tools._common import _shorten, _to_json, mcp, store
@@ -257,6 +258,11 @@ def mem_ingest(
     """
     写入新记忆。
 
+    接续点自动打标：``type=task`` 且 content 首行以「接续点」标题词开头
+    （``core.task_state._is_handoff`` 判据）→ 自动写 ``kind=handoff``（幂等），
+    跨会话交接记录由此默认从活跃任务列表排除、``tasks_active(include_handoff=true)``
+    可显式取回。
+
     ★ 写入前请先判定（判定归调用方，本工具不代判、不额外接 LLM）：
       1) 先 ``mem_search`` 查同主题的现有记忆（``scope="memory"``，top_k=3~5）；
       2) 按结果分三种情况：
@@ -313,6 +319,14 @@ def mem_ingest(
         "created_at": now,
         "linked_from": linked_kb_ids,
     }
+    # 会话接续点写入层打标（幂等）：type=task 且 content 首行以「接续点」标题词
+    # 开头 → 自动写 kind=handoff。判定复用 core.task_state._is_handoff 的首行判据
+    # （PR #112 收紧过的「标题词开头」，与查询 / 回填同源，不另立识别规则）——
+    # 此前 kind 只有存量回填会打，回填之后纯 ingest 进来的接续点一律缺 kind，
+    # include_handoff=True 也捞不回（生产 2363/2393 实测根因之一）。已是接续点
+    # 的写入不重复打、不报错。
+    if type == "task" and _is_handoff({"content": content}):
+        node_data["kind"] = HANDOFF_KIND
     # bi-temporal：新事实补 valid_at（世界时间 = 事实开始为真之时；缺省=写入时刻）。
     # 非事实类型（kb_chunk / record 等）自动跳过，见 core.bitemporal。
     stamp_new_fact(node_data, now)
@@ -463,7 +477,9 @@ def tasks_active(
         ``done`` / ``canceled``）；非法值被忽略，全非法则回退默认三态；
       - ``limit``：返回条数上限（``total`` 仍为过滤后总数）；
       - ``include_handoff``：``true`` 时同时列出会话接续点
-        （``kind=handoff`` 的跨会话交接记录），默认排除。
+        （``kind=handoff`` 的跨会话交接记录），默认排除。显式列出时**不受状态
+        过滤限制**——接续点没有「待办状态」语义，``task_state`` 为 ``None`` 也能
+        完整取回（``kind`` 由写入层自动打标，见 ``core.task_state._is_handoff``）。
 
     排序：``doing > blocked > todo`` → ``last_touched_at`` 倒序 → ``importance`` 倒序。
     默认排除 ``payload.legacy = true`` 的老节点（见 CLI ``tasks backfill``）。

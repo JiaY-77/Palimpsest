@@ -258,7 +258,7 @@ python scripts/build_kb_index.py --rules rules.json
 | `memoryhub` | MemoryHub 记忆包（子命令 `read` / `import`） |
 | `memoryhub read PATH` | 只读解开记忆包（校验 + 人读摘要，`--preview-chars`） |
 | `memoryhub import PATH` | 把包内节点入籍（`--select 12,15,31`；为空 = 只预览不写；`--include-secrets` 放行强敏感节点） |
-| `tasks active` | 活跃任务列表（`--project`、`--states todo,doing,blocked`、`--limit`、`--include-handoff` 列出会话接续点） |
+| `tasks active` | 活跃任务列表（`--project`、`--states todo,doing,blocked`、`--limit`、`--include-handoff` 列出会话接续点——接续点由写入层自动打 `kind=handoff`，显式列出时不受状态过滤） |
 | `tasks backfill` | 存量任务节点回填 `task_state`（默认 dry-run 预览，`--apply` 才写库） |
 | `review` | 最近 N 天的周期回顾（`--tier facts\|logs\|''` 作用于 recent_ingests） |
 | `stats` | 库级盘点统计（totals/域/重要度/时间/图谱） |
