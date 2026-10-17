@@ -4,6 +4,12 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
+## [Unreleased]
+
+### 新增
+
+- **Hermes 插件侧接入（`hermes-plugin`，纯传输零判定）**：给侧注册 `pre_llm_call` 钩子——每轮 LLM 调用前向 `/lifecycle/pre-turn` 取骨架，**包一句 `<thought>` 指令前缀后返回**（注入落在 user 消息末尾，裸骨架会被当「参考资料」忽略，实测须指令引导模型才按骨架产出；包装在传输侧——骨架文本本体侧另有 REST 直调等读取方，指令只属于注入场景）。收侧 `sync_turn` 从 `messages` 最后一条 assistant 的 `reasoning` 键（Hermes 已把正文 `<thought>` 剥进去）原样还原成 `<thought>` 块拼回 `assistant_message`，让本体既有抽取直接生效；`reasoning` 无法区分「骨架引导产物」与「模型原生思考」，仅以骨架 kind 做亲和性观察（日志），不声称精确归因。全链 fail-open（不可达 / 超时 / 空骨架 → 本轮不注入，绝不打断回复）。新增配置 `PALIMPSEST_THOUGHT_SKELETON`（默认开）/ `PALIMPSEST_THOUGHT_TIMEOUT`（默认 2.0 秒）。
+
 ## [2.12.0] - 2026-10-17
 
 ### 新增

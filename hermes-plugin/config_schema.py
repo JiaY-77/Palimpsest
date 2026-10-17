@@ -77,5 +77,19 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             kind="bool",
             description="命中明确指令（纠正/偏好/规则）时自动写入 Palimpsest（logs 层）",
         ),
+        ProviderField(
+            key="thought_skeleton",
+            label="思考骨架",
+            default="true",
+            kind="bool",
+            description="每轮 LLM 调用前注入小帕按情境挑的思考骨架（思维预设层给侧）；闲聊/过短轮本体自动不给",
+        ),
+        ProviderField(
+            key="thought_timeout",
+            label="骨架超时(秒)",
+            default="2.0",
+            kind="number",
+            description="取骨架的热路径超时（fail-open：超时/不可达时本轮不给骨架，绝不打断回复）",
+        ),
     ),
 )
