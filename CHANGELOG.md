@@ -13,6 +13,7 @@
 ### 修复
 
 - **会话接续点（`kind=handoff`）在活跃任务列表里隐形**：两个根因——①`kind` 此前**只有**存量回填（`tasks backfill`）会打，回填之后经 `mem_ingest` 纯写入的接续点一律缺标记，`include_handoff=true` 也捞不回；②活跃任务过滤要求生效状态 ∈ `{todo, doing, blocked}`，接续点正文首行是标记块、解析不出状态（`task_state=None`），连显式取回也被一并挡掉（生产实测两条接续点在默认 / `include_handoff` / `include_legacy` 三条列表全隐形）。现改为：**任何写入路径**（`mem_ingest`——MCP / REST / CLI 三通道同一实现——与 `apply_task_patch`，即 `PUT /memory/{node_id}`）对 `type=task` 且 content 首行以「接续点」标题词开头的节点**自动打 `kind=handoff`**（幂等；判定复用 `_is_handoff` 首行判据，不放宽 PR #112 收紧成果——句中含「接续点」的真待办不会被误标）；`kind=handoff` 的节点在活跃任务过滤中**豁免状态判定**——显式 `include_handoff=true` 时无论 `task_state` 是否可解析都能完整取回，且不塞假状态（解析不出仍如实为 `None`）；存量回填同步修正：接续点不再因状态解析不出被标 `legacy=True`（旧逻辑会把显式取回也挡掉；修正后 `tasks backfill` 重跑幂等 0 变更）。
+- **接续点写入层自动补 `title`**：`kind=handoff` 写入层打标落地后，新写入的接续点仍只有存量回填（`tasks backfill`）会补 `title`——经 `mem_ingest` 纯写入的接续点在 `include_handoff=true` 的交接列表里 `title` 为空、读不出是哪一条。现 `mem_ingest` 与 `apply_task_patch` 在打标的同一判定（`_is_handoff` 首行判据）上，于 **`title` 为空时**用 `_handoff_title`（PR #112 验收过的提取逻辑，不改动）自动补一行摘要；**已有非空值不覆盖**（尊重人工与既有值，与回填「title 非空即就绪」判据一致）。
 
 ## [2.12.0] - 2026-10-17
 

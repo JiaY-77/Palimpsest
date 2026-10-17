@@ -277,8 +277,9 @@ def apply_task_patch(store, node_id: int, payload_patch: dict | None = None) -> 
 
       4. **接续点写入层打标（幂等）**：合并后的 ``type=task`` content 若首行以
          「接续点」标题词开头（``_is_handoff``，与 ``mem_ingest`` / 回填同源的
-         唯一识别规则）→ 自动补 ``kind=handoff``。content 改成接续点形态同样打标；
-         已是接续点的不重复写、不报错。
+         唯一识别规则）→ 自动补 ``kind=handoff``，并在 ``title`` 为空时用
+         ``_handoff_title`` 补摘要（``title`` 已有非空值不覆盖，提取逻辑与回填
+         同源）。content 改成接续点形态同样打标；已是接续点的不重复写、不报错。
 
     **原子性**：状态更新与日志写入不是一个事务（triviumdb 的连接模型如此，
     见 core/trivium_store.py 的单进程写约束）。因此日志节点**先写**——日志写入
@@ -312,8 +313,14 @@ def apply_task_patch(store, node_id: int, payload_patch: dict | None = None) -> 
     # 接续点写入层打标（幂等）：合并后的 content 首行以「接续点」标题词开头
     # （``_is_handoff``——与 ``mem_ingest`` / 回填同源的唯一识别规则，PR #112
     # 收紧过的首行判据不放宽）→ 自动补 ``kind=handoff``；已是接续点的不重复写。
+    # title 同步补齐（幂等、不覆盖）：``title`` 此前只有回填会补，更新路径改出
+    # 的接续点在交接列表里 title 为空、读不出是哪条。``title`` 已有非空值就保持
+    # 原值（尊重人工与既有值，与回填「title 非空即就绪」判据一致）；为空才用
+    # ``_handoff_title`` 补（PR #112 验收过的提取逻辑，直接复用不改动）。
     if merged.get("type") == "task" and _is_handoff(merged):
         merged["kind"] = HANDOFF_KIND
+        if not (merged.get("title") or "").strip():
+            merged["title"] = _handoff_title(merged)
 
     # 状态变化先留痕：日志成功后才落状态，避免「状态已变、无留痕」。
     changed = new_state is not None and new_state != previous_state
