@@ -1223,3 +1223,76 @@ def test_write_layer_backfill_handoff_without_state_retrievable(iso_store):
     second = backfill_task_state(iso_store, dry_run=False)
     assert second["changes"] == []
     assert second["already"] == second["scanned"] == 2
+
+
+def test_write_layer_mem_ingest_fills_title(iso_store):
+    """⑥title 同步：ingest 写接续点 → 落库即带非空 title（交接列表读得出是哪条）。"""
+    content = "【★接续点·2026-10-17 写入层 title 补齐验证 · 新会话先读这条】"
+    nid = _ingest_task(content)
+
+    payload = _iso_payload(iso_store, nid)
+    title = (payload.get("title") or "").strip()
+    assert title, "接续点落库必须带非空 title（此前只有回填会补，新写入的全是空）"
+    assert "2026-10-17" in title and "title 补齐验证" in title, (
+        f"title 应取自标记里的日期+主题段，不是常量回退值：{title!r}"
+    )
+    assert payload["kind"] == HANDOFF_KIND, "kind 打标行为不受 title 补齐影响"
+
+
+def test_write_layer_preserves_existing_title(iso_store):
+    """⑦不覆盖：title 已有非空值（人工/既有）→ 更新路径补 kind 但 title 保持原值。"""
+    project = _ns()
+    nid = _iso_insert_task(
+        iso_store,
+        "[todo] T-833 普通待办任务",
+        project,
+        title="人工拟好的标题",
+        task_state="todo",
+    )
+
+    apply_task_patch(iso_store, nid, {"content": "【★接续点·2026-10-17 不覆盖已有 title 验证 · 新会话先读这条】"})
+
+    payload = _iso_payload(iso_store, nid)
+    assert payload["kind"] == HANDOFF_KIND, "更新路径照常补 kind=handoff"
+    assert payload["title"] == "人工拟好的标题", "title 已有非空值时必须保持原值，不得被自动补齐覆盖"
+
+
+def test_write_layer_ingest_title_idempotent(iso_store):
+    """⑧幂等：同一内容 ingest 两次 → 不报错、两份 title 稳定一致（不拼接、不重复）。"""
+    content = "【★接续点·2026-10-17 幂等 title 验证 · 新会话先读这条】"
+    first = _ingest_task(content)
+    second = _ingest_task(content)
+
+    assert first != second, "两次 ingest 各落一条节点"
+    t1 = (_iso_payload(iso_store, first).get("title") or "").strip()
+    t2 = (_iso_payload(iso_store, second).get("title") or "").strip()
+    assert t1 and t1 == t2, f"同内容两次 ingest 的 title 必须稳定一致：{t1!r} vs {t2!r}"
+    assert t1.count("幂等 title 验证") == 1, "title 不得重复拼接（每次写入只补一次）"
+
+
+def test_write_layer_apply_task_patch_fills_title(iso_store):
+    """⑨apply_task_patch 路径：content 改成接续点形态 → kind 与缺失的 title 一并自动补。"""
+    project = _ns()
+    nid = _iso_insert_task(iso_store, "[todo] T-834 普通待办任务", project, task_state="todo")
+
+    apply_task_patch(iso_store, nid, {"content": "【★接续点·2026-10-17 patch 补 title 验证 · 新会话先读这条】"})
+
+    payload = _iso_payload(iso_store, nid)
+    assert payload["kind"] == HANDOFF_KIND
+    title = (payload.get("title") or "").strip()
+    assert "2026-10-17" in title and "patch 补 title 验证" in title, f"title 应从更新后的 content 首行提取：{title!r}"
+
+    # 幂等：再 patch 与 title 无关的字段 → title 稳定（不重复拼接、不被清掉）
+    apply_task_patch(iso_store, nid, {"importance": 0.7})
+    payload = _iso_payload(iso_store, nid)
+    assert payload["title"] == title, "title 非空后再次更新必须保持原值"
+    assert payload["importance"] == 0.7
+
+
+def test_write_layer_normal_todo_gets_no_handoff_title(iso_store):
+    """⑩反例：普通待办（首行不以接续点标记词开头）→ 不得被塞接续点 title。"""
+    nid = _ingest_task("[待办] 小帕「接续点 × 任务列表」解耦（走 PR，2026-10-16 立）")
+
+    payload = _iso_payload(iso_store, nid)
+    assert payload.get("kind") is None, "真待办不得被打 kind=handoff（既有回归口，PR #112 收紧成果）"
+    assert not (payload.get("title") or "").strip(), "普通待办不得被塞接续点 title（补 title 只限接续点）"

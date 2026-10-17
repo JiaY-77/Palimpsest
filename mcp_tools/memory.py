@@ -21,7 +21,7 @@ from core.memoryhub import apply_import, read_pack, summarize_pack
 from core.policy import check_ingest
 from core.secret_scan import SecretScanError
 from core.strategy import decide_import
-from core.task_state import HANDOFF_KIND, _is_handoff
+from core.task_state import HANDOFF_KIND, _handoff_title, _is_handoff
 from core.trivium_store import domain_in_block, node_domain
 from core.utils import _to_float
 from mcp_tools._common import _shorten, _to_json, mcp, store
@@ -260,8 +260,9 @@ def mem_ingest(
 
     接续点自动打标：``type=task`` 且 content 首行以「接续点」标题词开头
     （``core.task_state._is_handoff`` 判据）→ 自动写 ``kind=handoff``（幂等），
-    跨会话交接记录由此默认从活跃任务列表排除、``tasks_active(include_handoff=true)``
-    可显式取回。
+    并在 ``title`` 为空时用 ``core.task_state._handoff_title`` 自动补一行摘要
+    （已有非空值不覆盖），跨会话交接记录由此默认从活跃任务列表排除、
+    ``tasks_active(include_handoff=true)`` 可显式取回，且交接列表里读得出是哪条。
 
     ★ 写入前请先判定（判定归调用方，本工具不代判、不额外接 LLM）：
       1) 先 ``mem_search`` 查同主题的现有记忆（``scope="memory"``，top_k=3~5）；
@@ -325,8 +326,14 @@ def mem_ingest(
     # 此前 kind 只有存量回填会打，回填之后纯 ingest 进来的接续点一律缺 kind，
     # include_handoff=True 也捞不回（生产 2363/2393 实测根因之一）。已是接续点
     # 的写入不重复打、不报错。
+    # title 同步补齐（幂等、不覆盖）：title 此前只有回填会补，新写入的接续点在
+    # 交接列表里 title 为空、读不出是哪条。已有非空值不覆盖（尊重人工与既有值，
+    # 与回填「title 非空即就绪」判据一致）；为空才补，提取复用 _handoff_title
+    # （PR #112 验收过的逻辑，不改动）。
     if type == "task" and _is_handoff({"content": content}):
         node_data["kind"] = HANDOFF_KIND
+        if not (node_data.get("title") or "").strip():
+            node_data["title"] = _handoff_title({"content": content})
     # bi-temporal：新事实补 valid_at（世界时间 = 事实开始为真之时；缺省=写入时刻）。
     # 非事实类型（kb_chunk / record 等）自动跳过，见 core.bitemporal。
     stamp_new_fact(node_data, now)
