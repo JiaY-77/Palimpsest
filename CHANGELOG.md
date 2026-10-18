@@ -4,7 +4,7 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
-## [Unreleased]
+## [2.13.0] - 2026-10-18
 
 ### 新增
 
@@ -472,7 +472,8 @@
 
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
-[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.12.0...HEAD
+[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.13.0...HEAD
+[2.13.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.13.0
 [2.12.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.12.0
 [2.11.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.11.0
 [2.10.1]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.10.1
