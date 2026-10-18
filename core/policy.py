@@ -103,6 +103,29 @@ def check_ingest(content: str, node_type: str, domain: str) -> dict:
     return {"ok": True, "warnings": warnings, "error": None}
 
 
+def check_search_query(query: str) -> dict:
+    """检索入口校验：query 超长拒绝（与写入侧 ``check_ingest`` 同源策略）。
+
+    返回 ``{"ok": bool, "error": str | None}``（风格对齐 ``check_ingest``，
+    无分级上限概念，故没有 ``warnings`` 键）。
+
+    上限 ``Config.MEM_SEARCH_MAX_QUERY_CHARS``（默认 8000）：超长 query 会打到
+    embedding 模型侧报「input length exceeds the context length」，且召回随
+    长度退化——入口直接拒绝，不让排查方向被 embedding 错误误译带偏。
+
+    空串不在此判定：空 query 的语义（返回提示而非拒绝）由各检索实现既有
+    行为负责，保持不变。
+    """
+    stripped = (query or "").strip()
+    max_len = int(getattr(Config, "MEM_SEARCH_MAX_QUERY_CHARS", 8000))
+    if len(stripped) > max_len:
+        return {
+            "ok": False,
+            "error": f"查询超长：{len(stripped)} 字符，上限 {max_len} 字符（MEM_SEARCH_MAX_QUERY_CHARS）。",
+        }
+    return {"ok": True, "error": None}
+
+
 def check_protected_overwrite(old_payload: dict | None) -> str | None:
     """受保护节点将被覆盖时返回告警文案；非受保护返回 ``None``。"""
     if not is_protected(old_payload):

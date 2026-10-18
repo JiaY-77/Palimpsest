@@ -82,6 +82,17 @@ class EmbeddingUnavailableError(Exception):
     """
 
 
+class EmbeddingInputTooLongError(EmbeddingUnavailableError):
+    """输入超出 embedding 模型可处理长度。
+
+    与 `EmbeddingUnavailableError` 语义拆开（issue #121）：模型侧明确报
+    「input length exceeds the context length」时抛本类——服务在跑、模型在，
+    `503「检查 Ollama 是否启动」`会把排查方向带偏。REST 侧映射为 **422**。
+    继承 `EmbeddingUnavailableError`：既有按后者捕获的调用方（如 pre-turn
+    兜底、插件适配）继续生效，新代码用本类精确定位。
+    """
+
+
 class DatabaseBusyError(RuntimeError):
     """记忆库被其他进程占用，无法打开。
 
@@ -199,6 +210,37 @@ def _filter_candidates_by_block(scored: list[tuple[float, dict]], block: str) ->
     return [(s, n) for s, n in scored if domain_in_block(node_domain(n.get("payload", {})), block)]
 
 
+# 模型侧「输入超上下文」错误关键词（issue #121：Ollama 实测 50,000 字符 prompt
+# 返回 HTTP 500 {"error": "the input length exceeds the context length"}）。
+_EMBEDDING_TOO_LONG_MARKERS = (
+    "exceeds the context length",
+    "context length exceeded",
+    "maximum context length",
+)
+
+
+def _raise_embedding_http_error(response: Any, provider: str) -> None:
+    """HTTP 状态判别（issue #121）：模型侧「输入超上下文」与「服务不可用」拆开。
+
+    响应体含模型侧长度错误关键词 → 抛 `EmbeddingInputTooLongError`（REST 侧
+    映射 422）；其余 HTTP 错误按 ``raise_for_status`` 原样抛出，由调用方外层
+    统一包成 `EmbeddingUnavailableError`（503 语义不变），排查方向不再被
+    「检查 Ollama 是否启动」的误译带偏。
+    """
+    try:
+        response.raise_for_status()
+        return
+    except Exception as exc:
+        body = ""
+        with contextlib.suppress(Exception):
+            body = (response.text or "").lower()
+        if any(marker in body for marker in _EMBEDDING_TOO_LONG_MARKERS):
+            raise EmbeddingInputTooLongError(
+                f"输入超出 embedding 模型可处理长度（{provider}）：{(response.text or '')[:200]}"
+            ) from exc
+        raise
+
+
 class TriviumStore:
     """封装 TriviumDB 操作，提供记忆存储和检索接口"""
 
@@ -314,7 +356,7 @@ class TriviumStore:
                 json={"model": Config.OLLAMA_EMBEDDING_MODEL, "prompt": text},
                 timeout=30,
             )
-            response.raise_for_status()
+            _raise_embedding_http_error(response, provider="Ollama")
             embedding = response.json().get("embedding")
             if not embedding:
                 raise EmbeddingUnavailableError(
@@ -352,7 +394,7 @@ class TriviumStore:
                 json={"model": Config.EMBEDDING_MODEL, "input": text},
                 timeout=30,
             )
-            response.raise_for_status()
+            _raise_embedding_http_error(response, provider="云端 Embedding")
             data = response.json()
             # OpenAI 兼容返回: {"data": [{"embedding": [...]}]}
             embedding = data["data"][0]["embedding"]

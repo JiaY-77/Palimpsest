@@ -22,7 +22,7 @@ from core.policy import check_ingest
 from core.secret_scan import SecretScanError
 from core.strategy import THOUGHT_TYPE, decide_import, detect_thought_origin, normalize_skeleton_kind
 from core.task_state import HANDOFF_KIND, _handoff_title, _is_handoff
-from core.trivium_store import domain_in_block, node_domain
+from core.trivium_store import EmbeddingInputTooLongError, EmbeddingUnavailableError, domain_in_block, node_domain
 from core.utils import _to_float
 from mcp_tools._common import _shorten, _to_json, mcp, store
 from mcp_tools.graph import _collect_neighbors
@@ -255,6 +255,7 @@ def mem_ingest(
     source: str = "",
     replaces: str = "",
     skeleton_kind: str = "",
+    turn_index: int | None = None,
 ) -> str:
     """
     写入新记忆。
@@ -349,6 +350,11 @@ def mem_ingest(
     if type == THOUGHT_TYPE:
         node_data["skeleton_kind"] = normalize_skeleton_kind(skeleton_kind)
         node_data["thought_origin"] = detect_thought_origin(content)
+        # issue #125：lifecycle 通道写入时落 turn_index（宿主上报的轮次序号），
+        # 作为同轮重复提交的持久判重依据；不传（None）不落。需与 source
+        # （lifecycle:post-turn[:session_id]）配合判重——见 main.lifecycle_post_turn。
+        if turn_index is not None:
+            node_data["turn_index"] = int(turn_index)
     # bi-temporal：新事实补 valid_at（世界时间 = 事实开始为真之时；缺省=写入时刻）。
     # 非事实类型（kb_chunk / record 等）自动跳过，见 core.bitemporal。
     stamp_new_fact(node_data, now)
@@ -421,8 +427,18 @@ def mem_recent(domain: str = "", limit: int = 10, as_of: float | None = None) ->
     # 非法 domain 安全降级、不崩溃（不抛异常）。此校验必须在 _acquire() 之前，
     # 避免 open 的 db 与 iter_payloads 内部 _acquire 双开同一库文件报 Database locked。
     domain_ok = bool(re.fullmatch(r"[a-z0-9_-]+", domain_val or ""))
-    if domain_val and not domain_ok:
-        logger.warning("mem_recent domain 非法，退化为 iter_payloads: %r", domain_val)
+    # issue #123：「general」是 node_domain() 对空/隐式 domain 的归一别名——
+    # TQL FIND {domain: "general"} 只匹配**显式** payload 字段，会把
+    # domain 缺省为空串的隐式 general 节点漏掉（与 /mem/search 的 node_domain
+    # 口径相反）。改走 iter_payloads + node_domain 过滤兜底，保证隐式 general
+    # 可达、口径一致；非法 domain 同样走该兜底（原防注入路径）。其余 domain
+    # 保持 TQL 快路径不变。
+    if domain_val and (not domain_ok or domain_val == "general"):
+        logger.warning(
+            "mem_recent domain=%r 走 iter_payloads 兜底（%s）",
+            domain_val,
+            "非法字符" if not domain_ok else "隐式 general 需 node_domain 口径",
+        )
         raw = [(nid, pl) for nid, pl in store.iter_payloads() if node_domain(pl) == domain_val]
     else:
         db = None
@@ -1286,6 +1302,11 @@ def _hybrid_search_impl(
                 as_of=as_of,
             )
         result = {"results": items, "scope": scope, "mode": mode, "channels": channels}
+        if channels.get("fts") == "degraded":
+            # issue #122：FTS 通道真降级（向量侧仍可用）→ 保留结果 + 程序可读
+            # 契约字段，不只靠 channels 字符串。
+            result["degraded"] = True
+            result["errors"] = ["fts channel degraded: 结果仅来自语义通道"]
         if domain_bias:
             result["bias"] = domain_bias
         if include_neighbors:
@@ -1293,8 +1314,22 @@ def _hybrid_search_impl(
             result["neighbors"] = neighbors
             result["neighbor_count"] = len(neighbors)
         return result
-    except Exception as e:  # noqa: BLE001 —— 混合检索失败返回空结果附失败提示
-        return {"results": [], "scope": scope, "hint": f"混合检索失败: {e}"}
+    except (EmbeddingInputTooLongError, EmbeddingUnavailableError):
+        # issue #122：embedding 类失败向上抛（REST 由 main.py 统一映射，与
+        # /mem/search 同状态码同语义），不再伪装成 200 + 空结果。
+        raise
+    except Exception as e:  # noqa: BLE001 —— 真·局部降级保留结果并结构化留痕
+        # 非 embedding 的失败（如 FTS 子路径问题）不再只靠 hint 字符串告知：
+        # degraded / errors 是程序可读的契约字段。
+        logger.warning("混合检索局部降级（query=%r）: %s", query[:60], e)
+        return {
+            "results": [],
+            "scope": scope,
+            "mode": mode,
+            "degraded": True,
+            "errors": [str(e)],
+            "hint": f"混合检索失败: {e}",
+        }
 
 
 @mcp.tool()

@@ -86,6 +86,12 @@ class Config:
     # 单条记忆 content 最大字符数，超长拒绝写入（防超大 payload 拖垮库）
     MEM_INGEST_MAX_LENGTH = int(os.getenv("MEM_INGEST_MAX_LENGTH", str(50_000)))
 
+    # ---- mem_search 检索 query 上限（与写入侧 policy 同源，见 core/policy.py）----
+    # 超长 query 先在本体入口被 422 拒绝，而不是打到 embedding 模型后炸出
+    # 「input length exceeds the context length」（曾被误译成「embedding 服务
+    # 不可用」，排查方向被带偏）。默认 8000 字符。
+    MEM_SEARCH_MAX_QUERY_CHARS = int(os.getenv("MEM_SEARCH_MAX_QUERY_CHARS", "8000"))
+
     # ---- 写入口约束护栏（write-guard policy，见 core/policy.py）----
     # 模式：warn（默认，只记日志不改行为）/ enforce（真正拦截）。
     # 默认 warn——攒一阶段数据后再显式开 enforce；非法值回退 warn。
