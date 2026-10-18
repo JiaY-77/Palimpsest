@@ -282,6 +282,8 @@ python scripts/build_kb_index.py --rules rules.json
 
 `block` is the "domain-group" concept: the graph is isolated per block, and diffusion retrieval only follows edges inside the same block, preventing cross-domain pollution. Built-ins: `task` / `kb` / `hermes` / `novel` / `general`; any of your own `domain` values can be a block (e.g. `--block myproject`), and an empty `--block` runs in full mode. Node ownership is expressed by `payload.domain`: set it at write time via `--domain X` or `mem_ingest(domain=...)`; `kb` nodes are set automatically by the indexer.
 
+**Domain attribution semantics**: nodes written without a `domain` (empty or missing) are normalized to the implicit `general` — all domain-filtered reads (`mem_search`, `mem_recent`, block filtering) use this normalized attribution, so **nodes written without a domain are visible under `domain="general"` queries**. `mem_recent(domain="general")` scans payloads with the same normalized attribution; other domains keep the index fast path — both give consistent results. Thought traces from the lifecycle channel get their domain via the optional `domain` field of `POST /lifecycle/post-turn` (omitting it stays implicit `general`).
+
 ### REST API — `main.py`, port 8090
 
 | Method | Path | Description |

@@ -42,6 +42,7 @@
 | `TIER_LOGS` | `record,event,git_commit` | 归入日志层的记忆 type（逗号分隔），默认不进检索与注入池 | 检索与注入按 tier 过滤时 |
 | `DEFAULT_TIER` | `facts` | 检索与注入的默认分层；`logs` 只回日志层，空串 = 不过滤（全量历史通道） | 未显式指定 `tier` 时 |
 | `MEM_INGEST_MAX_LENGTH` | `50000` | 单条记忆 content 最大字符数，超长拒绝写入 | `mem_ingest` 写入时 |
+| `MEM_SEARCH_MAX_QUERY_CHARS` | `8000` | 检索 query 最大字符数，超长在检索入口直接拒绝（REST 422 / pre-turn fail-open 并标 `skip_reason="query_too_long"`），不再打到 embedding 模型侧报「exceeds the context length」 | `/mem/search`、`/mem/hybrid-search`、`/lifecycle/pre-turn` |
 | `POLICY_MODE` | `warn` | 写入口护栏模式：`warn` = 只记日志与结果字段，不改写行为（默认）；`enforce` = 策略真正拦截；非法值回退 `warn` | `mem_ingest` 写入时 |
 | `POLICY_PROTECTED_TYPES` | `rule` | 受保护 type（逗号分隔）：`enforce` 模式下不参与自动覆盖（不被标 `outdated` / 建 `REVISED_BY` 边）；`payload.protected=True` 的节点亦受保护 | `mem_ingest` 写入时的冲突检测 |
 | `POLICY_TYPE_LIMITS` | `record:8000,memory:8000,task:10000,plan:12000,kb_chunk:8000,novel_chunk:12000` | 按 type 分级的软上限（形如 `task:20000,plan:80000`）；`warn` 模式只告警不拒，`enforce` 模式拒绝。默认值取自实测内容长度分布（各类型 p90 的 3-5 倍），正常写入不受影响 | `mem_ingest` 写入时 |

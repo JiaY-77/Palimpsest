@@ -277,6 +277,8 @@ python scripts/build_kb_index.py --rules rules.json
 
 `block` 是「域分组」概念：图谱按区块隔离，扩散检索只沿同区块的边，防止跨域污染。内置 `task` / `kb` / `hermes` / `novel` / `general`，也可把自己的 `domain` 当作区块（如 `--block myproject`），留空按全量模式检索。节点归属统一由 `payload.domain` 表达：写入时通过 `--domain X` 或 `mem_ingest(domain=...)` 指定，`kb` 节点由索引自动设置。
 
+**域取舍口径**：`domain` 未指定（空 / 缺省）的节点被归一为隐式 `general`——所有按域过滤与检索（`mem_search`、`mem_recent`、区块过滤）都以这个归一后的口径为准，因此**不带 domain 写入的节点在 `domain="general"` 查询下可见**；`mem_recent(domain="general")` 走载荷归一口径逐年扫描，其余 domain 走索引快路径，两者结论一致。lifecycle 通道的思考底片经 `POST /lifecycle/post-turn` 的可选 `domain` 字段落各自的域（不传仍为隐式 `general`）。
+
 ### REST API — `main.py`，端口 8090
 
 | 方法 | 路径 | 说明 |

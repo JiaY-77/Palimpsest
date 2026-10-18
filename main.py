@@ -19,8 +19,10 @@ Palimpsest — FastAPI 主入口
 """
 
 import asyncio
+import contextlib
 import json
 import logging
+import re
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -31,6 +33,7 @@ from pydantic import BaseModel
 
 from config import Config
 from core.fts_index import sync_node
+from core.policy import check_search_query
 from core.reporting import generate_report
 from core.startup_check import run_startup_check
 from core.strategy import (
@@ -67,7 +70,7 @@ from core.strategy import (
     is_near_duplicate as _strategy_is_near_duplicate,
 )
 from core.task_state import apply_task_patch
-from core.trivium_store import DatabaseBusyError, EmbeddingUnavailableError, TriviumStore
+from core.trivium_store import DatabaseBusyError, EmbeddingInputTooLongError, EmbeddingUnavailableError, TriviumStore
 from core.version import get_version
 from mcp_tools import (
     graph_neighbors as _mcp_graph_neighbors,
@@ -166,6 +169,24 @@ app.add_middleware(_NormalizeMcpPath, prefix="/mcp")
 # 设置后除 / 健康检查外所有请求须带 Bearer 或 X-API-Key，否则 401。
 # API Key 仅做校验，不做加密传输；公网部署必须配 HTTPS 反向代理。
 API_KEY = Config.API_KEY
+
+
+@app.exception_handler(EmbeddingInputTooLongError)
+async def _embedding_input_too_long_handler(request, exc: EmbeddingInputTooLongError):
+    """输入超出 embedding 模型可处理长度 → 422（issue #121）。
+
+    与 EmbeddingUnavailableError（503，服务真挂了）语义拆开：模型侧明确报
+    「exceeds the context length」时服务是活的，503 的「检查 Ollama 是否启动」
+    会把排查方向带偏。
+    """
+    logger.warning("检索输入超出 embedding 模型可处理长度: %s", exc)
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": "输入超出 embedding 模型可处理长度",
+            "hint": str(exc),
+        },
+    )
 
 
 @app.exception_handler(EmbeddingUnavailableError)
@@ -644,8 +665,20 @@ def _as_json(text: str):
         return {"raw": text}
 
 
+def _query_limit_rejected(query: str) -> bool:
+    """检索入口 query 上限校验（issue #121）：超长 → 422，不去打 embedding。
+
+    阈值只从 policy/Config 取（MEM_SEARCH_MAX_QUERY_CHARS），不在端点写魔数。
+    """
+    result = check_search_query(query)
+    if result["ok"]:
+        return False
+    raise HTTPException(status_code=422, detail=result["error"])
+
+
 @app.post("/mem/search")
 def mem_search(req: MemSearchRequest):
+    _query_limit_rejected(req.query)
     return _as_json(
         _mcp_mem_search(
             req.query,
@@ -670,6 +703,7 @@ def skill_search(req: SkillSearchRequest):
 
 @app.post("/mem/hybrid-search")
 def mem_hybrid_search(req: MemHybridSearchRequest):
+    _query_limit_rejected(req.query)
     return _as_json(
         _mcp_mem_hybrid_search(
             req.query,
@@ -889,6 +923,10 @@ class PostTurnRequest(BaseModel):
     # 思维预设层事实字段：本轮给侧注入的思考骨架类型（"" / code / research /
     # default）。宿主不传 → 空串（老宿主兼容）；白名单外的值落库时归一为空串。
     skeleton_kind: str = ""
+    # 本轮思考底片的域归属（issue #123，可选）：宿主不传 → 空串（老宿主行为
+    # 不变，隐式 general）；传了则落进 payload.domain，宿主可按自己的域检索
+    # 底片（否则固定 domain=hermes 的宿主永远查不到自己的底片）。
+    domain: str = ""
 
 
 class SessionEndRequest(BaseModel):
@@ -916,7 +954,24 @@ def lifecycle_pre_turn(req: PreTurnRequest):
     """
     skeleton = _strategy_decide_thought_skeleton(req.user_message, enabled=req.thought_skeleton)
     probe = _strategy_pre_turn(req.user_message, hits=None, top_k=req.top_k, min_score=req.min_score)
+    # issue #124：早退分支同样回显请求的 session_id / turn_index（此前只在正常分支回显）。
+    probe["session_id"] = req.session_id
+    probe["turn_index"] = req.turn_index
     if probe["skip"] and probe["skip_reason"] in ("trivial", "too_short"):
+        probe["thought_skeleton"] = skeleton["skeleton"]
+        probe["thought_skeleton_kind"] = skeleton["kind"]
+        return probe
+
+    # issue #121：内部召回那一路同样受 query 上限约束——fail-open 但可观测。
+    # 超长 query 不送 embedding（模型侧会报 exceeds the context length 并被
+    # 误译成「服务不可用」），跳过召回但明确标 skip_reason，不静默吞。
+    qcheck = check_search_query(req.user_message)
+    if not qcheck["ok"]:
+        probe["skip"] = True
+        probe["skip_reason"] = "query_too_long"
+        probe["inject_text"] = ""
+        probe["inject_blocks"] = []
+        probe["decision_log"] = {"reason": "query_too_long", "detail": qcheck["error"]}
         probe["thought_skeleton"] = skeleton["skeleton"]
         probe["thought_skeleton_kind"] = skeleton["kind"]
         return probe
@@ -938,6 +993,49 @@ def lifecycle_pre_turn(req: PreTurnRequest):
     result["thought_skeleton"] = skeleton["skeleton"]
     result["thought_skeleton_kind"] = skeleton["kind"]
     return result
+
+
+def _thought_already_stored(source: str, turn_index: int) -> bool:
+    """同一 lifecycle 轮次的 thought 查重（issue #125）。
+
+    判据：既有 ``type="thought"`` 节点 payload 的 ``source`` 与 ``turn_index``
+    都与本轮相同。判定**在库内**——跨进程 / 重启窗口依然有效，不依赖内存集合。
+
+    双路径（照 ``mcp_tools.memory.mem_recent`` 的既有写法）：TQL
+    ``FIND {source: ...}`` 快路径优先；source 含可疑字符（防 TQL 注入）或 TQL
+    失败时退化为 ``iter_payloads`` 全遍历过滤。``DatabaseBusyError`` 不吞——
+    fail-fast，与写路径的占用语义一致。
+    """
+    store = _get_store()
+    rows: list[tuple[int, dict]] = []
+    db = None
+    try:
+        if re.fullmatch(r"[A-Za-z0-9_:-]+", source or ""):
+            db = store._acquire()
+            for r in db.tql(f'FIND {{source: "{source}"}} RETURN *'):
+                nd = r.row.get("_", {})
+                nid = nd.get("id")
+                if nid is not None:
+                    rows.append((nid, nd.get("payload", {}) or {}))
+        else:
+            rows = [(nid, pl) for nid, pl in store.iter_payloads()]
+    except DatabaseBusyError:
+        raise
+    except Exception as e:  # noqa: BLE001 —— TQL 失败退化为全遍历保证不漏判
+        if db is not None:
+            with contextlib.suppress(Exception):
+                db.close()
+            db = None
+        logger.warning("thought 查重 TQL 失败，退化为 iter_payloads: %s", e)
+        rows = [(nid, pl) for nid, pl in store.iter_payloads()]
+    finally:
+        if db is not None:
+            with contextlib.suppress(Exception):
+                db.close()
+    return any(
+        pl.get("type") == "thought" and (pl.get("source") or "") == source and pl.get("turn_index") == turn_index
+        for _nid, pl in rows
+    )
 
 
 @app.post("/lifecycle/post-turn")
@@ -970,6 +1068,7 @@ def lifecycle_post_turn(req: PostTurnRequest):
                 decision["content"],
                 type=decision["type"],
                 importance=decision["importance"],
+                domain=req.domain,
             )
         )
         decision["stored"] = bool(ingest.get("stored"))
@@ -998,23 +1097,32 @@ def lifecycle_post_turn(req: PostTurnRequest):
         "decision_log": thought["decision_log"],
     }
     if thought["store"]:
-        tingest = _as_json(
-            _mcp_mem_ingest(
-                thought["content"],
-                type=thought["type"],
-                importance=thought["importance"],
-                source=thought["source"],
-                skeleton_kind=thought["skeleton_kind"],
-            )
-        )
-        thought_out["stored"] = bool(tingest.get("stored"))
-        thought_out["node_id"] = tingest.get("node_id")
-        if not tingest.get("stored"):
-            thought_out["skip_reason"] = "ingest_failed"
-            if tingest.get("error"):
-                thought_out["error"] = tingest["error"]
+        # issue #125：同 (session, turn_index) 的重复提交不落第二条 thought。
+        # turn_index==0（宿主未提供真实序号）不判重——与「宿主不传字段 = 老
+        # 行为不变」的兼容约定一致，避免把退化序号误吞成重复。
+        if req.turn_index > 0 and _thought_already_stored(thought["source"], req.turn_index):
+            thought_out["stored"] = False
+            thought_out["skip_reason"] = "duplicate"
         else:
-            tier_dist[thought["tier"]] = tier_dist.get(thought["tier"], 0) + 1
+            tingest = _as_json(
+                _mcp_mem_ingest(
+                    thought["content"],
+                    type=thought["type"],
+                    importance=thought["importance"],
+                    source=thought["source"],
+                    skeleton_kind=thought["skeleton_kind"],
+                    turn_index=req.turn_index,
+                    domain=req.domain,
+                )
+            )
+            thought_out["stored"] = bool(tingest.get("stored"))
+            thought_out["node_id"] = tingest.get("node_id")
+            if not tingest.get("stored"):
+                thought_out["skip_reason"] = "ingest_failed"
+                if tingest.get("error"):
+                    thought_out["error"] = tingest["error"]
+            else:
+                tier_dist[thought["tier"]] = tier_dist.get(thought["tier"], 0) + 1
     decision["thought"] = thought_out
     decision["tier_distribution"] = tier_dist
     return decision
