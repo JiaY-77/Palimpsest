@@ -8,7 +8,7 @@ Pa·limp·sest: *a writing surface that is overwritten again and again while old
 
 | | |
 |---|---|
-| Version | v2.13.0 |
+| Version | v2.14.0 |
 | Python | 3.10+ |
 | License | MIT |
 | Storage | TriviumDB 0.8.9 (vector + graph + document, embedded) |

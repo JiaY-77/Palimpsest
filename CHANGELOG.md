@@ -4,6 +4,23 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
+## [2.14.0] - 2026-10-19
+
+### 新增
+
+- **活跃任务列表的新鲜度维度（`fresh_days`，默认 30 天）**：`GET /tasks/active`、MCP `tasks_active`、CLI `tasks active` 新增 `fresh_days` 参数。判据时间取 `last_touched_at` 与 `created_at` 的**更早者**——存量任务的 `last_touched_at` 会被批量回填刷成同一天，单看它会让建了很久的老任务显示成「刚动过」而永不退场。超过窗口的条目不再逐条返回，汇总进返回体 `stale`（`count` / `oldest` / `hint`）；传 `fresh_days=0` 展开全部（兼容旧行为）。真实库实测：默认返回从 19 条降到 10 条（折叠 9 条，最老 52 天）。
+- **会话接续点在活跃列表里置顶**：`include_handoff=true` 时，`kind=handoff` 的条目按 `importance` 倒序排在所有普通任务之前（此前与普通任务混排，会被状态优先级压到后面）。接续点同时豁免新鲜度折叠。
+- **治理哨兵自动降级僵尸任务**：`scripts/palimpsest_gov_daily.py` 迁入仓库（`PROJECT_DIR` / `VENV_PYTHON` 改为从脚本自身位置派生，不再写死绝对路径）。`doing` / `blocked` 超 30 天未动 → 自动降级（`task_state=blocked` + content 前缀 `[待复核]`，经 `PUT /memory/{id}` 复用 `apply_task_patch`，自动写 `type=record` 日志 + `LOGS` 边，可回溯）；超 60 天**额外**输出归档建议清单（不执行删除，归档仍由人拍板）。幂等：已带 `[待复核]` 前缀的不重复降级。
+
+### 修复
+
+- **`last_touched_at` 初始语义**：`mem_ingest` 写 `type=task` 时把 `last_touched_at` 初始化为 `created_at` 同一刻（ISO，与 `apply_task_patch` 同格式），只在缺失时补、不覆盖已有值。此前该字段只在状态变更时才写，写入后从未变更过的任务恒为 `null`，无法用作新鲜度判据。
+
+### 变更
+
+- **`triviumdb` 0.8.8 → 0.8.9**：零迁移（存储格式与 0.8.8 一致）。QuIVer 向量内核换为无训练 SM-L2（默认启用）；无索引 `FIND ... LIMIT` 早停修复。同步 `README_EN.md` / `docs/TDB-能力盘点.md` / `tests/test_storage.py` 的版本引用。
+- `list_active_tasks` 返回体新增 `stale` 字段（无超期项时为 `null`）；brief 条目新增 `created_at` 字段。
+
 ## [2.13.0] - 2026-10-18
 
 ### 新增
@@ -472,7 +489,8 @@
 
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
-[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.13.0...HEAD
+[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.14.0...HEAD
+[2.14.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.14.0
 [2.13.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.13.0
 [2.12.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.12.0
 [2.11.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.11.0
