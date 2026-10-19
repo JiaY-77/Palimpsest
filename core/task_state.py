@@ -237,6 +237,16 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
+def _iso_from_epoch(ts: float) -> str:
+    """数值时间戳 → ``_now_iso()`` 同格式（本地时区、秒精度、带偏移）的 ISO 字符串。
+
+    issue #128 C1：``mem_ingest`` 写 ``type=task`` 时把 ``last_touched_at`` 初始化为
+    ``created_at`` 同一刻。``created_at`` 是数值时间戳（``time.time()``），转换统一走
+    这里，两个时间字段格式一致，列表新鲜度判据（``_freshness_epoch``）可直接比较。
+    """
+    return datetime.fromtimestamp(float(ts), tz=timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
 def _date_str() -> str:
     """当前日期 ``YYYY-MM-DD``（日志节点 content 用）。"""
     return datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d")
@@ -461,6 +471,107 @@ class _DescStr:
         return self.value > other.value
 
 
+def _iso_to_epoch(value: str) -> float | None:
+    """ISO8601 字符串 → epoch 秒；解析不出 → ``None``（不猜）。
+
+    naive（无时区）按 UTC 处理——与治理脚本既有约定一致：``_now_iso`` 的产物都带
+    偏移，naive 只出现在手工写入的旧数据里，偏差至多是时区差，不影响 30 天级窗口。
+    """
+    try:
+        dt = datetime.fromisoformat(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+def _freshness_epoch(payload: dict) -> float | None:
+    """新鲜度判据时间（epoch 秒，issue #128 A 项）。
+
+    **``last_touched_at`` 与 ``created_at`` 取更早者**（2026-10-19 主人拍板）：
+    存量任务的 ``last_touched_at`` 会被批量回填刷成同一天（实测生产库 9 条
+    52 天前建的老任务全是 ``2026-10-08``），单看它会把「建了很久的老任务」
+    显示成「11 天前动过」而永不退场；取更早者 = 「建得久 或 久未动，都算旧」。
+    两个时间戳都缺 / 都解析不出 → ``None``，调用方视为新鲜（保留、不猜、不折叠）。
+    """
+    candidates: list[float] = []
+    touched = payload.get("last_touched_at")
+    if isinstance(touched, str) and touched.strip():
+        epoch = _iso_to_epoch(touched)
+        if epoch is not None:
+            candidates.append(epoch)
+    created = payload.get("created_at")
+    if isinstance(created, (int, float)) and created > 0:
+        candidates.append(float(created))
+    elif isinstance(created, str) and created.strip():
+        epoch = _iso_to_epoch(created)
+        if epoch is not None:
+            candidates.append(epoch)
+    return min(candidates) if candidates else None
+
+
+def _stale_age_days(payload: dict, now: float) -> float | None:
+    """条目年龄（天，浮点）；判据缺失 → ``None``（不猜）。"""
+    epoch = _freshness_epoch(payload)
+    if epoch is None:
+        return None
+    return max(0.0, (now - epoch) / 86400.0)
+
+
+def _order_handoff_first(items: list[dict], include_handoff: bool) -> list[dict]:
+    """排序（issue #128 A2）：``include_handoff=True`` 时接续点**置顶**。
+
+    接续点组内 ``importance`` 倒序、``id`` 倒序兜底；普通任务保持原排序
+    （状态优先级 → ``last_touched_at`` 倒序 → ``importance`` 倒序）。取回接续点
+    的目的就是「先读这条」，混排在旧实现里会被状态优先级压到后面。
+    """
+    if not include_handoff:
+        items.sort(key=_sort_key)
+        return items
+    handoffs = [it for it in items if it.get("kind") == HANDOFF_KIND]
+    others = [it for it in items if it.get("kind") != HANDOFF_KIND]
+    handoffs.sort(key=lambda it: (-(_to_float(it.get("importance"), 0.0) or 0.0), -(it.get("id") or 0)))
+    others.sort(key=_sort_key)
+    return handoffs + others
+
+
+def _fold_stale(items: list[dict], ages: dict[int, float | None], fresh_days: int) -> tuple[list[dict], dict | None]:
+    """新鲜度折叠（issue #128 A1）：超期条目移出 ``results``，汇总成 ``stale`` 摘要。
+
+    - ``fresh_days <= 0`` → 关闭折叠（原样返回全部、``stale=None``，兼容旧行为）；
+    - ``kind=handoff`` 豁免折叠（跨会话交接记录天然可能很旧，进 results 不进汇总）；
+    - ``stale.oldest.age_days`` 为整数天（向下取整，与治理脚本的 ``.days`` 口径一致）。
+    """
+    try:
+        threshold = float(fresh_days)
+    except (TypeError, ValueError):
+        threshold = 30.0
+    if threshold <= 0:
+        return items, None
+    visible: list[dict] = []
+    stale: list[tuple[float, dict]] = []
+    for it in items:
+        age = ages.get(it["id"])
+        if age is not None and age > threshold and it.get("kind") != HANDOFF_KIND:
+            stale.append((age, it))
+        else:
+            visible.append(it)
+    if not stale:
+        return visible, None
+    oldest_age, oldest = max(stale, key=lambda pair: pair[0])
+    return visible, {
+        "count": len(stale),
+        "oldest": {
+            "id": oldest.get("id"),
+            "title": oldest.get("title") or "",
+            "state": oldest.get("state") or "",
+            "age_days": int(oldest_age),
+        },
+        "hint": "显式传 fresh_days=0 可展开全部",
+    }
+
+
 def list_active_tasks(
     store,
     project: str = "",
@@ -468,6 +579,7 @@ def list_active_tasks(
     limit: int = 15,
     include_legacy: bool = False,
     include_handoff: bool = False,
+    fresh_days: int = 30,
 ) -> dict:
     """列出活跃任务（``type=task`` & ``status=active`` & 状态命中）。
 
@@ -476,26 +588,37 @@ def list_active_tasks(
     - ``project``：非空时只保留 ``payload.project`` 相等的节点。
     - ``include_legacy=False``（默认）排除 ``payload.legacy is True`` 的老节点。
     - ``include_handoff=False``（默认）排除 ``payload.kind == "handoff"`` 的会话
-      接续点（跨会话交接记录而非待办；显式传 ``True`` 可取回）。
-    - 排序：状态优先级 → ``last_touched_at`` 倒序 → ``importance`` 倒序。
+      接续点（跨会话交接记录而非待办；显式传 ``True`` 可取回，此时接续点置顶，
+      见 ``_order_handoff_first``）。
+    - ``fresh_days``（issue #128 A 项）：新鲜度窗口（天）。判据时间 =
+      ``last_touched_at``（ISO），为空回退 ``created_at``（数值时间戳），两者都缺
+      视为新鲜（保留、不猜、不折叠）。超过 ``fresh_days`` 天未触碰的条目不再逐条
+      返回，汇总进返回体的 ``stale``（``count`` / ``oldest`` / ``hint``）；
+      ``kind=handoff`` 豁免折叠；``fresh_days <= 0`` 关闭折叠（兼容旧行为）。
 
-    返回 ``{"results": [...], "total": int, "states": [...]}``；
-    ``total`` 是过滤后的总数（不受 ``limit`` 影响）。
+    返回 ``{"results": [...], "total": int, "states": [...], "stale": dict | None}``；
+    ``total`` 是过滤后的总数（不受 ``limit`` 影响，**含被折叠的超期条目**——
+    可见数 = ``len(results)``，折叠数 = ``stale.count``）；``stale`` 无超期项时为 ``None``。
     """
     state_set = _parse_states(states)
+    now = time.time()
     items: list[dict] = []
+    ages: dict[int, float | None] = {}
     for nid, node in store.iter_nodes():
         payload = node.get("payload") or {}
         if not _matches_filters(payload, project, state_set, include_legacy, include_handoff):
             continue
         state, _ = _resolve_effective_state(payload)
         items.append(_brief(nid, payload, state))
-    items.sort(key=_sort_key)
+        ages[nid] = _stale_age_days(payload, now)
+
+    items = _order_handoff_first(items, include_handoff)
+    visible, stale = _fold_stale(items, ages, fresh_days)
     try:
         cap = max(1, int(limit))
     except (TypeError, ValueError):
         cap = 15
-    return {"results": items[:cap], "total": len(items), "states": sorted(state_set)}
+    return {"results": visible[:cap], "total": len(items), "states": sorted(state_set), "stale": stale}
 
 
 def _parse_states(states) -> set:
@@ -516,6 +639,7 @@ def _brief(nid: int, payload: dict, state: str | None) -> dict:
         "next_action": payload.get("next_action") or "",
         "aliases": payload.get("aliases") or [],
         "last_touched_at": payload.get("last_touched_at"),
+        "created_at": payload.get("created_at"),
         "importance": payload.get("importance", 0.5),
         "kind": payload.get("kind") or "",
     }

@@ -871,6 +871,7 @@ def tasks_active(
     states: str = "todo,doing,blocked",
     limit: int = 15,
     include_handoff: bool = False,
+    fresh_days: int = 30,
 ):
     """活跃任务列表：``type=task`` & ``status=active`` & 状态命中，按优先级排序。
 
@@ -879,11 +880,20 @@ def tasks_active(
     同一实现。默认排除 ``payload.legacy = true`` 的老节点（老节点请先跑 CLI
     ``tasks backfill``）；``include_handoff=true`` 才列出会话接续点
     （``kind=handoff`` 的跨会话交接记录，而非待办事项；显式列出时不受状态
-    过滤限制——接续点没有「待办状态」语义，``task_state`` 为 None 也能取回）。
+    过滤限制——接续点没有「待办状态」语义，``task_state`` 为 None 也能取回，
+    且置顶按 ``importance`` 倒序）；``fresh_days`` 是新鲜度窗口（默认 30 天）：
+    超期未动的条目折叠进 ``stale`` 汇总、不再逐条返回，传 ``0`` 展开全部。
     """
     from core.task_state import list_active_tasks
 
-    return list_active_tasks(_get_store(), project=project, states=states, limit=limit, include_handoff=include_handoff)
+    return list_active_tasks(
+        _get_store(),
+        project=project,
+        states=states,
+        limit=limit,
+        include_handoff=include_handoff,
+        fresh_days=fresh_days,
+    )
 
 
 # ---------------------------------------------------------------------------
