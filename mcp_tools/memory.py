@@ -21,7 +21,7 @@ from core.memoryhub import apply_import, read_pack, summarize_pack
 from core.policy import check_ingest
 from core.secret_scan import SecretScanError
 from core.strategy import THOUGHT_TYPE, decide_import, detect_thought_origin, normalize_skeleton_kind
-from core.task_state import HANDOFF_KIND, _handoff_title, _is_handoff
+from core.task_state import HANDOFF_KIND, _handoff_title, _is_handoff, _iso_from_epoch
 from core.trivium_store import EmbeddingInputTooLongError, EmbeddingUnavailableError, domain_in_block, node_domain
 from core.utils import _to_float
 from mcp_tools._common import _shorten, _to_json, mcp, store
@@ -193,7 +193,8 @@ def _post_ingest_side_effects(
 
     - FTS 全文索引同步（混合检索依赖；失败仅 warning，主写入已提交，可 fts-rebuild 兜底）
     - 知识关联建边：把 linked_from 的切片 id 落成 REFERENCES 图边（同样 best-effort）
-    - 读回已提交节点取 secret_hint（弱规则命中标记），并补写缺失的 created_at
+    - 读回已提交节点取 secret_hint（弱规则命中标记），并补写缺失的 created_at；
+      ``type=task`` 再补写缺失的 ``last_touched_at``（= created_at 同一刻，issue #128 C1）
     """
     try:
         index_node(node_id, content)
@@ -205,8 +206,20 @@ def _post_ingest_side_effects(
     node = store.get_node(node_id)
     payload = node.get("payload", {}) if node else {}
     secret_hint = payload.get("secret_hint", [])
+    changed = False
     if payload.get("created_at") is None:
         payload["created_at"] = now
+        changed = True
+    # issue #128 C1：type=task 的 last_touched_at 初始化为 created_at 同一刻
+    # （ISO，与 apply_task_patch._now_iso 同格式）。此前只在状态变更时才写，
+    # 从未更新过的任务恒为 null，列表新鲜度判据失去回退依据。只在缺失时补——
+    # 已有值（状态机写的）绝不覆盖。
+    if payload.get("type") == "task" and not payload.get("last_touched_at"):
+        created = payload.get("created_at")
+        if isinstance(created, (int, float)):
+            payload["last_touched_at"] = _iso_from_epoch(created)
+            changed = True
+    if changed:
         store.update_payload(node_id, payload)
     return secret_hint, node_domain(payload)
 
@@ -506,6 +519,7 @@ def tasks_active(
     states: str = "todo,doing,blocked",
     limit: int = 15,
     include_handoff: bool = False,
+    fresh_days: int = 30,
 ) -> str:
     """活跃任务列表：``type=task`` & ``status=active`` & 状态命中，按优先级排序。
 
@@ -517,7 +531,11 @@ def tasks_active(
       - ``include_handoff``：``true`` 时同时列出会话接续点
         （``kind=handoff`` 的跨会话交接记录），默认排除。显式列出时**不受状态
         过滤限制**——接续点没有「待办状态」语义，``task_state`` 为 ``None`` 也能
-        完整取回（``kind`` 由写入层自动打标，见 ``core.task_state._is_handoff``）。
+        完整取回（``kind`` 由写入层自动打标，见 ``core.task_state._is_handoff``），
+        且置顶按 ``importance`` 倒序；
+      - ``fresh_days``：新鲜度窗口（天，默认 30）。超期未动的条目不再逐条返回，
+        汇总进返回体 ``stale``（``count`` / ``oldest`` / ``hint``）——旧任务由此
+        退场，不再污染会话开场工作集（issue #128）；``0`` = 展开全部。
 
     排序：``doing > blocked > todo`` → ``last_touched_at`` 倒序 → ``importance`` 倒序。
     默认排除 ``payload.legacy = true`` 的老节点（见 CLI ``tasks backfill``）。
@@ -527,7 +545,14 @@ def tasks_active(
     from core.task_state import list_active_tasks
 
     return _to_json(
-        list_active_tasks(store, project=project, states=states, limit=limit, include_handoff=include_handoff)
+        list_active_tasks(
+            store,
+            project=project,
+            states=states,
+            limit=limit,
+            include_handoff=include_handoff,
+            fresh_days=fresh_days,
+        )
     )
 
 

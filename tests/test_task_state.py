@@ -24,7 +24,9 @@ import contextlib
 import os
 import shutil
 import tempfile
+import time
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from corpus_real_cases import EXPECTED_NONE, REAL_CORPUS
@@ -35,6 +37,7 @@ from core.task_state import (
     UNKNOWN_STATE,
     _handoff_title,
     _is_handoff,
+    _iso_from_epoch,
     apply_task_patch,
     backfill_task_state,
     list_active_tasks,
@@ -298,7 +301,9 @@ def test_list_active_state_filter_and_priority_sort():
     done = _insert_task("[done] T-403 完成", project, task_state="done", last_touched_at="2026-06-01T00:00:00+08:00")
     canceled = _insert_task("[canceled] T-404 取消", project, task_state="canceled")
 
-    data = list_active_tasks(store, project=project)
+    # fresh_days=0：本用例锁的是状态过滤与优先级排序语义，硬编码旧日期只为
+    # 拉开 last_touched_at 差距——关掉新鲜度维度，避免与折叠逻辑互相污染
+    data = list_active_tasks(store, project=project, fresh_days=0)
     ids = [it["id"] for it in data["results"]]
 
     # doing > blocked > todo；done / canceled 不在默认三态里
@@ -312,7 +317,8 @@ def test_list_active_sort_by_last_touched_desc_within_state():
     older = _insert_task("[doing] T-410 旧", project, task_state="doing", last_touched_at="2026-01-01T00:00:00+08:00")
     newer = _insert_task("[doing] T-411 新", project, task_state="doing", last_touched_at="2026-06-01T00:00:00+08:00")
 
-    data = list_active_tasks(store, project=project)
+    # fresh_days=0：同上，本用例只锁组内 last_touched_at 倒序语义
+    data = list_active_tasks(store, project=project, fresh_days=0)
     assert [it["id"] for it in data["results"]] == [newer, older]
 
 
@@ -366,7 +372,8 @@ def test_list_active_brief_shape():
         importance=0.7,
     )
 
-    row = next(it for it in list_active_tasks(store, project=project)["results"] if it["id"] == nid)
+    # fresh_days=0：本用例锁 brief 字段形状，硬编码旧日期只为填字段值——关掉折叠
+    row = next(it for it in list_active_tasks(store, project=project, fresh_days=0)["results"] if it["id"] == nid)
     assert set(row) == {
         "id",
         "task_key",
@@ -376,6 +383,7 @@ def test_list_active_brief_shape():
         "next_action",
         "aliases",
         "last_touched_at",
+        "created_at",
         "importance",
         "kind",
     }
@@ -1296,3 +1304,172 @@ def test_write_layer_normal_todo_gets_no_handoff_title(iso_store):
     payload = _iso_payload(iso_store, nid)
     assert payload.get("kind") is None, "真待办不得被打 kind=handoff（既有回归口，PR #112 收紧成果）"
     assert not (payload.get("title") or "").strip(), "普通待办不得被塞接续点 title（补 title 只限接续点）"
+
+
+# ---------------------------------------------------------------------------
+# 11. 列表新鲜度（issue #128 A 项）：fresh_days 折叠 / created_at 回退 / handoff 豁免置顶
+# ---------------------------------------------------------------------------
+
+
+def _iso_days_ago(days: float) -> str:
+    """现在时刻往前推 days 天的 ISO 串（本地时区，与 ``_now_iso`` 同格式）。"""
+    return (datetime.now(timezone.utc).astimezone() - timedelta(days=days)).isoformat(timespec="seconds")
+
+
+def test_list_active_fresh_fallback_to_created_at_when_touched_null():
+    """``last_touched_at`` 为 null → ``fresh_days`` 回退 ``created_at``（issue 验收第 4 条）。
+
+    created_at 久远 → 折叠；created_at 新鲜 → 保留；两个时间戳都缺 → 视为新鲜
+    （保留、不猜、不折叠）。insert_node 会吞掉传入的 created_at（占位 None），
+    这里插入后用 update_payload 补写（与生产写入路径同款做法）。
+    """
+    project = _ns()
+
+    def _with_created_at(content: str, age_days: float) -> int:
+        nid = _insert_task(content, project, task_state="doing")
+        payload = (store.get_node(nid) or {}).get("payload") or {}
+        payload["created_at"] = time.time() - age_days * 86400
+        store.update_payload(nid, payload)
+        return nid
+
+    stale_id = _with_created_at("[doing] T-910 created_at 超期", 40)
+    fresh_id = _with_created_at("[doing] T-911 created_at 新鲜", 1)
+    naked_id = _insert_task("[doing] T-912 无任何时间戳", project, task_state="doing")  # 两者都缺
+
+    data = list_active_tasks(store, project=project)  # 默认 fresh_days=30
+
+    ids = [it["id"] for it in data["results"]]
+    assert stale_id not in ids, "created_at 40 天前 → 折叠"
+    assert fresh_id in ids and naked_id in ids, "created_at 新鲜 / 两者都缺 → 保留"
+    assert data["stale"]["count"] == 1
+    assert data["stale"]["oldest"]["id"] == stale_id
+
+
+def test_list_active_folds_stale_items_with_summary():
+    """超期项折叠进 stale 汇总：count / oldest 正确，results 只留新鲜项。"""
+    project = _ns()
+    fresh_id = _insert_task("[doing] T-920 新鲜", project, task_state="doing")
+    _insert_task("[doing] T-921 超期", project, task_state="doing", last_touched_at=_iso_days_ago(40))
+    older_id = _insert_task("[doing] T-922 更老", project, task_state="doing", last_touched_at=_iso_days_ago(90))
+
+    data = list_active_tasks(store, project=project)
+
+    ids = [it["id"] for it in data["results"]]
+    assert ids == [fresh_id], "超期项全部折叠，只留新鲜条目"
+    assert data["total"] == 3, "total 是过滤后总数（含折叠项），语义不变"
+    assert data["stale"]["count"] == 2
+    assert data["stale"]["oldest"]["id"] == older_id
+    assert data["stale"]["oldest"]["age_days"] >= 89
+    assert "fresh_days=0" in data["stale"]["hint"]
+
+
+def test_list_active_fresh_days_zero_expands_all():
+    """``fresh_days=0`` 关闭折叠：返回全部、``stale`` 为 null（兼容旧行为）。"""
+    project = _ns()
+    ids = [
+        _insert_task("[doing] T-930 现在的", project, task_state="doing"),
+        _insert_task("[doing] T-931 40 天前", project, task_state="doing", last_touched_at=_iso_days_ago(40)),
+    ]
+
+    data = list_active_tasks(store, project=project, fresh_days=0)
+
+    assert {it["id"] for it in data["results"]} == set(ids), "关闭折叠 → 全部可见"
+    assert data["stale"] is None
+    assert data["total"] == 2
+
+
+def test_list_active_handoff_exempt_from_folding_and_pinned():
+    """handoff 豁免折叠 + ``include_handoff=True`` 时置顶按 importance 倒序（issue 验收第 2 条）。"""
+    project = _ns()
+    h_high = _insert_task(
+        "[doing] 接续点·老的高优",
+        project,
+        task_state="doing",
+        kind=HANDOFF_KIND,
+        importance=0.9,
+        last_touched_at=_iso_days_ago(90),
+    )
+    h_low = _insert_task(
+        "[doing] 接续点·老的低优",
+        project,
+        task_state="doing",
+        kind=HANDOFF_KIND,
+        importance=0.3,
+        last_touched_at=_iso_days_ago(90),
+    )
+    normal = _insert_task("[doing] T-940 普通新鲜任务", project, task_state="doing")
+
+    data = list_active_tasks(store, project=project, include_handoff=True)
+
+    ids = [it["id"] for it in data["results"]]
+    assert ids == [h_high, h_low, normal], "接续点置顶（importance 倒序），普通任务保持原排序"
+    assert data["stale"] is None, "接续点豁免折叠：超期也不进 stale 汇总"
+
+
+def test_list_active_handoff_pin_importance_tie_breaks_by_id_desc():
+    """置顶组内 importance 相同 → id 倒序兜底。"""
+    project = _ns()
+    first = _insert_task("[doing] 接续点·先写", project, task_state="doing", kind=HANDOFF_KIND, importance=0.8)
+    second = _insert_task("[doing] 接续点·后写", project, task_state="doing", kind=HANDOFF_KIND, importance=0.8)
+
+    data = list_active_tasks(store, project=project, include_handoff=True)
+
+    assert [it["id"] for it in data["results"]] == [second, first]
+
+
+# ---------------------------------------------------------------------------
+# 12. last_touched_at 初始语义（issue #128 C 项）：mem_ingest 写 task 时初始化
+# ---------------------------------------------------------------------------
+
+
+def test_mem_ingest_task_initializes_last_touched_at(iso_store):
+    """``mem_ingest(type='task')`` 后 ``last_touched_at`` 非空且与 ``created_at`` 同一刻。"""
+    nid = _ingest_task(f"[doing] T-950 ingest 初始化验证 {uuid.uuid4().hex[:8]}")
+
+    payload = _iso_payload(iso_store, nid)
+    touched = payload.get("last_touched_at")
+    assert touched, "type=task 落库必须初始化 last_touched_at（此前恒为 null，无法当新鲜度判据）"
+    created = payload["created_at"]
+    assert isinstance(created, (int, float))
+    assert touched == _iso_from_epoch(created), "应与 created_at 同一刻、同 _now_iso 格式（秒精度 ISO）"
+
+
+def test_mem_ingest_non_task_has_no_last_touched_at(iso_store):
+    """非 task 类型不受影响：不写 last_touched_at。"""
+    import json
+
+    from mcp_tools import mem_ingest
+
+    res = json.loads(mem_ingest(f"普通记忆 {uuid.uuid4().hex[:8]}", type="memory", importance=0.5))
+    assert res["stored"] is True
+
+    payload = _iso_payload(iso_store, res["node_id"])
+    assert "last_touched_at" not in payload
+
+
+# ---------------------------------------------------------------------------
+# 13. 判据取更早者（2026-10-19 主人拍板）：last_touched 被回填刷过也要能退场
+# ---------------------------------------------------------------------------
+
+
+def test_list_active_fresh_uses_earlier_of_touched_and_created():
+    """判据取 ``last_touched_at`` 与 ``created_at`` **更早者**。
+
+    存量任务的 ``last_touched_at`` 会被批量回填刷成同一天（实测生产库 9 条 52 天前
+    建的老任务全是 ``2026-10-08``）→ 单看它会把「建了很久的老任务」显示成「11 天前
+    动过」而永不退场；取更早者 = 「建得久 或 久未动，都算旧」。
+    """
+    project = _ns()
+    nid = _insert_task("[doing] T-960 老任务", project, task_state="doing")
+    payload = (store.get_node(nid) or {}).get("payload") or {}
+    payload["created_at"] = time.time() - 40 * 86400  # 40 天前建
+    payload["last_touched_at"] = _iso_days_ago(1)  # 1 天前被批量回填刷过
+    store.update_payload(nid, payload)
+
+    data = list_active_tasks(store, project=project)
+    assert [r["id"] for r in data["results"]] == [], "40 天前建的老任务应退场（不能因回填的 last_touched 显得新鲜）"
+    assert data["stale"]["count"] == 1
+    assert data["stale"]["oldest"]["id"] == nid
+
+    expanded = list_active_tasks(store, project=project, fresh_days=0)
+    assert [r["id"] for r in expanded["results"]] == [nid]
