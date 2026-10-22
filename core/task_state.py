@@ -519,19 +519,45 @@ def _stale_age_days(payload: dict, now: float) -> float | None:
     return max(0.0, (now - epoch) / 86400.0)
 
 
+def _handoff_time_key(item: dict) -> float:
+    """接续点时间主键（epoch 秒）：``created_at`` 解析失败 / 缺失 → ``id`` 作时间代理。
+
+    数值与 ISO8601 字符串都认（库里两种形态都有，与 ``_freshness_epoch`` 同口径）；
+    ``id`` 单调递增（新建越晚 id 越大），作时间代理时降序方向与时间一致。
+    """
+    created = item.get("created_at")
+    if isinstance(created, (int, float)) and created > 0:
+        return float(created)
+    if isinstance(created, str) and created.strip():
+        epoch = _iso_to_epoch(created)
+        if epoch is not None:
+            return epoch
+    return float(item.get("id") or 0)
+
+
 def _order_handoff_first(items: list[dict], include_handoff: bool) -> list[dict]:
     """排序（issue #128 A2）：``include_handoff=True`` 时接续点**置顶**。
 
-    接续点组内 ``importance`` 倒序、``id`` 倒序兜底；普通任务保持原排序
-    （状态优先级 → ``last_touched_at`` 倒序 → ``importance`` 倒序）。取回接续点
-    的目的就是「先读这条」，混排在旧实现里会被状态优先级压到后面。
+    接续点组内 ``created_at`` **倒序（最新在前）** → ``importance`` 倒序 → ``id``
+    倒序兜底（同刻时保稳定）；``created_at`` 缺失的条目以 ``id`` 作时间代理。
+    旧实现 importance 主序会让「历史写入时 importance 偏高的老接续点」压住
+    最新接续点（2026-10-22 实测：新条 0.92 被 10-17 的 0.93 压住，新会话
+    「先读这条」读到过期上下文）——取回接续点的目的就是「先读**最新**这条」，
+    故时间为主、importance 只作同刻次序。普通任务保持原排序（状态优先级 →
+    ``last_touched_at`` 倒序 → ``importance`` 倒序）。
     """
     if not include_handoff:
         items.sort(key=_sort_key)
         return items
     handoffs = [it for it in items if it.get("kind") == HANDOFF_KIND]
     others = [it for it in items if it.get("kind") != HANDOFF_KIND]
-    handoffs.sort(key=lambda it: (-(_to_float(it.get("importance"), 0.0) or 0.0), -(it.get("id") or 0)))
+    handoffs.sort(
+        key=lambda it: (
+            -_handoff_time_key(it),
+            -(_to_float(it.get("importance"), 0.0) or 0.0),
+            -(it.get("id") or 0),
+        )
+    )
     others.sort(key=_sort_key)
     return handoffs + others
 
