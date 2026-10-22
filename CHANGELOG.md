@@ -4,6 +4,12 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
+## [Unreleased]
+
+### 变更
+
+- **`triviumdb` 0.8.9 → 0.8.10**：零迁移（主文件 v9 / flush marker v3 / `.quiver` v1 均不变，无需导出重建）。上游本版内容：TQL 递归防护（标量表达式与嵌套解析共用 128 层预算，覆盖括号、函数参数、一元运算与嵌套子查询）；QuIVer 构图连通性（同签名近邻挤占时保留其他签名候选，收尾连接入口不可达区域）；发布中断恢复（写新事实前持久化旧代独立备份与 TPUB v1 撤销日志，可写打开先恢复未提交发布再回放 WAL）；WebUI 图探索与 AI Copilot。同步 `README_EN.md` / `docs/TDB-能力盘点.md` 的版本引用；`tests/test_storage.py` 的 `package_version` 断言改为与安装版本动态比对（钉字面量会让每次依赖升级都假红，而该断言的意图是「`storage_info` 报的是真装的那版」）。
+
 ## [2.14.0] - 2026-10-19
 
 ### 新增
