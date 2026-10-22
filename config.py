@@ -159,6 +159,20 @@ class Config:
     RRF_SEM_WEIGHT = float(os.getenv("RRF_SEM_WEIGHT", "1.0"))
     RRF_FTS_WEIGHT = float(os.getenv("RRF_FTS_WEIGHT", "0.1"))
 
+    # 精确标识符查询专用 FTS 权重（query 含 commit hash / PR 号 / 工单号时生效）。
+    # 此类 query 下语义通道天然失灵（hash 与目标节点的中文正文不相似），FTS 是
+    # 唯一能救场的通道，但全局小权重（0.1）会让 FTS-only 命中挤不进 top_k
+    # （实测 hash query 在 FTS 通道排第 2 名、最终 top_k 全 MISS）。
+    #
+    # 默认 1.0（等权）不是拍的，是 RRF 的数学下限：语义第 0 名得 1/(K+0)=1/61≈0.0164，
+    # 而 FTS-only 命中得 w/(K+q)。要让 FTS 第 2 名（q=1）越过语义头部进入 top_k=5，
+    # 需 w/(61) > 1/(65)，即 w > 0.94；w=0.5 时只有 0.5/62≈0.0081，永远追不上
+    # （实测总排名 63，与 w=0.1 同效）。w=1.0 时 FTS 前几名与语义头部同量级，
+    # 而 bm25 靠后的弱命中（rank≥10 得 1/71≈0.0141）仍排在语义之后——抬高只惠及
+    # 真正的精确命中，不会把噪声顶上榜。
+    # 仅对判定为标识符查询的请求用本权重，普通自然语言 query 仍走 RRF_FTS_WEIGHT。
+    RRF_FTS_EXACT_WEIGHT = float(os.getenv("RRF_FTS_EXACT_WEIGHT", "1.0"))
+
     # ---- 记忆分层（tier）：检索侧视图，不改存储、不迁数据 ----
     # facts = 事实层（默认检索与注入池）；logs = 日志层（从默认池摘出）；
     # ""（空串）= 不过滤，回到改动前的全量行为（显式历史通道）。
