@@ -23,7 +23,8 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -45,6 +46,28 @@ class RemoteStoreNotFoundError(RemoteStoreError):
     单独成类而不是让调用方从消息串里抠状态码：404 是「可能正常」的语义
     （如 ``get_node`` 查不存在的 id 返回 ``None``），必须可被精确捕获。
     """
+
+
+@dataclass(frozen=True)
+class RemoteEdge:
+    """REST 邻边的属性兼容视图（对齐 TriviumDB/TriviumStore 的 Edge 对象属性）。
+
+    全仓库消费方（core/* 与 mcp_tools/graph.py）统一按属性访问
+    ``target_id`` / ``label`` / ``weight``（如 ``mcp_tools/graph.py`` 的
+    ``edge.target_id``）；此前 ``RemoteStore.get_edges`` 直接返回 REST JSON
+    dict（键名还是 ``relation`` 不是 ``label``），属性访问直接 AttributeError。
+    这里把序列化结果包回属性对象，两种实现的返回形状不再漂移。
+    ``relation`` 保留为兼容别名（REST 响应键名，与 ``label`` 同值）。
+    """
+
+    target_id: int
+    label: str
+    weight: float
+
+    @property
+    def relation(self) -> str:
+        """别名：REST 响应键名（与 ``label`` 同值）。"""
+        return self.label
 
 
 class RemoteStore:
@@ -103,16 +126,36 @@ class RemoteStore:
         except RemoteStoreNotFoundError:
             return None
 
-    def get_edges(self, node_id: int) -> list:
-        """取某节点邻边——经 ``POST /graph/neighbors``。
+    def get_edges(self, node_id: int) -> list[RemoteEdge]:
+        """取某节点邻边——经 ``POST /graph/neighbors``（depth=1）。
 
-        REST 返回结构为 ``{"node_id":…, "relations":[…]}"``（键名 ``relations``，
-        非 ``neighbors``/``edges``）——按实际响应解析。
+        服务端 relations 条目形如 ``{"target_id", "relation", "weight",
+        "target_type", "target_title"}``（键名 ``relation``，非 ``label``）。
+        这里包成 ``RemoteEdge`` 属性对象，与本地实现（TriviumDB Edge）的
+        属性（``target_id`` / ``label`` / ``weight``）兼容——消费方不用感知
+        自己拿到的是哪种实现。非 dict 条目显式抛错，不静默吞（静默降级是
+        历史上库损坏的起点，与本模块其余 fail-loud 决策一致）。
         """
         data = self._req("POST", "/graph/neighbors", json={"node_id": node_id, "depth": 1})
-        if isinstance(data, dict):
-            return data.get("relations") or data.get("neighbors") or data.get("edges") or []
-        return data or []
+        if not isinstance(data, dict):
+            raise RemoteStoreError(f"/graph/neighbors 响应不是对象：{data!r}")
+        relations = data.get("relations") or data.get("neighbors") or data.get("edges") or []
+        edges: list[RemoteEdge] = []
+        for item in relations:
+            if not isinstance(item, dict):
+                raise RemoteStoreError(f"/graph/neighbors relations 含非对象条目：{item!r}")
+            raw_weight = item.get("weight")
+            target_id = item.get("target_id")
+            if target_id is None:
+                raise RemoteStoreError(f"/graph/neighbors relations 缺 target_id：{item!r}")
+            edges.append(
+                RemoteEdge(
+                    target_id=target_id,
+                    label=(item.get("relation") or ""),
+                    weight=1.0 if raw_weight is None else float(raw_weight),
+                )
+            )
+        return edges
 
     def iter_payloads(self) -> Iterator[tuple[int, dict[str, Any]]]:
         """遍历全部节点 ``(node_id, payload)``。
@@ -134,7 +177,7 @@ class RemoteStore:
                 "/export",
                 params={"page": page, "page_size": page_size, "include_payload": "true"},
             )
-            items = []
+            items: list = []
             if isinstance(data, dict):
                 items = data.get("memories", data.get("items", [])) or []
             elif isinstance(data, list):
@@ -189,7 +232,7 @@ class RemoteStore:
         而非「最近 N」，语义不符。
         """
         data = self._req("POST", "/mem/recent", json={"limit": limit})
-        items = []
+        items: list = []
         if isinstance(data, dict):
             items = data.get("results") or []
         elif isinstance(data, list):
@@ -262,19 +305,30 @@ class RemoteStore:
         block: str = "",
         payload_filter: dict[str, Any] | None = None,
         **kwargs: Any,
-    ) -> Iterable:
+    ) -> list:
         """语义检索 —— 经 ``POST /mem/search``。
 
-        ``payload_filter`` 服务端**尚不支持**：``main.MemSearchRequest`` 与
-        ``mcp_tools.memory.mem_search`` 都没有该字段（即便塞进 body 也会被
-        FastAPI 模型静默丢弃），故收到非空过滤时直接抛 ``NotImplementedError``——
-        静默忽略会让调用方以为过滤生效了。
+        契约对拍要点（与 ``LocalStore.search_similar`` / 测试对咬的口径）：
+
+        - ``payload_filter`` 服务端**尚不支持**：``main.MemSearchRequest`` 与
+          ``mcp_tools.memory.mem_search`` 都没有该字段（即便塞进 body 也会被
+          FastAPI 模型静默丢弃），故收到非空过滤时直接抛 ``NotImplementedError``——
+          静默忽略会让调用方以为过滤生效了。
+        - 默认 body 显式发 ``scope="all"`` / ``tier=""``：REST 端点模型的默认
+          ``tier="facts"`` 是检索**视图**过滤（日志层摘出），协议层语义是
+          「不过滤」——不静默继承服务端视图默认。显式参数仍经白名单透传
+          （scope / domain_bias / include_neighbors / include_outdated /
+          tier / domain_boost）。
+        - 服务端检索端点不接受 ``expand_depth``（总是用
+          ``Config.RETRIEVAL_EXPAND_DEPTH``）——与 Local 同参数对拍时，
+          Local 一侧需显式传同值（见 tests/test_store_protocol.py）。
+        - 返回元素为服务端检索条目 ``{"id","type","score","summary","meta"}``。
         """
         if payload_filter:
             raise NotImplementedError(
                 "RemoteStore.search_similar 暂不支持 payload_filter 下推，请先补服务端支持或改用 LocalStore"
             )
-        body: dict[str, Any] = {"query": query, "top_k": top_k}
+        body: dict[str, Any] = {"query": query, "top_k": top_k, "scope": "all", "tier": ""}
         if domain:
             body["domain"] = domain
         if block:

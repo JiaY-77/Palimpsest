@@ -186,3 +186,54 @@ def test_iter_payloads_fails_loud_when_payload_missing(http, rs):
 
     with pytest.raises(RemoteStoreError, match="payload"):
         list(rs.iter_payloads())
+
+
+# ---------------------------------------------------------------------------
+# 偏离钉：已文档化的偏离，往任一边「静默收敛」都要让这里响
+# ---------------------------------------------------------------------------
+
+
+def test_search_similar_defaults_are_protocol_faithful(http, rs):
+    """偏离钉：协议层检索不过滤——默认 body 显式 scope="all" / tier=""。
+
+    REST 端点模型默认 tier="facts"（检索视图摘日志层）；RemoteStore 作为
+    protocols.Store 实现不得静默继承该视图默认（否则 Local/Remote 默认语义
+    对不上）。白名单显式透传的调用方不受影响。
+    """
+    http["responses"][("POST", "/mem/search")] = _Resp(200, {"results": []})
+
+    rs.search_similar("q", top_k=2)
+
+    body = http["calls"][0][2]["json"]
+    assert body == {"query": "q", "top_k": 2, "scope": "all", "tier": ""}, body
+    assert "scope" in body and "tier" in body, f"scope/tier 必须显式发送：{body}"
+
+
+def test_iter_nodes_matches_iter_payloads_semantics(http, rs):
+    """偏离钉：iter_nodes 无完整结构端点，等价 iter_payloads 语义。
+
+    钉两点：① 只发 /export 请求（不给「悄悄换端点假装完整结构」的口子）；
+    ② yield 的 (id, payload) 序列与 iter_payloads 完全一致、不含 vector。
+    服务端将来若提供真正的批量节点端点，本钉会红——先改文档与实现再放开。
+    """
+    http["responses"][("GET", "/export")] = _Resp(
+        200,
+        {
+            "memories": [
+                {"id": 3, "payload": {"content": "x", "domain": "hero"}},
+                {"id": 9, "payload": {"content": "y"}},
+            ],
+            "total_nodes": 2,
+            "page": 1,
+            "page_size": 500,
+            "total_pages": 1,
+        },
+    )
+
+    node_pairs = list(rs.iter_nodes())
+    payload_pairs = list(rs.iter_payloads())
+
+    paths = {path for _m, path, _k in http["calls"]}
+    assert paths == {"/export"}, paths
+    assert node_pairs == payload_pairs == [(3, {"content": "x", "domain": "hero"}), (9, {"content": "y"})]
+    assert all("vector" not in dict(payload) for _, payload in node_pairs), "iter_nodes 不该伪装返回向量"

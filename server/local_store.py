@@ -19,10 +19,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
 from typing import Any
 
-from core.trivium_store import TriviumStore
+from core.trivium_store import TriviumStore, node_domain
 
 
 class LocalStore:
@@ -84,7 +84,10 @@ class LocalStore:
         relation: str = "RELATED_TO",
         weight: float = 1.0,
     ) -> None:
-        self._store.create_edge(source_id, target_id, relation, weight)
+        # 显式按关键字转发：TriviumStore.create_edge 的第 4 位是 content（历史
+        # 遗留、db.link 用不到的死参），按位置传 weight 会把 float 塞进 content、
+        # weight 静默回退默认值 0.9——之前 weight 从未生效过。
+        self._store.create_edge(source_id, target_id, relation_type=relation, weight=weight)
 
     # ---- 检索 ----
 
@@ -97,15 +100,47 @@ class LocalStore:
         block: str = "",
         payload_filter: dict[str, Any] | None = None,
         **kwargs: Any,
-    ) -> Iterable:
-        return self._store.search_similar(
-            query,
-            top_k,
-            domain=domain,
-            block=block,
-            payload_filter=payload_filter,
-            **kwargs,
+    ) -> list[dict[str, Any]]:
+        """语义检索：协议首参是 query **字符串**，本实现先 embed 成向量再转发。
+
+        （修 bug 记录）原实现把 query 原样转发给
+        ``TriviumStore.search_similar(query_embedding: list[float], ...)``——
+        真调用会把字符串当向量喂进去（此前无人调用才没炸）。
+
+        - 协议外参数（``expand_depth`` / ``apply_decay`` / ``include_outdated``）
+          经 ``**kwargs`` 原样透传给 ``TriviumStore.search_similar``，
+          ``apply_decay`` 等不丢失。
+        - ``embed_text`` 的异常（``EmbeddingUnavailableError``）不吞、自然传播，
+          与 ``TriviumStore`` 其它 embed 路径一致。
+        - ``domain``：``TriviumStore.search_similar`` 没有该参数；远程语义由
+          REST 检索视图（``mcp_tools.memory._mem_search_impl``）实现——
+          「宽召回 → 过滤 → 截断」。为让 Local/Remote 对同一协议参数语义一致，
+          这里用与远程**同一个** ``node_domain`` 函数复刻同一条规则：
+          非 ``kb_chunk`` 且 ``node_domain(payload) != domain`` 的候选剔除。
+          先宽召回 ``max(top_k * 3, 30)`` 再过滤截断，对齐远程的召回宽度，
+          避免「过滤在截断之后」导致候选被非本域结果挤出窗口。
+        """
+        embedding = self._store.embed_text(query)
+        domain_norm = (domain or "").strip().lower()
+        wide_k = max(top_k * 3, 30) if domain_norm else top_k
+        results = list(
+            self._store.search_similar(
+                embedding,
+                wide_k,
+                block=block,
+                payload_filter=payload_filter,
+                **kwargs,
+            )
         )
+        if domain_norm:
+            results = [
+                r
+                for r in results
+                if (r.get("payload") or {}).get("type") == "kb_chunk"
+                or node_domain(r.get("payload") or {}) == domain_norm
+            ]
+            results = results[:top_k]
+        return results
 
 
 # 协议契合检查放在**测试**里做（tests/test_store_protocol.py），

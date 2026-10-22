@@ -131,8 +131,18 @@ def resolve_conflict(
 
     if tx is not None:
         similar = _similar_hits(db, embedding)
-    else:
+    elif hasattr(store, "embed_text"):
+        # TriviumStore 形实现（自带 embed_text）：保持原向量直查——嵌入由
+        # mem_ingest 调用方传入复用，零额外嵌入开销（历史行为，字节不动）。
         similar = store.search_similar(embedding, top_k=3, expand_depth=0, apply_decay=False)
+    else:
+        # protocols.Store 实现（LocalStore / RemoteStore）：search_similar 首参
+        # 是 query **文本**、各实现自行 embed。此前把向量当文本传，会让
+        # LocalStore 把向量再 embed、RemoteStore 给服务端发数组——协议外的
+        # 静默破坏。按协议传文本：query 取新节点 content（与 embedding 同源，
+        # embed 后同向量，结果排序不变）。
+        query = str((new_payload or {}).get("content") or "")
+        similar = store.search_similar(query, top_k=3, expand_depth=0, apply_decay=False)
 
     auto_supersede = bool(getattr(Config, "CONFLICT_AUTO_SUPERSEDE", False))
     for r in similar:
