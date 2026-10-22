@@ -19,6 +19,7 @@ from core.fts_index import index_node, search_fts_status
 from core.judgment_metrics import record_ingest
 from core.memoryhub import apply_import, read_pack, summarize_pack
 from core.policy import check_ingest
+from core.search import is_exact_identifier_query
 from core.secret_scan import SecretScanError
 from core.strategy import THOUGHT_TYPE, decide_import, detect_thought_origin, normalize_skeleton_kind
 from core.task_state import HANDOFF_KIND, _handoff_title, _is_handoff, _iso_from_epoch
@@ -1175,7 +1176,8 @@ def _hybrid_rrf(
 
     返回 `(items, channels)`，其中 channels 记录各检索通道状态
     （`fts` / `semantic`），FTS 通道降级时如实标出并在日志留痕，
-    避免「通道挂了」被误读成「确实没命中」。
+    避免「通道挂了」被误读成「确实没命中」；`exact_query` / `fts_weight`
+    透出精确标识符判定与本次实际使用的 FTS 权重（线上排查走没走抬高路）。
     """
     sem_items = _sem_candidate_items(
         query, scope, domain, domain_bias, top_k, block, include_outdated=include_outdated, tier=tier, as_of=as_of
@@ -1184,13 +1186,19 @@ def _hybrid_rrf(
     if fts_status == "degraded":
         logger.warning("混合检索降级：FTS 通道不可用（query=%r），结果仅来自语义通道", query[:60])
 
+    # 精确标识符查询（commit hash / PR 号 / 工单号）专用 FTS 权重：
+    # 此类 query 语义通道天然失灵，FTS 是唯一能救场的通道，改用更高的
+    # RRF_FTS_EXACT_WEIGHT 保证 FTS-only 命中能进 top_k；普通 query 走原权重。
+    exact_query = is_exact_identifier_query(query)
+    w_fts = Config.RRF_FTS_EXACT_WEIGHT if exact_query else Config.RRF_FTS_WEIGHT
+
     ranked = _rrf_fuse(
         [it.get("id") for it in sem_items if it.get("id") is not None],
         [r.get("node_id") for r in fts if r.get("node_id") is not None],
         top_k,
         Config.RRF_K,
         w_sem=Config.RRF_SEM_WEIGHT,
-        w_fts=Config.RRF_FTS_WEIGHT,
+        w_fts=w_fts,
     )
 
     # 语义条目按 id 建表，便于合并命中来源标记；FTS-only 节点按 payload 补全
@@ -1211,7 +1219,12 @@ def _hybrid_rrf(
         merged.append(item)
         if len(merged) >= top_k:
             break
-    channels = {"semantic": "ok" if sem_items else "empty", "fts": fts_status}
+    channels = {
+        "semantic": "ok" if sem_items else "empty",
+        "fts": fts_status,
+        "exact_query": exact_query,
+        "fts_weight": w_fts,
+    }
     return merged, channels
 
 

@@ -778,6 +778,66 @@ def test_list_active_include_handoff_opt_in(iso_store):
     assert row["kind"] == HANDOFF_KIND
 
 
+def _iso_insert_handoff_with_age(s, project: str, *, importance: float, age_days: float) -> int:
+    """插入一个 kind=handoff 接续点，并把 created_at 补写为 days 天前（生产同款补写）。
+
+    insert_node 会吞掉传入的 created_at（占位 None），插入后 update_payload 补写
+    （与 test_list_active_fresh_fallback_to_created_at_when_touched_null 同款做法）。
+    """
+    nid = _iso_insert_task(
+        s,
+        "[doing] 【★接续点】检索排序修复测试用接续点 · 新会话先读这条",
+        project,
+        task_state="doing",
+        kind=HANDOFF_KIND,
+        importance=importance,
+    )
+    s.update_payload(nid, {"created_at": time.time() - age_days * 86400})
+    return nid
+
+
+def test_handoff_order_recency_beats_importance(iso_store):
+    """接续点组内 created_at 主序：老条 importance 更高也不能压住最新条（2026-10-22 实测回归）。
+
+    生产实测：新接续点 importance=0.92，10-17 老条 0.93 → 旧排序（importance 主序）
+    返回的第一条是老条，新会话「先读这条」读到过期上下文。修后时间为主、
+    importance 只作同刻次序。
+    """
+    project = _ns()
+    old_nid = _iso_insert_handoff_with_age(iso_store, project, importance=0.95, age_days=5)
+    new_nid = _iso_insert_handoff_with_age(iso_store, project, importance=0.5, age_days=0)
+
+    data = list_active_tasks(iso_store, project=project, include_handoff=True)
+
+    ids = [it["id"] for it in data["results"]]
+    assert ids.index(new_nid) < ids.index(old_nid), (
+        f"最新的接续点必须排第一（时间主序）：实际顺序 {ids}，new={new_nid} old={old_nid}"
+    )
+    assert ids[0] == new_nid
+
+
+def test_handoff_order_handoffs_still_pinned_and_default_excluded(iso_store):
+    """时间主序不破坏置顶语义：接续点（含老条）全部排在普通任务之前；include_handoff=False 默认排除照旧。"""
+    project = _ns()
+    old_handoff = _iso_insert_handoff_with_age(iso_store, project, importance=0.95, age_days=5)
+    new_handoff = _iso_insert_handoff_with_age(iso_store, project, importance=0.5, age_days=0)
+    normal_a = _iso_insert_task(iso_store, "[doing] T-901 陪跑普通任务甲", project, task_state="doing")
+    normal_b = _iso_insert_task(iso_store, "[doing] T-902 陪跑普通任务乙", project, task_state="doing")
+
+    included = list_active_tasks(iso_store, project=project, include_handoff=True)
+    excluded = list_active_tasks(iso_store, project=project)
+
+    ids = [it["id"] for it in included["results"]]
+    assert ids.index(new_handoff) < ids.index(old_handoff), "接续点组内仍按时间倒序"
+    assert ids.index(old_handoff) < ids.index(normal_a), "老接续点也要置顶在普通任务之前"
+    assert set(ids[:2]) == {new_handoff, old_handoff}, "前两名必须是两条接续点"
+    assert {normal_a, normal_b} & set(ids) == {normal_a, normal_b}
+    # 默认排除行为不受影响
+    default_ids = {it["id"] for it in excluded["results"]}
+    assert old_handoff not in default_ids and new_handoff not in default_ids
+    assert {normal_a, normal_b} <= default_ids
+
+
 def test_mcp_tasks_active_include_handoff_passes_through(iso_store):
     """MCP 工具 tasks_active：默认排除 / include_handoff=True 取回。"""
     import json
@@ -1379,9 +1439,14 @@ def test_list_active_fresh_days_zero_expands_all():
 
 
 def test_list_active_handoff_exempt_from_folding_and_pinned():
-    """handoff 豁免折叠 + ``include_handoff=True`` 时置顶按 importance 倒序（issue 验收第 2 条）。"""
+    """handoff 豁免折叠 + ``include_handoff=True`` 时置顶、组内按 created_at 倒序（新在前）。
+
+    排序主键是**时间**不是 importance（否则历史接续点凭高 importance 长期压住新写的
+    那条，「新会话先读这条」会读到过期上下文）。这里特意让「老的高优 / 新的低优」，
+    断言新的排前面——importance 只在同刻时作次键。
+    """
     project = _ns()
-    h_high = _insert_task(
+    h_old = _insert_task(
         "[doing] 接续点·老的高优",
         project,
         task_state="doing",
@@ -1389,20 +1454,25 @@ def test_list_active_handoff_exempt_from_folding_and_pinned():
         importance=0.9,
         last_touched_at=_iso_days_ago(90),
     )
-    h_low = _insert_task(
-        "[doing] 接续点·老的低优",
+    h_new = _insert_task(
+        "[doing] 接续点·新的低优",
         project,
         task_state="doing",
         kind=HANDOFF_KIND,
         importance=0.3,
         last_touched_at=_iso_days_ago(90),
     )
+    # insert_node 不落 created_at，用 update_payload 补写（与生产写入同款做法）
+    for nid, days in ((h_old, 30), (h_new, 1)):
+        payload = dict((store.get_node(nid) or {}).get("payload") or {})
+        payload["created_at"] = time.time() - days * 86400
+        store.update_payload(nid, payload)
     normal = _insert_task("[doing] T-940 普通新鲜任务", project, task_state="doing")
 
     data = list_active_tasks(store, project=project, include_handoff=True)
 
     ids = [it["id"] for it in data["results"]]
-    assert ids == [h_high, h_low, normal], "接续点置顶（importance 倒序），普通任务保持原排序"
+    assert ids == [h_new, h_old, normal], "接续点置顶 + 组内时间倒序（新在前），普通任务保持原排序"
     assert data["stale"] is None, "接续点豁免折叠：超期也不进 stale 汇总"
 
 
