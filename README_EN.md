@@ -248,6 +248,8 @@ python scripts/build_kb_index.py --rules rules.json
 | `mem_unpack` | Unpack a MemoryHub pack read-only: validate format / version, scan for secrets, produce a human-readable summary; writes nothing |
 | `mem_import` | "Naturalize" nodes from a pack into this store; read-only preview by default, only ids in `select` are written, strong-secret nodes need `include_secrets=True` |
 
+> What a MemoryHub pack is, the three-step flow (read → select → naturalize), the format definition and secret-scan rules: see [`docs/MEMORYHUB.md`](docs/MEMORYHUB.md); a runnable sample pack lives at [`docs/examples/memoryhub-sample.json`](docs/examples/memoryhub-sample.json).
+
 ### CLI — `scripts/palimpsest_cli.py`
 
 | Command | Description |

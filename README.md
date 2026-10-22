@@ -243,6 +243,8 @@ python scripts/build_kb_index.py --rules rules.json
 | `mem_unpack` | 只读解开 MemoryHub 记忆包：校验格式 / 版本、扫描敏感信息、给人读摘要；不写入任何东西 |
 | `mem_import` | 把记忆包里的节点「入籍」（写回本库）；默认只读预览，`select` 显式选中才写，`include_secrets=True` 才放行强敏感节点 |
 
+> 记忆包是什么、三步用法（解开看 → 挑着选 → 入籍）、格式定义与敏感扫描规则，见 [`docs/MEMORYHUB.md`](docs/MEMORYHUB.md)；可直接跑的示例包在 [`docs/examples/memoryhub-sample.json`](docs/examples/memoryhub-sample.json)。
+
 ### CLI 命令 — `scripts/palimpsest_cli.py`
 
 | 命令 | 说明 |
