@@ -38,9 +38,10 @@ venv/Scripts/python.exe eval/run_eval.py --eval-set eval/.tmp/mini_set.json --li
 
 ## 题集版本
 
-- **当前基准**：`eval_set.json`，由 `gen_eval_set.py` 产出，评测默认使用。它生成到本地评测数据目录，**不入库**（`eval/` 下不跟踪题集 JSON）。
-- **历史题集**：`eval_set_v1_149.json`（149 题版本）与 `manual_set.json`（手工题）保存在本地评测数据目录，同样不入库；前者是历史版本、后者是手工补充集，**均非当前基准**。
-- 新增评测一律以 `eval_set.json` 为基准。
+- **当前基准**：`fusion_set_v1.json`，由 `gen_fusion_set.py` 产出，供 `fusion_ab.py` 使用。gold 口径 = FTS 字面枚举 ∩ 当前可见（`status != outdated`）。
+- **`eval_set.json`（138 题，已失效）**：由 `gen_eval_set.py` 生成的历史题集。⚠️ **2026-10-22 实测其 gold 已整体不可信**——抽查 5 条，1 条的 gold 节点已不存在，存活的也语义错配（问「知识库版本号」，gold 是「压测方法学复证」片段；问「RAG 是什么」，gold 是「各阶段详细说明」）。推测是库重建后 id 漂移。**不要再用它作评测基准**，用它跑出的历史数字都应视为不可信。
+- **历史题集**：`eval_set_v1_149.json`（149 题版本）与 `manual_set.json`（手工题）保存在本地评测数据目录，同样不入库；前者是历史版本、后者是手工补充集。
+- 新增评测一律以 `fusion_set_v1.json` 这套生成流程为准。
 
 ## 题集 Schema (`eval/eval_set.json`)
 
@@ -103,6 +104,32 @@ venv/Scripts/python.exe eval/run_eval.py --eval-set eval/.tmp/mini_set.json --li
 | `rrf` | RRF 融合（语义排名 + FTS 排名的 reciprocal rank 求和，k=60） |
 | `cascade` | 级联策略（FTS 粗筛 → 语义精排） |
 
+## 融合权重 A/B 评测（`fusion_ab.py`）
+
+`run_eval.py` 比的是**检索模式**（fts / vec / rrf / cascade）。如果要调的是 **RRF 内部的融合权重**，就不能每个方案各走一遍线上检索——语义 embedding、FTS 降级、库的瞬时状态都会引入噪声，A/B 的差值就不再只归因于融合逻辑。
+
+`fusion_ab.py` 的做法：**每题只采集一次两路原始排名**（语义 top-N 带分数、FTS top-N 带 bm25 rank），多套融合方案在内存里对同一份排名重排，指标在重排后的顺序上计算。
+
+```bash
+# 1) 生成题集（gold 口径 = FTS 字面枚举 ∩ 当前可见）
+venv/Scripts/python.exe eval/gen_fusion_set.py --out eval/fusion_set_v1.json
+
+# 2) 跑 A/B（默认 5 套方案：基线 / 分档 / 归一化 / 纯候选补偿 / 分档+补偿）
+venv/Scripts/python.exe eval/fusion_ab.py --eval-set eval/fusion_set_v1.json
+
+# 3) 检查精确标识符判定的误判面
+venv/Scripts/python.exe eval/probe_exact_misjudge.py
+```
+
+题集分四类，两类要点：
+
+- **`exact` / `mixed` 共用同一 gold 集**（mixed 只是 query 里多了自然语言）——这样「加自然语言会不会把噪声带进语义通道」是单变量对照。
+- **`mixed` 的 gold 由 FTS 字面枚举得到**，不用语义检索反查（否则就是「用检索结果证明检索结果」）。
+
+题集的**人工部分不入库**（含私有记忆内容与具体 node id），放在 `eval/fusion_set_manual.json`（已被 `.gitignore` 忽略）；仓库里只保留脱敏模板 `eval/fusion_set_manual.example.json`。换库后照模板重抽节点、重写 query 即可。
+
+> ⚠️ 主判据用 `hit@k`（前 k 条能否命中至少一条 gold），不要只看 `recall@k`：标识符类的 gold 是「库里所有提到该标识符的可见节点」，规模差异很大（2 条 ~ 60 条）。gold 36 条时 top-5 最多覆盖 5/36≈0.14，这个上限由 gold 规模决定，不是检索质量。
+
 ## 库副本保护机制
 
 为避免评测过程对真实数据库产生写入（如 `hit_count` 递增），所有脚本在启动时会：
@@ -121,6 +148,10 @@ eval/
 ├── metrics.py           # 纯函数指标（recall, MRR, nDCG），不联网不连库
 ├── gen_eval_set.py      # 生成评测题集（抽样 + DeepSeek API）
 ├── run_eval.py          # 运行评测，输出结果 JSON + 报告 Markdown
+├── fusion_ab.py         # 融合权重 A/B：一次采集、多方案内存重排
+├── gen_fusion_set.py    # 生成融合评测题集（gold = FTS 字面枚举 ∩ 可见）
+├── probe_exact_misjudge.py  # 精确标识符判定的误判探针
+├── fusion_set_manual.example.json  # 题集人工部分的脱敏模板（真实文件不入库）
 ├── README.md            # 本文件
 ├── eval_set.json        # 生成的评测题集（由 gen_eval_set.py 产出）
 ├── results_*.json       # 逐题原始排名（由 run_eval.py 产出）

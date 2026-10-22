@@ -22,7 +22,9 @@ dist/
 
 # 评测数据（query set / 结果 / 临时副本，含本机私有记忆内容）
 eval/.tmp/
+eval/.tmp_fusion/
 eval/*.json
+!eval/fusion_set_manual.example.json
 eval/report_*.md
 
 
