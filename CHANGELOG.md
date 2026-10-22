@@ -8,7 +8,7 @@
 
 ### 新增
 
-- **精确标识符查询专用 FTS 权重（`RRF_FTS_EXACT_WEIGHT`，默认 `1.0`）**：query 含 commit hash（7 位以上且含数字的十六进制 token）/ `#PR号` / `工单号` 时，本次混合检索的 FTS 侧权重由 `RRF_FTS_WEIGHT`（`0.1`）提升到该值。原因：这类 query 的语义通道天然失灵（hash 与目标节点的中文正文不相似），而 RRF 下 FTS-only 命中的上限是 `w/(k+q)`——`0.1` 时永远排在语义候选之后（实测：目标节点在 FTS 通道排第 2 名，最终 `top_k=60` 全 MISS；`w=0.5` 同样出局，`w=1.0` 才进前列，下限由此而来）。判定保持保守（`core/search.py::is_exact_identifier_query`），纯自然语言 query 行为完全不变；`/mem/hybrid-search` 的 `channels` 现透出 `exact_query` / `fts_weight`，便于线上排查走了哪条路。
+- **精确标识符查询专用 FTS 权重（`RRF_FTS_EXACT_WEIGHT`，默认 `1.5`）**：query 含 commit hash（7 位以上且含数字的十六进制 token）/ `#PR号` / `工单号` 时，本次混合检索的 FTS 侧权重由 `RRF_FTS_WEIGHT`（`0.1`）提升到该值。原因：这类 query 的语义通道天然失灵（hash 与目标节点的中文正文不相似），而 RRF 下 FTS-only 命中的上限是 `w/(k+q)`——`0.1` 时永远排在语义候选之后（实测：目标节点在 FTS 通道排第 2 名，最终 `top_k=60` 全 MISS；`w=0.5` 同样出局，下限约 `0.94`）。**为什么不是 1.0**：`1.0` 恰好等于语义权重 `RRF_SEM_WEIGHT`，会让 FTS 第 0 名与语义第 0 名拿到完全相同的分数（都是 `1/(K+0)`），胜负取决于实现顺序——离线 22 条标识符 query 实测 `w=1.0` 时 `recall@5` 0.356 / `MRR@10` 0.636，`w=1.05` 时 `MRR@10` 即达 1.000，`w=1.10` 时 `recall@5` 0.690 并**完全饱和**（`1.1`~`3.0` 指标相同）；取 `1.5` 是为留余量抵抗库分布与 embedding 版本漂移。判定保持保守（`core/search.py::is_exact_identifier_query`），纯自然语言 query 行为完全不变；`/mem/hybrid-search` 的 `channels` 现透出 `exact_query` / `fts_weight`，便于线上排查走了哪条路。
 
 ### 修复
 
