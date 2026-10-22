@@ -75,7 +75,14 @@ class Store(Protocol):
         ...
 
     def get_edges(self, node_id: int) -> list:
-        """取某节点的出边列表。"""
+        """取某节点的出边列表。
+
+        返回条目是**属性兼容对象**（两种实现一致）：``target_id`` / ``label``
+        / ``weight`` 属性访问；本地实现返回 TriviumDB Edge，远程实现返回
+        ``client.remote_store.RemoteEdge``（REST JSON dict 键名 ``relation``
+        在客户端侧包回 ``label``）。返回 dict 的历史行为已收回——依赖它
+        的代码是违约点。
+        """
         ...
 
     def iter_payloads(self) -> Iterator[tuple[int, dict[str, Any]]]:
@@ -140,7 +147,16 @@ class Store(Protocol):
     ) -> Iterable:
         """语义检索。
 
-        参数与 ``TriviumStore.search_similar`` 对齐；``payload_filter`` 用于把
-        类型过滤下推到检索层（避免全局 top_k 后再过滤导致目标被挤出窗口）。
+        ``query`` 是**文本**：各实现自行生成向量（LocalStore 先 ``embed_text``
+        再转发 ``TriviumStore.search_similar``；RemoteStore 交给服务端重算）。
+        ``domain`` 的语义与 REST 检索视图一致：仅作用记忆节点——
+        非 ``kb_chunk`` 且 ``node_domain(payload) != domain`` 的候选剔除
+        （kb_chunk 不受影响），先宽召回再过滤截断。
+        ``payload_filter`` 用于把类型过滤下推到检索层（避免全局 top_k 后再过滤
+        导致目标被挤出窗口）；服务端暂未支持下推——Remote 侧该参数非空时
+        显式抛 ``NotImplementedError``（fail-loud，不静默忽略）。
+        协议外参数（``expand_depth`` / ``apply_decay`` / ``include_outdated``）
+        由本地侧经 ``**kwargs`` 透传；远程侧不受 ``expand_depth`` 控制
+        （服务端固定用 ``Config.RETRIEVAL_EXPAND_DEPTH``）。
         """
         ...
