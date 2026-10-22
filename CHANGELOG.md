@@ -4,7 +4,7 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
-## [Unreleased]
+## [2.15.0] - 2026-10-22
 
 ### 新增
 
@@ -13,10 +13,20 @@
 ### 修复
 
 - **会话接续点排序改按时间，不再按 `importance`**：`_order_handoff_first` 此前以 `importance` 为主键，历史接续点（写入时往往被给了更高 importance）会长期压住新写入的那条——`tasks_active(include_handoff=true)` 的首条因此可能是过期上下文，「新会话先读这条」的语义随之失效。现改为 `created_at` 降序主序 → `importance` → `id` 兜底；`created_at` 缺失时以 `id` 作时间代理，兼容存量节点。
+- **`PUT` / `PATCH /memory/{id}` 统一走任务写路径**：此前 `PATCH` 直连 `store.update_payload`，绕过 `apply_task_patch`——`type=task` 节点的状态变更因此不补 `last_touched_at`、不写 `type=record` 日志节点、不建 `LOGS` 边，属「状态无痕变更」。现两个端点合并到 `_apply_payload_update`，响应字段与 PUT 完全一致，`PUT` 原行为不变。
+
+### 文档
+
+- **记忆包（MemoryHub）使用文档**：新增 [`docs/MEMORYHUB.md`](docs/MEMORYHUB.md)，说明格式定义（`manifest` / `nodes` / `edges`）、三步用法（只读解开 → 预览决策 → 显式选中入籍）、六条契约**及其理由**、敏感扫描两档规则与三条如实边界（不加密 / 不去重 / 不校验语义）。配套可直接跑的示例包 `docs/examples/memoryhub-sample.json`（6 节点 / 3 边，纯虚构内容，其中一条刻意放了假 key 用于演示敏感命中）与生成脚本 `scripts/gen_memoryhub_sample.py`——指纹由仓库自身的 `pack_fingerprint` 计算，保证示例与真实包格式一致。`README.md` / `README_EN.md` 的 MCP 工具表下方补了指引。
+
+### 测试
+
+- **融合权重 A/B 评测框架（`eval/fusion_ab.py`）**：每题**只采集一次**两路原始排名（语义 top-N 带分数、FTS top-N 带 bm25 rank），多套融合方案在内存中对同一份排名重排——避免「每个方案各走一遍线上检索」把 embedding 调用、FTS 降级状态、库的瞬时数据引入 A/B 差值。配套 `eval/gen_fusion_set.py`（gold 口径 = FTS 字面枚举 ∩ 当前可见，不依赖排序）与 `eval/probe_exact_misjudge.py`（标识符判定的误判探针）。题集的人工部分含私有内容与具体 node id，**不入库**，仓库只保留脱敏模板 `eval/fusion_set_manual.example.json`。同时标注 `eval/eval_set.json` 的 gold 已整体失效（抽查 5 条，1 条 gold 节点已不存在，其余语义错配），后续评测统一走新流程。
 
 ### 变更
 
 - **`triviumdb` 0.8.9 → 0.8.10**：零迁移（主文件 v9 / flush marker v3 / `.quiver` v1 均不变，无需导出重建）。上游本版内容：TQL 递归防护（标量表达式与嵌套解析共用 128 层预算，覆盖括号、函数参数、一元运算与嵌套子查询）；QuIVer 构图连通性（同签名近邻挤占时保留其他签名候选，收尾连接入口不可达区域）；发布中断恢复（写新事实前持久化旧代独立备份与 TPUB v1 撤销日志，可写打开先恢复未提交发布再回放 WAL）；WebUI 图探索与 AI Copilot。同步 `README_EN.md` / `docs/TDB-能力盘点.md` 的版本引用；`tests/test_storage.py` 的 `package_version` 断言改为与安装版本动态比对（钉字面量会让每次依赖升级都假红，而该断言的意图是「`storage_info` 报的是真装的那版」）。
+- **`LocalStore` / `RemoteStore` 与 store 协议对齐**：补齐两个实现对 `protocols.StoreProtocol` 的契约一致性（内部重构，对外接口与行为不变）。
 
 ## [2.14.0] - 2026-10-19
 
@@ -503,7 +513,8 @@
 
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
-[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.14.0...HEAD
+[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.15.0...HEAD
+[2.15.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.15.0
 [2.14.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.14.0
 [2.13.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.13.0
 [2.12.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.12.0
