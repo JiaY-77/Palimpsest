@@ -445,9 +445,8 @@ def _sync_fts_after_update(node_id: int) -> None:
         logger.warning("FTS 索引同步失败 node=%s: %s", node_id, e)
 
 
-@app.put("/memory/{node_id}")
-def update_memory_payload(node_id: int, payload: dict):
-    """更新指定 ID 的记忆 payload（部分更新合并语义：只改传入字段，其余保留）。
+def _apply_payload_update(node_id: int, payload: dict) -> dict:
+    """PUT/PATCH 共用的 update 写路径（唯一实现，避免两份逻辑漂移）。
 
     ``type=task`` 节点走任务写路径（``core.task_state.apply_task_patch``）：状态变化时
     自动补 ``last_touched_at``、写 ``type=record`` 日志节点并建 ``record -[LOGS]-> task``
@@ -493,22 +492,27 @@ def update_memory_payload(node_id: int, payload: dict):
         raise HTTPException(status_code=404, detail="更新失败：节点不存在或数据格式错误") from e
 
 
+@app.put("/memory/{node_id}")
+def update_memory_payload(node_id: int, payload: dict):
+    """更新指定 ID 的记忆 payload（部分更新合并语义：只改传入字段，其余保留）。
+
+    ``type=task`` 节点走任务写路径（``core.task_state.apply_task_patch``）：状态变化时
+    自动补 ``last_touched_at``、写 ``type=record`` 日志节点并建 ``record -[LOGS]-> task``
+    边，保证任务状态「变了必留痕」；其余类型节点行为不变。
+    """
+    return _apply_payload_update(node_id, payload)
+
+
 @app.patch("/memory/{node_id}")
 def patch_memory_payload(node_id: int, payload: dict):
-    """PATCH：部分更新指定 ID 的记忆 payload（与 PUT 同逻辑，但语义上更精确）"""
-    try:
-        _get_store().update_payload(node_id, payload)
-        _sync_fts_after_update(node_id)
-        result = {"status": "ok", "message": f"节点 {node_id} payload 已更新"}
-        if "content" in payload:
-            result["warning"] = (
-                "content 已更新，但向量未重算——语义检索与冲突检测仍按旧文本执行。"
-                f"如需同步，调用 POST /memory/{node_id}/reembed。"
-            )
-        return result
-    except Exception as e:
-        logger.info("更新节点 payload 失败 node=%s: %s", node_id, e)
-        raise HTTPException(status_code=404, detail="更新失败：节点不存在或数据格式错误") from e
+    """PATCH：部分更新指定 ID 的记忆 payload，与 PUT 走**同一条写路径**。
+
+    ``type=task`` 节点同样经过 ``apply_task_patch``（状态变化留痕：补
+    ``last_touched_at``、写日志节点、建 ``LOGS`` 边）——本端点历史上曾
+    直连 ``store.update_payload``，绕过任务写路径导致状态无痕变更，
+    现已与 PUT 合并到 ``_apply_payload_update``。响应字段与 PUT 完全一致。
+    """
+    return _apply_payload_update(node_id, payload)
 
 
 @app.post("/memory/{node_id}/reembed")
