@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from importlib.metadata import version as pkg_version
 
 import pytest
 import triviumdb
@@ -50,7 +51,9 @@ def tdb(_dir):
 def test_storage_info_metadata(tdb):
     info = tdb.storage_info()
     assert isinstance(info, dict)
-    assert info["package_version"] == "0.8.9"
+    # 与安装版本动态比对：钉死字面量会让每次依赖升级都假红，
+    # 而这条断言的真实意图是「storage_info 报的是真装的那版」，不是「装的必须是某版」。
+    assert info["package_version"] == pkg_version("triviumdb")
     assert info["database_format_current"] == 9
     assert info["database_format_minimum"] <= info["database_format_current"]
     assert info["access_mode"] in ("read_write", "read_only", "immutable")
