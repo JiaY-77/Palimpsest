@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "note": "题集人工部分模板（真实文件是 fusion_set_manual.json，含本机私有内容、不入库）。exact_tokens=纯标识符；mixed=标识符+自然语言；date=8 位日期+自然语言；semantic=自然语言（gold 是节点 id）。换库后按当前库重抽节点并重写 query。",
+  "exact_tokens": [
+    ["07ce0de", "commit"],
+    ["#42", "pr"]
+  ],
+  "mixed": [
+    ["07ce0de", "07ce0de 这次合并改了什么"]
+  ],
+  "date": [
+    [123, "20260915 那天的评审结论是什么"]
+  ],
+  "semantic": [
+    [456, "这个（只有本库才知道的）问题该怎么解？"]
+  ]
+}
