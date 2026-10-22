@@ -37,7 +37,7 @@
 | `RRF_K` | `60.0` | 混合检索 RRF 常数 k（单侧命中也计贡献） | `mem_hybrid_search` 且 `mode=rrf` |
 | `RRF_SEM_WEIGHT` | `1.0` | 混合检索 RRF 语义侧权重 | `mem_hybrid_search` 且 `mode=rrf` |
 | `RRF_FTS_WEIGHT` | `0.1` | 混合检索 RRF 精确（FTS）侧权重——语义主序干净后 FTS 小幅加成 | `mem_hybrid_search` 且 `mode=rrf` |
-| `RRF_FTS_EXACT_WEIGHT` | `1.0` | 精确标识符查询（query 含 commit hash / `#PR号` / `工单号`）时的 FTS 侧权重。此类 query 语义通道天然失灵，需等权才能让 FTS 命中进 top_k（`w/(k+q) > 1/(k+top_k)` 决定下限）；普通自然语言 query 仍走 `RRF_FTS_WEIGHT`，全局行为不变 | `mem_hybrid_search` 且 `mode=rrf` 且判定为标识符查询 |
+| `RRF_FTS_EXACT_WEIGHT` | `1.5` | 精确标识符查询（query 含 commit hash / `#PR号` / `工单号`）时的 FTS 侧权重。下限由 `w/(k+q) > 1/(k+top_k)` 决定（约 `0.94`）；但 `1.0` 恰好等于语义权重会造成两者第 0 名**同分**（都是 `1/60`），胜负交给实现顺序，所以取 `1.5` 留余量——离线实测（22 条标识符 query）`1.10` 即已饱和（`recall@5` 0.356 → 0.690、`MRR@10` 0.636 → 1.000），`1.1`~`3.0` 指标完全相同。普通自然语言 query 仍走 `RRF_FTS_WEIGHT`，全局行为不变 | `mem_hybrid_search` 且 `mode=rrf` 且判定为标识符查询 |
 | `RETRIEVAL_EXPAND_DEPTH` | `0` | 语义主序的图扩散深度：`0` = 纯语义排序（默认）；`1` = 图邻居参与语义主序（可一键回退） | 检索启用图扩散时 |
 | `TIER_FACTS` | `memory,correction,decision,plan,task,review,solution,inspiration,user_intent,character_state` | 归入事实层的记忆 type（逗号分隔）；未登记的 type 一律归事实层 | 检索与注入按 tier 过滤时 |
 | `TIER_LOGS` | `record,event,git_commit` | 归入日志层的记忆 type（逗号分隔），默认不进检索与注入池 | 检索与注入按 tier 过滤时 |

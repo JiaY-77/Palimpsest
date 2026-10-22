@@ -4,7 +4,8 @@
   1. ``core.search.is_exact_identifier_query``：commit hash / PR 号 / 工单号命中，
      中文长句与普通英文词不命中（保守：判不了就走原权重）；
   2. ``_rrf_fuse`` 的数学下限：语义候选满员时，FTS-only 命中能否进 top_k 决定性
-     地取决于 ``w_fts``——这是 ``RRF_FTS_EXACT_WEIGHT`` 必须取 ~1.0 的量化依据；
+     地取决于 ``w_fts``——这是 ``RRF_FTS_EXACT_WEIGHT`` 下限 ~0.94 的量化依据；
+     另有一道护栏：默认值必须**严格大于**语义权重，否则两路第 0 名同分（见下）；
   3. 混合检索端到端：标识符 query 走抬高权重并在 ``channels`` 透出，
      普通自然语言 query 保持原权重（不动全局行为）。
 
@@ -85,8 +86,9 @@ def test_exact_identifier_negative(query):
 def test_rrf_elevated_weight_promotes_fts_only_hit():
     """语义候选满员 + 目标只在 FTS 第 2 名时：0.1/0.5 都出局，1.0 才进。
 
-    这是 RRF_FTS_EXACT_WEIGHT 默认取 1.0 的依据：语义第 0 名得 1/(60+0)≈0.0164，
-    FTS 第 2 名得 w/(60+1)；w=0.5 时仅 0.0081，永远追不上。
+    这是 RRF_FTS_EXACT_WEIGHT 的**下限**依据：语义第 0 名得 1/(60+0)≈0.0164，
+    FTS 第 2 名得 w/(60+1)；w=0.5 时仅 0.0081，永远追不上。默认值取 1.5 而非 1.0，
+    理由见下一个测试（打平问题）。
     """
     sem_ids = list(range(1000, 1040))  # 40 条语义候选，全部排在前
     fts_ids = [9999, 8888, 7777]  # 目标 9999 在 FTS 第 1（0-based rank 0）
@@ -98,6 +100,20 @@ def test_rrf_elevated_weight_promotes_fts_only_hit():
     assert 9999 not in ranks(0.1), "原权重下 FTS-only 命中不该挤进 top10"
     assert 9999 not in ranks(0.5), "0.5 在数学上仍追不上语义头部"
     assert 9999 in ranks(1.0), "等权时精确命中应进入前列"
+
+
+def test_exact_fts_weight_strictly_exceeds_semantic_weight():
+    """默认权重必须**严格大于**语义权重，否则两个通道第 0 名同分。
+
+    w_fts == w_sem 时，FTS 第 0 名与语义第 0 名都拿 1/(K+0)，分数完全相同——谁排前
+    取决于字典/插入顺序，目标节点会被随机压到后面。离线 22 条标识符 query 实测：
+    w=1.0 → recall@5 0.356 / MRR@10 0.636；w=1.05 → MRR 1.000；w=1.10 → recall@5
+    0.690 且完全饱和（1.1~3.0 指标相同）。所以默认值要在饱和区内留余量。
+    """
+    assert Config.RRF_FTS_EXACT_WEIGHT > Config.RRF_SEM_WEIGHT, (
+        "精确标识符 FTS 权重必须严格大于语义权重：相等会造成两路第 0 名同分，"
+        "排序结果依赖实现细节（实测 recall@5 从 0.690 掉到 0.356）"
+    )
 
 
 def test_rrf_default_weights_unchanged():
