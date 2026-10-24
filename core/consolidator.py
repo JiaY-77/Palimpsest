@@ -3,6 +3,7 @@
 import contextlib
 import logging
 
+from core import tdb_text_index as _tdb_text
 from core.fts_index import sync_node
 from core.secret_scan import SecretScanError, scan_secret_classified
 from core.trivium_store import TriviumStore, node_domain
@@ -264,6 +265,11 @@ def consolidate(
             sync_node(new_id, content)
         except Exception as e:  # noqa: BLE001 —— FTS 同步失败仅告警不阻断合并
             logger.warning("合并节点 FTS 同步失败 node=%s: %s", new_id, e)
+        # TDB 文本通道（默认关闭零成本；失败 warning 不阻断，可 rebuild 兜底）
+        try:
+            _tdb_text.sync_node(new_id, content)
+        except Exception as e:  # noqa: BLE001 —— TDB 同步失败仅告警不阻断合并
+            logger.warning("合并节点 TDB 文本同步失败 node=%s: %s", new_id, e)
 
     return {
         "candidates": candidates,

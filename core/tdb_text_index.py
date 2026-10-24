@@ -149,6 +149,27 @@ def index_node(node_id: int, content: str) -> bool:
         return False
 
 
+def sync_node(node_id: int, content: str) -> bool:
+    """按 Config.TDB_TEXT_ENABLED 门控的写入同步入口（默认关闭 = 零成本）。
+
+    - 关闭（默认）：立即 return False —— 不 import 配置以外的重量级模块、
+      不开任何连接、不产生日志噪音。调用方无需各自判 Config，门控只在本
+      函数做一次（门内读取、模块级不缓存：测试 monkeypatch 改 Config.TDB_TEXT_ENABLED 即时生效）。
+    - 开启：转调 ``index_node(node_id, content)``（空串 = 清除该节点正文，
+      与 rebuild 的「不留残留文本」语义一致），同一套「失败 warning 不抛」
+      契约——主写已提交，索引失败可 rebuild 兜底。
+    """
+    from config import Config  # 延迟导入 + 每次调用读取属性，不模块级缓存
+
+    if not Config.TDB_TEXT_ENABLED:
+        return False
+    try:
+        return index_node(node_id, content or "")
+    except Exception as e:  # noqa: BLE001 —— TDB 同步失败仅告警返回 False 不抛
+        logger.warning("TDB 文本索引同步失败 node=%s: %s", node_id, e)
+        return False
+
+
 def search(query: str, limit: int = 10) -> tuple[list[dict], str]:
     """TDB BM25 文本检索（带通道状态，语义对齐 `fts_index.search_fts_status`）。
 

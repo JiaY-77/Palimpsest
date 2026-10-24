@@ -32,6 +32,8 @@ import re
 import time
 from datetime import datetime, timezone
 
+from core import tdb_text_index as _tdb_text
+from core.fts_index import sync_node as fts_sync_node
 from core.utils import _to_float
 
 logger = logging.getLogger(__name__)
@@ -405,6 +407,17 @@ def _write_state_log(store, node_id: int, payload: dict, previous_state, new_sta
         log_stored["created_at"] = now_ts
         store.update_payload(log_id, log_stored)
     store.create_edge(log_id, node_id, "LOGS")
+    # 索引同步（主写已提交、连接已释放；失败不阻断状态日志，可 rebuild 兜底）：
+    # FTS —— 此前漏接，task_state 日志节点（type=record）进不了 fts.db
+    # （check_fts_consistency 实测 missing_in_fts）；TDB —— 文本通道接线点。
+    try:
+        fts_sync_node(log_id, content)
+    except Exception as e:  # noqa: BLE001 —— FTS 同步失败仅告警不阻断状态日志
+        logger.warning("FTS 索引同步失败 node=%s: %s", log_id, e)
+    try:
+        _tdb_text.sync_node(log_id, content)
+    except Exception as e:  # noqa: BLE001 —— TDB 同步失败仅告警不阻断状态日志
+        logger.warning("TDB 文本索引同步失败 node=%s: %s", log_id, e)
     logger.info("任务状态日志已写入 log_node=%s -> task=%s（%s）", log_id, node_id, new_state)
 
 

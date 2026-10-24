@@ -12,6 +12,7 @@ import os
 import re
 from datetime import datetime
 
+from core import tdb_text_index as _tdb_text
 from core.fts_index import remove_node
 from core.trivium_store import TriviumStore, node_domain
 from core.utils import _to_float
@@ -299,6 +300,11 @@ def archive_tasks(store: TriviumStore, dry_run: bool = True, knowledge_dir: str 
         except Exception as e:  # noqa: BLE001 —— FTS 清理失败仅告警不阻塞归档主流程
             errors.append({"id": p["id"], "title": p["title"], "error": f"移除 FTS 索引失败: {e}"})
             logger.warning(f"FTS 索引清理失败 node={p['id']}: {e}")
+        # TDB 文本通道（默认关闭零成本）：删除节点同步清空正文文本
+        try:
+            _tdb_text.sync_node(p["id"], "")
+        except Exception as e:  # noqa: BLE001 —— TDB 清理失败仅告警不阻塞归档主流程
+            logger.warning(f"TDB 文本索引清理失败 node={p['id']}: {e}")
         archived.append(
             {
                 "id": p["id"],

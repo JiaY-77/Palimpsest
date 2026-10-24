@@ -9,6 +9,7 @@ from typing import Any
 import triviumdb
 
 from config import Config
+from core import tdb_text_index as _tdb_text
 from core.fts_index import remove_node, sync_node
 from core.secret_scan import SecretScanError, scan_secret_classified
 
@@ -764,11 +765,11 @@ class TriviumStore:
             remove_node(node_id)
         except Exception as e:  # noqa: BLE001 —— FTS 清理失败仅告警不抛出
             logger.warning("FTS 索引清理失败 node=%s: %s", node_id, e)
-        # TODO(feat/tdb-text-channel)：此处是 TDB BM25 文本通道的接线点之一。
-        # 本轮该通道默认关闭、只做读取与 A/B（core/tdb_text_index.py），写入链路
-        # 不强接以避免与现有写路径耦合出回归；下一轮启用后需在 delete_node /
-        # update_content（见下方 sync_node 调用点）同步调
-        # core.tdb_text_index.index_node(node_id, "") / (node_id, content)。
+        # TDB 文本通道（默认关闭零成本）：清空该节点正文，语义同 FTS remove_node
+        try:
+            _tdb_text.sync_node(node_id, "")
+        except Exception as e:  # noqa: BLE001 —— TDB 清理失败仅告警不抛出
+            logger.warning("TDB 文本索引清理失败 node=%s: %s", node_id, e)
 
     def update_payload(self, node_id: int, new_payload: dict[str, Any]) -> None:
         """更新节点的 payload 元数据（合并语义，不覆盖未涉及的字段）。
@@ -798,12 +799,16 @@ class TriviumStore:
         reembed_node。FTS 同步失败仅告警——可 fts-rebuild 兜底。
         """
         self.update_payload(node_id, {"content": content, "vector_stale": True})
-        # TODO(feat/tdb-text-channel)：TDB BM25 文本通道不强接本轮写路径——
-        # 通道启用后在此 sync_node 调用点旁同步调 core.tdb_text_index.index_node。
+        # FTS 全文索引同步（失败仅告警不阻断主更新，可 fts-rebuild 兜底）
         try:
             sync_node(node_id, content)
         except Exception as e:  # noqa: BLE001 —— FTS 同步失败仅告警不阻断主更新
             logger.warning("FTS 索引同步失败 node=%s: %s", node_id, e)
+        # TDB 文本通道（默认关闭零成本；失败 warning 不阻断，可 rebuild 兜底）
+        try:
+            _tdb_text.sync_node(node_id, content)
+        except Exception as e:  # noqa: BLE001 —— TDB 同步失败仅告警不阻断主更新
+            logger.warning("TDB 文本索引同步失败 node=%s: %s", node_id, e)
         logger.info(f"已更新节点 ID={node_id} 的内容（向量标记为 stale）")
 
     def update_vector(self, node_id: int, new_vector: list[float]) -> None:
