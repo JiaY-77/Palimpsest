@@ -32,6 +32,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from config import Config
+from core import tdb_text_index as _tdb_text
 from core.fts_index import sync_node
 from core.policy import check_search_query
 from core.reporting import generate_report
@@ -429,6 +430,8 @@ def delete_memory(node_id: int):
         _get_store().delete_node(node_id)
         # FTS 全文索引同步（失败不阻塞主删除，可手动 fts-rebuild 兜底）
         sync_node(node_id, "")
+        # TDB 文本通道（默认关闭零成本）：删除节点同步清空正文文本
+        _tdb_text.sync_node(node_id, "")
         return {"status": "ok", "message": f"节点 {node_id} 已删除"}
     except Exception as e:
         logger.info("删除节点失败 node=%s: %s", node_id, e)
@@ -443,6 +446,14 @@ def _sync_fts_after_update(node_id: int) -> None:
         sync_node(node_id, content)
     except Exception as e:  # noqa: BLE001 —— FTS 同步失败仅告警不阻塞节点更新
         logger.warning("FTS 索引同步失败 node=%s: %s", node_id, e)
+    # TDB 文本通道（默认关闭零成本；失败 warning 不阻断，可 rebuild 兜底）：
+    # 与 FTS 同一份 content——立即读仓库当前正文，update_content 已落库。
+    try:
+        node = _get_store().get_node(node_id)
+        content = ((node or {}).get("payload") or {}).get("content", "")
+        _tdb_text.sync_node(node_id, content)
+    except Exception as e:  # noqa: BLE001 —— TDB 同步失败仅告警不阻塞节点更新
+        logger.warning("TDB 文本索引同步失败 node=%s: %s", node_id, e)
 
 
 def _apply_payload_update(node_id: int, payload: dict) -> dict:

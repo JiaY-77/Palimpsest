@@ -13,6 +13,7 @@ import time
 from typing import Any
 
 from config import Config
+from core import tdb_text_index as _tdb_text
 from core.bitemporal import is_valid_at, stamp_new_fact, time_fields
 from core.conflict import resolve_conflict
 from core.db_health import check_db_health, health_hint
@@ -202,6 +203,11 @@ def _post_ingest_side_effects(
         index_node(node_id, content)
     except Exception as e:  # noqa: BLE001 —— 写入后 FTS 索引失败仅告警主链已提交
         logger.warning("FTS 索引同步失败 node=%s: %s", node_id, e)
+    # TDB 文本通道（默认关闭零成本；失败 warning 不阻断，可 rebuild 兜底）
+    try:
+        _tdb_text.sync_node(node_id, content)
+    except Exception as e:  # noqa: BLE001 —— TDB 同步失败仅告警主链已提交
+        logger.warning("TDB 文本索引同步失败 node=%s: %s", node_id, e)
 
     _link_kb_references(store, node_id, linked_kb_ids or [])
 
