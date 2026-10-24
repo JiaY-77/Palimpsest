@@ -13,9 +13,37 @@ TDB BM25 文本通道（默认关闭）的失败路径 + 兼容回归测试。
 隔离：沿用 conftest 的临时库与 fake embedder，不碰生产库。
 """
 
+import importlib.metadata
 import os
 
 import pytest
+
+# 本通道的文本语义依赖 triviumdb 0.8.11+ 的文本索引：
+#   ① `index_text(id, "")` 清除该节点正文（0.8.10 不清除，写串空文本无效）；
+#   ② `index_text` 对主库不存在的节点抛「Node not found」（0.8.10 静默写入）。
+# 版本 bump 本身是独立的升级工作（另有会话负责），本测试对 0.8.10 的
+# CI 环境如实跳过，不给「行为未验证」留假绿。
+_TRIVIUM_VERSION = ""
+try:
+    _TRIVIUM_VERSION = importlib.metadata.version("triviumdb")
+except importlib.metadata.PackageNotFoundError:  # pragma: no cover
+    _TRIVIUM_VERSION = ""
+
+
+def _trivium_at_least(minor_floor: tuple[int, ...]) -> bool:
+    parts: list[int] = []
+    for chunk in _TRIVIUM_VERSION.split(".")[:3]:
+        digits = "".join(c for c in chunk if c.isdigit())
+        parts.append(int(digits) if digits else 0)
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts[:3]) >= tuple(list(minor_floor) + [0] * (3 - len(minor_floor)))
+
+
+skip_pre_0811 = pytest.mark.skipif(
+    not _trivium_at_least((0, 8, 11)),
+    reason="文本索引清除/未知节点拒绝语义需要 triviumdb>=0.8.11（CI 暂装 0.8.10）",
+)
 
 # ================================================================
 # 公共夹具：临时库 + 写入节点的最小 store
@@ -119,6 +147,7 @@ def test_search_degraded_when_sidecar_missing(tdb_store):
     assert tdb_text_index.is_warmed() is True  # warm 过但侧车真没了 → 仍如实降级
 
 
+@skip_pre_0811
 def test_index_node_rejects_unknown_node(tdb_store):
     """主库不存在的 node_id → index_text 抛 Node not found → index_node 返回 False。"""
     from core import tdb_text_index
@@ -278,6 +307,7 @@ def test_rrf_fuse_ent_ids_backward_compatible():
 # ================================================================
 
 
+@skip_pre_0811
 def test_index_node_empty_content_clears_text(tmp_path, monkeypatch):
     """空 content → index_text(id,"") 后该节点不再命中（也不残留其他节点）。"""
     from core import tdb_text_index
