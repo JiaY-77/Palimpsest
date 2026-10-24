@@ -10,6 +10,7 @@ import logging
 import re
 import threading
 import time
+from typing import Any
 
 from config import Config
 from core.bitemporal import is_valid_at, stamp_new_fact, time_fields
@@ -1118,6 +1119,7 @@ def _rrf_fuse(
     w_fts: float = 1.0,
     ent_ids: list | None = None,
     w_ent: float = 0.0,
+    extra_channels: list | None = None,
 ) -> list:
     """纯 RRF 融合打分（不碰库，供单测与 _hybrid_rrf 复用）。
 
@@ -1131,6 +1133,12 @@ def _rrf_fuse(
     ent_ids=None（默认）时行为与两路版本逐位一致；w_ent=0 时该路不计分。
     实体路的命中标记单独给出（meta.hit 由调用方自行组装），此处保持
     返回结构不变以免破坏既有调用方。
+
+    extra_channels：第四路及以后的**泛化可选通道**，形如
+    `[(ids, weight), ...]`——例如 TDB BM25 文本通道（TDB_TEXT_ENABLED=1 时
+    由 _hybrid_rrf 传入）。与 ent_ids 同规则计分（0-based rank、单侧命中
+    也计入），不影响 fts_hit/sem_hit 命中标记；默认 None，不传时行为与
+    改动前逐位一致。
 
     返回按 RRF 分降序的 [(node_id, rrf_score, fts_hit, sem_hit), ...] 直至 top_k。
     """
@@ -1152,6 +1160,13 @@ def _rrf_fuse(
             if nid is None:
                 continue
             rrf[nid] = rrf.get(nid, 0.0) + w_ent / (k + rank)
+    for ch_ids, ch_weight in extra_channels or []:
+        if not ch_ids or not ch_weight:
+            continue
+        for rank, nid in enumerate(ch_ids):
+            if nid is None:
+                continue
+            rrf[nid] = rrf.get(nid, 0.0) + ch_weight / (k + rank)
     return [
         (nid, score, nid in fts_hit, nid in sem_hit)
         for nid, score in sorted(rrf.items(), key=lambda kv: kv[1], reverse=True)
@@ -1192,6 +1207,23 @@ def _hybrid_rrf(
     exact_query = is_exact_identifier_query(query)
     w_fts = Config.RRF_FTS_EXACT_WEIGHT if exact_query else Config.RRF_FTS_WEIGHT
 
+    # TDB BM25 文本通道（第四路，默认关闭）：TDB_TEXT_ENABLED=0 时**零成本**，
+    # 连延迟导入都不做，保证默认路径与引入前逐位一致。
+    extra_channels: list = []
+    tdb_status: str = ""
+    if getattr(Config, "TDB_TEXT_ENABLED", False):
+        from core.tdb_text_index import search as _tdb_text_search  # 可选通道，失败即降级
+
+        tdb_limit = Config.TDB_TEXT_LIMIT or fts_limit  # 0 = 沿用 FTS 的 limit
+        tdb_rows, tdb_status = _tdb_text_search(query, limit=tdb_limit)
+        if tdb_status == "degraded":
+            logger.warning(
+                "混合检索降级：TDB 文本通道不可用（query=%r），该路不计入融合", query[:60]
+            )
+        extra_channels.append(
+            ([r.get("node_id") for r in tdb_rows if r.get("node_id") is not None], Config.TDB_TEXT_WEIGHT)
+        )
+
     ranked = _rrf_fuse(
         [it.get("id") for it in sem_items if it.get("id") is not None],
         [r.get("node_id") for r in fts if r.get("node_id") is not None],
@@ -1199,6 +1231,7 @@ def _hybrid_rrf(
         Config.RRF_K,
         w_sem=Config.RRF_SEM_WEIGHT,
         w_fts=w_fts,
+        extra_channels=extra_channels or None,
     )
 
     # 语义条目按 id 建表，便于合并命中来源标记；FTS-only 节点按 payload 补全
@@ -1225,6 +1258,9 @@ def _hybrid_rrf(
         "exact_query": exact_query,
         "fts_weight": w_fts,
     }
+    if tdb_status:
+        # 仅启用 TDB 文本通道时才出现该键（默认关闭的输出逐位不变）。
+        channels["tdb_text"] = tdb_status
     return merged, channels
 
 
@@ -1339,12 +1375,17 @@ def _hybrid_search_impl(
                 tier=tier,
                 as_of=as_of,
             )
-        result = {"results": items, "scope": scope, "mode": mode, "channels": channels}
+        result: dict[str, Any] = {"results": items, "scope": scope, "mode": mode, "channels": channels}
         if channels.get("fts") == "degraded":
             # issue #122：FTS 通道真降级（向量侧仍可用）→ 保留结果 + 程序可读
             # 契约字段，不只靠 channels 字符串。
             result["degraded"] = True
             result["errors"] = ["fts channel degraded: 结果仅来自语义通道"]
+        if channels.get("tdb_text") == "degraded":
+            # TDB 文本通道真降级（可选通道，仅启用时存在）：同类契约留痕。
+            result["degraded"] = True
+            result.setdefault("errors", [])
+            result["errors"] = list(result["errors"]) + ["tdb_text channel degraded: 该路不计入融合"]
         if domain_bias:
             result["bias"] = domain_bias
         if include_neighbors:
