@@ -337,3 +337,101 @@ def test_rebuild_indexes_all_nonempty_contents(tdb_store):
     rows, status = tdb_text_index.search("中文短词召回")
     assert status == "ok"
     assert any(r["node_id"] == 1 for r in rows)
+
+
+# ================================================================
+# 7. 条件触发（TDB_TEXT_FTS_FLOOR）+ per-item tdb_text_hit 命中标记
+# ================================================================
+
+
+def _patch_sem_fts(monkeypatch, fts_rows: list, tdb_calls: list):
+    """共用替身：语义两路固定，FTS 命中由 fts_rows 给定，TDB search 走计数器替身。
+
+    search 在 _hybrid_rrf 内是调用时 `from core.tdb_text_index import search`，
+    所以这里 monkeypatch 模块属性即可被截住。
+    """
+    import mcp_tools.memory as mm
+    from core import tdb_text_index
+
+    def _spy_search(query, limit=10):
+        tdb_calls.append((query, limit))
+        return ([{"node_id": 13}, {"node_id": 99}], "ok")  # 11 未命中，13 命中，99 幽灵不入 merged
+
+    monkeypatch.setattr(tdb_text_index, "search", _spy_search)
+
+    def _fake_sem(query, scope, domain, bias, top_k, block, **kw):
+        return [
+            {"id": 11, "type": "memory", "score": 0.9, "summary": "甲", "meta": {}},
+            {"id": 13, "type": "memory", "score": 0.7, "summary": "丙", "meta": {}},
+        ]
+
+    monkeypatch.setattr(mm, "_sem_candidate_items", _fake_sem)
+    monkeypatch.setattr(mm, "search_fts_status", lambda q, limit=50: (fts_rows, "ok"))
+
+
+def test_tdb_skipped_when_fts_hits_meet_floor(monkeypatch):
+    """FTS 命中数 ≥ floor → search 不被调用，channels 标 skipped，标记全 False。"""
+    import mcp_tools.memory as mm
+    from config import Config
+
+    monkeypatch.setattr(Config, "TDB_TEXT_ENABLED", True)
+    monkeypatch.setattr(Config, "TDB_TEXT_FTS_FLOOR", 3)
+    tdb_calls: list = []
+    _patch_sem_fts(monkeypatch, [{"node_id": 11}, {"node_id": 13}, {"node_id": 2}], tdb_calls)
+
+    items, channels = mm._hybrid_rrf("固定查询甲乙丙", "memory", "", "", 5, 50, "")
+    assert tdb_calls == []  # 零成本：连接/侧车都没碰
+    assert channels["tdb_text"] == "skipped"
+    assert all(it["meta"]["tdb_text_hit"] is False for it in items)  # 跳过不是没命中，但标记如实为 False
+    assert all("tdb_text_hit" in (it["meta"] or {}) for it in items)  # 启用时条目必须带该键
+
+
+def test_tdb_queried_when_fts_hits_below_floor(monkeypatch):
+    """FTS 命中数 < floor → search 被调用；命中/未命中的节点标记分别 True/False。"""
+    import mcp_tools.memory as mm
+    from config import Config
+
+    monkeypatch.setattr(Config, "TDB_TEXT_ENABLED", True)
+    monkeypatch.setattr(Config, "TDB_TEXT_FTS_FLOOR", 3)
+    tdb_calls: list = []
+    _patch_sem_fts(monkeypatch, [{"node_id": 11}, {"node_id": 2}], tdb_calls)  # 2 条 < 3
+
+    items, channels = mm._hybrid_rrf("固定查询甲乙丙", "memory", "", "", 5, 50, "")
+    assert len(tdb_calls) == 1  # 下限未达，TDB 路照常走
+    assert channels["tdb_text"] == "ok"
+    # TDB 替身命中集合 = {13, 99}：任何 merged 条目的标记都应等于
+    # 「该节点在替身命中集合里」；99 是否进 merged 取决于库里有没有
+    # 空闲 id 99 的节点（环境状态不定），但只要进了标记必须是 True。
+    assert all(it["meta"]["tdb_text_hit"] == (it["id"] in (13, 99)) for it in items)
+    assert 11 not in {it["id"] for it in items if it["meta"]["tdb_text_hit"]}  # 替身未命中 → False
+
+
+def test_tdb_floor_zero_never_skips(monkeypatch):
+    """floor=0 → 永不跳过（等价引入本项前的旧行为）：命中数再多也调 TDB。"""
+    import mcp_tools.memory as mm
+    from config import Config
+
+    monkeypatch.setattr(Config, "TDB_TEXT_ENABLED", True)
+    monkeypatch.setattr(Config, "TDB_TEXT_FTS_FLOOR", 0)
+    tdb_calls: list = []
+    _patch_sem_fts(monkeypatch, [{"node_id": 11}, {"node_id": 13}, {"node_id": 2}], tdb_calls)
+
+    _items, channels = mm._hybrid_rrf("固定查询甲乙丙", "memory", "", "", 5, 50, "")
+    assert len(tdb_calls) == 1
+    assert channels["tdb_text"] == "ok"
+
+
+def test_tdb_hit_key_absent_when_disabled(monkeypatch):
+    """关闭态：meta 里不得出现 tdb_text_hit、channels 里不得出现 tdb_text（硬契约）。"""
+    import mcp_tools.memory as mm
+    from config import Config
+
+    monkeypatch.setattr(Config, "TDB_TEXT_ENABLED", False)
+    monkeypatch.setattr(Config, "TDB_TEXT_FTS_FLOOR", 3)
+    tdb_calls: list = []
+    _patch_sem_fts(monkeypatch, [{"node_id": 11}], tdb_calls)
+
+    items, channels = mm._hybrid_rrf("固定查询甲乙丙", "memory", "", "", 5, 50, "")
+    assert tdb_calls == []
+    assert "tdb_text" not in channels
+    assert all("tdb_text_hit" not in (it["meta"] or {}) for it in items)
