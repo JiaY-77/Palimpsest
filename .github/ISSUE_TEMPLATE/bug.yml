@@ -22,6 +22,21 @@ body:
       required: true
 
   - type: textarea
+    id: doctor
+    attributes:
+      label: "`doctor` output"
+      description: |
+        Run `python scripts/palimpsest_cli.py doctor` and paste the **whole** output here.
+        It reports every failing check with its fix command, which is usually enough for us to
+        pinpoint the problem. Secrets are not printed, but give it one more look before pasting.
+      render: shell
+      placeholder: |
+        $ python scripts/palimpsest_cli.py doctor
+        ...
+    validations:
+      required: true
+
+  - type: textarea
     id: description
     attributes:
       label: Description

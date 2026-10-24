@@ -108,7 +108,13 @@ hermes config set context.engine palimpsest-graph
 
 ### 安装（通用）
 
+> **本项目没有发布到 PyPI。** PyPI 上的 `palimpsest` 是**另一个无关的包**（2023 年上传、此后未更新），
+> `pip install palimpsest` 装到的**不是**本项目，也启动不了。请按下述步骤从源码安装。
+
 ```bash
+git clone https://github.com/JiaY-77/Palimpsest.git
+cd Palimpsest
+
 # 需要 Python 3.10+
 python -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
@@ -165,6 +171,22 @@ python scripts/build_kb_index.py
 > Embedding 项失败时：本地 Ollama 请先启动并 `ollama pull qwen3-embedding:0.6b`；云端请确认 `.env` 已配置 `EMBEDDING_API_KEY`。
 
 Windows 下 `scripts/start_rest.vbs` 可隐藏窗口启动 REST 服务（如开机自启），日志写入 `scripts/start_rest.log`。
+
+### 装不起来怎么办
+
+先跑体检——它会把每个失败项和对应的修复命令直接打出来：
+
+```bash
+python scripts/palimpsest_cli.py doctor
+```
+
+最常见的三类原因：
+
+- **Embedding 项失败**：本地 Ollama 没启动或缺模型 → `ollama pull qwen3-embedding:0.6b`；云端请确认 `.env` 里 `EMBEDDING_API_KEY` 已填。
+- **Python 版本 / 激活命令**：需要 Python 3.10+；Windows 上激活虚拟环境是 `venv\Scripts\activate`，不是 `source venv/bin/activate`。
+- **端口或库占用**：REST 默认 8090，被占用换 `--port`；一个库同时只允许一个进程访问（多开会被 `Database locked` 拒掉）。
+
+体检也解决不了 → 到 [Issues](https://github.com/JiaY-77/Palimpsest/issues/new/choose) 开一条，**把 `doctor` 的完整输出贴进去**（输出会隐去密钥；贴之前自己再扫一眼有没有真实 key）。报清楚「OS / Python 版本 / 卡在哪一步」，比一句「跑不起来」有用得多。
 
 **MCP 客户端接入（推荐：HTTP，与 REST 共进程）**
 
