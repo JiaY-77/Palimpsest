@@ -1217,16 +1217,24 @@ def _hybrid_rrf(
     # 连延迟导入都不做，保证默认路径与引入前逐位一致。
     extra_channels: list = []
     tdb_status: str = ""
+    tdb_hit_ids: list = []  # 保序（RRF 需要 rank 顺序）
+    tdb_hit_set: set = set()  # 无序（per-item 命中标记用）
     if getattr(Config, "TDB_TEXT_ENABLED", False):
-        from core.tdb_text_index import search as _tdb_text_search  # 可选通道，失败即降级
+        # 条件触发：FTS 命中数 ≥ 下限说明 FTS 已够好 → 跳过 TDB 路
+        # （不 import、不查询、不开连接）；0 = 永不跳过（等价旧行为）。
+        tdb_floor = getattr(Config, "TDB_TEXT_FTS_FLOOR", 3)
+        if tdb_floor > 0 and len(fts) >= tdb_floor:
+            tdb_status = "skipped"
+        else:
+            from core.tdb_text_index import search as _tdb_text_search  # 可选通道，失败即降级
 
-        tdb_limit = Config.TDB_TEXT_LIMIT or fts_limit  # 0 = 沿用 FTS 的 limit
-        tdb_rows, tdb_status = _tdb_text_search(query, limit=tdb_limit)
-        if tdb_status == "degraded":
-            logger.warning("混合检索降级：TDB 文本通道不可用（query=%r），该路不计入融合", query[:60])
-        extra_channels.append(
-            ([r.get("node_id") for r in tdb_rows if r.get("node_id") is not None], Config.TDB_TEXT_WEIGHT)
-        )
+            tdb_limit = Config.TDB_TEXT_LIMIT or fts_limit  # 0 = 沿用 FTS 的 limit
+            tdb_rows, tdb_status = _tdb_text_search(query, limit=tdb_limit)
+            if tdb_status == "degraded":
+                logger.warning("混合检索降级：TDB 文本通道不可用（query=%r），该路不计入融合", query[:60])
+            tdb_hit_ids = [r.get("node_id") for r in tdb_rows if r.get("node_id") is not None]
+            tdb_hit_set = set(tdb_hit_ids)
+            extra_channels.append((tdb_hit_ids, Config.TDB_TEXT_WEIGHT))
 
     ranked = _rrf_fuse(
         [it.get("id") for it in sem_items if it.get("id") is not None],
@@ -1251,6 +1259,11 @@ def _hybrid_rrf(
         meta = dict(item.get("meta", {}) or {})
         meta["fts_hit"] = fts_hit_flag
         meta["sem_hit"] = sem_hit_flag
+        if tdb_status:
+            # 仅启用 TDB 文本通道时才出现该键（默认关闭的输出逐位不变）；
+            # skipped（FTS 够好跳过）与真正未命中靠此处 False + channels 里的
+            # "tdb_text": "skipped" 区分开。
+            meta["tdb_text_hit"] = nid in tdb_hit_set
         item["meta"] = meta
         item["score"] = round(score, 4)
         merged.append(item)

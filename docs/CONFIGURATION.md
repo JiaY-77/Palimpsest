@@ -41,6 +41,7 @@
 | `TDB_TEXT_ENABLED` | `0` | **关闭（默认）**：TDB（TriviumDB）BM25 文本通道，第二路中文文本召回。`0` = 完全零成本（检索不发任何 TDB 文本调用、也不预热，线上行为与未引入该通道前逐位一致）；`1` = 混合检索（`mode=rrf`）多取一路 `TEXT BM25` 计入融合，通道状态见 `channels["tdb_text"]`（`ok`/`empty`/`degraded`，启动自检会额外预热）。背景：FTS5 trigram 对 2 字短词与 6~8 字中文长短语的召回弱于 TDB 的 CJK 2-gram（2026-10-24 生产库副本实测） | `mem_hybrid_search` 且 `mode=rrf` 且开关为 1 |
 | `TDB_TEXT_WEIGHT` | `1.0` | TDB 文本通道在 RRF 融合中的权重（同为 `mode=rrf`） | `TDB_TEXT_ENABLED=1` 时 |
 | `TDB_TEXT_LIMIT` | `0` | TDB 文本通道候选量；`0` = 沿用 FTS 的 `fts_limit`，不另配 | `TDB_TEXT_ENABLED=1` 时 |
+| `TDB_TEXT_FTS_FLOOR` | `3` | 条件触发门槛：本次 FTS 命中数 **≥** 此值时**跳过** TDB 路（FTS 已够好，省掉整路的开库 + 载侧车开销）；**<** 此值才走 TDB，只在中文短词/长短语这类 FTS 弱场景付费。`0` = 永不跳过（等价于改动前「永远走 TDB」）。跳过时 `channels["tdb_text"]` 为 `skipped`（与 `degraded` 区分） | `TDB_TEXT_ENABLED=1` 时 |
 | `RETRIEVAL_EXPAND_DEPTH` | `0` | 语义主序的图扩散深度：`0` = 纯语义排序（默认）；`1` = 图邻居参与语义主序（可一键回退） | 检索启用图扩散时 |
 | `TIER_FACTS` | `memory,correction,decision,plan,task,review,solution,inspiration,user_intent,character_state` | 归入事实层的记忆 type（逗号分隔）；未登记的 type 一律归事实层 | 检索与注入按 tier 过滤时 |
 | `TIER_LOGS` | `record,event,git_commit` | 归入日志层的记忆 type（逗号分隔），默认不进检索与注入池 | 检索与注入按 tier 过滤时 |

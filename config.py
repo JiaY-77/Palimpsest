@@ -191,6 +191,10 @@ class Config:
     TDB_TEXT_WEIGHT = float(os.getenv("TDB_TEXT_WEIGHT", "1.0"))
     # 该路候选量：0 = 沿用 FTS 的 limit（不单独另配）。
     TDB_TEXT_LIMIT = int(os.getenv("TDB_TEXT_LIMIT", "0"))
+    # 条件触发下限：单次查询 FTS 命中数 ≥ 此值说明 FTS 已经够好 → 跳过 TDB 路
+    # （不 import、不开连接，多数查询零成本）；< 此值才走 TDB 补召回。
+    # 0 = 永不跳过（等价于引入本项前的「启用即永远走 TDB」）。
+    TDB_TEXT_FTS_FLOOR = int(os.getenv("TDB_TEXT_FTS_FLOOR", "3"))
 
     # ---- 记忆分层（tier）：检索侧视图，不改存储、不迁数据 ----
     # facts = 事实层（默认检索与注入池）；logs = 日志层（从默认池摘出）；
