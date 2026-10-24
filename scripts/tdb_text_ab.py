@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 """
 TDB BM25 文本通道 A/B 对比脚本（feat/tdb-text-channel 交付物）。
 
@@ -28,10 +27,10 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 DEFAULT_QUERIES = [
-    "兜底",            # 2 字短词：FTS 大弱点场景
-    "降级",            # 2 字短词
-    "接续点",          # 3 字
-    "混合检索降级",     # 6 字长短语：FTS 整串 MATCH 0 命中场景
+    "兜底",  # 2 字短词：FTS 大弱点场景
+    "降级",  # 2 字短词
+    "接续点",  # 3 字
+    "混合检索降级",  # 6 字长短语：FTS 整串 MATCH 0 命中场景
     "记忆写入冲突检测",  # 8 字长短语
 ]
 
@@ -91,9 +90,6 @@ def main() -> int:
     os.environ.setdefault("DB_PATH", args.db)
     Config.DB_PATH = args.db  # 本进程内生效（不写回磁盘）
     _ensure_fts_for_copy(args.db)
-    from core.trivium_store import TriviumStore
-
-    store = TriviumStore(read_only=True)
 
     # 文本侧车不存在：--rebuild 才在副本上重建；否则显式告知后退出
     sidecar = args.db + ".text"
@@ -108,8 +104,10 @@ def main() -> int:
             count = tdb_text_index.rebuild(_TS(read_only=False))
             print(f"[rebuild] 完成 entries={count} 耗时={((_t.perf_counter() - t0) * 1000):.0f}ms")
         else:
-            print(f"[提示] .text 侧车不存在（{sidecar}）。\n"
-                  "       副本库加 --rebuild 让本脚本在副本上重建（不碰生产库）。\n")
+            print(
+                f"[提示] .text 侧车不存在（{sidecar}）。\n"
+                "       副本库加 --rebuild 让本脚本在副本上重建（不碰生产库）。\n"
+            )
             return 2
 
     if not tdb_text_index.warmup():

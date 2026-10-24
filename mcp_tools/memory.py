@@ -1217,9 +1217,7 @@ def _hybrid_rrf(
         tdb_limit = Config.TDB_TEXT_LIMIT or fts_limit  # 0 = 沿用 FTS 的 limit
         tdb_rows, tdb_status = _tdb_text_search(query, limit=tdb_limit)
         if tdb_status == "degraded":
-            logger.warning(
-                "混合检索降级：TDB 文本通道不可用（query=%r），该路不计入融合", query[:60]
-            )
+            logger.warning("混合检索降级：TDB 文本通道不可用（query=%r），该路不计入融合", query[:60])
         extra_channels.append(
             ([r.get("node_id") for r in tdb_rows if r.get("node_id") is not None], Config.TDB_TEXT_WEIGHT)
         )
@@ -1385,7 +1383,7 @@ def _hybrid_search_impl(
             # TDB 文本通道真降级（可选通道，仅启用时存在）：同类契约留痕。
             result["degraded"] = True
             result.setdefault("errors", [])
-            result["errors"] = list(result["errors"]) + ["tdb_text channel degraded: 该路不计入融合"]
+            result["errors"] = [*result["errors"], "tdb_text channel degraded: 该路不计入融合"]
         if domain_bias:
             result["bias"] = domain_bias
         if include_neighbors:

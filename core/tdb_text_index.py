@@ -173,9 +173,7 @@ def search(query: str, limit: int = 10) -> tuple[list[dict], str]:
     top_k = max(1, int(limit or 0))  # TOP 0 会抛「超出预算」，先归一
     try:
         with _acquire("read_only", load_text_index=True) as db:
-            rows = db.tql(
-                f'TEXT BM25 "{cleaned}" TOP {top_k} AS hits WITH hits RETURN hits'
-            )
+            rows = db.tql(f'TEXT BM25 "{cleaned}" TOP {top_k} AS hits WITH hits RETURN hits')
         out: list[dict] = []
         for row in rows:
             hit = (row.row or {}).get("hits") or {}
@@ -210,7 +208,7 @@ def rebuild(store) -> int:
         for nid, text in node_texts:
             db.index_text(nid, text)
             entries += 1
-        for nid in (set(db.all_node_ids()) - text_nids):
+        for nid in set(db.all_node_ids()) - text_nids:
             db.index_text(int(nid), "")  # 清掉无正文章节点的残留文本
         db.flush()
     global _warmed

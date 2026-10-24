@@ -30,10 +30,13 @@ def _mk_bare_db(tmp_path, monkeypatch, nodes: dict[int, str]):
     import triviumdb
 
     dim = 8
-    vec = lambda nid: [1.0 if i == nid % dim else 0.0 for i in range(dim)]
+
+    def _vec(nid: int) -> list[float]:
+        return [1.0 if i == nid % dim else 0.0 for i in range(dim)]
+
     db = triviumdb.TriviumDB(str(tmp_path / "mh.db"), dim=dim)
     for nid, text in nodes.items():
-        db.upsert_with_id(id=int(nid), vector=vec(nid), payload={"content": text})
+        db.upsert_with_id(id=int(nid), vector=_vec(nid), payload={"content": text})
     db.flush()
     db.close()
 
@@ -136,7 +139,7 @@ def test_warmup_returns_false_when_db_corrupt(tmp_path, monkeypatch):
     (tmp_path / "mh.db").write_bytes(b"not-a-trivium-db")
     assert tdb_text_index.warmup() is False
     assert tdb_text_index.is_warmed() is False
-    rows, status = tdb_text_index.search("兜底")
+    _, status = tdb_text_index.search("兜底")
     assert status == "degraded"
 
 
@@ -159,7 +162,7 @@ def test_search_degraded_when_tql_raises(tmp_path, monkeypatch):
         raise RuntimeError("mocked tdb failure")
 
     monkeypatch.setattr(tdb_text_index, "_acquire", _boom)
-    rows, status = tdb_text_index.search("中文短词召回")
+    _, status = tdb_text_index.search("中文短词召回")
     assert status == "degraded"
 
 
@@ -179,9 +182,7 @@ def test_hybrid_rrf_falls_back_to_sem_fts_when_tdb_degrades(tmp_path, monkeypatc
         ]
 
     monkeypatch.setattr(mm, "_sem_candidate_items", _fake_sem)
-    monkeypatch.setattr(
-        mm, "search_fts_status", lambda q, limit=50: ([{"node_id": 2}], "ok")
-    )
+    monkeypatch.setattr(mm, "search_fts_status", lambda q, limit=50: ([{"node_id": 2}], "ok"))
     items, channels = mm._hybrid_rrf("查询", "memory", "", "", 5, 50, "")
     assert channels["tdb_text"] == "degraded"
     ids = [it["id"] for it in items]
@@ -254,9 +255,9 @@ def test_rrf_fuse_ent_ids_backward_compatible():
     without_ent = _rrf_fuse(**fixture)
     # 两路 fixture 下与「无实体路」完全一致——同 fixture 比对
     assert with_ent[:-1] == with_ent[:-1]  # trivial guard
-    assert [
-        (nid, round(score, 12), fts_hit, sem_hit) for nid, score, fts_hit, sem_hit in without_ent
-    ] == [(nid, round(score, 12), f, s) for nid, score, f, s in base]
+    assert [(nid, round(score, 12), fts_hit, sem_hit) for nid, score, fts_hit, sem_hit in without_ent] == [
+        (nid, round(score, 12), f, s) for nid, score, f, s in base
+    ]
     # 实体路加分但不改 fts_hit/sem_hit 标记
     # fixture 分值（denominator = k + rank，rank 0 起）：2 = 1/61 + 0.1/60 ≈ 0.01806；
     #   1 = 1/60 ≈ 0.016667；ent(4) = 1/60 ≈ 0.016667（同分，按 dict 插入序 1 在前）；
@@ -266,8 +267,7 @@ def test_rrf_fuse_ent_ids_backward_compatible():
     assert all(fts_hit == (nid in (2, 3)) and sem_hit == (nid in (1, 2)) for nid, _, fts_hit, sem_hit in with4)
     # 泛化 extra_channels 等价于 ent 通道（同 ids、同权重、同输出）
     assert [
-        (nid, round(score, 12), f, s)
-        for nid, score, f, s in _rrf_fuse(**fixture, extra_channels=[([4], 1.0)])
+        (nid, round(score, 12), f, s) for nid, score, f, s in _rrf_fuse(**fixture, extra_channels=[([4], 1.0)])
     ] == [(nid, round(score, 12), f, s) for nid, score, f, s in with4]
     # extra_channels 零权重 / 空列表 → 不计分，与改动前一致
     assert _rrf_fuse(**fixture, extra_channels=[([4], 0.0)]) == base
