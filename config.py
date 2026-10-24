@@ -181,6 +181,17 @@ class Config:
     # 仅对判定为标识符查询的请求用本权重，普通自然语言 query 仍走 RRF_FTS_WEIGHT。
     RRF_FTS_EXACT_WEIGHT = float(os.getenv("RRF_FTS_EXACT_WEIGHT", "1.5"))
 
+    # ---- TDB（TriviumDB）BM25 文本通道：第二路中文文本召回，默认关闭 ----
+    # 背景：FTS5 trigram 对 2 字短词与 6~8 字长短语召回明显弱于 TDB 的
+    # CJK 2-gram（2026-10-24 生产库副本实测）。三件套默认关闭，线上行为与
+    # 未引入本通道前逐位一致；开启后与 FTS5 并存供 A/B（scripts/tdb_text_ab.py）。
+    # 总开关：1=启用（检索时多取一路并计入 RRF）；0=完全零成本（连 warmup 都不做）。
+    TDB_TEXT_ENABLED = os.getenv("TDB_TEXT_ENABLED", "0") == "1"
+    # 该路在 RRF 融合中的权重（对比 FTS 路默认 0.1 / 精确标识符路 1.5）。
+    TDB_TEXT_WEIGHT = float(os.getenv("TDB_TEXT_WEIGHT", "1.0"))
+    # 该路候选量：0 = 沿用 FTS 的 limit（不单独另配）。
+    TDB_TEXT_LIMIT = int(os.getenv("TDB_TEXT_LIMIT", "0"))
+
     # ---- 记忆分层（tier）：检索侧视图，不改存储、不迁数据 ----
     # facts = 事实层（默认检索与注入池）；logs = 日志层（从默认池摘出）；
     # ""（空串）= 不过滤，回到改动前的全量行为（显式历史通道）。

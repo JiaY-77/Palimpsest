@@ -157,6 +157,26 @@ def _check_embedding() -> str:
     return f"Embedding 服务可用 (provider=ollama, dim={len(emb)})"
 
 
+def _check_tdb_text() -> str:
+    """检查⑥（可选，仅 TDB_TEXT_ENABLED=1 时注册）：TDB BM25 文本通道预热。
+
+    预热失败不阻塞启动（_probe 吃掉异常只标红），可之后手动调
+    `core.tdb_text_index.warmup()` 补预热——通道降级会被混合检索如实
+    留痕（channels["tdb_text"]=="degraded"），不会静默吃查询。
+    """
+    from config import Config  # 延迟导入，避免重 import 副作用
+    from core import tdb_text_index
+
+    if not getattr(Config, "TDB_TEXT_ENABLED", False):
+        return "未启用（TDB_TEXT_ENABLED=0）"
+    if not tdb_text_index.warmup():
+        raise RuntimeError("TDB 文本索引预热失败（build_text_index/flush 异常）")
+    rows, status = tdb_text_index.search("启动自检")  # 容错查询，降级即判定失败
+    if status == "degraded":
+        raise RuntimeError("TDB 文本索引预热后查询仍降级（侧车缺失/加载失败）")
+    return f"TDB 文本通道已预热 (rows={len(rows)}, status={status})"
+
+
 def run_startup_check() -> dict:
     """执行全部自检，返回结构化结果（永不抛异常）。"""
     checks = [
@@ -166,4 +186,9 @@ def run_startup_check() -> dict:
         _probe("依赖可导入", _check_dependencies),
         _probe("Embedding 服务可用", _check_embedding),
     ]
+    from config import Config  # 延迟导入
+
+    # 可选通道自检：仅启用 TDB 文本通道时注册，默认关闭时输出与改动前一致
+    if getattr(Config, "TDB_TEXT_ENABLED", False):
+        checks.append(_probe("TDB 文本通道预热", _check_tdb_text))
     return {"ok": all(c["ok"] for c in checks), "checks": checks}
