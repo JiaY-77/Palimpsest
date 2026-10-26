@@ -2,16 +2,16 @@
 
 # Palimpsest
 
-**本地优先的长期记忆系统 · AI 助手的跨会话记忆底座**
+**All You Need Is Just Memory.**
 
-**Local-first, battle-tested, memory that never disappears.**
+你需要的只是一份自己的记忆。会话关了，记忆还在。
 
-> _Palimpsest_：拉丁语，原指「重写的羊皮纸」——旧字迹被覆写抹去，却又在岁月里重新透出。我们把这个意象搬进记忆里：**新的事实覆盖旧的事实，但旧迹永不真正丢失**——每次改写都通过一条有迹可循的 **版本链**（`REVISED_BY`）连接，新旧记忆可查可溯。
+**Local-first · 向量 / 全文 / 图谱 / 时间，四种索引一个内核 · MCP + REST + CLI 共用同一套工具**
 
 [![Version](https://img.shields.io/badge/Version-v2.16.1-4c6ef5.svg)](/)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Backends](https://img.shields.io/badge/Backends-DeepSeek%E2%80%A2Ollama-6f42c1.svg)](/)
+[![Backends](https://img.shields.io/badge/Backends-DeepSeek%E2%80%A2Ollama%E2%80%A2Built--in-6f42c1.svg)](/)
 [![CI](https://github.com/JiaY-77/Palimpsest/actions/workflows/ci.yml/badge.svg)](https://github.com/JiaY-77/Palimpsest/actions/workflows/ci.yml)
 
 **中文** | [English](./README_EN.md)
@@ -20,7 +20,242 @@
 
 ---
 
-## 一句话介绍
+> _Palimpsest_：拉丁语，原指「重写的羊皮纸」——旧字迹被覆写抹去，却又在岁月里重新透出。这里把同一个意象用在记忆上：**新事实覆盖旧事实，但旧迹永不真正丢失**，每次改写都沿一条可查的 **版本链**（`REVISED_BY`）连接。
+
+---
+
+## What it is
+
+一个**本地记忆库**：把 AI 会话里的收获写成节点，存进本机一个数据库，之后任何会话都能**按意思**（不是按关键词）找回来。
+
+- **不需要 API key 就能跑。** 存储、检索、图谱、版本链全部本地完成；LLM 只在生成报告时用到，可以完全不配。
+- **零外部依赖。** 内置向量引擎（`llama-cpp-python` + 自带 GGUF 模型），装完即可离线运行；Ollama 只是可选的加速路径，不是必需。
+- **一个进程是唯一写者。** REST `:8090` 是唯一入口，MCP / CLI / 各脚本都经它，所以不存在多进程写坏库。
+- **数据就是一个目录。** `data/` 下的 `.db` + `.vec` / `.gidx` / `.pidx` 侧车 + `fts.db`，整组备份即可搬家。
+
+---
+
+## Install
+
+**全程 5–10 分钟，不需要任何 API key。** 向量模型约 610 MB，仅首次下载。
+
+### 0. 前置检查
+
+```bash
+python --version    # 需要 3.10+
+```
+
+未通过先装 Python 3.10+。Windows 上激活虚拟环境用 `venv\Scripts\activate`。
+
+### 1. 拉代码、装依赖
+
+```bash
+git clone https://github.com/JiaY-77/Palimpsest.git
+cd Palimpsest
+python -m venv venv
+source venv/bin/activate          # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+> ⚠️ 本项目**没有发布到 PyPI**。`pip install palimpsest` 装到的是 2023 年上传的另一个无关包，启动不了。
+
+### 2. 向量引擎（默认已定，不用选）
+
+不设置 `EMBEDDING_PROVIDER` 时自动探测：有云端 `EMBEDDING_API_KEY` → `openai`，否则 → **内置 `local`（推荐，零外部依赖）**。
+
+```bash
+cp .env.example .env
+
+# 内置引擎需要 llama-cpp-python。它在 PyPI 没有预编译 wheel，必须走官方 CPU wheel 索引，
+# 否则会尝试源码编译（要求 CMake + MSVC，多数机器失败）。
+pip install "llama-cpp-python>=0.3.36,<0.4" \
+  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+```
+
+首次启动自动下载 `Qwen3-Embedding-0.6B` Q8_0（约 610 MB，默认 ModelScope、国内可直连，失败自动回退 HuggingFace），带 sha256 校验与断点续传。**只需一次，之后完全离线。**
+
+**本机已有 Ollama？** 可复用它省掉上面的步骤（可选，不是必需）：
+
+```bash
+ollama pull qwen3-embedding:0.6b
+echo "EMBEDDING_PROVIDER=ollama" >> .env
+```
+
+### 3. 起服务
+
+```bash
+python scripts/palimpsest_cli.py doctor      # 部署体检：每个失败项都会直接打印修复命令
+python -m uvicorn main:app --host 127.0.0.1 --port 8090
+```
+
+> 服务**禁止多 worker / 多实例**：库文件由 triviumdb 以独占写模式打开，第二个写连接会失败并报 `Database locked`，并发写入失败还可能污染文件组且不自愈。冲突是响亮的（CLI 抛 `DatabaseBusyError`、REST 返 `503`），不会静默降级。
+
+Windows 可用 `scripts/start_rest.vbs` 隐藏窗口启动（日志写 `scripts/start_rest.log`）。
+
+### 4. 验证（三条全过才算装好）
+
+```bash
+# ① 服务活着
+curl -s http://127.0.0.1:8090/
+# 返回 {"service":"Palimpsest","version":"v2.16.1","endpoints":[...]}
+
+# ② 体检全绿
+python scripts/palimpsest_cli.py doctor
+
+# ③ 能写能读 —— 验的是「语义召回通不通」
+python scripts/palimpsest_cli.py ingest "install smoke test"
+python scripts/palimpsest_cli.py search "装好了吗"
+# 返回 {"results":[{"id":1,"type":"memory","score":0.4815,"summary":"install smoke test",...}]}
+```
+
+③ 是真正的验收：**写进去是英文、问的是中文、一个字都不重合却命中了**。如果这步只能靠关键词匹配才成功，说明向量链路没通。
+
+### 5. 接到你的 agent
+
+MCP 客户端（推荐，与 REST 共进程）：
+
+```json
+{ "mcpServers": { "palimpsest": { "url": "http://127.0.0.1:8090/mcp/" } } }
+```
+
+Hermes：
+
+```bash
+mkdir -p ~/.hermes/plugins/palimpsest && cp hermes-plugin/* ~/.hermes/plugins/palimpsest/
+hermes plugins enable palimpsest
+hermes config set memory.provider palimpsest
+hermes config set context.engine palimpsest-graph
+```
+
+其他 HTTP 客户端直接打 REST `http://127.0.0.1:8090`（`/mcp` 与它同进程）。
+
+> 接入面是标准协议：MCP（stdio / streamable-http）、REST、CLI 指向同一个进程与同一套底层工具，因此**多个客户端可以同时接入同一座记忆库**。多写入方之间的一致性规范仍在设计中，当前版本建议以单一主写入方为准。
+
+---
+
+## What it solves
+
+| 症状 | 它怎么解 | 自己验一下 |
+|---|---|---|
+| 换个会话它就忘了我们聊过什么 | 高信号要点写入本地库；新会话按**语义**召回，不靠关键词命中 | `mem_search "上次讨论的架构"` |
+| 记忆越堆越乱，同一件事好几个版本 | 取代由**写入方显式声明**（`replaces`）；旧版标 `outdated` 并留 `REVISED_BY` 链，永不静默覆盖 | `mem_version_history <id>` |
+| 有一堆 Markdown，AI 读不过来 | 按 `##`/`###` **标题**切片入库（标题＝人写下的语义边界），`[[双链]]` 转图谱边 | `build_kb_index.py` → `kb "关键词"` |
+| 它记不住「当时为什么这么定」 | 节点带类型 / 重要度 / 时间维度；推理过程另存为 `thought` 节点 | `mem_fact_history <id>` |
+| 记忆存在别人服务器上 | 全部在本机 `data/` 目录；冷备份整组文件即可搬家 | `python scripts/backup_db.py --keep 7` |
+| 多轮之后上下文爆掉 | 检索默认只回 **150 字摘要 + 元数据**，全文按需二次拉取 | 看 `mem_retrieve` 返回体积 |
+
+**一条设计底线**：任何节点默认**不会因为相似度高就被自动取代**。相似只作相关提示（`related_ids`），要不要取代由有完整上下文的那一方说了算——因为「我喜欢吃苹果」和「我喜欢吃苹果派」相似度很高，但根本不是同一件事。
+
+**日常怎么用**（该记什么、`importance` 怎么给、什么时候该取代）见 **[`docs/USAGE.md`](docs/USAGE.md)**。
+
+---
+
+## Why not the others
+
+| | md 文件夹 | 纯向量库 | 云托管记忆 | **Palimpsest** |
+|---|---|---|---|---|
+| 存什么 | 文件 | 向量 | 向量 / 文本 | 节点 + 加权边 + 向量 + 时间 |
+| 排序 | 无 | 有 | 有 | 有（重要性 / 时间衰减 / 命中计数） |
+| 冲突治理 | 无 | 无 | 部分 | **显式取代 + `REVISED_BY` 版本链** |
+| 语义召回 | 无（grep） | 有 | 有 | 有（向量 + FTS5 + RRF 融合） |
+| 关系 | 无 | 无 | 部分 | **加权图 + BFS 扩散 + Leiden 社区** |
+| 版本可溯 | 无 | 无 | 少见 | **bi-temporal（`valid_at` / `invalid_at`）** |
+| 数据归属 | 你的 | 你的 | 平台的 | **你的** |
+| 安装成本 | 零 | 中 | 零（要账号） | **中（Python + 向量模型）** |
+
+**三件不回避的事：**
+
+1. **安装比 md 文件夹麻烦。** 这一点 md 方案赢，承认。装完之后才是它崩的地方——文件到几百上千个时，排序、冲突治理、语义召回、版本链四个问题会一起出现。
+2. **单机单进程。** 一个库同时只允许一个写进程，不是为多端共用设计的。
+3. **多写入方的一致性规范还没做。** 当前建议以单一主写入方为准。
+
+### Markdown 在这里是什么位置
+
+不是要兼容的外部格式，是**原生材料**。
+
+Palimpsest 的第一份知识资产就是一百多篇 Markdown 笔记（Obsidian 库），所以知识库切片默认按**标题**切（`core/index_rules.py` 三种策略 `file` / `heading` / `chars`，默认 `heading`），而不是按字数硬切——标题本来就是人亲手写下的语义边界。
+
+**Markdown 的每一层结构都会被用上**：`##`/`###` 当切片边界、`[[双链]]` 转图谱边、frontmatter 当元数据、`⛔ 已退役` 当生命周期（不索引 + 清旧块）、文件 `mtime` 用来增量重建（节点 id 不变、图谱边不丢）。
+
+> 文件式记忆只用了 Markdown 的**文本**；Palimpsest 用的是它的**结构**。
+
+---
+
+## When it breaks
+
+先跑体检——它会把每个失败项对应的修复命令直接打出来：
+
+```bash
+python scripts/palimpsest_cli.py doctor
+```
+
+| 症状 | 原因 | 修法 |
+|---|---|---|
+| `Embedding` 项失败 | 内置模型缺失 / 损坏；或 Ollama 未启动；或云端 key 未配 | 删掉模型文件重下；`ollama pull qwen3-embedding:0.6b`；或填 `EMBEDDING_API_KEY` |
+| `Database locked` / REST `503` | 同一库被第二个进程打开 | 只留一个写进程，先停掉旧的 REST / CLI |
+| 向量维度不一致 | 换过 embedding 模型或 provider | `reindex --force` 全量重算并写入新指纹 |
+| `pip install llama-cpp-python` 编译失败 | 走了源码编译路径 | 用官方 CPU wheel 索引（见 Install 步骤 2） |
+| 端口被占用 | 8090 已被别的进程监听 | `uvicorn --port <其他>`，或先查出占用进程 |
+
+**REST 是唯一写者。** CLI / dashboard / 各脚本都经 REST；stdio `mcp_server.py` 只在不跑 REST 的纯 MCP 场景使用（逃生梯），因为它会以独占写模式直接打开库文件。
+
+---
+
+## Report an issue
+
+装不起来或行为异常，开一条 issue：**[新建 issue](https://github.com/JiaY-77/Palimpsest/issues/new/choose)**
+
+带上这三样，处理速度快十倍：
+
+1. **`doctor` 的完整输出**（会隐去密钥；贴之前自己再扫一眼有没有真实 key）
+2. **OS / Python 版本 / 卡在第几步**（对应 Install 的步骤编号）
+3. **能复现的命令**（一条就够，贴完整调用，而不是「跑不起来」）
+
+- Bug → [`bug.yml`](.github/ISSUE_TEMPLATE/bug.yml)　功能请求 → [`feature.yml`](.github/ISSUE_TEMPLATE/feature.yml)
+- 安全漏洞**不要**开公开 issue，见 [`SECURITY.md`](SECURITY.md)
+- 想改代码：先看 [`CONTRIBUTING.md`](CONTRIBUTING.md)（开发环境 / 加工具 / 测试要求 / commit 规范 / PR 流程）
+- 合并门禁：`pytest` + `ruff check` + `ruff format --check` + `mypy` + `scripts/readme_check.py --strict`，五条全绿才进
+
+---
+
+## Deep dive
+
+以下是想深入了解时再看的内容：机制清单、设计取舍、完整安装选项、配置与命令参考。
+
+---
+
+## 它不是又一个 Markdown 记忆文件夹
+
+先说清关系：**Markdown 不是 Palimpsest 需要兼容的格式，是它的原生材料。**
+
+它的第一份知识资产就是一百多篇 Markdown 笔记，所以切片默认按标题切——标题是人写的语义边界，比按字数硬切聪明得多。`core/index_rules.py` 里三种策略并存：`file`（整篇不切）/ `heading`（按标题，**默认**）/ `chars`（按字数）。
+
+### 差别不在「存不存 md」，在用不用得上 md 的结构
+
+大多数文件式记忆只用了 Markdown 的**文本**——grep、全文检索，或者把整个目录喂给模型。Palimpsest 用的是它的**结构**：
+
+| Markdown 的结构 | Palimpsest 怎么用 |
+|---|---|
+| `##` / `###` 标题 | 切片边界——人自己标出来的语义层次 |
+| `[[双链]]` | 转成图谱边（`WIKI_LINK`） |
+| `frontmatter` | 元数据，切片前单独处理 |
+| `⛔ 已退役` 横幅 | 生命周期：不索引 + 清理旧块，退役内容不会被检索命中 |
+| 文件 `mtime` | 增量重建：只重建变过的文件，节点 id 不变、图谱边不丢 |
+
+### 只读文本的代价：四个随规模放大的硬伤
+
+| 硬伤 | 表现 |
+|---|---|
+| **没有排序** | 文件攒到几百上千个，先读哪个靠文件名和运气 |
+| **没有冲突治理** | 同一件事的两个相反版本同时躺在两个文件里，模型读到哪个就信哪个 |
+| **没有语义召回** | 措辞不同就搜不到——「服务端口」搜不到「listen 8095」 |
+| **没有版本链** | 改过之后不知道原来是什么、为什么改 |
+
+这四个在小规模时一个都看不出来，规模上去才一起爆发。Palimpsest 在 Markdown 之上补的正是这四层：混合检索（语义 + 全文 + RRF 融合）、图谱扩散、显式取代与 `REVISED_BY` 版本链、bi-temporal 时间维度。
+
+---
+
+## 机制清单
 
 Palimpsest 是一个 **本地优先的嵌入式长期记忆系统**，将 **语义向量检索（Vector Search）、加权知识图谱（Knowledge Graph）与全文检索（Full-Text Retrieval）** 三合一，把 AI 助手的跨会话记忆统一存放、管理、演化在一座本地数据库里。目标是成为 **AI 助手的「记忆底座」**——让每一次对话的收获都不再随会话关闭而烟消云散，而是**可检索、可关联、可演进**：
 
@@ -52,16 +287,6 @@ Palimpsest 是一个 **本地优先的嵌入式长期记忆系统**，将 **语�
 
 ---
 
-## 为什么需要它 · 使用场景
-
-绝大多数 AI 应用同时面临三类数据能力割裂：跨会话记忆每次从零开始、知识库只能关键词匹配、记忆无序堆积越用越乱。Palimpsest 用 **一个本地内核** 同时解决「检索、关联、演进」三件事，避免在向量库、文档库、图谱库之间搬运与同步。
-
-「记忆不丢」的一个例子：你告诉助手「服务监听 8090 端口」，后来设计变更又说「端口改为 8095」。这次改写由写入方显式声明取代（`replaces`）——旧记忆不会被粗暴覆盖，它被标记 `outdated`，通过 `REVISED_BY` 指向新版本，版本链查询随时能展开这条链，看清这个事实**如何一步步演变成今天的样子**。这就是 Palimpsest：覆而不失，改写可溯。
-
-它适合四类场景：**长期陪伴 / 个人助理**（Hermes 等）把每轮对话自动召回、强信号自动沉淀，压缩前图谱再提炼一次；**知识库语义化**（Obsidian）把多年 Vault 切片向量化，搜索从关键词碰运气变成语义相关 + 图谱邻居；**创作设定库**（小说 / 世界观）整文件入库并批量建边，配合社区发现看清设定关系；**记忆治理**用敏感扫描、冲突检测、容量合并、时间衰减与 `promote`，让记忆库越用越清晰。
-
----
-
 ## 记忆优势：为什么不是「又一个向量库」
 
 市面上的记忆方案（LangGraph Store、AutoGen Memory 等）大多解决「**存得下、找得到**」。Palimpsest 在此基础上多解决一层：**记忆会变，而且必须说得清它怎么变**。
@@ -78,6 +303,16 @@ Palimpsest 是一个 **本地优先的嵌入式长期记忆系统**，将 **语�
 这些机制回答的是同一个问题：**当记忆从「一条记录」变成「一段演化史」，你怎么保证它说得清、回得去、不误伤。** 完整设计见 [`docs/BITEMPORAL.md`](docs/BITEMPORAL.md) 与 [`SECURITY.md`](SECURITY.md)。
 
 > **装好之后怎么用 → [`docs/USAGE.md`](docs/USAGE.md)**（什么时候用哪个工具、参数怎么定、输出怎么读）
+
+---
+
+## 为什么需要它 · 使用场景
+
+绝大多数 AI 应用同时面临三类数据能力割裂：跨会话记忆每次从零开始、知识库只能关键词匹配、记忆无序堆积越用越乱。Palimpsest 用 **一个本地内核** 同时解决「检索、关联、演进」三件事，避免在向量库、文档库、图谱库之间搬运与同步。
+
+「记忆不丢」的一个例子：你告诉助手「服务监听 8090 端口」，后来设计变更又说「端口改为 8095」。这次改写由写入方显式声明取代（`replaces`）——旧记忆不会被粗暴覆盖，它被标记 `outdated`，通过 `REVISED_BY` 指向新版本，版本链查询随时能展开这条链，看清这个事实**如何一步步演变成今天的样子**。这就是 Palimpsest：覆而不失，改写可溯。
+
+它适合四类场景：**长期陪伴 / 个人助理**（Hermes 等）把每轮对话自动召回、强信号自动沉淀，压缩前图谱再提炼一次；**知识库语义化**（Obsidian）把多年 Vault 切片向量化，搜索从关键词碰运气变成语义相关 + 图谱邻居；**创作设定库**（小说 / 世界观）整文件入库并批量建边，配合社区发现看清设定关系；**记忆治理**用敏感扫描、冲突检测、容量合并、时间衰减与 `promote`，让记忆库越用越清晰。
 
 ---
 
@@ -106,7 +341,7 @@ hermes config set context.engine palimpsest-graph
 
 ---
 
-## 快速上手
+## 完整安装选项（含三条向量引擎路径）
 
 ### 安装（通用）
 
@@ -257,7 +492,7 @@ python scripts/build_kb_index.py --rules rules.json
 
 ---
 
-## 使用
+## 使用（命令参考）
 
 > 本节是**命令参考表**。日常用法（什么时候该用哪个工具、参数怎么定、输出怎么读）见 **[`docs/USAGE.md`](docs/USAGE.md)**。
 
