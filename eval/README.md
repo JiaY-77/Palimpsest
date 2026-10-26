@@ -130,6 +130,21 @@ venv/Scripts/python.exe eval/probe_exact_misjudge.py
 
 > ⚠️ 主判据用 `hit@k`（前 k 条能否命中至少一条 gold），不要只看 `recall@k`：标识符类的 gold 是「库里所有提到该标识符的可见节点」，规模差异很大（2 条 ~ 60 条）。gold 36 条时 top-5 最多覆盖 5/36≈0.14，这个上限由 gold 规模决定，不是检索质量。
 
+## 一次性探针（审计 / 证伪用）
+
+以下脚本用于**先证伪再动手**：在决定是否投入某个检索改造前，先用它们拿数据。都是只读，默认连生产库，要隔离请用 `DB_PATH` 指向副本。
+
+| 脚本 | 回答什么问题 |
+|---|---|
+| `scripts/entity_gate0.py` | 图里到底有没有「实体锚定 + 多跳扩散」能吃到的增量？（输出 `trigger_rate` / `reach@2` / `novel_reach@2`，低于阈值就该先做「写边」而不是做实体层） |
+| `scripts/replay_conflict_threshold.py` | 冲突判定阈值从 0.75 调到 0.85，会让多少对「从标 outdated 变成仅 related」？逐条列出供人工判读 |
+| `eval/scan_identifiers.py` | 库里真实存在多少 commit hash / PR 号？为精确标识符题集挑样本 |
+| `eval/scan_contexts.py` | 候选标识符在正文里的真实语义是什么？用来区分真 hash 与章节编号、日期、路径数字 |
+| `eval/scan_date_tokens.py` | 把 8 位日期误判成 hash，实际会让检索变差多少？（A/B 对比，若明显变差说明判定规则该收紧） |
+| `eval/sample_nodes_for_queries.py` | 跨类型抽样节点（排除短内容、已含标识符、outdated），输出供人工写自然语言 query |
+
+> 这些脚本产出的报告（如 `entity_gate0_report.md`）入库作结论留档；脚本本身不含任何私有内容。
+
 ## 库副本保护机制
 
 为避免评测过程对真实数据库产生写入（如 `hit_count` 递增），所有脚本在启动时会：
@@ -151,6 +166,10 @@ eval/
 ├── fusion_ab.py         # 融合权重 A/B：一次采集、多方案内存重排
 ├── gen_fusion_set.py    # 生成融合评测题集（gold = FTS 字面枚举 ∩ 可见）
 ├── probe_exact_misjudge.py  # 精确标识符判定的误判探针
+├── sample_nodes_for_queries.py  # 为自然语言题抽样节点（输出可读内容供人工写 query）
+├── scan_identifiers.py  # 扫描库里真实存在的精确标识符（commit hash / PR 号）
+├── scan_contexts.py     # 抽验候选标识符在正文里的上下文（区分真 hash 与章节号/路径数字）
+├── scan_date_tokens.py  # 量化「8 位日期被误判成 hash」的实际影响（A/B 对比）
 ├── fusion_set_manual.example.json  # 题集人工部分的脱敏模板（真实文件不入库）
 ├── README.md            # 本文件
 ├── eval_set.json        # 生成的评测题集（由 gen_eval_set.py 产出）
