@@ -4,6 +4,12 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
+## [Unreleased]
+
+### 依赖
+
+- **triviumdb 回退并钉死 `0.8.10`**：`0.8.11` 的文本索引校验（`src/storage/file_format.rs::read_deferred_text_index` 用主库记录的 `.text` 长度 / CRC 校验磁盘文件）与本版「`load_text_index=false` 时 `flush()` 保留已有 `.text` 文件」的写入语义冲突，会导致**整库写操作全部失败**——报 `ImmutableArtifactError: 未加载的文本索引缺失、损坏或与主数据不匹配`，而读取、`node_count()`、`/doctor` 全部正常，因此升级时的冒烟检查（含 `/doctor` 八项全绿）发现不了。实测同一库、同一时刻：`0.8.10` 读写全部正常，`0.8.11` 任一写操作（`insert` 之后的 `flush()`、`build_text_index()`）必失败，可来回切换 100% 复现。上游已报 [YoKONCy/TriviumDB#72](https://github.com/YoKONCy/TriviumDB/issues/72)——`0.9.0-beta.1` 仍复现，且一次失败的 `flush()` 会留下不一致的文件组、使库**无法再次打开**。恢复写入的方式是把 pin 退回 `0.8.10`；上游修复前不要升级。`0.8.10` 下依赖 `>=0.8.11` 文本索引语义的 `tests/test_tdb_text_channel.py` 保持原有 skip 行为。
+
 ## [2.15.0] - 2026-10-22
 
 ### 新增

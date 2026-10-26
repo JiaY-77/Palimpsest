@@ -8,5 +8,9 @@ pydantic==2.13.3
 python-dotenv==1.2.2
 python-multipart==0.0.27
 requests==2.33.1
-triviumdb==0.8.11
+# triviumdb 锁 0.8.10：0.8.11 的文本索引校验（file_format.rs::read_deferred_text_index
+# 用主库记录的 .text 长度/CRC 校验磁盘文件）与本版「load_text_index=false 时 flush() 保留
+# 已有 .text」的写入语义冲突，会使整库写操作失败（读与 /doctor 均正常，冒烟发现不了）。
+# 上游见 YoKONCy/TriviumDB#72；在其修复前不要升级。
+triviumdb==0.8.10
 uvicorn==0.46.0
