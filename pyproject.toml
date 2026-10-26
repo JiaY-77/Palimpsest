@@ -22,6 +22,10 @@ dependencies = [
     "uvicorn==0.46.0",
 ]
 
+[project.optional-dependencies]
+# 本地词嵌入（EMBEDDING_PROVIDER=local）：进程内 GGUF 推理，不装也能用 ollama/openai
+local-embed = ["llama-cpp-python>=0.3.36,<0.4"]
+
 [project.scripts]
 palimpsest-cli = "scripts.palimpsest_cli:main"
 
@@ -87,6 +91,13 @@ warn_unused_ignores = true
 warn_redundant_casts = true
 no_implicit_optional = true
 strict_equality = true
+
+# llama-cpp-python 是可选依赖（extras: local-embed），上游既无 .pyi 也无 py.typed。
+# 不忽略会报 import-not-found（未装）或 import-untyped（装了），两种都让 CI 的 mypy job 红。
+# 只豁免这一个模块，其余第三方仍按 types-requests 等桩包严格检查。
+[[tool.mypy.overrides]]
+module = ["llama_cpp", "llama_cpp.*"]
+ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------
 # 路径解析说明：

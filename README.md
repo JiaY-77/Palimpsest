@@ -119,34 +119,51 @@ cd Palimpsest
 python -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
+# 内置向量引擎（默认 EMBEDDING_PROVIDER=local 需要；不装则改用 ollama / openai 后端）
+# ⚠️ llama-cpp-python 在 PyPI 没有预编译 wheel，直接 pip install 会走源码编译（要求 CMake + MSVC，
+#    多数机器会失败）。走官方 CPU wheel 索引：
+pip install "llama-cpp-python>=0.3.36,<0.4" \
+  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
 ```
 
 ### 硬件要求
 
-**没有独显也能跑。** 本地默认向量模型 `qwen3-embedding:0.6b` 在纯 CPU 上实测端到端检索 209 ms（稳定均值）、索引约 92–296 ms/条——对「对话间隙检索一次记忆」这个使用方式毫无感知。三种硬件档位（纯 CPU / 核显 / 独显）的完整实测数据、复现方式与档位强制手段见 [`docs/HARDWARE.md`](docs/HARDWARE.md)。
+**没有独显也能跑。** 本地向量模型 `qwen3-embedding:0.6b`（1024 维）在纯 CPU 上的实测：走 Ollama 时端到端检索 209 ms（稳定均值）、索引约 92–296 ms/条——对「对话间隙检索一次记忆」这个使用方式毫无感知。三种硬件档位（纯 CPU / 核显 / 独显）的完整实测数据、复现方式与档位强制手段见 [`docs/HARDWARE.md`](docs/HARDWARE.md)。
 
-不想装 Ollama 的用户直接走**路径 A（云端 key）**即可，本机零额外依赖。**本地部署的门槛在安装动作，不在硬件性能**——后者已有实测数据证明不构成门槛。
+内置本地引擎（`EMBEDDING_PROVIDER=local`）走 `llama-cpp-python`，纯 CPU 单条 embedding 约 0.8 秒（Q8_0 量化，2880 条全库重嵌约 40 分钟）；检索端到端耗时尚未在同一张表里补测，需要更快就走 Ollama 路径。
 
-### 路径 A：云端 key，最快跑起来（无需 Ollama）
+**本地部署的门槛在「有没有模型文件」，不在硬件性能**——模型首次运行自动下载，之后完全离线。
+
+### 路径 A（默认）：内置本地向量模型，零外部依赖
 
 ```bash
 cp .env.example .env
-# 编辑 .env：填入云端向量 API Key + LLM Key
-#    EMBEDDING_API_KEY=你的云端key        # 留空或删除 → 自动走本地 Ollama
-#    EMBEDDING_BASE_URL / EMBEDDING_MODEL / EMBEDDING_DIM  按服务商填写
-#    DEEPSEEK_API_KEY=你的LLMkey         (LLM_BACKEND=deepseek 时必填)
+# 编辑 .env：填入 DEEPSEEK_API_KEY（或改 LLM_BACKEND=ollama 走全本地对话）
 ```
 
-### 路径 B：本地 Ollama（隐私优先，数据不出本机）
+首次启动自动下载向量模型（`Qwen3-Embedding-0.6B` Q8_0，约 610 MB，默认从 ModelScope 拉取、国内可直连，失败自动回退 HuggingFace），带 sha256 校验与断点续传；只需一次，之后完全离线、数据不出本机。
+
+**已经装过 Ollama 的用户不必重复下载**：把 `EMBEDDING_MODEL_PATH` 指向已有文件即可（Ollama 的 `qwen3-embedding:0.6b` 与这里要的 GGUF 是同一个文件，sha256 一致）。
+
+### 路径 B：复用已有的 Ollama（可选）
 
 ```bash
 # 1. 安装并启动 Ollama（https://ollama.com）；2. 拉取向量模型
 ollama pull qwen3-embedding:0.6b
-# 3. 复制 .env.example → .env 并填 DEEPSEEK_API_KEY（或改 LLM_BACKEND=ollama 全本地）
-cp .env.example .env
+# 3. .env 里设 EMBEDDING_PROVIDER=ollama
 ```
 
-> **两条路径通用**：不设置 `EMBEDDING_PROVIDER` 即自动探测（有有效 `EMBEDDING_API_KEY` → 云端，否则本地；可显式写 `openai` / `ollama` 强制）。换 provider = 换向量空间，**必须重建知识库索引**（见 [更换向量模型](#更换向量模型--重嵌全库)）。
+Ollama 常驻 11434 端口；本项目的 REST 检测到端口被 Ollama 桌面版占用时会主动让路。
+
+### 路径 C：云端 key（无需本地模型）
+
+```bash
+# 编辑 .env：
+#    EMBEDDING_API_KEY=你的云端key
+#    EMBEDDING_BASE_URL / EMBEDDING_MODEL / EMBEDDING_DIM  按服务商填写
+```
+
+> **三条路径通用**：不设置 `EMBEDDING_PROVIDER` 即自动探测（有有效 `EMBEDDING_API_KEY` → 云端，否则 → 内置本地；可显式写 `local` / `ollama` / `openai` 强制）。换 provider = 换向量空间，**必须重建知识库索引**（见 [更换向量模型](#更换向量模型--重嵌全库)）。
 
 ### 启动
 
@@ -211,9 +228,10 @@ python scripts/palimpsest_cli.py doctor
 | `LLM_BACKEND` | `deepseek` | LLM 后端：`deepseek` 或 `ollama` |
 | `DEEPSEEK_API_KEY` | *（空）* | DeepSeek 密钥（`LLM_BACKEND=deepseek` 必填） |
 | `OLLAMA_MODEL` | `deepseek-r1:7b` | `LLM_BACKEND=ollama` 时的对话模型 |
-| `EMBEDDING_PROVIDER` | *（空 = 自动探测）* | 向量后端：留空自动探测，或 `ollama` / `openai` |
+| `EMBEDDING_PROVIDER` | *（空 = 自动探测）* | 向量后端：留空自动探测（有云端 key → `openai`，否则 → `local`），或显式 `local` / `ollama` / `openai` |
 | `OLLAMA_EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | 本地 Ollama 向量模型 |
 | `EMBEDDING_API_KEY` | *（空）* | 云端向量端点密钥（配置后自动走 `openai`） |
+| `EMBEDDING_MODEL_PATH` | *（空）* | 本地 GGUF 路径；留空则自动下载。可指向 Ollama 已有的 blob 复用 |
 | `KNOWLEDGE_DIR` | *（可选）* | 知识库根目录（待索引的 Obsidian `.md` 文件） |
 
 ---

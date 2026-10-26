@@ -1,7 +1,7 @@
 """
 config 自动探测测试 —— 覆盖 EMBEDDING_PROVIDER 三种情形：
   1. 未设置 + 有效云端 key → "openai"
-  2. 未设置 + 无 key / 占位符 → "ollama"
+  2. 未设置 + 无 key / 占位符 → "local"（内置引擎，零外部依赖）
   3. 显式设置 → 以显式值为准
 """
 
@@ -9,33 +9,33 @@ config 自动探测测试 —— 覆盖 EMBEDDING_PROVIDER 三种情形：
 class TestDetectEmbeddingProvider:
     """直接测试 _detect_embedding_provider 函数（monkeypatch env）。"""
 
-    def test_no_key_falls_back_to_ollama(self, monkeypatch):
+    def test_no_key_falls_back_to_local(self, monkeypatch):
         monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
         monkeypatch.delenv("EMBEDDING_API_KEY", raising=False)
         from config import _detect_embedding_provider
 
-        assert _detect_embedding_provider() == "ollama"
+        assert _detect_embedding_provider() == "local"
 
-    def test_placeholder_key_falls_back_to_ollama(self, monkeypatch):
+    def test_placeholder_key_falls_back_to_local(self, monkeypatch):
         monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
         monkeypatch.setenv("EMBEDDING_API_KEY", "YOUR_API_KEY")
         from config import _detect_embedding_provider
 
-        assert _detect_embedding_provider() == "ollama"
+        assert _detect_embedding_provider() == "local"
 
-    def test_empty_string_key_falls_back_to_ollama(self, monkeypatch):
+    def test_empty_string_key_falls_back_to_local(self, monkeypatch):
         monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
         monkeypatch.setenv("EMBEDDING_API_KEY", "   ")
         from config import _detect_embedding_provider
 
-        assert _detect_embedding_provider() == "ollama"
+        assert _detect_embedding_provider() == "local"
 
-    def test_xxx_key_falls_back_to_ollama(self, monkeypatch):
+    def test_xxx_key_falls_back_to_local(self, monkeypatch):
         monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
         monkeypatch.setenv("EMBEDDING_API_KEY", "xxx")
         from config import _detect_embedding_provider
 
-        assert _detect_embedding_provider() == "ollama"
+        assert _detect_embedding_provider() == "local"
 
     def test_valid_key_selects_openai(self, monkeypatch):
         monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
@@ -63,14 +63,14 @@ class TestDetectEmbeddingProvider:
         monkeypatch.setenv("EMBEDDING_API_KEY", "  changeme  ")
         from config import _detect_embedding_provider
 
-        assert _detect_embedding_provider() == "ollama"
+        assert _detect_embedding_provider() == "local"
 
     def test_skxxx_is_placeholder(self, monkeypatch):
         monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
         monkeypatch.setenv("EMBEDDING_API_KEY", "sk-xxx")
         from config import _detect_embedding_provider
 
-        assert _detect_embedding_provider() == "ollama"
+        assert _detect_embedding_provider() == "local"
 
     def test_voyage_key_selects_openai(self, monkeypatch):
         monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
