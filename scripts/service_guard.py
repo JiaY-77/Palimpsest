@@ -257,6 +257,39 @@ def _start_rest(ps_home: str) -> bool:
         return False
 
 
+def _ollama_desktop_app_running() -> bool:
+    """Whether the Ollama desktop app (``ollama app.exe``) is running.
+
+    Why this exists: the Windows desktop app spawns and manages its own
+    ``ollama serve`` child on port 11434. During the app's startup window
+    (its port not yet listening), a guard-spawned ``ollama serve`` steals
+    the port; the app's own server then fails to bind forever and the app
+    retries endlessly, popping windows nonstop (2026-10-26 incident). The
+    guard must therefore stand down whenever the app is running and let it
+    manage its own server.
+
+    Conservative by design: any probe failure (tasklist missing, timeout,
+    access denied) returns ``False`` -- a failed probe must never block a
+    legitimate start. Non-Windows returns ``False``: the desktop-app form
+    only exists there. The image name is matched as ``bytes`` because
+    tasklist output is locale-encoded (GBK on zh-CN systems), and when no
+    process matches it prints a "no tasks" notice rather than nothing, so
+    output emptiness is not a usable signal.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        proc = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq ollama app.exe", "/NH"],
+            capture_output=True,
+            timeout=10,
+        )
+    except Exception as e:  # noqa: BLE001 —— 探测失败视为「app 不在」，不阻塞正常拉起
+        logger.debug("guard: desktop-app probe failed: %s", e)
+        return False
+    return b"ollama app.exe" in proc.stdout
+
+
 def _start_ollama() -> bool:
     """Start Ollama. Uses the ``ollama`` executable found on PATH."""
     import shutil as _shutil
@@ -320,6 +353,14 @@ def main() -> int:
     if not _service_up(OLLAMA_URL, OLLAMA_HOST, OLLAMA_PORT):
         if _within_grace("ollama"):
             pass
+        elif _ollama_desktop_app_running():
+            # The desktop app manages its own ``ollama serve`` child; a
+            # guard-spawned serve would steal the port and leave the app
+            # retrying forever (see _ollama_desktop_app_running). Stand
+            # down and stay off stdout -- cron delivers stdout to the
+            # owner every run, and a healthy "app is handling it" is not
+            # worth a message every 2 minutes. Event log only.
+            _record_event("ollama", "skipped_desktop_app")
         else:
             _record_start("ollama")
             issued = _start_ollama()
