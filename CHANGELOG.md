@@ -4,7 +4,7 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
-## [Unreleased]
+## [2.16.0] - 2026-10-26
 
 ### 新增
 
@@ -18,15 +18,32 @@
   - **`reindex --force`** = 放弃断点 + 跳过指纹确认 + 全量重算，完成时写入新指纹；`--restart` 的旧语义（只放弃断点）不变，`--force` 是其超集。
   - 指纹**只在零失败且未被 Ctrl+C 中断时写入**：向量只重算了一半却盖上「已完成」的章，等于让守卫失去意义。
   - 已知代价：存量库升级后首次 `doctor` 必然 FAIL（库内还没有指纹记录），按提示跑一次 `reindex --force` 即转为 PASS。
+- **TriviumDB BM25 中文文本通道（`TDB_TEXT_ENABLED`，默认关）**：在 FTS5 trigram 之外增加第二条中文召回通道（TriviumDB TEXT BM25，2-gram 分词）。动机来自副本库实测：FTS5 对**短中文 query**（2 字会退化成 rowid 顺序的 LIKE）和**长短语**（6~8 字被当整句匹配，召回近乎为零）都失灵，而 TDB 2-gram BM25 在这些场景 top-3 全中。
+  - 读通道上线时只认识 `rebuild()` 的快照，此后写入的记忆全都看不见——补上写侧同步，接在 FTS 已有的同一批 hook 上（ingest / update_content / delete / consolidate / task_archive / REST 删改），`type=record` 的状态日志节点也一并纳入。同步失败只告警，与 FTS 侧行为一致。
+  - **性能护栏 `TDB_TEXT_FTS_FLOOR`（默认 3）**：该通道每次查询都要重开 store 并加载约 11MB 的 `.text` sidecar，实测 260~480ms，端到端从 0.9s 涨到 1.5~3.5s，而召回提升只发生在 FTS 本来就吃力的 query 上。故 FTS 命中数达到该下限时**整条通道跳过**（不 import、不查询、不连库；`0` = 永不跳过）。跳过以 `channels["tdb_text"] == "skipped"` 上报，与 `degraded`、真空结果三者可区分；每条结果另带 `meta.tdb_text_hit`，便于把贡献归因到单条而非只到通道级。
+  - `TDB_TEXT_ENABLED=0`（默认）时**输出与改动前逐字节一致**——新通道不改变任何既有行为。
 
 ### 变更
 
 - **默认 embedding provider 从 `ollama` 改为 `local`**：不设 `EMBEDDING_PROVIDER` 且无云端 key 时走内置引擎，新用户不再需要先装 Ollama。显式设置始终优先（完全向后兼容）。**存量库升级需重嵌全库**——向量空间标识变化由上面的指纹守卫在启动/体检时点名，一条 `reindex --force` 即可对齐。
 
+### 修复
+
+- **服务守卫在 Ollama 桌面版持有端口时让路**：Windows 桌面 app 会自己拉起并管理 `ollama serve`。在它启动的那段窗口里端口还没开始监听，守卫探测为「down」于是起了第二个 `serve` 抢走端口，导致 app 每次重试都 bind 失败、约每秒弹一次窗口。现在启动前先查桌面进程是否在场：在场则记一条 `skipped_desktop_app` 事件并**完全静默**（「app 在管它」不值得每两分钟报一次）；探测按字节匹配 `tasklist` 输出（本地化编码，无匹配时打印的是 notice 而非空），任何探测失败都返回 False——坏掉的探测永远不能阻断一次合法启动。
+
 ### 依赖
 
 - **新增可选依赖 `llama-cpp-python>=0.3.36,<0.4`（extras：`local-embed`）**：不装也能用 `ollama` / `openai` 后端。⚠️ 它在 PyPI **没有预编译 wheel**，`pip install` 会走源码编译（要求 CMake + MSVC，多数机器失败）；须走官方 CPU wheel 索引 `--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu`（README 已写明）。上限钉在 `<0.4`：`pooling_type` 常量与 `embed()` 签名属可变更的 API 面，大版本升级须先在隔离环境验证向量一致性（同文本新旧引擎 cosine ≥0.999）再放宽。
 - **triviumdb 回退并钉死 `0.8.10`**：`0.8.11` 的文本索引校验（`src/storage/file_format.rs::read_deferred_text_index` 用主库记录的 `.text` 长度 / CRC 校验磁盘文件）与本版「`load_text_index=false` 时 `flush()` 保留已有 `.text` 文件」的写入语义冲突，会导致**整库写操作全部失败**——报 `ImmutableArtifactError: 未加载的文本索引缺失、损坏或与主数据不匹配`，而读取、`node_count()`、`/doctor` 全部正常，因此升级时的冒烟检查（含 `/doctor` 八项全绿）发现不了。实测同一库、同一时刻：`0.8.10` 读写全部正常，`0.8.11` 任一写操作（`insert` 之后的 `flush()`、`build_text_index()`）必失败，可来回切换 100% 复现。上游已报 [YoKONCy/TriviumDB#72](https://github.com/YoKONCy/TriviumDB/issues/72)——`0.9.0-beta.1` 仍复现，且一次失败的 `flush()` 会留下不一致的文件组、使库**无法再次打开**。恢复写入的方式是把 pin 退回 `0.8.10`；上游修复前不要升级。`0.8.10` 下依赖 `>=0.8.11` 文本索引语义的 `tests/test_tdb_text_channel.py` 保持原有 skip 行为。
+
+### 文档
+
+- **安装反馈闭环 + PyPI 同名警示**：install 段改为从 `git clone` 开始（此前没说源码从哪来），明说 PyPI 上的 `palimpsest` 是**另一个项目**（2023 年的 YAML 角色卡阅读器，此后未更新），否则 `pip install palimpsest` 会静默装错；新增「装不起来怎么办」把 `doctor` 放在第一位，再引导去开 issue 并附完整输出。issue 模板把 `doctor` 输出设为必填——它逐项列出失败原因和修复命令，比「起不来」有用得多。
+- 新增 `scripts/github_traffic_snapshot.py`：GitHub 只保留 14 天流量且不暴露访问者身份，故改为每天本地累积一条 JSON 记录。
+
+### 测试
+
+- **检索探针脚本入库**（`eval/` 与 `scripts/`）：6 个只读探针 + Gate 0 报告——实体锚定图谱覆盖审计（结论：图太稀疏，多跳扩散吃不到增量，应先做写边）、冲突阈值 0.75→0.85 回放对照、真实标识符扫描、标识符上下文抽验、日期误判损失量化、跨类型节点抽样。脚本里硬编码的本机路径改为从 `__file__` 派生，任何 clone 都能跑。
 
 ## [2.15.0] - 2026-10-22
 
@@ -538,6 +555,7 @@
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
 [Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.15.0...HEAD
+[2.16.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.16.0
 [2.15.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.15.0
 [2.14.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.14.0
 [2.13.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.13.0
