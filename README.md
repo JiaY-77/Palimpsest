@@ -77,6 +77,8 @@ Palimpsest 是一个 **本地优先的嵌入式长期记忆系统**，将 **语�
 
 这些机制回答的是同一个问题：**当记忆从「一条记录」变成「一段演化史」，你怎么保证它说得清、回得去、不误伤。** 完整设计见 [`docs/BITEMPORAL.md`](docs/BITEMPORAL.md) 与 [`SECURITY.md`](SECURITY.md)。
 
+> **装好之后怎么用 → [`docs/USAGE.md`](docs/USAGE.md)**（什么时候用哪个工具、参数怎么定、输出怎么读）
+
 ---
 
 ## 接入示例：以 Hermes 为例
@@ -256,6 +258,8 @@ python scripts/build_kb_index.py --rules rules.json
 ---
 
 ## 使用
+
+> 本节是**命令参考表**。日常用法（什么时候该用哪个工具、参数怎么定、输出怎么读）见 **[`docs/USAGE.md`](docs/USAGE.md)**。
 
 ### MCP 工具（21 个）— `mcp_tools/*`
 
