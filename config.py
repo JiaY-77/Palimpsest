@@ -210,8 +210,48 @@ class Config:
         ).split(",")
         if t.strip()
     )
-    TIER_LOGS = frozenset(t.strip() for t in os.getenv("TIER_LOGS", "record,event,git_commit").split(",") if t.strip())
+    TIER_LOGS = frozenset(
+        t.strip() for t in os.getenv("TIER_LOGS", "record,event,git_commit,thought").split(",") if t.strip()
+    )
     DEFAULT_TIER = os.getenv("DEFAULT_TIER", "facts")
+
+    # 代码内已知会写入的节点 type 全集（守护测试 tests/test_tier_registry.py 用：
+    # 断言它 ⊆ TIER_FACTS ∪ TIER_LOGS，防止新 type 既不登记 facts 也不登记 logs、
+    # 错误走「未登记保守归 facts」兜底 —— issue #151 时 thought 即如此漏网）。
+    # 来源（grep 仓库实际写入 / 分支处）：
+    #   事实层语义 type（mem_ingest 调用方契约，与 TIER_FACTS 默认同源）：
+    #     memory      mcp_tools/memory.py（ingest 默认值）、core/strategy.py（session-end
+    #                 提炼）、core/consolidator.py（合并产物）
+    #     review      mcp_tools/memory.py（mem_review：复盘裁决后存 type=review）
+    #     event / character_state / user_intent / correction / decision / plan /
+    #     task / inspiration   调用方语义 type 侧分支：main.py（event / character_state
+    #                 展示分支）、mcp_tools/memory.py（task 接续点 / thought 专属字段分支）、
+    #                 core/conflict.py + core/bitemporal.py（留痕类豁免分支列举）
+    #   日志层 type（代码内写入点）：
+    #     record      core/strategy.py（对话原话 capture）、core/task_state.py（任务状态
+    #                 变更日志节点）、core/embedding_fingerprint.py（向量空间指纹记录）
+    #     thought     core/strategy.py（THOUGHT_TYPE，思维底片，tier=logs 设计意图见该处注释）
+    #     git_commit  scripts/palimpsest_cli.py（git 提交同步落库）
+    # 例外（不入本清单）：kb_chunk / novel_chunk / skill_chunk —— 索引切片类走既有
+    # scope / domain 隔离，不参与 tier 分层（见上方 TIER_FACTS 注释）。
+    KNOWN_TYPES = frozenset(
+        {
+            "memory",
+            "correction",
+            "decision",
+            "plan",
+            "task",
+            "review",
+            "solution",
+            "inspiration",
+            "user_intent",
+            "character_state",
+            "record",
+            "event",
+            "git_commit",
+            "thought",
+        }
+    )
 
     # ---- LLM 后端选择 ----
     # 可选: "ollama" 或 "deepseek"
