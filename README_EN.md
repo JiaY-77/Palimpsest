@@ -50,7 +50,7 @@ This is a list of mechanisms, not a pile of features — every entry traces back
 
 **Deployment**
 
-- ✅ **Deployment doctor.** `doctor` checks critical files / storage / FTS / dependencies / Embedding / vector-dimension consistency / runtime path charset, printing an actionable fix per failure.
+- ✅ **Deployment doctor.** `doctor` checks critical files / storage / FTS / dependencies / Embedding / vector-dimension consistency / vector-space fingerprint / runtime path charset, printing an actionable fix per failure.
 - 🔐 **Optional API-key auth.** Off by default; setting `PALIMPSEST_API_KEY` requires a Bearer / X-API-Key header on REST.
 - 🎯 **Three interfaces, one core.** MCP (stdio and streamable-http), FastAPI REST, and a full CLI reuse the same tools, so behavior never drifts.
 - 🧠 **Dual Hermes plugins.** A Memory Provider plus a Context Engine for Hermes, enabled in one command (see the integration example below).
@@ -223,7 +223,7 @@ All configuration is read from environment variables (a `.env` file is loaded au
 
 ## Swapping models / re-embedding
 
-Changing the embedding model changes the vector space, so you **must re-embed the full store**. The complete sequence (`reindex --check` / `--dry-run` / `--yes`) and the dimension-change rebuild flow are in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+Switching the embedding model or provider changes the vector space, so you **must re-embed the full store**. The store keeps a **vector-space fingerprint** (a hash of `provider` / `model` / `dim` / `pooling`); the startup self-check, `doctor` and `reindex` all compare against it — on a mismatch `doctor` fails that item and prints the fix command. After changing the model or provider, run `reindex --force`: it drops the resume checkpoint, skips the fingerprint prompt, re-embeds everything and writes the new fingerprint when done. The complete sequence (`--check` / `--dry-run` / `--yes`) and the dimension-change rebuild flow are in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
 
 ---
 
@@ -295,10 +295,10 @@ python scripts/build_kb_index.py --rules rules.json
 | `ingest-git` | Index recent git commits as `git_commit` nodes (idempotent) |
 | `fts-rebuild` | Rebuild the full FTS5 index |
 | `fts-search "QUERY"` | Raw FTS5 search (trigram substring) |
-| `doctor` | Deployment health check: critical files / storage / FTS / dependencies / Embedding / vector-dimension consistency / runtime path charset, with an actionable fix per failure (`--json`) |
+| `doctor` | Deployment health check: critical files / storage / FTS / dependencies / Embedding / vector-dimension consistency / vector-space fingerprint / runtime path charset, with an actionable fix per failure (`--json`) |
 | `startup-check` | Run the startup self-check (lightweight subset of `doctor`; exit code 1 on failure) |
 | `task-archive` | Archive completed task nodes; `--apply` writes markdown and deletes the node |
-| `reindex` | Re-embed the whole store after switching embedding models (`--check` health check, `--dry-run` preview) |
+| `reindex` | Re-embed the whole store after switching embedding models or providers (`--check` health check, `--dry-run` preview, `--force` accept the current vector space and re-embed everything, writing the new fingerprint) |
 
 ### Blocks
 

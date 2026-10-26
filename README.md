@@ -238,7 +238,7 @@ python scripts/palimpsest_cli.py doctor
 
 ## 更换向量模型 / 重嵌全库
 
-切换 embedding 模型会改变向量空间，**必须重嵌全库**。完整操作顺序（`reindex --check` / `--dry-run` / `--yes`）与换维度的重建流程见 [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)。
+切换 embedding 模型或 provider 会改变向量空间，**必须重嵌全库**。库内会记录一条**向量空间指纹**（`provider` / `model` / `dim` / `pooling` 的哈希）；启动自检、`doctor` 与 `reindex` 开跑前都会比对它——不一致时 `doctor` 该项判失败并直接给出修复命令。换模型 / 换 provider 后跑 `reindex --force` 一次到位：放弃断点、跳过指纹确认、全量重算，完成时写入新指纹。完整操作顺序（`--check` / `--dry-run` / `--yes`）与换维度的重建流程见 [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)。
 
 ---
 
@@ -310,10 +310,10 @@ python scripts/build_kb_index.py --rules rules.json
 | `ingest-git` | 将近期 git 提交索引为 `git_commit` 节点（幂等） |
 | `fts-rebuild` | 重建完整 FTS5 索引 |
 | `fts-search "QUERY"` | 原始 FTS5 搜索（trigram 子串） |
-| `doctor` | 部署体检：关键文件 / 存储 / FTS / 依赖 / Embedding / 向量维度一致性 / 运行时路径字符集，失败项给出修复命令（`--json` 机器可读） |
+| `doctor` | 部署体检：关键文件 / 存储 / FTS / 依赖 / Embedding / 向量维度一致性 / **向量空间指纹** / 运行时路径字符集，失败项给出修复命令（`--json` 机器可读） |
 | `startup-check` | 运行启动自检（`doctor` 的轻量子集，失败时退出码 1） |
 | `task-archive` | 归档已完成任务；`--apply` 写入 markdown 并删除节点 |
-| `reindex` | 全库向量重嵌入（换 embedding 模型后使用；`--check` 体检、`--dry-run` 预览） |
+| `reindex` | 全库向量重嵌入（换 embedding 模型 / provider 后使用；`--check` 体检、`--dry-run` 预览、`--force` 接受当前向量空间并全量重算并写指纹） |
 
 ### 区块（Blocks）
 

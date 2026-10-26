@@ -23,8 +23,9 @@ from mcp_tools import store
 # doctor 检查项数量：
 #   ①~⑤ run_startup_check（关键文件 / Store 初始化 / FTS5 / 依赖 / Embedding）
 #   ⑥ 向量维度一致性   ⑦ domain 字段迁移状态   ⑧ 运行时路径字符集
+#   ⑨ 向量空间一致性（指纹守卫；startup_check 里同名那项是轻量 WARN 版，doctor 会跳过它）
 # 新增检查项时只改这一处（原先三处硬编码 6，加第 ⑦ 项时三处齐红）。
-_EXPECTED_CHECK_COUNT = 8
+_EXPECTED_CHECK_COUNT = 9
 
 
 @pytest.fixture
@@ -59,6 +60,15 @@ def test_doctor_all_pass(iso_db, monkeypatch):
         return f"Embedding 服务可用 (fake, dim={len(emb)})"
 
     monkeypatch.setattr(sc, "_check_embedding", _fake_check_embedding)
+
+    # 指纹守卫（⑨）：先写入当前向量空间指纹，模拟「已经重算对齐」的健康库。
+    # 不写的话第 ⑨ 项按设计判 FAIL（存量库升级首见即红的语义），与本用例
+    # 「全部检查项通过」的意图冲突。
+    from core import embedding_fingerprint as ef
+    from core.trivium_store import TriviumStore
+
+    _store = TriviumStore()
+    ef.write_fingerprint(_store, ef.current_fingerprint(_store))
 
     result = run_doctor()
     assert result["ok"]

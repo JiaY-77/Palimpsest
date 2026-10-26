@@ -11,6 +11,8 @@
   ③ FTS5 全文索引能连接
   ④ 核心依赖可导入（fastapi / triviumdb / dotenv / requests 等）
   ⑤ Embedding 服务可用（HTTP 探测 Ollama + 实际 embed_text 验证向量非全零）
+  ⑥（可选）TDB 文本通道预热（仅 TDB_TEXT_ENABLED=1 时注册）
+  ⑦ 向量空间一致性（指纹守卫，轻量：不一致只 WARN 一行 + 修复命令，不改 ok/退出码）
 
 设计原则：任何单项失败只记录，不抛异常，不阻断服务启动（可用性优先）。
 """
@@ -177,6 +179,29 @@ def _check_tdb_text() -> str:
     return f"TDB 文本通道已预热 (rows={len(rows)}, status={status})"
 
 
+def _check_embedding_space() -> str:
+    """检查⑦（轻量）：向量空间指纹一致性 —— 只告警，绝不阻断启动。
+
+    与 doctor 第 9 项的区别：doctor 里指纹不一致要 FAIL（部署体检拦下来），
+    启动自检里恒 ok=True——指纹不一致只说明库里向量是旧空间算的，服务本身
+    照常可用；若这里改退出码，升级后服务会起不来，比问题本身更糟。
+    指纹检查自身任何异常（含读不到库）也降级为一句跳过说明。
+    """
+    try:
+        from core import embedding_fingerprint as ef
+        from core.trivium_store import TriviumStore
+
+        store = TriviumStore()
+        verdict = ef.compare(ef.read_fingerprint(store), ef.current_fingerprint(store))
+        if verdict["ok"]:
+            if verdict["soft_warnings"]:
+                return "WARN: " + "；".join(verdict["soft_warnings"])
+            return "向量空间指纹一致"
+        return f"WARN: {verdict['reason']} 修复: {verdict['hint']}"
+    except Exception as e:  # noqa: BLE001 —— 指纹检查任何异常都不影响启动判定
+        return f"已跳过（指纹检查不可用: {e}）"
+
+
 def run_startup_check() -> dict:
     """执行全部自检，返回结构化结果（永不抛异常）。"""
     checks = [
@@ -191,4 +216,8 @@ def run_startup_check() -> dict:
     # 可选通道自检：仅启用 TDB 文本通道时注册，默认关闭时输出与改动前一致
     if getattr(Config, "TDB_TEXT_ENABLED", False):
         checks.append(_probe("TDB 文本通道预热", _check_tdb_text))
+
+    # 指纹守卫（轻量）：恒 ok=True，不一致只在 detail 里 WARN + 给修复命令，
+    # 不改变 result["ok"] / 退出码（否则升级后服务起不来）
+    checks.append({"name": "向量空间一致性", "ok": True, "detail": _check_embedding_space()})
     return {"ok": all(c["ok"] for c in checks), "checks": checks}
