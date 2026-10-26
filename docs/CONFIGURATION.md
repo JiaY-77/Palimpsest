@@ -18,7 +18,7 @@
 | `DEEPSEEK_MODEL` | `deepseek-v4-flash` | DeepSeek 模型标识 | `LLM_BACKEND=deepseek` |
 | `OLLAMA_BASE_URL` | `http://127.0.0.1:11434/v1` | Ollama OpenAI 兼容基础地址 | `LLM_BACKEND=ollama` |
 | `OLLAMA_MODEL` | `deepseek-r1:7b` | 作为 LLM 的 Ollama 对话模型 | `LLM_BACKEND=ollama` |
-| `EMBEDDING_PROVIDER` | *（空 = 自动探测）* | 向量后端：留空自动探测（有云端 key → `openai`，否则 → `ollama`）；显式写 `ollama`（本地、私有）或 `openai`（OpenAI 兼容云端，如 Voyage/硅基流动） | — |
+| `EMBEDDING_PROVIDER` | *（空 = 自动探测）* | 向量后端：留空自动探测（有云端 key → `openai`，否则 → **`local`**）；显式写 `local`（内置 llama.cpp，零外部依赖）、`ollama`（本地服务、私有）或 `openai`（OpenAI 兼容云端，如 Voyage/硅基流动） | — |
 | `OLLAMA_EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | 本地 Ollama 向量模型 | `EMBEDDING_PROVIDER=ollama` |
 | `OLLAMA_EMBEDDING_BASE_URL` | `http://127.0.0.1:11434` | Ollama 原生 embedding API 根地址（与 LLM 的 /v1 解耦） | `EMBEDDING_PROVIDER=ollama` |
 | `OLLAMA_EMBEDDING_DIM` | `1024` | 向量维度（本地后端） | `EMBEDDING_PROVIDER=ollama` |
@@ -26,6 +26,17 @@
 | `EMBEDDING_BASE_URL` | `https://api.voyageai.com/v1` | 云端向量基础地址（任意 OpenAI 兼容端点） | `EMBEDDING_PROVIDER=openai` |
 | `EMBEDDING_MODEL` | `voyage-3` | 云端向量模型 | `EMBEDDING_PROVIDER=openai` |
 | `EMBEDDING_DIM` | `1024` | 向量维度（云端后端） | `EMBEDDING_PROVIDER=openai` |
+| `EMBEDDING_MODEL_PATH` | *（空）* | 直接指向本地 GGUF 的绝对路径，设置后**跳过下载**。也可指向 Ollama 已有的 blob（`qwen3-embedding:0.6b` 与这里要的 GGUF 是同一文件，sha256 一致） | `EMBEDDING_PROVIDER=local` |
+| `EMBEDDING_MODEL_REPO` | `Qwen/Qwen3-Embedding-0.6B-GGUF` | 自动下载时使用的模型仓库 | `EMBEDDING_PROVIDER=local` |
+| `EMBEDDING_MODEL_FILE` | `Qwen3-Embedding-0.6B-Q8_0.gguf` | 下载 / 缓存的文件名 | `EMBEDDING_PROVIDER=local` |
+| `EMBEDDING_MODEL_SHA256` | `06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439` | 下载后的完整性校验值（不匹配则删除半成品并报错） | `EMBEDDING_PROVIDER=local` |
+| `EMBEDDING_MODEL_SIZE` | `639150592` | 期望字节数（进度显示与大小校验） | `EMBEDDING_PROVIDER=local` |
+| `EMBEDDING_MODELS_DIR` | *（空）* | 模型缓存目录；留空则用 `<项目根>/models` | `EMBEDDING_PROVIDER=local` |
+| `EMBEDDING_DOWNLOAD_SOURCE` | `auto` | 下载源：`auto`（依次尝试 ModelScope → HuggingFace）/ `modelscope` / `huggingface` | `EMBEDDING_PROVIDER=local` |
+| `EMBEDDING_AUTO_DOWNLOAD` | `1` | 缺模型时是否自动下载；设 `0` 则要求显式提供 `EMBEDDING_MODEL_PATH` | `EMBEDDING_PROVIDER=local` |
+| `EMBEDDING_LOCAL_DIM` | `1024` | 本地模型的向量维度 | `EMBEDDING_PROVIDER=local` |
+| `EMBEDDING_LOCAL_N_CTX` | `2048` | llama.cpp 上下文长度（调大可处理更长文本，吃内存也更多） | `EMBEDDING_PROVIDER=local` |
+| `EMBEDDING_LOCAL_N_THREADS` | `0` | CPU 线程数；`0` = 交引擎自行决定 | `EMBEDDING_PROVIDER=local` |
 | `MEMORY_DECAY_FACTOR` | `0.95` | 月度记忆衰减（排序用，`score × importance × factor^(天/30)`）；`1.0` 关闭衰减；`kb_chunk` 节点永不衰减 | soft 模式：仅进入 ε 微调项 `recency_norm`（ε 默认 0.02 → 排序影响 ≤0.02，一年内约 0.01 量级，近乎半死参数）；hard 模式：乘性硬加权 |
 | `MEMORY_RERANK_MODE` | `soft` | 重排模式：`soft` = 语义分为主线 + ε 级元数据微调（默认）；`hard` = 旧版乘性硬加权（可回退） | — |
 | `SOFT_RERANK_EPS` | `0.02` | `soft` 模式的 ε：落在余弦分差区间的 15%–40%，只做 tie-break | `MEMORY_RERANK_MODE=soft` |

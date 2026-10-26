@@ -88,3 +88,9 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+
+# Local embedding model cache (auto-downloaded GGUF, ~610 MB) and partial downloads.
+# Never commit these: GitHub rejects files over 100 MB, and the file is reproducible.
+models/
+*.gguf
+*.gguf.part

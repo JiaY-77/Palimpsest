@@ -35,6 +35,12 @@ logger = logging.getLogger(__name__)
 # 自锁死（嵌套取连接仍会因连接级排他失败，与改动前一致，不是本次引入的）。
 _DB_ACCESS_LOCK = threading.RLock()
 
+# 进程内本地 embedding 模型（provider=local）单例：
+# 懒加载 + 双重检查锁——TriviumStore() 构造时绝不装模型（GGUF 700MB 级内存），
+# 第一次真正要向量才加载；加载失败不缓存（下次调用可重试）。
+_LOCAL_LLM: Any = None  # llama_cpp.Llama（延迟导入，未装包时保持 None）
+_LOCAL_LLM_LOCK = threading.Lock()
+
 
 class _LockedDB:
     """持有进程级 DB 访问锁的连接代理：连接 close 时释放锁。
@@ -251,11 +257,14 @@ class TriviumStore:
         # generation，无法与 REST 并发。read_only=True 时所有连接走只读模式，
         # 不再写库、不再抢写锁。默认 False 保持既有行为不变。
         self.read_only = read_only
-        # embedding 维度从配置读取（按 provider 选择：ollama 本地 / openai 兼容云端）
-        self.provider = getattr(Config, "EMBEDDING_PROVIDER", "ollama") or "ollama"
-        if self.provider == "openai":
+        # embedding 维度从配置读取（按 provider 显式三分支：local 进程内 llama.cpp /
+        # ollama 本地服务 / openai 兼容云端——不用 else 兜底，新 provider 编译期就暴露）
+        self.provider = getattr(Config, "EMBEDDING_PROVIDER", "local") or "local"
+        if self.provider == "local":
+            self.dim = Config.EMBEDDING_LOCAL_DIM
+        elif self.provider == "openai":
             self.dim = Config.EMBEDDING_DIM
-        else:
+        else:  # ollama
             self.dim = Config.OLLAMA_EMBEDDING_DIM
         # 性能优化：常用字段索引建一次即可，不再随每次 insert_node 重建
         # issue #53：只读实例不建索引（索引创建是写操作，只读连接会失败）。
@@ -338,10 +347,69 @@ class TriviumStore:
         return _LockedDB(db, _DB_ACCESS_LOCK)
 
     def embed_text(self, text: str) -> list[float]:
-        """生成文本向量，按 EMBEDDING_PROVIDER 分发（默认本地 ollama，隐私优先）。"""
+        """生成文本向量，按 EMBEDDING_PROVIDER 分发（默认进程内 local，隐私优先）。"""
         if self.provider == "openai":
             return self._embed_openai(text)
+        if self.provider == "local":
+            return self._embed_local(text)
         return self._embed_ollama(text)
+
+    def _embed_local(self, text: str) -> list[float]:
+        """用进程内 llama.cpp 生成向量（不依赖 Ollama 服务）。
+
+        pooling 必须 LAST：该模型（Qwen3-Embedding）是 decoder-only 因果 LM，
+        只有末位 token 见过整句（实测 mean→0.755 / cls→0.341，均废）。
+        输出必须 L2 归一化：与 Ollama 的输出尺度对齐（实测模长 1.0），
+        归一化自己算——不依赖 llama.cpp 的 normalize 参数，版本行为不稳。
+        """
+        global _LOCAL_LLM
+        if _LOCAL_LLM is None:
+            with _LOCAL_LLM_LOCK:
+                if _LOCAL_LLM is None:  # 双重检查：并发首调只加载一次
+                    try:
+                        from llama_cpp import LLAMA_POOLING_TYPE_LAST, Llama
+                    except ImportError as exc:
+                        raise EmbeddingUnavailableError(
+                            '本地 embedding 依赖 llama-cpp-python 未安装。请执行：pip install "palimpsest[local-embed]"'
+                        ) from exc
+                    from core.model_fetch import resolve_model_path
+
+                    model_path = ""
+                    try:
+                        model_path = resolve_model_path()
+                        _LOCAL_LLM = Llama(
+                            model_path=model_path,
+                            embedding=True,
+                            n_ctx=Config.EMBEDDING_LOCAL_N_CTX,
+                            n_threads=Config.EMBEDDING_LOCAL_N_THREADS or None,
+                            pooling_type=LLAMA_POOLING_TYPE_LAST,
+                            verbose=False,
+                        )
+                    except EmbeddingUnavailableError:
+                        raise
+                    except Exception as exc:
+                        raise EmbeddingUnavailableError(
+                            f"本地 embedding 模型加载失败（模型路径：{model_path}）：{exc}。"
+                            "请确认文件完整（缺失/损坏可删除后重新下载）、"
+                            "llama-cpp-python 版本 >= 0.3.36。"
+                        ) from exc
+
+        try:
+            vec = _LOCAL_LLM.embed(text)
+        except Exception as exc:
+            raise EmbeddingUnavailableError(
+                f"本地 embedding 推理出错（模型：{Config.EMBEDDING_MODEL_FILE}）：{exc}"
+            ) from exc
+        if not vec or len(vec) != self.dim:
+            raise EmbeddingUnavailableError(
+                f"本地 embedding 输出维度不符：实际 {len(vec) if vec else 0}，"
+                f"期望 {self.dim}（EMBEDDING_LOCAL_DIM）。请检查模型文件与维度配置。"
+            )
+        # L2 归一化（自己算，模长 1.0，与 Ollama 输出尺度对齐）
+        norm = sum(v * v for v in vec) ** 0.5
+        if norm == 0.0:
+            raise EmbeddingUnavailableError("本地 embedding 模型输出零向量，无法归一化。")
+        return [v / norm for v in vec]
 
     def _embed_ollama(self, text: str) -> list[float]:
         """

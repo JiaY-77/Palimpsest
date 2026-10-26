@@ -7,7 +7,7 @@ load_dotenv()
 # ---- Embedding provider auto-detect ----
 # When EMBEDDING_PROVIDER env var is not explicitly set, auto-detect:
 #   - Valid cloud EMBEDDING_API_KEY present → "openai"
-#   - Otherwise → "ollama" (local, private, zero-config)
+#   - Otherwise → "local" (in-process llama.cpp GGUF, zero-dependency-on-services)
 # "Valid key" excludes empty / whitespace-only / common placeholders
 # (e.g. YOUR_API_KEY from .env.example).
 _PLACEHOLDER_KEYS = frozenset({"", "your_api_key", "xxx", "changeme", "sk-xxx"})
@@ -18,7 +18,7 @@ def _detect_embedding_provider() -> str:
 
     Explicit ``EMBEDDING_PROVIDER`` env var always wins (fully backward-compatible).
     When unset, a non-placeholder ``EMBEDDING_API_KEY`` implies ``"openai"``;
-    otherwise fall back to ``"ollama"``.
+    otherwise fall back to ``"local"``.
     """
     raw = os.getenv("EMBEDDING_PROVIDER")
     if raw:
@@ -26,7 +26,7 @@ def _detect_embedding_provider() -> str:
     key = os.getenv("EMBEDDING_API_KEY", "").strip()
     if key.lower() not in _PLACEHOLDER_KEYS:
         return "openai"
-    return "ollama"
+    return "local"
 
 
 # 项目根 = config.py 所在目录（直接运行时为仓库根，pip 安装后为 site-packages 下包目录）。
@@ -238,7 +238,8 @@ class Config:
 
     # ---- Embedding 配置（2026-08-25 开源多选择：本地隐私优先，云端精度可选）----
     # EMBEDDING_PROVIDER：显式设置时以环境变量为准（完全向后兼容）；
-    # 未设置时自动探测：有可用云端 EMBEDDING_API_KEY → "openai"，否则 → "ollama"。
+    # 未设置时自动探测：有可用云端 EMBEDDING_API_KEY → "openai"，否则 → "local"
+    # （进程内 llama.cpp 跑 GGUF，不再依赖 Ollama 常驻服务）。
     # 「可用」排除空值 / 纯空白 / 常见占位符（YOUR_API_KEY 等，见 _detect_embedding_provider）。
     # 注意：换 provider = 换向量空间，必须全量重建知识库索引（scripts/build_kb_index.py）
     EMBEDDING_PROVIDER = _detect_embedding_provider()
@@ -254,6 +255,37 @@ class Config:
     EMBEDDING_BASE_URL = os.getenv("EMBEDDING_BASE_URL", "https://api.voyageai.com/v1")
     EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "voyage-3")
     EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1024"))
+
+    # ---- 本地词嵌入（provider=local：进程内 llama.cpp 跑 GGUF，不依赖 Ollama 服务）----
+    # 背景（2026-10-26 实测）：Qwen3-Embedding-0.6B-Q8_0.gguf 在 llama.cpp 下
+    # pooling 必须 LAST（decoder-only 因果 LM，只有末位 token 见过整句；mean/cls
+    # 余弦只有 0.755/0.341），输出再 L2 归一化即可与 Ollama 同一向量空间（cos 0.9994）。
+    # 非空 = 直接指向本地 GGUF 绝对路径：跳过下载与缓存目录逻辑，缺文件直接报错。
+    EMBEDDING_MODEL_PATH = os.getenv("EMBEDDING_MODEL_PATH", "")
+    # 下载用的 ModelScope/HuggingFace 仓库（国内首选 ModelScope，auto 会先试它）
+    EMBEDDING_MODEL_REPO = os.getenv("EMBEDDING_MODEL_REPO", "Qwen/Qwen3-Embedding-0.6B-GGUF")
+    # 下载用的文件名（同时也是缓存目录内的文件名）
+    EMBEDDING_MODEL_FILE = os.getenv("EMBEDDING_MODEL_FILE", "Qwen3-Embedding-0.6B-Q8_0.gguf")
+    # 完整性校验：sha256（不匹配=删 .part 报错，绝不留坏文件）
+    EMBEDDING_MODEL_SHA256 = os.getenv(
+        "EMBEDDING_MODEL_SHA256",
+        "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
+    )
+    # 字节数（用于进度条与完整性校验）
+    EMBEDDING_MODEL_SIZE = int(os.getenv("EMBEDDING_MODEL_SIZE", "639150592"))
+    # 模型缓存目录；空 = <项目根>/models
+    EMBEDDING_MODELS_DIR = os.getenv("EMBEDDING_MODELS_DIR", "")
+    # 缺模型时是否自动下载（0 = 拒绝下载并给出手动放置指引）
+    EMBEDDING_AUTO_DOWNLOAD = os.getenv("EMBEDDING_AUTO_DOWNLOAD", "1") == "1"
+    # 下载源：auto（ModelScope→HuggingFace 依次试）/ modelscope / huggingface
+    # 注意：不要用 hf-mirror.com——它对本仓库返回 308 永久重定向回 huggingface.co。
+    EMBEDDING_DOWNLOAD_SOURCE = os.getenv("EMBEDDING_DOWNLOAD_SOURCE", "auto").strip().lower()
+    # 本地模型输出维度（Qwen3-Embedding-0.6B = 1024）
+    EMBEDDING_LOCAL_DIM = int(os.getenv("EMBEDDING_LOCAL_DIM", "1024"))
+    # llama.cpp 上下文长度：实测基准值 2048，勿擅自放大（放大直接吃内存/速度）
+    EMBEDDING_LOCAL_N_CTX = int(os.getenv("EMBEDDING_LOCAL_N_CTX", "2048"))
+    # CPU 线程数；0 = 交 llama.cpp 自动决定
+    EMBEDDING_LOCAL_N_THREADS = int(os.getenv("EMBEDDING_LOCAL_N_THREADS", "0"))
 
     # ---- 根据后端动态取得当前使用的配置 ----
     @classmethod

@@ -6,8 +6,21 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **内置本地词嵌入后端（`EMBEDDING_PROVIDER=local`）**：用 `llama-cpp-python` 在**进程内**跑 GGUF，不再依赖 Ollama 常驻服务，`ollama` / `openai` 两个后端保留为可选。三个后端共用同一套 `embed_text()` 分发，`reindex` / `reembed` / REST 侧无需区分。
+  - 模型获取：`core/model_fetch.py` 负责路径解析与首次下载——ModelScope 优先（国内直连）、HuggingFace 兜底；**不用 `hf-mirror.com`**（实测它对 `Qwen/Qwen3-Embedding-0.6B-GGUF` 返回 308 永久重定向回官方，等于白绕）。下载带 `Range` 断点续传、大小 + sha256 双校验、`.part` 原子落盘；校验不通过立即删除半成品，不留「文件在但内容坏」的坑。已装 Ollama 的用户可用 `EMBEDDING_MODEL_PATH` 直接指向已有 blob——两处是同一个文件（sha256 `06507c7b…`，639150592 B，Q8_0）。
+  - **pooling 必须 `LAST`**：该模型基座是 decoder-only 因果 LM（`Qwen/Qwen3-0.6B-Base`），只有末位 token 见过整句。实测同一 GGUF 下 `last` 与 Ollama 基准 cosine **0.99942**；`mean` 0.755、`cls` 0.341——不是模型差，是取错了位置（官方 `last_token_pool` 亦如此，且需按 `attention_mask` 取最后一个**真实** token，批量推理右侧 padding 会踩空）。
+  - 输出**由本实现自己做 L2 归一化**（不依赖 llama.cpp 的 `normalize` 参数，版本行为不稳），与 Ollama 输出尺度对齐；实测三条文本 local 侧模长均为 `1.000000`，与 Ollama cosine 0.99934–0.99953。
+  - 换引擎不换模型：语义等价（0.999+），但两后端的读写**不可混用**（分数密集时千分之一扰动即可改排序，混用 top-5 重合仅 66%），落地方案是一次性全量 reembed（实测 2880 条约 40 分钟）。
+
+### 变更
+
+- **默认 embedding provider 从 `ollama` 改为 `local`**：不设 `EMBEDDING_PROVIDER` 且无云端 key 时走内置引擎，新用户不再需要先装 Ollama。显式设置始终优先（完全向后兼容）。**存量库升级需重嵌全库**（本版尚无指纹守卫，下一版补）。
+
 ### 依赖
 
+- **新增可选依赖 `llama-cpp-python>=0.3.36,<0.4`（extras：`local-embed`）**：不装也能用 `ollama` / `openai` 后端。⚠️ 它在 PyPI **没有预编译 wheel**，`pip install` 会走源码编译（要求 CMake + MSVC，多数机器失败）；须走官方 CPU wheel 索引 `--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu`（README 已写明）。上限钉在 `<0.4`：`pooling_type` 常量与 `embed()` 签名属可变更的 API 面，大版本升级须先在隔离环境验证向量一致性（同文本新旧引擎 cosine ≥0.999）再放宽。
 - **triviumdb 回退并钉死 `0.8.10`**：`0.8.11` 的文本索引校验（`src/storage/file_format.rs::read_deferred_text_index` 用主库记录的 `.text` 长度 / CRC 校验磁盘文件）与本版「`load_text_index=false` 时 `flush()` 保留已有 `.text` 文件」的写入语义冲突，会导致**整库写操作全部失败**——报 `ImmutableArtifactError: 未加载的文本索引缺失、损坏或与主数据不匹配`，而读取、`node_count()`、`/doctor` 全部正常，因此升级时的冒烟检查（含 `/doctor` 八项全绿）发现不了。实测同一库、同一时刻：`0.8.10` 读写全部正常，`0.8.11` 任一写操作（`insert` 之后的 `flush()`、`build_text_index()`）必失败，可来回切换 100% 复现。上游已报 [YoKONCy/TriviumDB#72](https://github.com/YoKONCy/TriviumDB/issues/72)——`0.9.0-beta.1` 仍复现，且一次失败的 `flush()` 会留下不一致的文件组、使库**无法再次打开**。恢复写入的方式是把 pin 退回 `0.8.10`；上游修复前不要升级。`0.8.10` 下依赖 `>=0.8.11` 文本索引语义的 `tests/test_tdb_text_channel.py` 保持原有 skip 行为。
 
 ## [2.15.0] - 2026-10-22

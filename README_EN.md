@@ -12,7 +12,7 @@ Pa·limp·sest: *a writing surface that is overwritten again and again while old
 | Python | 3.10+ |
 | License | MIT |
 | Storage | TriviumDB 0.8.10 (vector + graph + document, embedded) |
-| Backends | DeepSeek / Ollama (LLM), Ollama / OpenAI-compatible (embeddings) |
+| Backends | DeepSeek / Ollama (LLM), built-in local / Ollama / OpenAI-compatible (embeddings) |
 | CI | [![CI](https://github.com/JiaY-77/Palimpsest/actions/workflows/ci.yml/badge.svg)](https://github.com/JiaY-77/Palimpsest/actions/workflows/ci.yml) |
 
 **English** | [中文](./README.md)
@@ -118,34 +118,53 @@ We treat a vault not as "files" but as a **source of knowledge**: recursively sc
 python -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
+# Built-in embedding engine (needed by the default EMBEDDING_PROVIDER=local;
+# skip it if you plan to use the ollama / openai backends instead)
+# NOTE: llama-cpp-python ships no prebuilt wheels on PyPI, so a plain install
+# tries to compile from source (needs CMake + MSVC and usually fails).
+# Use the official CPU wheel index:
+pip install "llama-cpp-python>=0.3.36,<0.4" \
+  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
 ```
 
 ### Hardware requirements
 
-**No discrete GPU required.** The default local embedding model `qwen3-embedding:0.6b` was measured on a **pure CPU** setup at 209 ms end-to-end retrieval (stable mean) and ~92–296 ms per item when indexing — imperceptible for a memory lookup between conversation turns. Full measurements for all three tiers (pure CPU / integrated GPU / discrete GPU), reproduction commands, and how to pin a tier are in [`docs/HARDWARE.md`](docs/HARDWARE.md).
+**No discrete GPU required.** The local embedding model `qwen3-embedding:0.6b` (1024-dim) was measured on a **pure CPU** setup at 209 ms end-to-end retrieval (stable mean) and ~92–296 ms per item when indexing over Ollama — imperceptible for a memory lookup between conversation turns. Full measurements for all three tiers (pure CPU / integrated GPU / discrete GPU), reproduction commands, and how to pin a tier are in [`docs/HARDWARE.md`](docs/HARDWARE.md).
 
-If you would rather not install Ollama at all, take **Path A (cloud key)** — zero extra local dependencies. **The real cost of local deployment is the install step, not hardware performance**, which the measurements show is not a barrier.
+The built-in engine (`EMBEDDING_PROVIDER=local`, `llama-cpp-python`) takes ~0.8 s per embedding on a pure CPU with Q8_0 quantization (a full re-embed of 2,880 nodes takes ~40 min); its end-to-end retrieval latency has not been benchmarked in that same table yet — use the Ollama path if you need it faster.
 
-### Path A: Cloud API key — fastest start (no Ollama)
+**The local barrier is "do I have the model file", not hardware** — the model is downloaded once on first run and everything works offline afterwards.
+
+### Path A (default): built-in local embeddings, zero external dependencies
 
 ```bash
 cp .env.example .env
-# Edit .env: fill in your cloud embedding key + LLM key
-#    EMBEDDING_API_KEY=your_key          # leave empty or delete → local Ollama
-#    EMBEDDING_BASE_URL / EMBEDDING_MODEL / EMBEDDING_DIM  per your provider
-#    DEEPSEEK_API_KEY=your_key           (required when LLM_BACKEND=deepseek)
+# Edit .env: fill in DEEPSEEK_API_KEY (or set LLM_BACKEND=ollama for a fully local chat model)
 ```
 
-### Path B: Local Ollama (privacy-first, data never leaves your machine)
+The first run downloads the embedding model (`Qwen3-Embedding-0.6B` Q8_0, ~610 MB, from ModelScope by default — reachable from mainland China — falling back to HuggingFace), with sha256 verification, resume support and an explicit failure path. One download, then fully offline; no data leaves your machine.
+
+**Already have Ollama?** Don't download twice: point `EMBEDDING_MODEL_PATH` at the existing file (Ollama's `qwen3-embedding:0.6b` and the GGUF required here are the same file, identical sha256).
+
+### Path B: Reuse an existing Ollama (optional)
 
 ```bash
 # 1. Install and start Ollama (https://ollama.com); 2. Pull the embedding model
 ollama pull qwen3-embedding:0.6b
-# 3. Copy .env.example → .env and set DEEPSEEK_API_KEY (or LLM_BACKEND=ollama for full-local)
-cp .env.example .env
+# 3. Set EMBEDDING_PROVIDER=ollama in .env
 ```
 
-> **Both paths:** leaving `EMBEDDING_PROVIDER` empty auto-detects (valid `EMBEDDING_API_KEY` → cloud, otherwise local; set `openai` / `ollama` to force). Changing the provider changes the vector space — **you must rebuild the knowledge-base index** (see [Swapping models](#swapping-models--re-embedding)).
+Ollama listens on port 11434; this project's REST service yields the port when Ollama's desktop app owns it.
+
+### Path C: Cloud API key (no local model)
+
+```bash
+# Edit .env:
+#    EMBEDDING_API_KEY=your_key
+#    EMBEDDING_BASE_URL / EMBEDDING_MODEL / EMBEDDING_DIM  per your provider
+```
+
+> **All three paths:** leaving `EMBEDDING_PROVIDER` empty auto-detects (valid `EMBEDDING_API_KEY` → cloud, otherwise → built-in local; set `local` / `ollama` / `openai` to force). Changing the provider changes the vector space — **you must rebuild the knowledge-base index** (see [Swapping models](#swapping-models--re-embedding)).
 
 ### Run
 
@@ -194,9 +213,10 @@ All configuration is read from environment variables (a `.env` file is loaded au
 | `LLM_BACKEND` | `deepseek` | LLM backend: `deepseek` or `ollama` |
 | `DEEPSEEK_API_KEY` | *(empty)* | DeepSeek API key (required when `LLM_BACKEND=deepseek`) |
 | `OLLAMA_MODEL` | `deepseek-r1:7b` | Ollama chat model when `LLM_BACKEND=ollama` |
-| `EMBEDDING_PROVIDER` | *(empty = auto-detect)* | Embedding backend: empty auto-detects, or `ollama` / `openai` |
+| `EMBEDDING_PROVIDER` | *(empty = auto-detect)* | Embedding backend: empty auto-detects (cloud key → `openai`, otherwise `local`), or explicitly `local` / `ollama` / `openai` |
 | `OLLAMA_EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | Local Ollama embedding model |
 | `EMBEDDING_API_KEY` | *(empty)* | Cloud embedding endpoint key (setting it routes to `openai`) |
+| `EMBEDDING_MODEL_PATH` | *(empty)* | Local GGUF path; leave empty to auto-download. Can point at an existing Ollama blob to reuse it |
 | `KNOWLEDGE_DIR` | *(optional)* | Root of the knowledge base (Obsidian `.md` files) to index |
 
 ---
