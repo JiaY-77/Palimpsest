@@ -395,7 +395,13 @@ class TriviumStore:
                         ) from exc
 
         try:
-            vec = _LOCAL_LLM.embed(text)
+            # ★ 并发保护：ggml 的计算上下文不是线程安全的。REST 端点是同步 def
+            # （FastAPI 丢线程池），因此多请求是真并发；多个线程同时进 embed()
+            # 会触发 C 层 GGML_ASSERT（ggml-cpu/ops.cpp）直接 abort —— 进程消失，
+            # Python 拦不住、也没有 5xx 降级（见 issue #153）。
+            # 这里必须串行化；模型加载路径已在自己的 with 块内退出，不会重入本锁。
+            with _LOCAL_LLM_LOCK:
+                vec = _LOCAL_LLM.embed(text)
         except Exception as exc:
             raise EmbeddingUnavailableError(
                 f"本地 embedding 推理出错（模型：{Config.EMBEDDING_MODEL_FILE}）：{exc}"
