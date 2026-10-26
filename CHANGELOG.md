@@ -4,6 +4,13 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
+## [2.16.1] - 2026-10-26
+
+### 修复
+
+- **启动自检的「Embedding 服务可用」没有跟着 provider 分派**：`_check_embedding()` 此前只有 `openai` 和「其它」两条路，`local` 被 else 兜底当成 `ollama` 处理——于是内置引擎也在探测 `11434` 的 `/api/tags`。后果是**关掉 Ollama 后自检误报「Embedding 不可用」**，而检索实际完全正常，与 2.16.0「零外部依赖」的承诺直接冲突。现改为按 `EMBEDDING_PROVIDER` 三分支：`local` 直接实算一条向量（依赖未装 / 模型缺失 / 维度配置错都在这里如实暴露），`ollama` 保留「先探端口再实算」（端口不通时不必等满 embed 超时），`openai` 直接实算；三条路最终都以「非全零向量」为准——HTTP 可达不等于能用。
+- 失败文案按 provider 分开：`local` 现在给出带 `--extra-index-url` 的完整安装命令和模型文件指引，不再把内置引擎的问题说成「Ollama 没启动」。
+
 ## [2.16.0] - 2026-10-26
 
 ### 新增
@@ -555,6 +562,7 @@
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
 [Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.15.0...HEAD
+[2.16.1]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.16.1
 [2.16.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.16.0
 [2.15.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.15.0
 [2.14.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.14.0

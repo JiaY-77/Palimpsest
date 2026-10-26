@@ -116,47 +116,53 @@ def _all_zero(vec) -> bool:
 def _check_embedding() -> str:
     """检查⑤：Embedding 服务可用（向量非全零）。
 
-    策略：先用 HTTP 探测 Ollama 端点（快、准），可达后再实际调 embed_text
-    验证返回向量非全零——避免「自检通过但检索时向量全零」的静默失败。
+    按 ``EMBEDDING_PROVIDER`` 分派——三个后端的探测方式不一样，不能一刀切：
+
+    - ``local``  ：内置 llama.cpp，没有外部服务可探，直接实算一条向量。
+      依赖未装 / 模型文件缺失 / 维度配置错都会在这里如实暴露。
+    - ``ollama`` ：先 HTTP 探测 ``/api/tags``（2s 短超时，快、准），可达后再实算。
+      先探是为了「端口不通时不必等满 embed 超时」，不是为了替代实算。
+    - ``openai`` ：云端无法本地探测，直接实算。
+
+    三条路最后**都必须实算一次**：HTTP 可达 ≠ 能用（模型没拉取时照样返回全零，
+    那正是「自检全绿、检索全废」的静默失败来源）。
     """
     from config import Config  # 延迟导入，避免重 import 副作用
     from core.trivium_store import EmbeddingUnavailableError, TriviumStore
 
-    provider = getattr(Config, "EMBEDDING_PROVIDER", "ollama") or "ollama"
+    provider = getattr(Config, "EMBEDDING_PROVIDER", "local") or "local"
     store = TriviumStore()
-    fail_detail = (
-        "Ollama embedding 服务不可用，请确认已启动 Ollama 并 "
-        "ollama pull qwen3-embedding:0.6b；"
-        "若使用云端 EMBEDDING_PROVIDER=openai 请确认 EMBEDDING_API_KEY"
-    )
 
-    if provider == "openai":
-        # 云端：无法本地探测，直接实际调 embed_text 验证非全零
+    if provider == "local":
+        fail_detail = (
+            "内置 embedding 不可用：需安装 llama-cpp-python"
+            '（pip install "llama-cpp-python>=0.3.36,<0.4" '
+            "--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu）"
+            "，并确保模型文件可用（EMBEDDING_MODEL_PATH 指向本地 GGUF，或允许自动下载）"
+        )
+    elif provider == "openai":
+        fail_detail = "云端 embedding 不可用，请确认 EMBEDDING_API_KEY / EMBEDDING_BASE_URL / EMBEDDING_MODEL"
+    else:  # ollama
+        fail_detail = "Ollama embedding 服务不可用，请确认已启动 Ollama 并 ollama pull qwen3-embedding:0.6b"
+
+    # 只有 ollama 需要先探端口：端口不通时 embed_text 会白等一轮超时
+    if provider == "ollama":
         try:
-            emb = store.embed_text("ping")
-        except EmbeddingUnavailableError as e:
-            raise RuntimeError(fail_detail) from e
-        if _all_zero(emb):
-            raise RuntimeError(fail_detail)
-        return f"Embedding 服务可用 (provider=openai, dim={len(emb)})"
+            import requests
 
-    # 本地 ollama：先 HTTP 探测（2s 短超时，快、准）
-    try:
-        import requests
+            resp = requests.get(Config.OLLAMA_EMBEDDING_BASE_URL.rstrip("/") + "/api/tags", timeout=2)
+            resp.raise_for_status()
+        except Exception as e:
+            raise RuntimeError(f"{fail_detail}（探测失败: {e}）") from e
 
-        resp = requests.get(Config.OLLAMA_EMBEDDING_BASE_URL.rstrip("/") + "/api/tags", timeout=2)
-        resp.raise_for_status()
-    except Exception as e:
-        raise RuntimeError(f"{fail_detail}（探测失败: {e}）") from e
-
-    # HTTP 可达再实际 embed_text 验证非全零（模型未拉取时仍会返回全零）
+    # 三条路都要实算一次：可达 ≠ 能用，模型未就绪时可能返回全零向量
     try:
         emb = store.embed_text("ping")
     except EmbeddingUnavailableError as e:
-        raise RuntimeError(fail_detail) from e
+        raise RuntimeError(f"{fail_detail}（实际错误: {e}）") from e
     if _all_zero(emb):
-        raise RuntimeError(fail_detail)
-    return f"Embedding 服务可用 (provider=ollama, dim={len(emb)})"
+        raise RuntimeError(f"{fail_detail}（返回全零向量）")
+    return f"Embedding 服务可用 (provider={provider}, dim={len(emb)})"
 
 
 def _check_tdb_text() -> str:
