@@ -75,6 +75,21 @@
 
 不同的 embedding 模型产生不同的向量空间——**跨模型的向量不可混用**。如果切换了 `EMBEDDING_PROVIDER`、`OLLAMA_EMBEDDING_MODEL` 或 `EMBEDDING_MODEL`，必须对库中所有节点重新生成向量（重嵌），否则新旧向量空间互相排斥，检索质量会急剧下降。
 
+### 向量空间指纹
+
+库内会记录一条运维记录（`source=embedding-fingerprint`，全局唯一一条），内容是当前向量空间的标识：
+
+```
+space_id = sha256(provider | model | dim | pooling) 的前 16 位
+```
+
+- **启动自检**（`startup-check`）：不一致只打一行 WARN，**不改变退出码**（升级后服务仍能起）
+- **`doctor`**：作为第 9 项「向量空间一致性」——不一致判 **FAIL** 并直接给出修复命令
+- **`reindex` 开跑前**：比对并打印差异；`--force` / `--yes` 时继续，否则交互确认
+- **`reindex` 正常跑完且零失败**：写入 / 更新指纹（Ctrl+C 中断或部分失败时**不写**——向量只重算了一半，写指纹等于谎报）
+
+指纹里另存**引擎版本**（`engine`，如 `llama_cpp:0.3.36`），但它**不进 `space_id`**：引擎升级不改变向量空间，只记一条软提示（`doctor` 显示 WARN 而非 FAIL）。若引擎版本探测不到则记为 `unknown` 并静默——避免告警变成狼来了。
+
 ### 推荐操作顺序
 
 ```bash
@@ -86,6 +101,9 @@ python scripts/palimpsest_cli.py reindex --dry-run
 
 # 3. 正式执行（默认断点续跑，Ctrl+C 中断后可自动续跑）
 python scripts/palimpsest_cli.py reindex --yes
+
+# 换了模型 / provider 之后：一条命令到位（放弃断点 + 跳过指纹确认 + 全量重算 + 写新指纹）
+python scripts/palimpsest_cli.py reindex --force
 
 # 4. 验证：跑一次检索冒烟
 python scripts/palimpsest_cli.py search "测试" --top-k 3
@@ -99,6 +117,7 @@ python scripts/palimpsest_cli.py search "测试" --top-k 3
 | `--skip kb_chunk,novel_chunk` | 跳过指定类型 |
 | `--batch 128` | 每 128 个节点打印进度 |
 | `--restart` | 忽略断点，从头重嵌 |
+| `--force` | 接受当前向量空间并全量重算：放弃断点 + 跳过指纹确认，完成后写入新指纹（`--restart` 的超集） |
 
 ### 换维度（新模型输出维度不同）
 

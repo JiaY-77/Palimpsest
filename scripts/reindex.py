@@ -9,6 +9,7 @@
   python scripts/reindex.py --batch 64 --yes              # 批量打印进度、免二次确认
   python scripts/reindex.py --resume                      # 断点续跑（默认）
   python scripts/reindex.py --restart                     # 忽略进度，从头重嵌
+  python scripts/reindex.py --force                       # 接受当前向量空间并全量重算（--restart 超集）
 
 设计约束：
   - 只动向量，不碰 payload / 边 / 节点增删
@@ -32,6 +33,7 @@ except ImportError:  # 直接运行 scripts/reindex.py 时退化为同目录导�
     from _common import PROJECT_ROOT as _PROJECT_ROOT  # type: ignore[import-not-found, no-redef]  # noqa: F401
 
 from config import Config
+from core import embedding_fingerprint as ef
 from core.dims import get_db_dim as _get_db_dim
 from core.trivium_store import EmbeddingUnavailableError, TriviumStore
 
@@ -199,9 +201,17 @@ def cmd_check(store):
 # ---- 重嵌入主流程 ----
 
 
-def cmd_reindex(store, *, only=None, skip=None, batch=64, restart=False, dry_run=False, yes=False):
-    """重嵌入库中所有节点的向量。"""
+def cmd_reindex(store, *, only=None, skip=None, batch=64, restart=False, dry_run=False, yes=False, force=False):
+    """重嵌入库中所有节点的向量。
+
+    force（--force）：接受当前向量空间并全量重算 —— --restart 的超集：
+    忽略断点进度 + 跳过指纹不匹配确认，完成后写入新指纹。
+    """
     t0 = time.perf_counter()
+
+    # --force 是 --restart 的超集：放弃断点从头重算（--restart 单独用只放弃断点，旧语义不变）
+    if force:
+        restart = True
 
     # 1) DB 占用预检（必须在维度校验之前：维度校验要开库，锁库时会被误报成「读不到维度」）
     try:
@@ -222,6 +232,21 @@ def cmd_reindex(store, *, only=None, skip=None, batch=64, restart=False, dry_run
     print(f"维度校验: {msg}")
     if not ok:
         return 4 if actual is None else 2
+
+    # 2.5) 向量空间指纹比对（开跑前）：不一致打印差异，交给 --force / --yes / 交互确认决定。
+    # 只告警不硬拦：不一致时库还能用，重嵌本身就是修复动作的一部分。
+    stored_fp = ef.read_fingerprint(store)
+    current_fp = ef.current_fingerprint(store)
+    fp_verdict = ef.compare(stored_fp, current_fp)
+    if not fp_verdict["ok"]:
+        print("\n⚠ 向量空间指纹不一致:")
+        print(f"  {fp_verdict['reason']}")
+        print(f"  修复: {fp_verdict['hint']}")
+        if not (force or yes or dry_run):
+            confirm = input("确认继续重嵌（完成后将以当前向量空间写入新指纹）？[y/N] ")
+            if confirm.strip().lower() != "y":
+                print("已取消。换模型/引擎后请执行: python scripts/palimpsest_cli.py reindex --force")
+                return 0
 
     # 3) 收集待处理节点（完全消费 iter_nodes 释放 DB 连接，再逐节点 embed/update）
     only_set = set(only) if only else None
@@ -431,6 +456,17 @@ def cmd_reindex(store, *, only=None, skip=None, batch=64, restart=False, dry_run
             print(f"  结果:   {status}")
 
     print(f"\n状态文件: {state_file}")
+
+    # 7) 正常跑完且无失败 → 写入/更新向量空间指纹（下次启动/体检按此比对）。
+    #    Ctrl+C 中断或部分失败时不写：向量只重嵌了一半，写指纹等于谎报。
+    #    指纹写入用全 0 占位向量（不触发 embed），失败只告警，不吞重嵌结果。
+    if failed == 0 and not _interrupted:
+        try:
+            ef.write_fingerprint(store, ef.current_fingerprint(store))
+            print("\n已写入向量空间指纹（下次启动/体检按此比对）")
+        except Exception as e:  # noqa: BLE001 —— 指纹写入失败不影响重嵌结果
+            print(f"\n⚠ 指纹写入失败（不影响重嵌结果）: {e}", file=sys.stderr)
+
     if reindexed > 0:
         print("\n建议: 重嵌完成后跑一次检索冒烟验证检索结果")
         print('  python scripts/palimpsest_cli.py search "测试" --top-k 3')
@@ -466,6 +502,11 @@ def main():
         "--restart",
         action="store_true",
         help="忽略断点进度，从头重嵌所有节点",
+    )
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="接受当前向量空间并全量重算：放弃断点进度、跳过指纹不匹配确认，完成后写入新指纹",
     )
     p.add_argument(
         "--resume",
@@ -513,6 +554,7 @@ def main():
             restart=args.restart,
             dry_run=args.dry_run,
             yes=args.yes,
+            force=args.force,
         )
 
     sys.exit(code)

@@ -98,8 +98,19 @@ def test_reindex_dim_match_updates_vectors(iso_db):
     for nid in all_ids:
         assert new_vectors[nid] != old_vectors[nid], f"ID={nid} 向量未变"
 
-    # 节点总数不变
-    assert len(_collect_nodes(s)) == len(all_ids)
+    # 节点总数不变（reindex 只重嵌向量，不增删业务节点）
+    # 例外：正常跑完会写入一条向量空间指纹 record（source=embedding-fingerprint）。
+    # 那是新行为，单独断言——既保留「不增删业务节点」的原意，也验证指纹确实落库。
+    nodes_after = _collect_nodes(s)
+    biz_nodes = [
+        (nid, p, v)
+        for nid, p, v in nodes_after
+        if not (isinstance(p, dict) and p.get("source") == "embedding-fingerprint")
+    ]
+    assert len(biz_nodes) == len(all_ids)
+    fp_nodes = [p for _nid, p, _v in nodes_after if isinstance(p, dict) and p.get("source") == "embedding-fingerprint"]
+    assert len(fp_nodes) == 1, f"应恰好写入 1 条向量空间指纹，实际 {len(fp_nodes)} 条"
+    assert fp_nodes[0]["provider"] == s.provider
 
     # payload 未被改动（content 仍是改后的值；边仍在）
     for nid in all_ids:

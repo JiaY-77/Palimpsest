@@ -483,7 +483,7 @@ def cmd_startup_check(args):
 
 
 def cmd_doctor(args):
-    """部署体检：8 项全面检查，每项失败给具体修复命令，任一失败退出码 1。"""
+    """部署体检：9 项全面检查，每项失败给具体修复命令，任一失败退出码 1。"""
     result = run_doctor()
     if getattr(args, "json_output", False):
         print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -522,6 +522,7 @@ def cmd_reindex(args):
         restart=args.restart,
         dry_run=args.dry_run,
         yes=args.yes,
+        force=getattr(args, "force", False),
     )
     sys.exit(code)
 
@@ -687,7 +688,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("startup-check", help="启动自检（文件/存储/FTS/依赖），失败退出码 1")
     sp.set_defaults(fn=cmd_startup_check)
 
-    sp = sub.add_parser("doctor", help="部署体检（8 项全面检查，每项失败给具体修复命令）")
+    sp = sub.add_parser("doctor", help="部署体检（9 项全面检查，每项失败给具体修复命令）")
     sp.add_argument("--json", dest="json_output", action="store_true", help="输出机器可读 JSON（默认人类可读）")
     sp.set_defaults(fn=cmd_doctor)
 
@@ -702,6 +703,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--dry-run", action="store_true", help="试运行：只报告将要重嵌哪些节点，不实际写入")
     sp.add_argument("--restart", action="store_true", help="忽略断点进度，从头重嵌所有节点")
+    sp.add_argument(
+        "--force",
+        action="store_true",
+        help="接受当前向量空间并全量重算：放弃断点进度、跳过指纹不匹配确认，完成后写入新指纹",
+    )
     sp.add_argument("--resume", action="store_true", default=False, help="断点续跑（跳过已完成节点，默认行为）")
     sp.add_argument("--only", default="", help="只重嵌指定 payload.type（逗号分隔，如 memory,record）")
     sp.add_argument("--skip", default="", help="跳过指定 payload.type（逗号分隔，如 kb_chunk,novel_chunk）")

@@ -9,6 +9,7 @@
   ⑥     向量维度一致性（实测 embedding 维度 vs 库实际维度，复用 core.dims 逻辑）
   ⑦     domain 字段迁移状态（无 domain 但有 character_name 的历史兼容镜像存量）
   ⑧     运行时路径字符集（中文用户名等非 ASCII 路径下的依赖兼容性风险）
+  ⑨     向量空间一致性（指纹守卫：库内记录的 space_id/engine vs 当前配置，core.embedding_fingerprint）
 
 设计原则：
   - 单项失败不中断（embedding 不可用时其余检查项仍全部执行并展示）
@@ -194,6 +195,45 @@ def _check_legacy_domain_mirror():
     )
 
 
+def _check_embedding_space():
+    """第 9 项：向量空间一致性（指纹守卫）。
+
+    比对库内记录的向量空间指纹与当前配置（core.embedding_fingerprint）：
+    - ok 且无软告警            → PASS
+    - ok 但有软告警（引擎版本变）→ WARN（ok=True 不算失败，打印 soft_warnings）
+    - ok=False（指纹不一致）    → FAIL + reason/hint（hint 含 reindex --force）
+    - 读不到库                 → SKIP（ok=True 不 FAIL，库不可达交给前面各项报告）
+
+    返回 (ok, detail, fix, warn)。内部永不抛异常。
+    """
+    from core import embedding_fingerprint as ef
+    from core.trivium_store import TriviumStore
+
+    try:
+        store = TriviumStore()
+        stored = ef.read_fingerprint(store)
+        current = ef.current_fingerprint(store)
+        verdict = ef.compare(stored, current)
+    except Exception as e:  # noqa: BLE001 —— 读不到库跳过不 FAIL，不让体检整体崩掉
+        return (True, f"已跳过（无法读取记忆库/指纹）: {e}", "", False)
+
+    if verdict["ok"]:
+        if verdict["soft_warnings"]:
+            return (
+                True,
+                "向量空间一致，但有注意事项: " + "；".join(verdict["soft_warnings"]),
+                "",
+                True,
+            )
+        return (
+            True,
+            f"向量空间指纹一致 (space_id={current['space_id']}, engine={current['engine']})",
+            "",
+            False,
+        )
+    return (False, verdict["reason"], verdict["hint"], False)
+
+
 def run_doctor() -> dict:
     """执行全部体检，返回结构化结果（永不抛异常）。
 
@@ -205,6 +245,11 @@ def run_doctor() -> dict:
     # 第一阶段：复用 startup_check 的 5 项检查（fail-fast 已在其内部隔离）
     startup = run_startup_check()
     for c in startup["checks"]:
+        # startup_check 的「向量空间一致性」是轻量 WARN 版（不改 ok/退出码，见 core/startup_check.py）；
+        # doctor 需要 FAIL 语义 + 修复命令，由下面第五阶段单独实现。这里跳过同名项，
+        # 否则一次体检会出现两条「向量空间一致性」。
+        if c["name"] == "向量空间一致性":
+            continue
         checks.append(
             {
                 "name": c["name"],
@@ -247,6 +292,18 @@ def run_doctor() -> dict:
         }
     )
 
+    # 第五阶段：向量空间一致性（指纹守卫；warn=True 表示只告警不算失败）
+    ok, detail, fix, warn = _check_embedding_space()
+    checks.append(
+        {
+            "name": "向量空间一致性",
+            "ok": ok,
+            "detail": detail,
+            "fix": fix,
+            "warn": warn,
+        }
+    )
+
     return {"ok": all(c["ok"] for c in checks), "checks": checks}
 
 
@@ -282,7 +339,12 @@ def render_text(result: dict) -> str:
     lines.append("")
 
     for c in result["checks"]:
-        icon = "\u2705" if c["ok"] else "\u274c"
+        if not c["ok"]:
+            icon = "\u274c"
+        elif c.get("warn"):
+            icon = "\u26a0\ufe0f"  # WARN：只告警不算失败
+        else:
+            icon = "\u2705"
         lines.append(f"  {icon}  {c['name']}")
         if c["detail"]:
             lines.append(f"       {c['detail']}")

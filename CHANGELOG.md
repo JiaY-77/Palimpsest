@@ -13,10 +13,15 @@
   - **pooling 必须 `LAST`**：该模型基座是 decoder-only 因果 LM（`Qwen/Qwen3-0.6B-Base`），只有末位 token 见过整句。实测同一 GGUF 下 `last` 与 Ollama 基准 cosine **0.99942**；`mean` 0.755、`cls` 0.341——不是模型差，是取错了位置（官方 `last_token_pool` 亦如此，且需按 `attention_mask` 取最后一个**真实** token，批量推理右侧 padding 会踩空）。
   - 输出**由本实现自己做 L2 归一化**（不依赖 llama.cpp 的 `normalize` 参数，版本行为不稳），与 Ollama 输出尺度对齐；实测三条文本 local 侧模长均为 `1.000000`，与 Ollama cosine 0.99934–0.99953。
   - 换引擎不换模型：语义等价（0.999+），但两后端的读写**不可混用**（分数密集时千分之一扰动即可改排序，混用 top-5 重合仅 66%），落地方案是一次性全量 reembed（实测 2880 条约 40 分钟）。
+- **向量空间指纹守卫 + `reindex --force`**：库内记录一条运维记录（`source=embedding-fingerprint`，upsert 保证全局至多一条，多余的历史残留自动清掉），标识 `space_id = sha256(provider|model|dim|pooling)[:16]`。三处比对、三种力度：启动自检只打一行 WARN 且**不改退出码**（否则升级后服务起不来）；`doctor` 第 9 项「向量空间一致性」判 **FAIL** 并直接给出修复命令；`reindex` 开跑前比对差异并要求确认（`--force` / `--yes` 跳过）。
+  - **引擎版本单独记录、不进 `space_id`**：换引擎不改变向量空间（实测 cosine 0.9994），若也进哈希，则每次 `pip install --upgrade` 都判红，告警很快变成狼来了。故 `engine`（如 `llama_cpp:0.3.36`）只用于**软提示**，且任一方探测不到（`unknown`）时静默。
+  - **`reindex --force`** = 放弃断点 + 跳过指纹确认 + 全量重算，完成时写入新指纹；`--restart` 的旧语义（只放弃断点）不变，`--force` 是其超集。
+  - 指纹**只在零失败且未被 Ctrl+C 中断时写入**：向量只重算了一半却盖上「已完成」的章，等于让守卫失去意义。
+  - 已知代价：存量库升级后首次 `doctor` 必然 FAIL（库内还没有指纹记录），按提示跑一次 `reindex --force` 即转为 PASS。
 
 ### 变更
 
-- **默认 embedding provider 从 `ollama` 改为 `local`**：不设 `EMBEDDING_PROVIDER` 且无云端 key 时走内置引擎，新用户不再需要先装 Ollama。显式设置始终优先（完全向后兼容）。**存量库升级需重嵌全库**（本版尚无指纹守卫，下一版补）。
+- **默认 embedding provider 从 `ollama` 改为 `local`**：不设 `EMBEDDING_PROVIDER` 且无云端 key 时走内置引擎，新用户不再需要先装 Ollama。显式设置始终优先（完全向后兼容）。**存量库升级需重嵌全库**——向量空间标识变化由上面的指纹守卫在启动/体检时点名，一条 `reindex --force` 即可对齐。
 
 ### 依赖
 
