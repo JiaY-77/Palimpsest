@@ -4,6 +4,17 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
+## [Unreleased]
+
+### 新增
+
+- **REST `/mem/ingest` 支持可选 `meta` 自定义元数据（MCP `mem_ingest` 同步支持）**：键值均为字符串的字典，校验通过后原样写入节点 payload 的 `meta` 子字典，供外部宿主把记忆绑定到自己的会话实体上（如 `{"chat_id": "..."}`）。结构约束（不合法拒绝写入，REST 侧 422）：键 ≤8 个、键名 `^[a-zA-Z0-9_]{1,32}$`、值为字符串且 ≤256 字符（护栏集中在 `core/meta_guard.py`）。不传 / 空字典时 payload 不含 `meta` 键，payload 形状与旧行为完全一致。
+- **新 REST 端点 `POST /mem/purge-by-meta`：按「域名 + 自定义元数据」精确定位并批量删除**。典型场景：外置宿主（如酒馆 / SillyTavern 记忆桥）在用户删除聊天记录时，同步清空该聊天在记忆库里写入的节点。破坏性操作三道护栏：`domain` 必填非空（缺失 / 空串 400，不存在全库级删除）；`dry_run` 默认 true（缺省只返回 `matched_count` / `ids` / 每条 80 字 `previews` 预览，不删任何节点）；匹配数 > `max_delete`（默认 50）时 409 拒绝执行（附实际匹配数 + 预览）。真实删除逐条走节点删除链（级联清理关联边 + FTS/TDB 文本通道），单条失败记入 `failed` 不中断；每次执行写一条 `type=record` 审计节点（domain 同请求、importance 0.5、content 含 meta 键值 / deleted_ids / 时间戳），审计节点本身不带 `meta`，不会被同条件的 purge 连坐删除。
+
+### 测试
+
+- 新增 `tests/test_meta_tag_purge.py`（12 条）：meta 写入与非打标旧行为、三项结构校验拒绝（非法键名 / 值超长 / 键过多）、MCP 与 REST 同构共享写入路径、purge 的干跑缺省基线 / 精确命中删除 / 误删防护（同 meta 不同 domain 不删、同 domain 不同 meta 不删）/ 超限 409 一个不删 / 关联边级联清理 / `type=record` 审计节点且不带 `meta`。
+
 ## [2.16.2] - 2026-10-27
 
 ### 修复

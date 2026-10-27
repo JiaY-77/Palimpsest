@@ -27,6 +27,7 @@ import re
 import secrets
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,6 +37,7 @@ from pydantic import BaseModel
 from config import Config
 from core import tdb_text_index as _tdb_text
 from core.fts_index import sync_node
+from core.meta_guard import validate_meta
 from core.policy import check_search_query
 from core.reporting import generate_report
 from core.startup_check import run_startup_check
@@ -318,6 +320,7 @@ def root():
             "/skill/search",
             "/mem/hybrid-search",
             "/mem/ingest",
+            "/mem/purge-by-meta",
             "/mem/link",
             "/memoryhub/unpack",
             "/memoryhub/import",
@@ -616,6 +619,19 @@ class MemIngestRequest(BaseModel):
     source: str = ""
     # 显式取代：逗号分隔的旧节点 id。取代默认不自动发生，仅显式声明才标 outdated。
     replaces: str = ""
+    # 可选自定义元数据（如 {"chat_id": "..."}）：结构校验见 core.meta_guard，
+    # 通过后原样写入 payload 的 meta 子字典；不传 / 空字典时 payload 不含 meta 键。
+    meta: dict[str, str] | None = None
+
+
+class MemPurgeByMetaRequest(BaseModel):
+    # 按「域名 + 自定义元数据」批量删除（酒馆记忆桥：用户删聊天 → 同步清记忆）。
+    # domain 是防误删的硬闸门：缺失或空串一律 400，无法针对全库执行。
+    domain: str = ""
+    meta_key: str
+    meta_value: str
+    dry_run: bool = True  # 默认干跑：只预览不删除
+    max_delete: int = 50  # 单次真实删除上限：匹配数超过即 409 拒绝执行
 
 
 class MemHybridSearchRequest(BaseModel):
@@ -758,6 +774,11 @@ def mem_hybrid_search(req: MemHybridSearchRequest):
 
 @app.post("/mem/ingest")
 def mem_ingest(req: MemIngestRequest):
+    # meta 结构校验（core.meta_guard）：不合法直接 422，不去打 embedding。
+    if req.meta is not None:
+        meta_ok, meta_err = validate_meta(req.meta)
+        if not meta_ok:
+            raise HTTPException(status_code=422, detail=meta_err)
     result = _mcp_mem_ingest(
         req.content,
         type=req.type,
@@ -765,6 +786,7 @@ def mem_ingest(req: MemIngestRequest):
         domain=req.domain,
         source=req.source,
         replaces=req.replaces,
+        meta=req.meta,
     )
     # 校验类拒绝（空内容 / 超长）：REST 侧映射为 422，返回友好 message；
     # 其余 stored:false（如事务失败/secret 强拒，不携带 node_id 键）仍按 JSON 原样返回，不改语义。
@@ -775,6 +797,96 @@ def mem_ingest(req: MemIngestRequest):
     if not payload.get("stored") and "node_id" in payload and payload.get("node_id") is None:
         return JSONResponse(status_code=422, content={"detail": payload.get("error", "内容校验失败")})
     return _as_json(result)
+
+
+@app.post("/mem/purge-by-meta")
+def mem_purge_by_meta(req: MemPurgeByMetaRequest):
+    """按「域名 + 自定义元数据」精确批量删除记忆节点。
+
+    外置宿主（酒馆记忆桥）在用户删除聊天记录时，需要把该聊天的记忆一并
+    清空：写入端在 ingest 时打 ``meta`` 标（如 ``{"chat_id": "..."}``），
+    删除端在这里按「``payload.domain == domain`` 且 ``payload.meta[meta_key]
+    == meta_value``」匹配后逐个删除（走 store.delete_node，级联清理关联边
+    与 FTS/TDB 文本通道）。
+
+    破坏性操作的三道护栏：
+      1. ``domain`` 必填非空（缺失 / 空串 400）——不允许针对全库删除；
+      2. ``dry_run`` 默认 true——缺省只预览（matched_count / ids / previews），
+         不删任何节点；
+      3. 匹配数 > ``max_delete`` 时 409 拒绝执行（附实际匹配数 + 预览），
+         防止一次删爆。
+    每次真实删除写一条 ``type=record`` 审计节点（domain 同请求、importance=0.5、
+    content 含 meta 键值 / deleted_ids / 时间戳）；审计节点本身不带 meta，
+    不会被后续同条件的 purge 连坐删除。
+    """
+    if not (req.domain or "").strip():
+        raise HTTPException(status_code=400, detail="domain 必填且非空：本端点不允许针对全库删除")
+    if not req.meta_key or not req.meta_value:
+        raise HTTPException(status_code=400, detail="meta_key 与 meta_value 必填且非空")
+
+    # 先物化匹配结果再写库：iter_payloads 的生成器遍历期间占用连接，遍历中
+    # 写入必报 Database locked（先 list() 物化后再批量删）。
+    matched: list[tuple[int, str]] = []
+    for node_id, payload in _get_store().iter_payloads():
+        if payload.get("domain") == req.domain and (payload.get("meta") or {}).get(req.meta_key) == req.meta_value:
+            matched.append((int(node_id), (payload.get("content") or "")[:80]))
+    matched.sort()
+    matched_ids = [nid for nid, _ in matched]
+    previews = [snippet for _, snippet in matched]
+
+    if req.dry_run:
+        return {"dry_run": True, "matched_count": len(matched_ids), "ids": matched_ids, "previews": previews}
+
+    if len(matched_ids) > req.max_delete:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": f"匹配 {len(matched_ids)} 个节点，超过 max_delete={req.max_delete}，拒绝执行",
+                "matched_count": len(matched_ids),
+                "ids": matched_ids,
+                "previews": previews,
+            },
+        )
+
+    deleted_ids: list[int] = []
+    failed_ids: list[int] = []
+    store = _get_store()
+    for node_id in matched_ids:
+        try:
+            store.delete_node(node_id)
+            deleted_ids.append(node_id)
+        except Exception as e:  # noqa: BLE001 —— 单条失败不中断（记入 failed 继续）
+            logger.warning("purge-by-meta 删除节点 %s 失败: %s", node_id, e)
+            failed_ids.append(node_id)
+
+    audit_node_id = _write_purge_audit_record(req, deleted_ids, failed_ids)
+    return {
+        "dry_run": False,
+        "matched_count": len(matched_ids),
+        "deleted_count": len(deleted_ids),
+        "deleted_ids": deleted_ids,
+        "failed": failed_ids,
+        "audit_node_id": audit_node_id,
+    }
+
+
+def _write_purge_audit_record(req: MemPurgeByMetaRequest, deleted_ids: list[int], failed_ids: list[int]) -> int | None:
+    """真实删除后写一条 type=record 审计节点，返回其 node_id（写不出则 None）。
+
+    审计节点不带 meta——自身不会被同条件的 purge 连坐删除。审计失败不回滚
+    删除（节点已删、不可逆），仅审计链断档。
+    """
+    content = (
+        f"[purge-by-meta] domain={req.domain} meta.{req.meta_key}={req.meta_value} "
+        f"deleted_ids={deleted_ids} failed={failed_ids} "
+        f"at={datetime.now(timezone.utc).isoformat()}"
+    )
+    result = _mcp_mem_ingest(content, type="record", importance=0.5, domain=req.domain)
+    try:
+        payload = json.loads(result)
+    except Exception:  # noqa: BLE001 —— 解析失败按审计未写入处理
+        payload = {}
+    return payload.get("node_id") if payload.get("stored") else None
 
 
 @app.post("/mem/link")

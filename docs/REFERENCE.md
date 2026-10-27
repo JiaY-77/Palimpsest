@@ -90,7 +90,8 @@ python scripts/build_kb_index.py --rules rules.json
 |---|---|---|
 | `GET` | `/` | 服务信息 + 版本 + 端点索引 |
 | `POST` | `/mem/search` | 统一检索 |
-| `POST` | `/mem/ingest` | 写入新记忆（含冲突检测 + 敏感扫描；`replaces` 字段显式声明取代） |
+| `POST` | `/mem/ingest` | 写入新记忆（含冲突检测 + 敏感扫描；`replaces` 字段显式声明取代；可选 `meta` 元数据字典见 docs/API.md） |
+| `POST` | `/mem/purge-by-meta` | 按「域名 + 自定义元数据」批量删除（`domain` 必填非空；`dry_run` 默认 true；超出 `max_delete` 409 拒绝） |
 | `POST` | `/memoryhub/unpack` | 只读解开 MemoryHub 记忆包（校验 + 人读摘要） |
 | `POST` | `/memoryhub/import` | 把记忆包里的节点入籍（`select` 为空 = 只预览不写；`include_secrets` 放行强敏感节点） |
 | `POST` | `/graph/neighbors` | 某节点的图谱邻居 |
