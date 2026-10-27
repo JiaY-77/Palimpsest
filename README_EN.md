@@ -21,7 +21,235 @@ Pa·limp·sest: *a writing surface that is overwritten again and again while old
 
 ---
 
-## Features
+## What it is
+
+A **local memory store**: what your AI harvests in a session becomes nodes in a local database, and any later session can find it again **by meaning**, not by keyword.
+
+- **Runs without an API key.** Storage, retrieval, the graph, and version chains happen entirely locally; an LLM is only used when generating reports and can be left unconfigured altogether.
+- **Zero external dependencies.** The built-in vector engine (`llama-cpp-python` + a bundled GGUF model) runs fully offline once installed; Ollama is an optional speed-up path, not a requirement.
+- **One process is the single writer.** REST on `:8090` is the only entry point - MCP / CLI / scripts all go through it, so no second writer can corrupt the store.
+- **The data is one directory.** `.db` + `.vec` / `.gidx` / `.pidx` sidecars plus `fts.db` under `data/`, one group: back all of it up and you can move the store.
+
+---
+
+## Install
+
+**5-10 minutes end to end, no API key needed.** The embedding model is ~610 MB and downloads on first run only.
+
+### 0. Preflight
+
+```bash
+python --version    # 3.10+ required
+```
+
+If it fails, install Python 3.10+ first. On Windows, activate the venv with `venv\Scripts\activate`.
+
+### 1. Clone and install dependencies
+
+```bash
+git clone https://github.com/JiaY-77/Palimpsest.git
+cd Palimpsest
+python -m venv venv
+source venv/bin/activate          # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+> ⚠️ This project is **not published to PyPI**. `pip install palimpsest` installs an unrelated package uploaded in 2023 - it cannot start.
+
+### 2. The vector engine (the default is already decided - nothing to choose)
+
+With `EMBEDDING_PROVIDER` unset, it auto-detects: a cloud `EMBEDDING_API_KEY` means `openai`, otherwise it means the **built-in `local` engine (recommended, zero external dependencies)**.
+
+```bash
+cp .env.example .env
+
+# The built-in engine needs llama-cpp-python. It has no prebuilt wheel on PyPI,
+# so a plain install compiles from source (needs CMake + MSVC and mostly fails) -
+# use the official CPU wheel index:
+pip install "llama-cpp-python>=0.3.36,<0.4" \
+  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+```
+
+The first start downloads `Qwen3-Embedding-0.6B` Q8_0 (~610 MB; ModelScope by default - reachable from mainland China, with automatic HuggingFace fallback), sha256-verified and resumable. **Once only, fully offline afterwards.**
+
+**Already running Ollama?** Reuse it and skip the step above (optional, not required):
+
+```bash
+ollama pull qwen3-embedding:0.6b
+echo "EMBEDDING_PROVIDER=ollama" >> .env
+```
+
+### 3. Start the service
+
+```bash
+python scripts/palimpsest_cli.py doctor      # deployment health check: prints the fix for every failed item
+python -m uvicorn main:app --host 127.0.0.1 --port 8090
+```
+
+> **Never run multiple workers / instances**: triviumdb opens the store files in exclusive write mode, so the second write connection fails with `Database locked`, and a failed concurrent write can also pollute the file group without self-healing. Conflicts are loud (the CLI raises `DatabaseBusyError`, REST returns `503`), not a silent downgrade.
+
+On Windows, `scripts/start_rest.vbs` launches it in a hidden window (logs to `scripts/start_rest.log`).
+
+### 4. Verify (all three pass counts as installed)
+
+```bash
+# (1) the service is alive
+curl -s http://127.0.0.1:8090/
+# returns {"service":"Palimpsest","version":"v2.16.2","endpoints":[...]}
+
+# (2) the health check is all green
+python scripts/palimpsest_cli.py doctor
+
+# (3) write and read work - this checks semantic recall itself
+python scripts/palimpsest_cli.py ingest "install smoke test"
+python scripts/palimpsest_cli.py search "装好了吗"
+# returns {"results":[{"id":1,"type":"memory","score":0.4815,"summary":"install smoke test",...}]}
+```
+
+(3) is the real acceptance test: the query shares not one word with what was stored, yet it hits. If this step only succeeds through keyword matching, the vector lane is not connected.
+
+### 5. Plug it into your agent
+
+MCP clients (recommended - shares the REST process):
+
+```json
+{ "mcpServers": { "palimpsest": { "url": "http://127.0.0.1:8090/mcp/" } } }
+```
+
+Hermes:
+
+```bash
+mkdir -p ~/.hermes/plugins/palimpsest && cp hermes-plugin/* ~/.hermes/plugins/palimpsest/
+hermes plugins enable palimpsest
+hermes config set memory.provider palimpsest
+hermes config set context.engine palimpsest-graph
+```
+
+---
+
+## What it solves
+
+| Symptom | How it is solved | Run it yourself |
+|---|---|---|
+| A new session forgets what you talked about last time | What you harvest is written as high-signal nodes into the local store; a new session recalls it **by semantics**, not by keyword hits | `mem_search "the architecture we discussed"` |
+| Memory piles up, several versions of the same thing coexist | Superseding is **declared by the writer** (`replaces`); the old version is marked `outdated` and linked through a `REVISED_BY` chain - never silently overwritten | `mem_version_history` |
+| A pile of Markdown the AI cannot read through | Files are sliced into the store **by headings** (`##`/`###` - a heading is a semantic boundary written by a human), while `[[wikilinks]]` become graph edges | `build_kb_index.py`, then `kb "TERM"` |
+| It forgets "why the decision was made back then" | Nodes carry type / importance / time dimensions; the reasoning itself is stored as `thought` nodes | `mem_fact_history` |
+| Your memory lives on someone else's server | Everything stays in the local `data/` directory; back up the whole file group to move it | `python scripts/backup_db.py --keep 7` |
+| Context blows up after many turns | Retrieval returns only **150-char summaries + metadata** by default; the full text is fetched again on demand | look at the size of a `mem_retrieve` response |
+
+**One design floor:** by default, no node is superseded just because its similarity is high. Similarity produces only relevance hints (`related_ids`); whether to supersede is decided by the party holding the full context - because "I like apples" and "I like apple pie" are highly similar yet are not the same thing at all.
+
+**Daily use** (what to record, how to set `importance`, when to supersede) is in **[`docs/USAGE.md`](docs/USAGE.md)**.
+
+---
+
+## Why not the others
+
+| | md folders | Pure vector stores | Cloud-hosted memory | **Palimpsest** |
+|---|---|---|---|---|
+| What it stores | files | vectors | vectors / text | nodes + weighted edges + vectors + time |
+| Ranking | none | yes | yes | yes (importance / time decay / hit counts) |
+| Conflict governance | none | none | partial | **explicit superseding + `REVISED_BY` version chains** |
+| Semantic recall | none (grep) | yes | yes | yes (vectors + FTS5 + RRF fusion) |
+| Relations | none | none | partial | **weighted graph + BFS diffusion + Leiden communities** |
+| Version traceability | none | none | rare | **bi-temporal (`valid_at` / `invalid_at`)** |
+| Data ownership | yours | yours | the platform's | **yours** |
+| Install cost | zero | medium | zero (needs an account) | **medium (Python + embedding model)** |
+
+**Three things we do not dodge:**
+
+1. **Installing is more work than an md folder.** On that point the md approach wins - granted. Where it starts to break is right after the install: once files reach the hundreds to thousands range, ranking, conflict governance, semantic recall and version chains all break together.
+2. **Single machine, single process.** One store allows exactly one writing process at a time; it is not designed for sharing across machines.
+3. **The multi-writer consistency spec is not done yet.** For now, keep a single primary writer.
+
+### Where Markdown sits in all this
+
+Not an external format to be made compatible - **the native material**.
+
+Palimpsest's first knowledge asset was 100+ Markdown notes (an Obsidian vault), so knowledge-base slicing defaults to cutting **by headings** (`core/index_rules.py` has three strategies, `file` / `heading` / `chars`, default `heading`) instead of hard-cutting by character count - headings were semantic boundaries written by humans to begin with.
+
+**Every layer of Markdown's structure gets used**: `##`/`###` as slice boundaries, `[[wikilinks]]` as graph edges, frontmatter as metadata, a retirement banner as lifecycle (skip indexing + purge stale chunks), and file `mtime` for incremental rebuilds (node ids stay, graph edges survive).
+
+> File-based memory uses only Markdown's **text**; Palimpsest uses its **structure**.
+
+---
+
+## When it breaks
+
+Run the health check first - it prints the matching fix command for every failed item:
+
+```bash
+python scripts/palimpsest_cli.py doctor
+```
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| The `Embedding` check fails | the built-in model is missing / corrupt, or Ollama is not running, or the cloud key is unset | delete the model file and re-download; `ollama pull qwen3-embedding:0.6b`; or fill in `EMBEDDING_API_KEY` |
+| `Database locked` / REST `503` | a second process opened the same store | keep exactly one writing process; stop the old REST / CLI first |
+| Vector dimension mismatch | the embedding model or provider was switched | `reindex --force` re-embeds everything and writes the new fingerprint |
+| `pip install llama-cpp-python` fails to build | it went down the compile-from-source path | use the official CPU wheel index (see Install, step 2) |
+| The port is taken | 8090 is already listened on by another process | switch `uvicorn --port`, or find the occupying process first |
+
+**REST is the single writer.** The CLI / dashboard / all scripts go through REST; stdio `mcp_server.py` is used only in pure-MCP setups that do not run REST (the escape hatch), because it opens the store files directly in exclusive write mode.
+
+---
+
+## Report an issue
+
+The install fails or the behavior looks wrong - open an issue: **[new issue](https://github.com/JiaY-77/Palimpsest/issues/new/choose)**
+
+Bring these three and fixes get turned around ten times faster:
+
+1. **The full `doctor` output** (secrets are masked; still give it one look for real keys before pasting)
+2. **OS / Python version / exactly which step you are stuck at** (referencing the numbered Install steps)
+3. **One reproducible command** (a single one is enough - paste the whole call, not "it does not run")
+
+- Bug: [`bug.yml`](.github/ISSUE_TEMPLATE/bug.yml) - Feature request: [`feature.yml`](.github/ISSUE_TEMPLATE/feature.yml)
+- Security vulnerabilities: do **not** open a public issue, see [`SECURITY.md`](SECURITY.md)
+- Want to change code: start with [`CONTRIBUTING.md`](CONTRIBUTING.md) (dev environment / adding tools / test requirements / commit conventions / PR process)
+- Merge gates: `pytest` + `ruff check` + `ruff format --check` + `mypy` + `scripts/readme_check.py --strict`; all five green before landing
+
+---
+
+## Deep dive
+
+Everything below is for when you want to go deeper: the mechanism inventory, the design trade-offs, the full install options, configuration, and the command reference.
+
+---
+
+## Not just another Markdown memory folder
+
+First, the relationship: **Markdown is not a format Palimpsest needs to stay compatible with - it is its native material.**
+
+Its first knowledge asset was 100+ Markdown notes, so slicing defaults to headings - boundaries written by humans, far smarter than hard-cutting by character count. Three strategies coexist in `core/index_rules.py`: `file` (whole file, unsliced) / `heading` (by heading, **the default**) / `chars` (by character count).
+
+### The difference is not "does it store md" - it is "does it use md's structure"
+
+Most file-based memory uses only Markdown's **text** - grep, full-text search, or the whole directory fed to the model. Palimpsest uses its **structure**:
+
+| Markdown structure | How Palimpsest uses it |
+|---|---|
+| `##` / `###` headings | slice boundaries - semantic levels a human marked themselves |
+| `[[wikilinks]]` | converted into graph edges (`WIKI_LINK`) |
+| `frontmatter` | metadata, handled separately before slicing |
+| the retire banner | lifecycle: not indexed + stale chunks purged - retired content is never recalled |
+| file `mtime` | incremental rebuilds: only changed files are rebuilt; node ids stay and graph edges survive |
+
+### The cost of reading text only: four hard limits that grow with scale
+
+| Limit | Symptom |
+|---|---|
+| **No ranking** | files pile up to hundreds or thousands, and what to read first depends on filenames and luck |
+| **No conflict governance** | two opposite versions of the same fact sit in two files; the model believes whichever it reads |
+| **No semantic recall** | different wording, no hit - "service port" never finds "listen 8095" |
+| **No version chain** | after an edit, what it used to be and why it changed is gone |
+
+None of the four shows at small scale; they all erupt together as the store grows. What Palimpsest adds on top of Markdown is exactly these four layers: hybrid retrieval (semantic + full-text + RRF fusion), graph diffusion, explicit superseding with `REVISED_BY` version chains, and the bi-temporal time dimension.
+
+---
+
+## Mechanism inventory
 
 Palimpsest is a **local-first embedded long-term memory system** that fuses **semantic vector search, a weighted knowledge graph, and full-text retrieval** into one local database. Its goal is to be the **memory backbone for an AI assistant** — so every conversation's gains are **searchable, linkable, and evolvable** instead of vanishing when the session closes.
 
@@ -29,7 +257,7 @@ This is a list of mechanisms, not a pile of features — every entry traces back
 
 **Retrieval**
 
-- 🗃️ **Hybrid retrieval.** Semantic vectors (cosine) fused with an FTS5 full-text index (`trigram` tokenizer for Chinese substrings) via RRF or a cascade; hits are labeled by source.
+- 🗃️ **Hybrid retrieval.** Semantic vectors (cosine) fused with an FTS5 full-text index (`trigram` tokenizer for Chinese substrings) via RRF or a cascade; hits are labeled by source. A second text lane - TDB BM25, **off by default** (`TDB_TEXT_ENABLED=1`, CJK 2-gram) - adds another recall path for Chinese for A/B testing; see `scripts/tdb_text_ab.py`.
 - 🔗 **Knowledge-graph recall.** Nodes connected by weighted edges (`RELATED_TO` / `REVISED_BY` / `CAUSES` / `REFERS_TO`); BFS expansion, scopeable to one domain "block" to prevent cross-domain pollution.
 - 🕸️ **Community detection.** Built-in Leiden clustering splits the store into topical clusters.
 - ✂️ **Token-efficient by design.** Retrieval returns a **150-char summary + metadata**, never full text; full content is fetched on demand.
@@ -53,17 +281,7 @@ This is a list of mechanisms, not a pile of features — every entry traces back
 - ✅ **Deployment doctor.** `doctor` checks critical files / storage / FTS / dependencies / Embedding / vector-dimension consistency / vector-space fingerprint / runtime path charset, printing an actionable fix per failure.
 - 🔐 **Optional API-key auth.** Off by default; setting `PALIMPSEST_API_KEY` requires a Bearer / X-API-Key header on REST.
 - 🎯 **Three interfaces, one core.** MCP (stdio and streamable-http), FastAPI REST, and a full CLI reuse the same tools, so behavior never drifts.
-- 🧠 **Dual Hermes plugins.** A Memory Provider plus a Context Engine for Hermes, enabled in one command (see the integration example below).
-
----
-
-## Why it exists · use cases
-
-Most AI apps suffer from three split data capabilities: session memory starting from zero, keyword-only knowledge bases, and memory piles that grow messier over time. Palimpsest solves "retrieve, relate, evolve" with **one local core**, avoiding shuttling data between a vector store, a document store, and a graph store.
-
-A "memory that doesn't disappear" example: you tell the assistant "the service listens on 8090", then a design change says "the port is now 8095". This rewrite is declared explicitly by the writer (`replaces`), so the old memory is not overwritten — it is marked `outdated` and linked via `REVISED_BY` to the new version, so the version chain always shows how the fact evolved. This is Palimpsest: overwritten but never lost, rewritable and traceable.
-
-It fits four scenarios: **long-term companion / personal assistant** (Hermes & co.) auto-recalls each turn, auto-sediments high-signal facts, and distills the graph before compression; **making a knowledge base semantic** (Obsidian) slices and vectorizes years of notes so search returns semantically relevant hits with graph neighbors; **fiction / worldbuilding vaults** ingest whole files and bulk-create edges, with community detection revealing relationships; **memory governance** uses secret scanning, conflict detection, consolidation, time decay and `promote` to keep the store clean.
+- 🧠 **Dual Hermes plugins.** A Memory Provider plus a Context Engine for Hermes, enabled in one command (see the integration example).
 
 ---
 
@@ -81,6 +299,18 @@ Most memory layers (LangGraph Store, AutoGen Memory, and similar) answer "can yo
 | **Reversible governance** | Merges and promotions cannot be undone | `consolidate` / `promote` default to dry-run, are idempotent, and can be rolled back precisely |
 
 These mechanisms all answer the same question: **once memory stops being "a record" and becomes "a history", how do you keep it accountable, reversible, and non-destructive.** Full design in [`docs/BITEMPORAL.md`](docs/BITEMPORAL.md) and [`SECURITY.md`](SECURITY.md).
+
+> **Installed and want the day-to-day guidance - go to [`docs/USAGE.md`](docs/USAGE.md)** (which tool when, how to set parameters, how to read the output).
+
+---
+
+## Why it exists · use cases
+
+Most AI apps suffer from three split data capabilities: session memory starting from zero, keyword-only knowledge bases, and memory piles that grow messier over time. Palimpsest solves "retrieve, relate, evolve" with **one local core**, avoiding shuttling data between a vector store, a document store, and a graph store.
+
+A "memory that doesn't disappear" example: you tell the assistant "the service listens on 8090", then a design change says "the port is now 8095". This rewrite is declared explicitly by the writer (`replaces`), so the old memory is not overwritten — it is marked `outdated` and linked via `REVISED_BY` to the new version, so the version chain always shows how the fact evolved. This is Palimpsest: overwritten but never lost, rewritable and traceable.
+
+It fits four scenarios: **long-term companion / personal assistant** (Hermes & co.) auto-recalls each turn, auto-sediments high-signal facts, and distills the graph before compression; **making a knowledge base semantic** (Obsidian) slices and vectorizes years of notes so search returns semantically relevant hits with graph neighbors; **fiction / worldbuilding vaults** ingest whole files and bulk-create edges, with community detection revealing relationships; **memory governance** uses secret scanning, conflict detection, consolidation, time decay and `promote` to keep the store clean.
 
 ---
 
@@ -109,7 +339,7 @@ We treat a vault not as "files" but as a **source of knowledge**: recursively sc
 
 ---
 
-## Quick Start
+## Full install options (the three embedding backends)
 
 ### Install (common)
 
@@ -190,6 +420,22 @@ python scripts/build_kb_index.py
 
 On Windows, `scripts/start_rest.vbs` launches REST in a hidden window (e.g. at login), logging to `scripts/start_rest.log`.
 
+### If the install fails
+
+Run the health check first - it prints every failure along with its matching fix command:
+
+```bash
+python scripts/palimpsest_cli.py doctor
+```
+
+The three most common causes:
+
+- **The Embedding check fails**: local Ollama is not running or the model is missing, then `ollama pull qwen3-embedding:0.6b`; for cloud, confirm `EMBEDDING_API_KEY` is set in `.env`.
+- **Python version / activation command**: Python 3.10+ is required; on Windows the venv is activated with `venv\Scripts\activate`, not `source venv/bin/activate`.
+- **Port or store taken**: REST defaults to 8090 - switch `--port` if it is taken; one store is accessed by one process at a time (a second one is rejected with `Database locked`).
+
+If even the health check cannot sort it out, open an issue at [Issues](https://github.com/JiaY-77/Palimpsest/issues/new/choose) and **paste the full `doctor` output** (secrets are masked, but give it one look for real keys before pasting). State "OS / Python version / exactly which step it stalls at" - far more useful than "it does not run".
+
 **MCP client integration** (recommended: HTTP, sharing the REST process):
 
 ```json
@@ -240,7 +486,9 @@ python scripts/build_kb_index.py --rules rules.json
 
 ---
 
-## Usage
+## Usage (command reference)
+
+> This section is the **command reference tables**. Daily use - which tool when, how to set parameters, how to read outputs - is in **[`docs/USAGE.md`](docs/USAGE.md)**.
 
 ### MCP tools (21) — `mcp_tools/*`
 
