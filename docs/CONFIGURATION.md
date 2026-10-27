@@ -40,6 +40,9 @@
 | `MEMORY_DECAY_FACTOR` | `0.95` | 月度记忆衰减（排序用，`score × importance × factor^(天/30)`）；`1.0` 关闭衰减；`kb_chunk` 节点永不衰减 | soft 模式：仅进入 ε 微调项 `recency_norm`（ε 默认 0.02 → 排序影响 ≤0.02，一年内约 0.01 量级，近乎半死参数）；hard 模式：乘性硬加权 |
 | `MEMORY_RERANK_MODE` | `soft` | 重排模式：`soft` = 语义分为主线 + ε 级元数据微调（默认）；`hard` = 旧版乘性硬加权（可回退） | — |
 | `SOFT_RERANK_EPS` | `0.02` | `soft` 模式的 ε：落在余弦分差区间的 15%–40%，只做 tie-break | `MEMORY_RERANK_MODE=soft` |
+| `MEMORY_CONFIDENCE_EPS` | `0` | 记忆置信度的 ε 级修正强度。置信度由可观测证据按 Subjective Logic 公式算出（见 [CONFIDENCE.md](CONFIDENCE.md)），**只做 tie-break、不做过滤**——实测按置信度过滤会掉 4.81pp 召回。实测最优 `0.05` | `> 0`（默认关闭） |
+| `MEMORY_CONFIDENCE_CENTER` | `0.27` | 把 belief `b` 映射到 `[-1,1]` 的中心点：`b == center` → 0 | `MEMORY_CONFIDENCE_EPS > 0` |
+| `MEMORY_CONFIDENCE_SPAN` | `0.15` | 映射跨度：`b ≥ center + span` 截断到 `+1` | `MEMORY_CONFIDENCE_EPS > 0` |
 | `DOMAIN_BOOST_EPS` | `0.10` | 域软加权加分（加性，作用在语义分上）：`domain_boost` 非空时对同域候选加此值 | `domain_boost` 参数非空 |
 | `KB_SOFT_RERANK_MULT` | `1.5` | `kb_chunk`（知识块不老化）在 `soft` 模式下的 ε 加成倍率 | `MEMORY_RERANK_MODE=soft` |
 | `DOMAIN_BIAS_WEIGHT` | `1.15` | 域偏置检索的额外权重 | `domain_bias` 参数非空 |
