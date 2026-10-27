@@ -22,7 +22,6 @@
 import importlib.util
 import os
 import socket
-import subprocess
 import tempfile
 import threading
 import time
@@ -145,7 +144,7 @@ def test_within_grace_blocks_immediate_restart(guard):
 
 def test_grace_expiry_allows_restart(guard):
     """宽限窗口过期后应放行。"""
-    service = "ollama"
+    service = "rest"
     guard.STARTUP_GRACE_SECONDS = 0.3
     guard._record_start(service)
     time.sleep(0.5)
@@ -158,67 +157,3 @@ def test_record_event_appends_jsonl(guard):
     events = Path(guard.EVENTS)
     assert events.exists()
     assert "test_marker" in events.read_text(encoding="utf-8")
-
-
-# ---------------------------------------------------------------------------
-# 桌面 app 保护（2026-10-26 抢端口事故）：app 在跑时 guard 必须放手
-# ---------------------------------------------------------------------------
-
-
-def test_main_skips_start_when_desktop_app_running(guard, monkeypatch, capsys):
-    """app 在跑 + 探活失败 → guard 不拉起自己的 serve，也不往 stdout 写。"""
-    started: list[str] = []
-    # REST 判 up（跳过 REST 分支避免副作用），Ollama 判 down（进入保护分支）
-    monkeypatch.setattr(guard, "_service_up", lambda url, host, port: url == guard.REST_URL)
-    monkeypatch.setattr(guard, "_within_grace", lambda service: False)
-    monkeypatch.setattr(guard, "_ollama_desktop_app_running", lambda: True)
-    monkeypatch.setattr(guard, "_start_ollama", lambda: started.append("ollama") or True)
-    # 保险：万一保护失效走到等待，也不许真等 15×2 秒
-    monkeypatch.setattr(guard, "_wait_alive", lambda url, attempts, interval=2.0: True)
-    guard.main()
-    assert started == []
-    assert capsys.readouterr().out == ""
-    assert "skipped_desktop_app" in Path(guard.EVENTS).read_text(encoding="utf-8")
-
-
-def test_main_starts_ollama_when_desktop_app_absent(guard, monkeypatch):
-    """app 不在 + 探活失败 → 照旧拉起，且恰好一次。"""
-    started: list[str] = []
-    monkeypatch.setattr(guard, "_service_up", lambda url, host, port: url == guard.REST_URL)
-    monkeypatch.setattr(guard, "_within_grace", lambda service: False)
-    monkeypatch.setattr(guard, "_ollama_desktop_app_running", lambda: False)
-    monkeypatch.setattr(guard, "_start_ollama", lambda: started.append("ollama") or True)
-    monkeypatch.setattr(guard, "_wait_alive", lambda url, attempts, interval=2.0: True)
-    guard.main()
-    assert started == ["ollama"]
-
-
-def test_ollama_desktop_app_running_matches_tasklist_bytes(guard, monkeypatch):
-    """tasklist 输出按 bytes 子串判断；「没找到」的提示文字必须判 False。"""
-    monkeypatch.setattr(guard.os, "name", "nt")  # 强制走 tasklist 分支（CI 在 Linux 上也能全平台跑）
-    monkeypatch.setattr(
-        guard.subprocess,
-        "run",
-        lambda *a, **k: subprocess.CompletedProcess(
-            [], 0, stdout=b"ollama app.exe            1234 Console                    1      1,024 K"
-        ),
-    )
-    assert guard._ollama_desktop_app_running() is True
-    # 没找到时 tasklist 输出的是提示文字而非空输出，不能拿「非空」当「在跑」
-    monkeypatch.setattr(
-        guard.subprocess,
-        "run",
-        lambda *a, **k: subprocess.CompletedProcess([], 0, stdout="信息: 没有运行的任务匹配指定标准。".encode("gbk")),
-    )
-    assert guard._ollama_desktop_app_running() is False
-
-
-def test_ollama_desktop_app_running_swallows_probe_errors(guard, monkeypatch):
-    """探测本身失败（tasklist 缺失/超时等）必须吞异常返回 False，不阻塞正常拉起。"""
-
-    def _boom(*args, **kwargs):
-        raise OSError("tasklist not found")
-
-    monkeypatch.setattr(guard.os, "name", "nt")
-    monkeypatch.setattr(guard.subprocess, "run", _boom)
-    assert guard._ollama_desktop_app_running() is False

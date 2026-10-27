@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
-"""Palimpsest service guard — restart the local services when they die.
+"""Palimpsest service guard — restart the local service when it dies.
 
-Guards two services that Palimpsest depends on:
+Guards the one service Palimpsest still depends on:
 
   * Palimpsest REST ``:8090``  — started via ``scripts/start_rest.vbs`` (Windows)
     or the configured start command (other platforms).
-  * Ollama ``:11434``          — the embedding backend Palimpsest depends on.
 
 Why this exists
 ---------------
-Both services can die silently. If the REST service dies, every memory tool
-fails. If Ollama dies, semantic search quietly degrades to keyword matching --
-no error is raised and the degradation is easy to miss.
+The REST service can die silently: if it does, every memory tool fails.
+
+Ollama is no longer guarded. Since the built-in local embedding backend
+(``EMBEDDING_PROVIDER=local``, llama-cpp-python in-process GGUF) landed,
+embedding no longer needs a resident service; Ollama remains an optional
+backend that the operator starts themselves. Guarding it here would spawn
+``ollama serve`` on machines that intentionally do not have it installed.
 
 Why restarts must be serialised (important)
 -------------------------------------------
@@ -66,11 +69,8 @@ PS_HOME = os.getenv("PALIMPSEST_HOME") or ""
 
 REST_HOST = os.getenv("PALIMPSEST_REST_HOST", "127.0.0.1")
 REST_PORT = int(os.getenv("PALIMPSEST_REST_PORT", "8090"))
-OLLAMA_HOST = os.getenv("OLLAMA_HOST_URL", "127.0.0.1")
-OLLAMA_PORT = int(os.getenv("OLLAMA_PORT", "11434"))
 
 REST_URL = f"http://{REST_HOST}:{REST_PORT}/"
-OLLAMA_URL = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}/api/tags"
 
 EVENTS = os.path.join(HERMES_HOME, "logs", "guard_events.jsonl")
 
@@ -84,7 +84,6 @@ STARTUP_GRACE_SECONDS = float(os.getenv("PALIMPSEST_GUARD_STARTUP_GRACE", "90"))
 _STATE_DIR = os.path.join(HERMES_HOME, "logs", "guard_state")
 
 _CREATE_NO_WINDOW = 0x08000000
-_DETACHED_PROCESS = 0x00000008
 
 
 # ---------------------------------------------------------------------------
@@ -257,64 +256,6 @@ def _start_rest(ps_home: str) -> bool:
         return False
 
 
-def _ollama_desktop_app_running() -> bool:
-    """Whether the Ollama desktop app (``ollama app.exe``) is running.
-
-    Why this exists: the Windows desktop app spawns and manages its own
-    ``ollama serve`` child on port 11434. During the app's startup window
-    (its port not yet listening), a guard-spawned ``ollama serve`` steals
-    the port; the app's own server then fails to bind forever and the app
-    retries endlessly, popping windows nonstop (2026-10-26 incident). The
-    guard must therefore stand down whenever the app is running and let it
-    manage its own server.
-
-    Conservative by design: any probe failure (tasklist missing, timeout,
-    access denied) returns ``False`` -- a failed probe must never block a
-    legitimate start. Non-Windows returns ``False``: the desktop-app form
-    only exists there. The image name is matched as ``bytes`` because
-    tasklist output is locale-encoded (GBK on zh-CN systems), and when no
-    process matches it prints a "no tasks" notice rather than nothing, so
-    output emptiness is not a usable signal.
-    """
-    if os.name != "nt":
-        return False
-    try:
-        proc = subprocess.run(
-            ["tasklist", "/FI", "IMAGENAME eq ollama app.exe", "/NH"],
-            capture_output=True,
-            timeout=10,
-        )
-    except Exception as e:  # noqa: BLE001 —— 探测失败视为「app 不在」，不阻塞正常拉起
-        logger.debug("guard: desktop-app probe failed: %s", e)
-        return False
-    return b"ollama app.exe" in proc.stdout
-
-
-def _start_ollama() -> bool:
-    """Start Ollama. Uses the ``ollama`` executable found on PATH."""
-    import shutil as _shutil
-
-    exe = _shutil.which("ollama")
-    if not exe:
-        # Fall back to the default Windows install location.
-        guess = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", "ollama.exe")
-        exe = guess if os.path.isfile(guess) else None
-    if not exe:
-        return False
-    try:
-        env = os.environ.copy()
-        # Drop OLLAMA_ORIGINS: Values like app://obsidian.md are rejected by
-        # newer Ollama releases and make the server crash on start.
-        env.pop("OLLAMA_ORIGINS", None)
-        kwargs = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "env": env}
-        if os.name == "nt":
-            kwargs["creationflags"] = _CREATE_NO_WINDOW | _DETACHED_PROCESS
-        subprocess.Popen([exe, "serve"], **kwargs)
-        return True
-    except Exception:  # noqa: BLE001 —— 拉起失败返回 False，由调用方记录事件
-        return False
-
-
 # ---------------------------------------------------------------------------
 # Guard loop
 # ---------------------------------------------------------------------------
@@ -348,29 +289,6 @@ def main() -> int:
             else:
                 messages.append(f"Palimpsest REST :{REST_PORT} start failed")
                 _record_event("rest", "restart_failed")
-
-    # --- Ollama ------------------------------------------------------------
-    if not _service_up(OLLAMA_URL, OLLAMA_HOST, OLLAMA_PORT):
-        if _within_grace("ollama"):
-            pass
-        elif _ollama_desktop_app_running():
-            # The desktop app manages its own ``ollama serve`` child; a
-            # guard-spawned serve would steal the port and leave the app
-            # retrying forever (see _ollama_desktop_app_running). Stand
-            # down and stay off stdout -- cron delivers stdout to the
-            # owner every run, and a healthy "app is handling it" is not
-            # worth a message every 2 minutes. Event log only.
-            _record_event("ollama", "skipped_desktop_app")
-        else:
-            _record_start("ollama")
-            issued = _start_ollama()
-            back = _wait_alive(OLLAMA_URL, 15) if issued else False
-            if back:
-                messages.append(f"Ollama :{OLLAMA_PORT} restarted")
-                _record_event("ollama", "restarted")
-            else:
-                messages.append(f"Ollama :{OLLAMA_PORT} start failed")
-                _record_event("ollama", "restart_failed")
 
     if messages:
         print("[guard] " + "; ".join(messages))
