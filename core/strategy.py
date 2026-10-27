@@ -995,20 +995,29 @@ def backfill_thought_origin(store, dry_run: bool = True) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 会话胶囊（「骨架即胶囊」收口）：session-end 一次性提取 → 合并成胶囊
+# 会话胶囊（「骨架即胶囊」收口）：post-turn 累进缓冲 → session-end 合并成胶囊
 #
-# 骨架问的四个问题本身就是一轮的决策记录，答案不该被扔掉。宿主在会话结束时
-# 把整场 messages 交给小帕（on_session_end → /lifecycle/session-end），每轮
-# assistant 消息里的 <thought> 都在其中：extract_session_thoughts 按序取出各轮，
-# parse_thought_sections 把编号答案解析成结构化字段，compose_session_capsule
-# 合并成一条 type=task + kind=handoff 的「会话胶囊」，由既有交接通道
+# 骨架问的四个问题本身就是一轮的决策记录，答案不该被扔掉。post-turn 把每轮
+# <thought> 的编号答案解析成结构化字段（parse_thought_sections），经
+# decide_session_buffer 判定后累进该 session 的**缓冲节点**（type="session"，
+# 同一 session_id 只维护一条；落库由执行层 main.py 完成——本模块纯决策不碰
+# 存储）。会话结束时 compose_session_capsule 把缓冲里的 turns 合并成一条
+# type=task + kind=handoff 的「会话胶囊」，由既有交接通道
 # （list_active_tasks(include_handoff=True)）供新会话先读。
 # 全部纯函数：不接库、不接 LLM；解析失败一律返回空、绝不抛异常。
 # ---------------------------------------------------------------------------
 
 # 编号行：前导空白 + 数字 + 分隔符（半角点 / 顿号 / 全角点）+ 同行剩余内容。
 # 数字超出字段映射范围（如 5+）只作边界（该段内容不归属任何字段）。
-_THOUGHT_NUMBERED_LINE_RE = re.compile(r"^\s*(\d+)\s*[.、．:：]\s*(.*)$")
+_THOUGHT_NUMBERED_LINE_RE = re.compile(r"^\s*(\d+)\s*[.、．]\s*(.*)$")
+
+# 会话缓冲节点（type="session"）的约定字段与档位：过程簿记，logs 层语义
+# （不进 facts 默认注入池，见 config.TIER_LOGS 的 session 登记）。
+SESSION_BUFFER_TYPE = "session"
+SESSION_BUFFER_STATUS_ACTIVE = "active"  # 会话中；session-end 合并后改 closed
+SESSION_BUFFER_STATUS_CLOSED = "closed"
+SESSION_BUFFER_IMPORTANCE = 0.3  # 簿记节点，低于普通过程记录
+SESSION_BUFFER_RAW_MAX_CHARS = 4000  # 缓冲里每轮 thought 原文的截断上限
 
 CAPSULE_THOUGHT_MAX_CHARS = 300  # 胶囊「思路」节总长上限（纯截断，超出部分丢弃）
 CAPSULE_SECTION_TBD = "（待补）"  # 空节占位正文（不猜、不编，如实标待补）
@@ -1023,11 +1032,16 @@ _CAPSULE_NEXT_MARKERS = ("下一步", "待", "需", "再")
 def parse_thought_sections(text: str, skeleton_kind: str) -> dict[str, str]:
     """把 ``<thought>`` 段里的编号答案解析成「胶囊字段 → 文本」（纯解析）。
 
-    - 按 ``_SKELETON_FIELD_MAP[skeleton_kind]`` 映射编号 1..N；未知/空 kind → default 映射；
-    - 编号行认 ``1.`` / ``1、`` / ``1．`` / ``1:`` / ``1：``，容忍前导空白；
-    - 字段值 = 编号行同行剩余 + 后续非编号行（每行 strip 后以 ``\n`` 连接）；
-    - 缺编号 / 空值 → 该字段不出现（不猜、不补文案）；同编号重复 → 后见覆盖先见；
-    - 无 ``<thought>`` 段 / 解析不出任何字段 / 非字符串 → ``{}``，绝不抛异常。
+    - 按 ``_SKELETON_FIELD_MAP[skeleton_kind]`` 的字段名顺序映射编号 1..N；
+      skeleton_kind 为空或不在映射表 → 用 ``default`` 的映射。
+    - 每个字段值 = 「该编号行之后、下一个编号行之前」的文本（strip 后）；编号行
+      形如 ``1. 标签：答案``——编号之后同行若有内容（含标签回显）**原样取到**
+      （不猜、不改写、不截）。编号行本身的分隔符认 ``.`` / ``、`` / ``．``，
+      容忍前导空白；行内冒号全/半角均常见，但不作为编号分隔符。
+    - 缺编号 / 空值 → 该字段不出现（不猜、不补默认文案）；同编号重复出现 →
+      后见覆盖先见。
+    - 输入无 ``<thought>`` 段或解析不出任何字段 → 返回 ``{}``（非字符串同样
+      ``{}``，绝不抛异常）。
     """
     if not isinstance(text, str):
         return {}
@@ -1043,18 +1057,16 @@ def parse_thought_sections(text: str, skeleton_kind: str) -> dict[str, str]:
     parts: list[str] = []
 
     def _flush() -> None:
-        nonlocal current, parts
         if current is not None:
             value = "\n".join(parts).strip()
             if value:
                 sections[current] = value
-        current, parts = None, []
 
     for line in match.group(1).splitlines():
         numbered = _THOUGHT_NUMBERED_LINE_RE.match(line)
         if numbered is None:
             if current is not None:
-                parts.append(line.strip())
+                parts.append(line)
             continue
         _flush()
         num = int(numbered.group(1))
@@ -1065,172 +1077,119 @@ def parse_thought_sections(text: str, skeleton_kind: str) -> dict[str, str]:
     return sections
 
 
-def _detect_block_skeleton_kind(block_text: str) -> str:
-    """按骨架**起手式**识别单个 ``<thought>`` 块属于哪类骨架（只用于解析映射）。
+def decide_session_buffer(text: str, *, skeleton_kind: str, session_id: str, turn_index: int) -> dict[str, Any]:
+    """判定本轮思考要不要进「会话缓冲」、进什么（post-turn 第三条路径，纯决策）。
 
-    一条 assistant 消息里可能先后出现多块不同骨架的思考，消息级 ``skeleton_kind``
-    只能记一个，所以解析逐块识别；识别不出返回空串（调用方退回消息级字段）。
+    返回 ``{"buffer": bool, "reason": str, "skeleton_kind": str,
+    "sections": dict, "raw": str}``：
+
+    - session_id 为空 → ``buffer=False, reason="no_session_id"``（老宿主兼容，
+      不落缓冲，行为与改动前一致）；
+    - 解析不出任何字段 → ``buffer=False, reason="no_sections"``（保留原 thought
+      落库路径兜底，本判定只管缓冲）；
+    - 否则 ``buffer=True``（reason 为空串）：``sections`` 为解析结果
+      （:func:`parse_thought_sections`），``raw`` 为 ``<thought>`` 段原文截断到
+      ``SESSION_BUFFER_RAW_MAX_CHARS`` 字；``skeleton_kind`` 为归一后的骨架类型
+      （:func:`normalize_skeleton_kind`）。
+
+    ``turn_index`` 不参与判定（要不要进缓冲只看 session_id 与解析结果）——它随
+    调用方语义留给执行层做缓冲内幂等覆盖的键。
     """
-    folded = _fold_punctuation(block_text)
-    for kind, opener in _SKELETON_OPENERS_FOLDED.items():
-        if opener and opener in folded:
-            return kind
-    return ""
-
-
-def extract_session_thoughts(messages: list[dict]) -> list[dict]:
-    """从 session-end 收到的整场 messages 里，按顺序取出每轮 assistant 的 thought。
-
-    返回 ``[{"turn_index": int, "skeleton_kind": str, "sections": dict, "raw": str}, ...]``。
-
-    - 只看 ``role == "assistant"``；**缺 role 的消息也扫**（按内容有无 ``<thought>`` 判断）；
-    - ``content`` 支持字符串与多段列表（OpenAI 风格 ``[{"text": ...}]``）；
-    - ``turn_index`` = 该消息在全部 messages 中的下标（0 起）；
-    - ``skeleton_kind`` = 消息上的同名字段（归一化，缺省空串）——**宿主上报什么就是什么**；
-      ``sections`` 则逐块识别骨架类型解析（同消息可混多类）；
-    - 同一消息多个 ``<thought>`` 段：全部提取，按出现顺序 append；
-    - ``raw`` = 块原文（含标签），截断到 ``THOUGHT_MAX_CHARS``；
-    - 非列表 / 无 thought → ``[]``，绝不抛异常。
-    """
-    if not isinstance(messages, list):
-        return []
-    out: list[dict] = []
-    for idx, msg in enumerate(messages):
-        if not isinstance(msg, dict):
-            continue
-        role = str(msg.get("role") or "")
-        if role and role != "assistant":
-            continue
-        content = msg.get("content")
-        if isinstance(content, list):
-            content = "".join(str(part.get("text") or "") for part in content if isinstance(part, dict))
-        if not isinstance(content, str) or _THOUGHT_OPEN_RE.search(content) is None:
-            continue
-        msg_kind = normalize_skeleton_kind(str(msg.get("skeleton_kind") or ""))
-        for block in _THOUGHT_BLOCK_RE.finditer(content):
-            raw = block.group(0)
-            parse_kind = _detect_block_skeleton_kind(raw) or msg_kind
-            out.append(
-                {
-                    "turn_index": idx,
-                    "skeleton_kind": msg_kind,
-                    "sections": parse_thought_sections(raw, parse_kind),
-                    "raw": raw[:THOUGHT_MAX_CHARS],
-                }
-            )
-    return out
-
-
-def _dedup_preserve_order(items: list[str]) -> list[str]:
-    """去重且保序（胶囊四节的合并口径：先到先留）。"""
-    seen: set[str] = set()
-    out: list[str] = []
-    for item in items:
-        if item not in seen:
-            seen.add(item)
-            out.append(item)
-    return out
-
-
-def _split_items(text: str) -> list[str]:
-    """按换行 / 半角分号 / 全角分号切分条目，strip 后丢弃空项。"""
-    return [piece.strip() for piece in re.split(r"[\n;；]", text) if piece.strip()]
+    kind = normalize_skeleton_kind(skeleton_kind)
+    if not (session_id or "").strip():
+        return {"buffer": False, "reason": "no_session_id", "skeleton_kind": kind, "sections": {}, "raw": ""}
+    sections = parse_thought_sections(text, kind)
+    if not sections:
+        return {"buffer": False, "reason": "no_sections", "skeleton_kind": kind, "sections": {}, "raw": ""}
+    parsed = extract_thought(text or "")
+    raw = parsed["text"][:SESSION_BUFFER_RAW_MAX_CHARS] if parsed["found"] else ""
+    return {"buffer": True, "reason": "", "skeleton_kind": kind, "sections": sections, "raw": raw}
 
 
 def compose_session_capsule(turns: list[dict], *, session_id: str, handles: list[str] | None = None) -> dict:
-    """把整场各轮 sections 合并成胶囊内容（纯合成，不写库）。
+    """把会话缓冲的 turns 合并成胶囊内容（纯合成，不写库）。
 
     返回 ``{"content": str, "sections": dict, "pending": list[str], "turns": int}``。
+    sections 四节（字段名见 ``_SKELETON_FIELD_MAP``，逐轮按缓冲顺序合并）：
 
-    - thought（【思路】）：各轮 judgement / conclusion / goal 取第一个非空，去重，
-      超 ``CAPSULE_THOUGHT_MAX_CHARS`` 截断并补「…」；
-    - outcome（【做了什么】）：各轮 change / deliverable 按行与分号切分、去重；
-      ``handles`` 非空时末尾追加一行 ``交付物：a、b``（并入统一去重）；
-    - next（【下一步】）：各轮 verify / output / conclusion 里**含 marker 词**的行，去重；
-    - pitfalls（【踩的坑】）：各轮 failure_path 按行与分号切分、去重；
-    - 某节为空 → 写 ``CAPSULE_SECTION_TBD`` 并记进 pending（按 thought/outcome/next/pitfalls 顺序）；
-    - ``turns`` 为空 → ``{"content": "", "sections": {}, "pending": [四节], "turns": 0}``。
+    - thought（【思路】）：从各轮 judgement / conclusion / goal 里按顺序取
+      （每轮取第一个非空字段），总长 ≤ ``CAPSULE_THOUGHT_MAX_CHARS``（纯截断）；
+    - outcome（【做了什么】）：合并各轮 change / deliverable，去重，每项一行；
+      ``handles``（PR / 文件路径 / 节点号等交付物句柄）按序拼在末尾（并入统一去重）；
+    - next（【下一步】）：合并各轮 verify / output 里带「下一步 / 待 / 需 / 再」
+      的行，去重；
+    - pitfalls（【踩的坑】）：合并各轮 failure_path，去重。
 
-    content 首行 ``接续点 / 会话接续 <session_id>`` 与 ``task_state._is_handoff`` 的
-    首行判据对齐；四节标题逐字固定（供解析）。
+    任一节为空 → 该节写「（待补）」（``CAPSULE_SECTION_TBD``）并把它记进
+    ``pending``（按 thought / outcome / next / pitfalls 顺序）。
+
+    content 固定四节格式，首行「接续点 / 会话接续 <session_id>」与
+    ``core.task_state._is_handoff`` 的首行判据对齐（显式 ``payload.kind="handoff"``
+    之外的形态层识别路径）；四节标题【思路】/【做了什么】/【下一步】/【踩的坑】
+    逐字固定。
     """
     thought_parts: list[str] = []
     outcome_parts: list[str] = []
     next_parts: list[str] = []
     pitfall_parts: list[str] = []
     merged = 0
-
-    for turn in turns or []:
+    for turn in turns:
         if not isinstance(turn, dict):
             continue
-        sections = turn.get("sections")
-        if not isinstance(sections, dict):
+        s = turn.get("sections")
+        if not isinstance(s, dict):
             continue
         merged += 1
         for key in ("judgement", "conclusion", "goal"):
-            value = sections.get(key)
-            if isinstance(value, str) and value.strip():
-                thought_parts.append(value.strip())
+            v = s.get(key)
+            if isinstance(v, str) and v.strip():
+                thought_parts.append(v.strip())
                 break
         for key in ("change", "deliverable"):
-            value = sections.get(key)
-            if isinstance(value, str):
-                outcome_parts.extend(_split_items(value))
-        for key in ("verify", "output", "conclusion"):
-            value = sections.get(key)
-            if isinstance(value, str):
-                for line in value.splitlines():
+            v = s.get(key)
+            if isinstance(v, str) and v.strip():
+                outcome_parts.append(v.strip())
+        for key in ("verify", "output"):
+            v = s.get(key)
+            if isinstance(v, str) and v.strip():
+                for line in v.splitlines():
                     line = line.strip()
-                    if line and any(marker in line for marker in _CAPSULE_NEXT_MARKERS):
+                    if line and any(mk in line for mk in _CAPSULE_NEXT_MARKERS):
                         next_parts.append(line)
-        value = sections.get("failure_path")
-        if isinstance(value, str):
-            pitfall_parts.extend(_split_items(value))
+        v = s.get("failure_path")
+        if isinstance(v, str) and v.strip():
+            pitfall_parts.append(v.strip())
 
-    if merged == 0:
-        return {
-            "content": "",
-            "sections": {},
-            "pending": list(_CAPSULE_SECTION_ORDER),
-            "turns": 0,
-        }
+    def _dedupe(items: list[str]) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+        for item in items:
+            if item not in seen:
+                seen.add(item)
+                out.append(item)
+        return out
 
-    thought_body = "\n".join(_dedup_preserve_order(thought_parts))
+    for handle in handles or []:
+        text = str(handle).strip()
+        if text:
+            outcome_parts.append(text)  # handles 拼在 outcome 末尾（并入统一去重）
+
+    thought_body = "\n".join(thought_parts)
     if len(thought_body) > CAPSULE_THOUGHT_MAX_CHARS:
-        thought_body = thought_body[:CAPSULE_THOUGHT_MAX_CHARS] + "…"
-
-    outcome_items = _dedup_preserve_order(outcome_parts)
-    clean_handles = [str(h).strip() for h in (handles or []) if str(h).strip()]
-    if clean_handles:
-        outcome_items = _dedup_preserve_order([*outcome_items, "交付物：" + "、".join(clean_handles)])
-    outcome_body = "\n".join(outcome_items)
-    next_body = "\n".join(_dedup_preserve_order(next_parts))
-    pitfall_body = "\n".join(_dedup_preserve_order(pitfall_parts))
-
-    sections_out: dict[str, str] = {}
-    pending: list[str] = []
-    for name, body in (
-        ("thought", thought_body),
-        ("outcome", outcome_body),
-        ("next", next_body),
-        ("pitfalls", pitfall_body),
-    ):
-        if body:
-            sections_out[name] = body
-        else:
-            sections_out[name] = CAPSULE_SECTION_TBD
-            pending.append(name)
-
+        thought_body = thought_body[:CAPSULE_THOUGHT_MAX_CHARS]
+    raw = {
+        "thought": thought_body,
+        "outcome": "\n".join(_dedupe(outcome_parts)),
+        "next": "\n".join(_dedupe(next_parts)),
+        "pitfalls": "\n".join(_dedupe(pitfall_parts)),
+    }
+    sections = {name: raw[name] or CAPSULE_SECTION_TBD for name in _CAPSULE_SECTION_ORDER}
+    pending = [name for name in _CAPSULE_SECTION_ORDER if not raw[name]]
     content = (
         f"接续点 / 会话接续 {session_id}\n"
-        f"【思路】{sections_out['thought']}\n"
-        f"【做了什么】{sections_out['outcome']}\n"
-        f"【下一步】{sections_out['next']}\n"
-        f"【踩的坑】{sections_out['pitfalls']}"
+        f"【思路】{sections['thought']}\n"
+        f"【做了什么】{sections['outcome']}\n"
+        f"【下一步】{sections['next']}\n"
+        f"【踩的坑】{sections['pitfalls']}"
     )
-    return {
-        "content": content,
-        "sections": sections_out,
-        "pending": pending,
-        "turns": merged,
-    }
+    return {"content": content, "sections": sections, "pending": pending, "turns": merged}

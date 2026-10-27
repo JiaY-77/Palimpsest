@@ -1,17 +1,17 @@
-"""契约测试：会话胶囊（session-end 一次性提取 + 合并，「骨架即胶囊」收口）。
+"""契约测试：会话胶囊（「骨架即胶囊」——post-turn 累进缓冲，session-end 合并胶囊）。
 
-验收闸门（策略判定在 core/strategy.py，端点执行在 main.py，本文件钉行为）：
+验收闸门（策略判定在 core/strategy.py 纯函数，端点执行在 main.py，本文件钉行为）：
 
-  1. parse_thought_sections    <thought> 段按编号 → 胶囊字段（三种骨架 /
-     编号变体 / 缺字段 / 自由文本 / 异常输入一律 {} 不抛）
-  2. extract_session_thoughts  整场 messages 按序提取每轮 thought（多轮 /
-     一条多段 / 缺 role 也扫 / raw 截断 4000 / 空与非列表 → []）
-  3. compose_session_capsule   四节合成（空节进 pending / 思路截断 300 /
-     handles 拼进 outcome / 空 turns → content 为空）
-  4. POST /lifecycle/session-end 端到端（临时库）：写 1 条 type=task +
-     kind=handoff 胶囊；同 session 重复 POST 幂等更新不新增；可被
-     list_active_tasks(include_handoff=True) 取回；要点路径字段原样
-  5. 兼容：session_id="" 照常生成；messages=[] 不写胶囊
+  1. parse_thought_sections    <thought> 编号答案 → 胶囊字段（三种骨架正常样本 /
+     缺编号 / 空值 / 无 <thought> / 全角半角混排 / 同行带内容 / 异常输入一律 {}）
+  2. decide_session_buffer     三种 reason：no_session_id / no_sections / 正常
+  3. compose_session_capsule   四节合成（空节进 pending / 思路超 300 纯截断 /
+     handles 拼进 outcome 末尾 / 去重 / next 信号词过滤）
+  4. 端到端（临时库，不碰生产）：3 轮 post-turn（同 session_id 不同 turn_index）
+     → 缓冲节点只有 1 条、turns 3 项；同 turn_index 重复提交幂等；session-end
+     → 1 条 type=task + kind=handoff 胶囊、缓冲节点 closed、CONSOLIDATED_INTO 边、
+     可被 list_active_tasks(include_handoff=True) 取回
+  5. 兼容：session_id="" 行为与改动前一致（不写 session 节点、不报错）
 
 隔离保证：conftest 已把 DB_PATH 指向临时库 + fake embedder，不触碰正式库。
 """
@@ -23,9 +23,13 @@ import contextlib
 import pytest
 
 from core.strategy import (
-    THOUGHT_MAX_CHARS,
+    CAPSULE_THOUGHT_MAX_CHARS,
+    SESSION_BUFFER_RAW_MAX_CHARS,
+    SESSION_BUFFER_STATUS_CLOSED,
+    SESSION_BUFFER_TYPE,
     compose_session_capsule,
-    extract_session_thoughts,
+    decide_session_buffer,
+    detect_thought_origin,
     parse_thought_sections,
 )
 
@@ -68,7 +72,7 @@ def _client():
 _CODE_BLOCK = (
     "<thought>\n"
     "1. 本轮改什么 / 新增什么（一句话）：给骨架加胶囊字段\n"
-    "2. 失败路径（哪里会坏、坏了什么表现、怎么兜住）：解析抛异常会拖垮 session-end\n"
+    "2. 失败路径（哪里会坏、坏了什么表现、怎么兜住）：解析抛异常会拖垮落库\n"
     "3. 怎么验（跑什么、看到什么算数）：pytest 全绿\n"
     "4. 交付物（PR / 文件路径 / 节点号）：core/strategy.py\n"
     "</thought>"
@@ -92,9 +96,17 @@ _DEFAULT_BLOCK = (
     "</thought>"
 )
 
+# 旧版骨架文案（模板改版前的引导行）——存量 thought 节点长这样。
+_LEGACY_CODE_TEXT = (
+    "1. 要改什么 / 新增什么（一句话）：旧模板的产物\n"
+    "2. 现状核实了吗（哪些已核实、哪些还没看）：已核实\n"
+    "3. 失败路径（哪里会坏、坏了什么表现、怎么兜住）：无\n"
+    "4. 怎么验（跑什么、看到什么算数）：单测"
+)
+
 
 # ---------------------------------------------------------------------------
-# 1. parse_thought_sections
+# 1. parse_thought_sections — 编号答案 → 胶囊字段
 # ---------------------------------------------------------------------------
 
 
@@ -103,7 +115,7 @@ class TestParseThoughtSections:
         sections = parse_thought_sections(f"正文前缀\n{_CODE_BLOCK}\n正文后缀", "code")
         assert sections == {
             "change": "本轮改什么 / 新增什么（一句话）：给骨架加胶囊字段",
-            "failure_path": "失败路径（哪里会坏、坏了什么表现、怎么兜住）：解析抛异常会拖垮 session-end",
+            "failure_path": "失败路径（哪里会坏、坏了什么表现、怎么兜住）：解析抛异常会拖垮落库",
             "verify": "怎么验（跑什么、看到什么算数）：pytest 全绿",
             "deliverable": "交付物（PR / 文件路径 / 节点号）：core/strategy.py",
         }
@@ -126,14 +138,14 @@ class TestParseThoughtSections:
             "output": "这一轮的产出或下一步：跑 pytest",
         }
 
-    def test_number_separator_variants(self):
-        """编号变体全兼容：1、/ 2．/ 3: / 4：、全半角冒号、前导空白。"""
+    def test_number_separator_variants_and_leading_whitespace(self):
+        """编号分隔符认 . / 、 / ．，容忍前导空白；冒号只作行内标签分隔不作编号分隔。"""
         text = (
             "<thought>\n"
             "  1、要的是什么（一句话）：一碗白米饭\n"
             "  2．已知 / 未知（还缺什么信息）：还缺米饭的量\n"
-            "3: 值不值得记 / 该不该动手：值得\n"
-            "4：这一轮的产出或下一步：开饭\n"
+            "3. 值不值得记 / 该不该动手：值得\n"
+            "4. 这一轮的产出或下一步：开饭\n"
             "</thought>"
         )
         sections = parse_thought_sections(text, "default")
@@ -142,8 +154,15 @@ class TestParseThoughtSections:
         assert sections["judgement"] == "值不值得记 / 该不该动手：值得"
         assert sections["output"] == "这一轮的产出或下一步：开饭"
 
+    def test_fullwidth_halfwidth_colon_mix(self):
+        """全/半角冒号混排：都是「编号行 标签：答案」的合法形态。"""
+        text = "<thought>\n1. 要的是什么(一句话): 查空态\n2. 已知 / 未知（还缺什么信息）：缺截图\n</thought>"
+        sections = parse_thought_sections(text, "default")
+        assert sections["goal"] == "要的是什么(一句话): 查空态"
+        assert sections["known_unknown"] == "已知 / 未知（还缺什么信息）：缺截图"
+
     def test_multiline_answer_and_missing_number(self):
-        """多行答案归入同字段；缺编号（3）→ 对应字段不出现。"""
+        """多行答案归入同字段；缺编号（3）→ 对应字段不出现，其余照常。"""
         text = (
             "<thought>\n"
             "1. 要查清的问题（一句话）：查清锁行为\n"
@@ -154,7 +173,20 @@ class TestParseThoughtSections:
         )
         sections = parse_thought_sections(text, "research")
         assert set(sections) == {"question", "evidence", "conclusion"}
-        assert sections["evidence"] == "已有证据 / 还缺什么（标明 实测 / 引用 / 推测）：已有先例\n还缺实测证据"
+        assert sections["evidence"] == "已有证据 / 还缺什么（标明 实测 / 引用 / 推测）：已有先例\n  还缺实测证据"
+
+    def test_same_line_answer_is_captured(self):
+        """编号之后同行若有内容要取到（任务书样例句式）。"""
+        text = "<thought>\n1. 本轮改什么：加了 session_id 落库\n</thought>"
+        sections = parse_thought_sections(text, "code")
+        assert sections["change"] == "本轮改什么：加了 session_id 落库"
+
+    def test_template_verbatim_line_then_answer_below(self):
+        """模型原样回吐模板行、答案写在下一行：标签回显原样保留（不猜、不改写），
+        答案行跟在值里——值的边界仍到下一个编号行为止。"""
+        text = "<thought>\n1. 本轮改什么 / 新增什么（一句话）：\n重构了 strategy 模块\n</thought>"
+        sections = parse_thought_sections(text, "code")
+        assert sections["change"] == "本轮改什么 / 新增什么（一句话）：\n重构了 strategy 模块"
 
     def test_empty_numbered_line_field_absent(self):
         """空值不编造：编号行后无内容 → 该字段不出现。"""
@@ -162,6 +194,20 @@ class TestParseThoughtSections:
         sections = parse_thought_sections(text, "default")
         assert "goal" not in sections
         assert sections["known_unknown"] == "已知 / 未知（还缺什么信息）：已核实"
+
+    def test_out_of_range_number_section_dropped(self):
+        """编号超出映射范围（5+）：该段不归属任何字段，不污染其他字段。"""
+        text = (
+            "<thought>\n"
+            "1. 要的是什么（一句话）：查库存\n"
+            "5. 题外话：这一段没有字段可挂\n"
+            "2. 已知 / 未知（还缺什么信息）：缺截图\n"
+            "</thought>"
+        )
+        sections = parse_thought_sections(text, "default")
+        assert sections["goal"] == "要的是什么（一句话）：查库存"
+        assert sections["known_unknown"] == "已知 / 未知（还缺什么信息）：缺截图"
+        assert "output" not in sections
 
     def test_free_text_without_numbers_returns_empty(self):
         assert parse_thought_sections("<thought>\n先看堆栈第二帧再改，别急着动手。\n</thought>", "code") == {}
@@ -183,76 +229,69 @@ class TestParseThoughtSections:
 
 
 # ---------------------------------------------------------------------------
-# 2. extract_session_thoughts
+# 2. decide_session_buffer — 三种 reason
 # ---------------------------------------------------------------------------
 
 
-class TestExtractSessionThoughts:
-    def test_multi_turn_extracted_in_order(self):
-        messages = [
-            {"role": "user", "content": "帮我修复这个端点的报错"},
-            {"role": "assistant", "content": f"正文\n{_CODE_BLOCK}", "skeleton_kind": "code"},
-            {"role": "user", "content": "再安排一下会议纪要"},
-            {"role": "assistant", "content": _DEFAULT_BLOCK, "skeleton_kind": "default"},
-        ]
-        turns = extract_session_thoughts(messages)
-        assert [t["turn_index"] for t in turns] == [1, 3]
-        assert [t["skeleton_kind"] for t in turns] == ["code", "default"]
-        assert turns[0]["sections"]["change"].startswith("本轮改什么")
-        assert turns[1]["sections"]["goal"].startswith("要的是什么")
+class TestDecideSessionBuffer:
+    def test_no_session_id_not_buffered(self):
+        r = decide_session_buffer(_DEFAULT_BLOCK, skeleton_kind="default", session_id="", turn_index=1)
+        assert r["buffer"] is False
+        assert r["reason"] == "no_session_id"
+        assert r["sections"] == {}
 
-    def test_two_blocks_in_one_message_both_extracted(self):
-        messages = [
-            {"role": "assistant", "content": f"{_CODE_BLOCK}\n中间正文\n{_RESEARCH_BLOCK}"},
-        ]
-        turns = extract_session_thoughts(messages)
-        assert len(turns) == 2
-        assert all(t["turn_index"] == 0 for t in turns)
-        assert set(turns[0]["sections"]) == {"change", "failure_path", "verify", "deliverable"}
-        assert set(turns[1]["sections"]) == {"question", "evidence", "counterexample", "conclusion"}
+    def test_whitespace_session_id_counts_as_empty(self):
+        r = decide_session_buffer(_DEFAULT_BLOCK, skeleton_kind="default", session_id="   ", turn_index=1)
+        assert r["buffer"] is False and r["reason"] == "no_session_id"
 
-    def test_missing_role_scanned_and_user_role_skipped(self):
-        messages = [
-            {"content": _CODE_BLOCK},  # 缺 role：按内容有无 <thought> 判断 → 提取
-            {"role": "user", "content": _DEFAULT_BLOCK},  # 明确 user → 跳过
-        ]
-        turns = extract_session_thoughts(messages)
-        assert len(turns) == 1
-        assert turns[0]["turn_index"] == 0
+    def test_no_thought_block_no_sections(self):
+        r = decide_session_buffer("普通回复", skeleton_kind="default", session_id="s1", turn_index=1)
+        assert r["buffer"] is False and r["reason"] == "no_sections"
 
-    def test_raw_is_block_original_truncated_to_4000(self):
-        long_inner = "长" * 5000
-        messages = [{"role": "assistant", "content": f"<thought>\n{long_inner}\n</thought>"}]
-        turns = extract_session_thoughts(messages)
-        assert len(turns) == 1
-        assert len(turns[0]["raw"]) == THOUGHT_MAX_CHARS == 4000
-        assert turns[0]["raw"].startswith("<thought>")
+    def test_free_text_thought_no_sections(self):
+        """有 <thought> 但没有编号答案 → 解析不出字段 → no_sections（thought 路径照旧兜底）。"""
+        r = decide_session_buffer(
+            "<thought>\n自由思考，没有编号。\n</thought>", skeleton_kind="code", session_id="s1", turn_index=1
+        )
+        assert r["buffer"] is False and r["reason"] == "no_sections"
 
-    def test_skeleton_kind_defaults_to_empty(self):
-        turns = extract_session_thoughts([{"role": "assistant", "content": _DEFAULT_BLOCK}])
-        assert turns[0]["skeleton_kind"] == ""
+    def test_normal_turn_is_buffered(self):
+        r = decide_session_buffer(_CODE_BLOCK, skeleton_kind="code", session_id="s1", turn_index=7)
+        assert r["buffer"] is True
+        assert r["reason"] == ""
+        assert r["skeleton_kind"] == "code"
+        assert set(r["sections"]) == {"change", "failure_path", "verify", "deliverable"}
+        assert r["raw"].startswith("1. 本轮改什么")
 
-    def test_empty_and_non_list_inputs_return_empty(self):
-        assert extract_session_thoughts([]) == []
-        assert extract_session_thoughts(None) == []  # type: ignore[arg-type]
-        assert extract_session_thoughts("不是列表") == []  # type: ignore[arg-type]
-        assert extract_session_thoughts([{"role": "assistant", "content": "没有思考段"}]) == []
+    def test_skeleton_kind_normalized(self):
+        """白名单外的 kind 归空串 → 按 default 映射解析（与落库事实字段同一套归一）。"""
+        r = decide_session_buffer(_DEFAULT_BLOCK, skeleton_kind="bogus", session_id="s1", turn_index=1)
+        assert r["skeleton_kind"] == ""
+        assert set(r["sections"]) == {"goal", "known_unknown", "judgement", "output"}
+
+    def test_raw_truncated_to_4000(self):
+        long_block = "<thought>\n1. 要的是什么（一句话）：" + "长" * 5000 + "\n</thought>"
+        r = decide_session_buffer(long_block, skeleton_kind="default", session_id="s1", turn_index=1)
+        assert r["buffer"] is True
+        assert len(r["raw"]) == SESSION_BUFFER_RAW_MAX_CHARS == 4000
 
 
 # ---------------------------------------------------------------------------
-# 3. compose_session_capsule
+# 3. compose_session_capsule — 四节合成
 # ---------------------------------------------------------------------------
+
+
+def _turn(sections: dict) -> dict:
+    return {"turn_index": 0, "skeleton_kind": "default", "sections": sections, "raw": ""}
 
 
 class TestComposeSessionCapsule:
     def test_all_four_sections_filled(self):
-        turns = extract_session_thoughts(
-            [
-                {"role": "assistant", "content": _CODE_BLOCK},
-                {"role": "assistant", "content": _RESEARCH_BLOCK},
-                {"role": "assistant", "content": _DEFAULT_BLOCK},
-            ]
-        )
+        turns = [
+            _turn(parse_thought_sections(_CODE_BLOCK, "code")),
+            _turn(parse_thought_sections(_RESEARCH_BLOCK, "research")),
+            _turn(parse_thought_sections(_DEFAULT_BLOCK, "default")),
+        ]
         out = compose_session_capsule(turns, session_id="sess-compose-1")
         assert out["turns"] == 3
         assert out["pending"] == []
@@ -261,14 +300,24 @@ class TestComposeSessionCapsule:
         lines = out["content"].splitlines()
         assert lines[0] == "接续点 / 会话接续 sess-compose-1"
         assert lines[1].startswith("【思路】")
-        # 节体可多行，四节标题必须各自起一行（逐字固定，供解析）
+        # 四节标题逐字固定、各自起一行
         assert "\n【做了什么】" in out["content"]
         assert "\n【下一步】" in out["content"]
         assert "\n【踩的坑】" in out["content"]
-        assert "解析抛异常会拖垮 session-end" in out["sections"]["pitfalls"]
+        assert "解析抛异常会拖垮落库" in out["sections"]["pitfalls"]
+
+    def test_thought_priority_per_turn(self):
+        """每轮取 judgement / conclusion / goal 里第一个非空（优先级按此顺序）。"""
+        turns = [
+            _turn({"goal": "要的是什么：A", "judgement": "值不值得记：B"}),
+            _turn({"conclusion": "结论：C"}),
+            _turn({"goal": "要的是什么：D"}),
+        ]
+        out = compose_session_capsule(turns, session_id="s")
+        assert out["sections"]["thought"] == "值不值得记：B\n结论：C\n要的是什么：D"
 
     def test_empty_section_goes_to_pending(self):
-        turns = [{"turn_index": 0, "sections": {"goal": "要的是什么（一句话）：一碗白米饭"}}]
+        turns = [_turn({"goal": "要的是什么（一句话）：一碗白米饭"})]
         out = compose_session_capsule(turns, session_id="s")
         assert out["sections"]["thought"] != "（待补）"
         assert out["sections"]["outcome"] == "（待补）"
@@ -277,189 +326,352 @@ class TestComposeSessionCapsule:
         assert out["pending"] == ["outcome", "next", "pitfalls"]
 
     def test_thought_section_truncated_at_300(self):
-        turns = [{"turn_index": 0, "sections": {"judgement": "长" * 350}}]
+        """思路节总长 ≤300 字：纯截断（不加省略号，保证 ≤300 的合同）。"""
+        turns = [_turn({"judgement": "长" * 350})]
         out = compose_session_capsule(turns, session_id="s")
         body = out["sections"]["thought"]
-        assert len(body) == 301  # 300 字 + 「…」
-        assert body.startswith("长" * 300)
-        assert body.endswith("…")
+        assert len(body) == CAPSULE_THOUGHT_MAX_CHARS == 300
+        assert body == "长" * 300
 
-    def test_handles_appended_to_outcome(self):
-        turns = [{"turn_index": 0, "sections": {"change": "改了 strategy"}}]
-        out = compose_session_capsule(turns, session_id="s", handles=["core/strategy.py", "PR #140"])
-        assert out["sections"]["outcome"].endswith("交付物：core/strategy.py、PR #140")
-        # handles 为空 / 缺省 → 不拼交付物行
-        assert "交付物：" not in compose_session_capsule(turns, session_id="s")["sections"]["outcome"]
+    def test_handles_appended_to_outcome_end(self):
+        turns = [_turn({"change": "改了 strategy", "deliverable": "core/strategy.py"})]
+        out = compose_session_capsule(turns, session_id="s", handles=["PR #140", "节点 42"])
+        lines = out["sections"]["outcome"].splitlines()
+        assert lines[0] == "改了 strategy"
+        assert lines[1] == "core/strategy.py"
+        assert lines[-2] == "PR #140"  # handles 拼在末尾
+        assert lines[-1] == "节点 42"
 
-    def test_empty_turns(self):
-        out = compose_session_capsule([], session_id="s")
-        assert out == {
-            "content": "",
-            "sections": {},
-            "pending": ["thought", "outcome", "next", "pitfalls"],
-            "turns": 0,
-        }
-
-    def test_dedup_and_outcome_split_by_line_semicolon(self):
+    def test_outcome_deduped_across_turns(self):
         turns = [
-            {"turn_index": 0, "sections": {"change": "改了 A；改了 B\n改了 A", "deliverable": "x.py"}},
-            {"turn_index": 1, "sections": {"change": "改了 A"}},
+            _turn({"change": "改了 A", "deliverable": "x.py"}),
+            _turn({"change": "改了 A"}),
         ]
         out = compose_session_capsule(turns, session_id="s")
-        assert out["sections"]["outcome"] == "改了 A\n改了 B\nx.py"
+        assert out["sections"]["outcome"] == "改了 A\nx.py"
 
     def test_next_section_filters_by_marker(self):
+        """next 只收带「下一步 / 待 / 需 / 再」的行；无信号词的行不进。"""
         turns = [
-            {
-                "turn_index": 0,
-                "sections": {
-                    "verify": "怎么验（跑什么、看到什么算数）：netstat 看监听 PID",  # 无信号词 → 不进 next
-                    "conclusion": "结论 / 下一步：后续再实测锁行为",
-                },
-            },
+            _turn(
+                {
+                    "verify": "怎么验：netstat 看监听 PID\n需要看到监听 PID 消失",
+                    "output": "本轮产出：胶囊初稿",
+                }
+            ),
+            _turn({"verify": "跑 pytest，待全绿后收工"}),
         ]
         out = compose_session_capsule(turns, session_id="s")
         assert "netstat 看监听 PID" not in out["sections"]["next"]
-        assert "后续再实测锁行为" in out["sections"]["next"]
+        assert "本轮产出：胶囊初稿" not in out["sections"]["next"]
+        assert "需要看到监听 PID 消失" in out["sections"]["next"]
+        assert "跑 pytest，待全绿后收工" in out["sections"]["next"]
+
+    def test_empty_turns_all_pending(self):
+        out = compose_session_capsule([], session_id="s")
+        assert set(out["sections"]) == {"thought", "outcome", "next", "pitfalls"}
+        assert all(body == "（待补）" for body in out["sections"].values())
+        assert out["pending"] == ["thought", "outcome", "next", "pitfalls"]
+        assert out["turns"] == 0
 
 
 # ---------------------------------------------------------------------------
-# 4. 端到端：POST /lifecycle/session-end（临时库）
+# 4. 端到端（临时库）：post-turn 累进缓冲 → session-end 合并胶囊
 # ---------------------------------------------------------------------------
 
-_E2E_MESSAGES = [
-    {"role": "user", "content": "帮我修复这个端点的报错"},
-    {
-        "role": "assistant",
-        "content": f"正文从这里开始\n{_CODE_BLOCK}",
-        "skeleton_kind": "code",
-    },
-    {"role": "user", "content": "再调研一下胶囊的合成规则"},
-    {
-        "role": "assistant",
-        "content": _RESEARCH_BLOCK,
-        "skeleton_kind": "research",
-    },
-    {
-        "role": "assistant",
-        "content": _DEFAULT_BLOCK,  # 老宿主：不带 skeleton_kind → 空串
-    },
-]
 
-
-def _capsule_nodes_by_session(session_id: str) -> list[tuple[int, dict]]:
+def _session_nodes() -> list[tuple[int, dict]]:
+    """全库的 type=session 缓冲节点。"""
     from mcp_tools import store
 
     return [
         (nid, payload)
         for nid, payload in store.iter_payloads()
-        if isinstance(payload, dict)
-        and payload.get("type") == "task"
-        and payload.get("kind") == "handoff"
-        and payload.get("session_id") == session_id
+        if isinstance(payload, dict) and payload.get("type") == SESSION_BUFFER_TYPE
     ]
 
 
-def test_session_end_writes_one_handoff_capsule(db_path):
+def _buffer_by_session(session_id: str) -> tuple[int, dict] | None:
+    nodes = [(nid, pl) for nid, pl in _session_nodes() if pl.get("session_id") == session_id]
+    assert len(nodes) <= 1, f"同一 session_id 只允许一条缓冲节点，实际 {len(nodes)} 条"
+    return nodes[0] if nodes else None
+
+
+def test_post_turn_three_turns_accumulate_into_one_buffer(db_path):
+    """3 轮 post-turn（同 session_id、不同 turn_index）→ 缓冲节点只有 1 条、turns 3 项。"""
     client = _client()
-    r = client.post("/lifecycle/session-end", json={"session_id": "sess-capsule-e2e", "messages": _E2E_MESSAGES})
-    assert r.status_code == 200, r.text
-    body = r.json()
+    for i, (block, kind) in enumerate(
+        [(_CODE_BLOCK, "code"), (_RESEARCH_BLOCK, "research"), (_DEFAULT_BLOCK, "default")], start=1
+    ):
+        r = client.post(
+            "/lifecycle/post-turn",
+            json={
+                "session_id": "cap-e2e-1",
+                "turn_index": i,
+                "user_message": f"第 {i} 轮：帮我看看胶囊相关的问题",
+                "assistant_message": f"正文开始\n{block}\n正文结束",
+                "skeleton_kind": kind,
+            },
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        # 第三条路径与 thought 落库路径并存：两条都成功
+        assert body["thought"]["stored"] is True
+        assert body["session_buffer"]["buffered"] is True
+        assert body["session_buffer"]["reason"] == ""
+        assert body["session_buffer"]["error"] is None
 
-    # 老路径字段原样在返回体里
-    assert "store" in body and "points" in body and "stored" in body and "tier_distribution" in body
+    from config import Config
 
-    caps = body["capsule"]
-    assert caps["created"] is True
-    assert caps["error"] is None
-    assert caps["turns"] == 3
-    assert caps["pending"] == []
-    assert set(caps["sections"]) == {"thought", "outcome", "next", "pitfalls"}
-    assert caps["node_id"] is not None
+    buf = _buffer_by_session("cap-e2e-1")
+    assert buf is not None
+    payload = buf[1]
+    assert payload["status"] == "active"
+    assert payload["session_id"] == "cap-e2e-1"
+    assert isinstance(payload["started_at"], float)
+    assert len(payload["turns"]) == 3
+    assert payload["last_turn_index"] == 3
+    assert [t["turn_index"] for t in payload["turns"]] == [1, 2, 3]
+    assert [t["skeleton_kind"] for t in payload["turns"]] == ["code", "research", "default"]
+    assert payload["turns"][0]["sections"]["change"].startswith("本轮改什么")
+    assert payload["turns"][0]["raw"].startswith("1. 本轮改什么")
+    # 缓冲节点是过程簿记：type=session 已登记 TIER_LOGS（不进 facts 默认注入池）
+    assert "session" in Config.TIER_LOGS
 
-    got = client.get(f"/memory/{caps['node_id']}").json()
+
+def test_post_turn_same_turn_index_is_idempotent(db_path):
+    """同一 turn_index 重复提交：覆盖不追加（turns 仍 3 项，内容换成新答案）。"""
+    client = _client()
+    base = {"session_id": "cap-e2e-2", "user_message": "看看幂等", "skeleton_kind": "default"}
+    for turn_index in (1, 2, 3):
+        r = client.post(
+            "/lifecycle/post-turn",
+            json={**base, "turn_index": turn_index, "assistant_message": f"正文\n{_DEFAULT_BLOCK}\n"},
+        )
+        assert r.json()["session_buffer"]["buffered"] is True
+
+    replaced = _DEFAULT_BLOCK.replace("确认胶囊可被交接通道取回", "换成新的答案")
+    r = client.post(
+        "/lifecycle/post-turn",
+        json={**base, "turn_index": 2, "assistant_message": f"正文\n{replaced}\n"},
+    )
+    assert r.json()["session_buffer"]["buffered"] is True
+
+    buf = _buffer_by_session("cap-e2e-2")
+    assert buf is not None
+    payload = buf[1]
+    assert len(payload["turns"]) == 3  # 仍是 3 项，不是 4
+    assert [t["turn_index"] for t in payload["turns"]] == [1, 2, 3]
+    assert payload["turns"][1]["sections"]["goal"] == "要的是什么（一句话）：换成新的答案"
+
+
+def test_session_end_writes_capsule_closes_buffer_and_links(db_path):
+    """session-end：1 条 type=task + kind=handoff 胶囊；缓冲 closed；CONSOLIDATED_INTO 边。"""
+    client = _client()
+    for i in (1, 2):
+        r = client.post(
+            "/lifecycle/post-turn",
+            json={
+                "session_id": "cap-e2e-3",
+                "turn_index": i,
+                "user_message": f"第 {i} 轮",
+                "assistant_message": f"正文\n{_CODE_BLOCK}\n",
+                "skeleton_kind": "code",
+            },
+        )
+        assert r.json()["session_buffer"]["buffered"] is True
+
+    from mcp_tools import store
+
+    buf = _buffer_by_session("cap-e2e-3")
+    assert buf is not None
+    buf_nid, _ = buf
+
+    end = client.post("/lifecycle/session-end", json={"session_id": "cap-e2e-3", "messages": []})
+    assert end.status_code == 200, end.text
+    body = end.json()
+    capsule = body["capsule"]
+    assert capsule["node_id"] is not None
+    assert capsule["turns"] == 2
+    assert set(capsule["sections"]) == {"thought", "outcome", "next", "pitfalls"}
+    assert isinstance(capsule["pending"], list)
+
+    # 胶囊节点回读：type/kind/importance/domain/session_id/sections/pending/turns/content
+    got = client.get(f"/memory/{capsule['node_id']}").json()
     payload = got["payload"]
     assert payload["type"] == "task"
     assert payload["kind"] == "handoff"
-    assert payload["session_id"] == "sess-capsule-e2e"
-    assert payload["turns"] == 3
     assert payload["importance"] == 0.85
     assert payload["domain"] == "hermes"
+    assert payload["session_id"] == "cap-e2e-3"
+    assert payload["turns"] == 2
     assert set(payload["sections"]) == {"thought", "outcome", "next", "pitfalls"}
-    assert set(payload["pending"]) == set()
-    assert payload["content"].splitlines()[0] == "接续点 / 会话接续 sess-capsule-e2e"
-    assert "【思路】" in payload["content"]
+    assert payload["pending"] == capsule["pending"]
+    assert payload["content"].splitlines()[0] == "接续点 / 会话接续 cap-e2e-3"
+    assert "【思路】" in payload["content"] and "【踩的坑】" in payload["content"]
+
+    # 缓冲节点 closed + CONSOLIDATED_INTO 边指向胶囊
+    buf_after = store.get_node(buf_nid).get("payload", {})
+    assert buf_after.get("status") == SESSION_BUFFER_STATUS_CLOSED
+    edges = store.get_edges(buf_nid)
+    assert any(
+        getattr(e, "target_id", None) == capsule["node_id"] and getattr(e, "label", "") == "CONSOLIDATED_INTO"
+        for e in edges
+    )
 
 
-def test_session_end_same_session_is_idempotent_update(db_path):
-    client = _client()
-    first = client.post(
-        "/lifecycle/session-end", json={"session_id": "sess-capsule-idem", "messages": _E2E_MESSAGES}
-    ).json()["capsule"]
-    assert first["created"] is True and first["node_id"] is not None
-
-    second = client.post(
-        "/lifecycle/session-end", json={"session_id": "sess-capsule-idem", "messages": _E2E_MESSAGES}
-    ).json()["capsule"]
-    assert second["created"] is True
-    assert second["node_id"] == first["node_id"]  # 原地更新，不换节点
-
-    nodes = _capsule_nodes_by_session("sess-capsule-idem")
-    assert len(nodes) == 1  # 仍然只有一条胶囊
-    assert nodes[0][1]["turns"] == 3
-
-
-def test_session_end_capsule_reachable_via_task_state_channel(db_path):
+def test_capsule_reachable_via_tasks_active_channel(db_path):
+    """胶囊能被 tasks_active(include_handoff=true) 取到（同进程直调 list_active_tasks）。"""
     from core.task_state import list_active_tasks
     from mcp_tools import store
 
     client = _client()
-    caps = client.post(
-        "/lifecycle/session-end", json={"session_id": "sess-capsule-channel", "messages": _E2E_MESSAGES}
-    ).json()["capsule"]
-    assert caps["created"] is True
+    for i in (1, 2):
+        r = client.post(
+            "/lifecycle/post-turn",
+            json={
+                "session_id": "cap-e2e-4",
+                "turn_index": i,
+                "user_message": f"第 {i} 轮",
+                "assistant_message": f"正文\n{_DEFAULT_BLOCK}\n",
+                "skeleton_kind": "default",
+            },
+        )
+        assert r.json()["session_buffer"]["buffered"] is True
+    end = client.post("/lifecycle/session-end", json={"session_id": "cap-e2e-4", "messages": []})
+    capsule = end.json()["capsule"]
+    assert capsule["node_id"] is not None
 
-    listed = list_active_tasks(store, include_handoff=True)
-    assert caps["node_id"] in [item["id"] for item in listed["results"]]
+    listed = list_active_tasks(store, include_handoff=True, fresh_days=0)
+    ids = [item["id"] for item in listed["results"]]
+    assert capsule["node_id"] in ids
     # 默认通道（include_handoff=False）把接续点排除——互斥验证打标生效
-    hidden = list_active_tasks(store, include_handoff=False)
-    assert caps["node_id"] not in [item["id"] for item in hidden["results"]]
+    hidden = list_active_tasks(store, include_handoff=False, fresh_days=0)
+    assert capsule["node_id"] not in [item["id"] for item in hidden["results"]]
 
 
-def test_session_end_empty_messages_writes_no_capsule(db_path):
+def test_session_end_without_buffer_unchanged_response(db_path):
+    """无缓冲的 session-end：返回体不加 capsule 字段，既有字段不变（回归保护）。"""
     client = _client()
-    body = client.post("/lifecycle/session-end", json={"session_id": "sess-capsule-empty", "messages": []}).json()
-    assert body["capsule"] == {
-        "created": False,
-        "node_id": None,
-        "sections": {},
-        "pending": [],
-        "turns": 0,
-        "error": None,
-    }
-    assert _capsule_nodes_by_session("sess-capsule-empty") == []
-
-
-def test_session_end_empty_session_id_still_writes_capsule(db_path):
-    client = _client()
-    caps = client.post("/lifecycle/session-end", json={"session_id": "", "messages": _E2E_MESSAGES}).json()["capsule"]
-    assert caps["created"] is True and caps["node_id"] is not None
-    got = client.get(f"/memory/{caps['node_id']}").json()
-    assert got["payload"]["session_id"] == ""
-    assert got["payload"]["content"].startswith("接续点 / 会话接续 ")
-
-
-def test_session_end_legacy_memory_path_unaffected(db_path):
-    """要点路径（type=memory）行为不变：store/stored/tier_distribution 原样。"""
-    client = _client()
-    msgs = [
-        {"role": "user", "content": "记住这个偏好：报告用极简风"},
-        {"role": "user", "content": "不对，标题要左对齐"},
-    ]
-    body = client.post("/lifecycle/session-end", json={"session_id": "sess-capsule-legacy", "messages": msgs}).json()
+    body = client.post(
+        "/lifecycle/session-end",
+        json={
+            "session_id": "cap-no-buffer",
+            "messages": [{"role": "user", "content": "记住：周报用极简风模板"}],
+        },
+    ).json()
     assert body["store"] is True
     assert body["stored"] is True
     assert body["tier_distribution"] == {"facts": 1}
-    assert body["capsule"]["created"] is False  # 本场无 thought → 不写胶囊，但不影响要点路径
-    got = client.get(f"/memory/{body['node_id']}").json()
-    assert got["payload"]["type"] == "memory"
+    assert "capsule" not in body
+
+
+def test_session_memory_switch_off_skips_legacy_path_only(db_path):
+    """Config.SESSION_MEMORY_INGEST=False：旧要点路径停用（可观测），胶囊路径照常。"""
+    from config import Config
+
+    client = _client()
+    for i in (1, 2):
+        r = client.post(
+            "/lifecycle/post-turn",
+            json={
+                "session_id": "cap-e2e-5",
+                "turn_index": i,
+                "user_message": f"第 {i} 轮",
+                "assistant_message": f"正文\n{_DEFAULT_BLOCK}\n",
+                "skeleton_kind": "default",
+            },
+        )
+        assert r.json()["session_buffer"]["buffered"] is True
+
+    original = Config.SESSION_MEMORY_INGEST
+    Config.SESSION_MEMORY_INGEST = False
+    try:
+        end = client.post(
+            "/lifecycle/session-end",
+            json={
+                "session_id": "cap-e2e-5",
+                "messages": [{"role": "user", "content": "记住：这次要写要点"}],
+            },
+        )
+        body = end.json()
+        assert body["store"] is False
+        assert body["skip_reason"] == "session_memory_disabled"
+        # 胶囊路径不受开关影响
+        assert body["capsule"]["node_id"] is not None
+    finally:
+        Config.SESSION_MEMORY_INGEST = original
+
+
+def test_session_buffer_failure_is_observable_not_blocking(db_path):
+    """缓冲累计失败：不阻断既有两条落库路径，session_buffer.error 透传。"""
+    import main as main_mod
+
+    client = _client()
+    original = main_mod._append_session_buffer_turn
+
+    def _boom(session_id, turn_index, buf):
+        raise RuntimeError("mock: 缓冲节点写入失败")
+
+    main_mod._append_session_buffer_turn = _boom
+    try:
+        before = _session_nodes()
+        r = client.post(
+            "/lifecycle/post-turn",
+            json={
+                "session_id": "cap-e2e-6",
+                "turn_index": 1,
+                "user_message": "看看失败路径",
+                "assistant_message": f"正文\n{_DEFAULT_BLOCK}\n",
+                "skeleton_kind": "default",
+            },
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        sb = body["session_buffer"]
+        assert sb["buffered"] is False
+        assert sb["node_id"] is None
+        assert "mock" in sb["error"]
+        # 前两条路径不受影响：thought 照常落库
+        assert body["thought"]["stored"] is True
+        assert len(_session_nodes()) == len(before)
+    finally:
+        main_mod._append_session_buffer_turn = original
+
+
+# ---------------------------------------------------------------------------
+# 5. 兼容：session_id="" 行为与改动前一致
+# ---------------------------------------------------------------------------
+
+
+def test_empty_session_id_post_turn_writes_no_session_node(db_path):
+    """老宿主（无 session_id）：不写缓冲节点、不报错，thought 路径照旧。"""
+    client = _client()
+    r = client.post(
+        "/lifecycle/post-turn",
+        json={
+            "session_id": "",
+            "turn_index": 5,
+            "user_message": "老宿主的一轮",
+            "assistant_message": f"正文\n{_DEFAULT_BLOCK}\n",
+            "skeleton_kind": "default",
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["thought"]["stored"] is True
+    assert body["session_buffer"] == {"buffered": False, "node_id": None, "reason": "no_session_id", "error": None}
+    assert _session_nodes() == []  # 全库没有任何 type=session 节点
+
+    # session-end 同样：无 capsule 字段、无缓冲节点残留
+    end = client.post("/lifecycle/session-end", json={"session_id": "", "messages": []}).json()
+    assert "capsule" not in end
+    assert _session_nodes() == []
+
+
+def test_detect_thought_origin_tolerates_legacy_skeleton_text():
+    """模板改版后，旧骨架文案的存量节点：起手式不再匹配 → 不再判 skeleton（可接受
+    降级），但绝不抛异常——回填与交叉核对通道对此容忍（任务书兼容要求）。"""
+    result = detect_thought_origin(_LEGACY_CODE_TEXT)
+    assert result in ("native", "unknown")  # 降级到任一非 skeleton 值均可
+    assert detect_thought_origin(f"[思维底片] {_LEGACY_CODE_TEXT}") == result

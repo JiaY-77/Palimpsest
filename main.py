@@ -28,7 +28,6 @@ import secrets
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -44,6 +43,10 @@ from core.reporting import generate_report
 from core.startup_check import run_startup_check
 from core.strategy import (
     GRAPH_ENHANCE_TOP_K,
+    SESSION_BUFFER_IMPORTANCE,
+    SESSION_BUFFER_STATUS_ACTIVE,
+    SESSION_BUFFER_STATUS_CLOSED,
+    SESSION_BUFFER_TYPE,
 )
 from core.strategy import (
     clamp_max_topics as _strategy_clamp_max_topics,
@@ -61,6 +64,9 @@ from core.strategy import (
     decide_pre_turn as _strategy_pre_turn,
 )
 from core.strategy import (
+    decide_session_buffer as _strategy_decide_session_buffer,
+)
+from core.strategy import (
     decide_session_end as _strategy_session_end,
 )
 from core.strategy import (
@@ -73,15 +79,12 @@ from core.strategy import (
     extract_graph_topics as _strategy_extract_graph_topics,
 )
 from core.strategy import (
-    extract_session_thoughts as _strategy_extract_session_thoughts,
-)
-from core.strategy import (
     format_graph_enhancement as _strategy_format_graph_enhancement,
 )
 from core.strategy import (
     is_near_duplicate as _strategy_is_near_duplicate,
 )
-from core.task_state import apply_task_patch
+from core.task_state import HANDOFF_KIND, apply_task_patch
 from core.trivium_store import DatabaseBusyError, EmbeddingInputTooLongError, EmbeddingUnavailableError, TriviumStore
 from core.trivium_store import shutdown as _shutdown_shared_db
 from core.version import get_version
@@ -1370,6 +1373,87 @@ def _thought_already_stored(source: str, turn_index: int) -> bool:
     )
 
 
+# ---------------------------------------------------------------------------
+# 会话缓冲（「骨架即胶囊」第二/三刀的执行层）：post-turn 把每轮编号思考解析成
+# 字段累进该 session 的缓冲节点（type="session"，同一 session_id 只一条）；
+# session-end 由 compose_session_capsule 合并成 type=task + kind=handoff 胶囊。
+# 判定全在 core/strategy.py（parse_thought_sections / decide_session_buffer /
+# compose_session_capsule 纯函数），这里只做落库执行。
+# ---------------------------------------------------------------------------
+
+# 会话胶囊节点的固定档位（任务书口径）：接续点形态的任务卡，写进 hermes 域。
+SESSION_CAPSULE_TYPE = "task"
+SESSION_CAPSULE_IMPORTANCE = 0.85
+SESSION_CAPSULE_DOMAIN = "hermes"
+SESSION_CAPSULE_EDGE_RELATION = "CONSOLIDATED_INTO"  # 缓冲节点 → 胶囊节点
+
+
+def _find_active_session_buffer(session_id: str) -> tuple[int, dict] | None:
+    """按 payload 定位该 session 的活跃缓冲节点。
+
+    判据：``type=session`` + ``payload.session_id`` 相等 + ``status=active``。
+    缓冲按 payload 字段定位（不走向量 / FTS 检索），单用户库 iter_payloads
+    全遍历足够；同 session 理论上只有一条（写入路径保证），多则取先见的一条。
+    """
+    for nid, payload in _get_store().iter_payloads():
+        if not isinstance(payload, dict):
+            continue
+        if (
+            payload.get("type") == SESSION_BUFFER_TYPE
+            and payload.get("session_id") == session_id
+            and payload.get("status") == SESSION_BUFFER_STATUS_ACTIVE
+        ):
+            return nid, payload
+    return None
+
+
+def _append_session_buffer_turn(session_id: str, turn_index: int, buf: dict) -> int:
+    """把本轮解析出的 sections 累进该 session 的缓冲节点，返回缓冲节点 id。
+
+    - 无缓冲节点 → 新建（``store.insert_node`` 一次原子写入，payload 一次成形）：
+      不走 ``mem_ingest``——它的固定入参写不了 ``payload.turns`` 这类结构化字段，
+      且机器簿记不该参与冲突检测 / 记忆检索池。
+    - 已有 → 追加本轮 turn；**同一 turn_index 重复提交幂等覆盖**（原位替换，
+      不追加第二条）。
+    - ``started_at`` 记缓冲创建时刻（首个 turn 的落库时刻，数值）；更新时保留。
+    """
+    store = _get_store()
+    turn_entry = {
+        "turn_index": int(turn_index),
+        "skeleton_kind": str(buf.get("skeleton_kind") or ""),
+        "sections": dict(buf.get("sections") or {}),
+        "raw": str(buf.get("raw") or ""),
+    }
+    existing = _find_active_session_buffer(session_id)
+    if existing is None:
+        content = f"[会话缓冲] session={session_id}（进行中，session-end 合并为会话胶囊）"
+        nid = store.insert_node(
+            {
+                "type": SESSION_BUFFER_TYPE,
+                "content": content,
+                "importance": SESSION_BUFFER_IMPORTANCE,
+                "session_id": session_id,
+                "status": SESSION_BUFFER_STATUS_ACTIVE,
+                "started_at": time.time(),
+                "turns": [turn_entry],
+                "last_turn_index": turn_index,
+            },
+            store.embed_text(content),
+        )
+        return nid
+    nid, payload = existing
+    turns = [t for t in (payload.get("turns") or []) if isinstance(t, dict)]
+    for i, turn in enumerate(turns):
+        if turn.get("turn_index") == turn_index:
+            turns[i] = turn_entry  # 幂等：同轮重复提交覆盖，不追加第二条
+            break
+    else:
+        turns.append(turn_entry)
+    store.update_payload(nid, {"turns": turns, "last_turn_index": turn_index})
+    _sync_fts_after_update(nid)
+    return nid
+
+
 @app.post("/lifecycle/post-turn")
 def lifecycle_post_turn(req: PostTurnRequest):
     """每轮回复后：本体决定这轮要不要沉淀、写什么、写哪层；并抽取思考底片。
@@ -1458,121 +1542,139 @@ def lifecycle_post_turn(req: PostTurnRequest):
                 tier_dist[thought["tier"]] = tier_dist.get(thought["tier"], 0) + 1
     decision["thought"] = thought_out
     decision["tier_distribution"] = tier_dist
+
+    # 会话缓冲（第三条独立路径，「骨架即胶囊」）：解析编号思考 → 累进缓冲节点。
+    # 与前两条落库路径互不阻断：独立 try/except，失败透传 session_buffer.error。
+    session_buffer_out: dict = {"buffered": False, "node_id": None, "reason": "", "error": None}
+    try:
+        buf = _strategy_decide_session_buffer(
+            req.assistant_message,
+            skeleton_kind=req.skeleton_kind,
+            session_id=req.session_id,
+            turn_index=req.turn_index,
+        )
+        session_buffer_out["reason"] = buf["reason"]
+        if buf["buffer"]:
+            session_buffer_out["node_id"] = _append_session_buffer_turn(req.session_id, req.turn_index, buf)
+            session_buffer_out["buffered"] = True
+    except Exception as e:  # noqa: BLE001 —— 缓冲失败绝不拖垮既有两条落库路径
+        logger.warning("session 缓冲累计失败 session=%s turn=%s: %s", req.session_id, req.turn_index, e)
+        session_buffer_out["error"] = str(e)
+    decision["session_buffer"] = session_buffer_out
     return decision
 
 
-# ---------------------------------------------------------------------------
-# 会话胶囊（「骨架即胶囊」收口）
-#
-# 宿主在 on_session_end 把整场 messages 交给本端点，每轮 assistant 的 <thought>
-# 段都在其中。提取（extract_session_thoughts）→ 解析（parse_thought_sections）→
-# 合并（compose_session_capsule）全在 core/strategy.py 的纯函数里，这里只做落库：
-# 一条 type=task + kind=handoff 的胶囊，走既有交接通道供新会话先读。文案与判定
-# 一律不在端点重复实现。
-# ---------------------------------------------------------------------------
+def _finalize_session_capsule(session_id: str) -> dict | None:
+    """会话胶囊落地（session-end 新路径）：缓冲节点 → 合并 → 胶囊 + 关缓冲 + 建边。
 
-SESSION_CAPSULE_IMPORTANCE = 0.85
-SESSION_CAPSULE_DOMAIN = "hermes"
+    - 无活跃缓冲（老宿主 / 空 session_id / 已合并过）→ ``None``：调用方不给
+      返回体加 ``capsule`` 字段，行为与改动前完全一致。
+    - 有 → :func:`compose_session_capsule` 合并 → ``mem_ingest`` 写胶囊（走标准
+      入籍：embedding / FTS / 接续点打标——content 首行「接续点 / 会话接续
+      <session_id>」命中 ``_is_handoff``，kind=handoff 的两条识别路都通）。
+      ``mem_ingest`` 的固定入参写不了结构化字段，session_id / sections / pending /
+      turns 随后补写进 payload（kind 显式再打一遍，幂等双保险）。
+    - 缓冲节点标 ``status=closed`` 并建 ``CONSOLIDATED_INTO`` 边指向胶囊——失败
+      只记日志不阻断（胶囊正文此时已可用）。
 
-
-def _find_session_capsule(session_id: str) -> Any:
-    """按 payload 定位该 session 已存在的胶囊（幂等更新用）；找不到返回 None。
-
-    定位失败（库忙等）只意味着失去幂等、不影响新建，因此异常一律吞掉返回 None。
+    胶囊写入失败 → 抛出（调用方 catch 后只记日志，不影响旧要点路径）。
     """
-    if not session_id:
+    existing = _find_active_session_buffer(session_id)
+    if existing is None:
         return None
-    try:
-        for nid, payload in _get_store().iter_payloads():
-            if (
-                payload.get("type") == "task"
-                and payload.get("kind") == "handoff"
-                and str(payload.get("session_id") or "") == session_id
-            ):
-                return nid
-    except Exception:  # noqa: BLE001 —— 定位失败不阻断新建
-        return None
-    return None
-
-
-def _build_session_capsule(req: SessionEndRequest) -> dict:
-    """从整场 messages 合并出会话胶囊并落库（同 session 幂等更新）。不抛异常。"""
-    out: dict = {
-        "created": False,
-        "node_id": None,
-        "sections": {},
-        "pending": [],
-        "turns": 0,
-        "error": None,
+    buf_nid, buf_payload = existing
+    turns = [t for t in (buf_payload.get("turns") or []) if isinstance(t, dict)]
+    composed = _strategy_compose_session_capsule(turns, session_id=session_id)
+    ingest = _as_json(
+        _mcp_mem_ingest(
+            composed["content"],
+            type=SESSION_CAPSULE_TYPE,
+            importance=SESSION_CAPSULE_IMPORTANCE,
+            domain=SESSION_CAPSULE_DOMAIN,
+        )
+    )
+    if not (isinstance(ingest, dict) and ingest.get("stored") and ingest.get("node_id") is not None):
+        error = (
+            str(ingest.get("error") or "capsule_ingest_failed") if isinstance(ingest, dict) else "capsule_ingest_failed"
+        )
+        raise RuntimeError(f"会话胶囊写入失败: {error}")
+    capsule_id = int(ingest["node_id"])
+    structured = {
+        "kind": HANDOFF_KIND,  # 显式写进 payload（_is_handoff 首行判据之外的显式路）
+        "session_id": session_id,
+        "sections": composed["sections"],
+        "pending": composed["pending"],
+        "turns": composed["turns"],
     }
     try:
-        turns = _strategy_extract_session_thoughts(req.messages)
-        out["turns"] = len(turns)
-        if not turns:
-            return out
-        capsule = _strategy_compose_session_capsule(turns, session_id=req.session_id)
-        out["sections"] = capsule.get("sections", {})
-        out["pending"] = capsule.get("pending", [])
-        payload_patch = {
-            "kind": "handoff",
-            "session_id": req.session_id,
-            "sections": capsule.get("sections", {}),
-            "pending": capsule.get("pending", []),
-            "turns": len(turns),
-        }
-        existing = _find_session_capsule(req.session_id)
-        if existing is not None:
-            _get_store().update_payload(int(existing), {"content": capsule["content"], **payload_patch})
-            out["node_id"] = existing
-            out["created"] = True
-            return out
-        ingest = _as_json(
-            _mcp_mem_ingest(
-                capsule["content"],
-                type="task",
-                importance=SESSION_CAPSULE_IMPORTANCE,
-                domain=SESSION_CAPSULE_DOMAIN,
-            )
-        )
-        out["created"] = bool(ingest.get("stored"))
-        out["node_id"] = ingest.get("node_id")
-        if ingest.get("node_id"):
-            # content 已落库（kind=handoff 由 ingest 按首行「接续点」自动打标）；
-            # 这里补结构化字段。失败只影响 payload 细节，不影响胶囊可读。
-            try:
-                _get_store().update_payload(int(ingest["node_id"]), payload_patch)
-            except Exception as exc:  # noqa: BLE001
-                out["error"] = f"update_payload: {exc}"
-        return out
-    except Exception as exc:  # noqa: BLE001 —— 胶囊生成失败不影响既有要点路径
-        out["error"] = f"{type(exc).__name__}: {exc}"
-        return out
+        _get_store().update_payload(capsule_id, structured)
+        _sync_fts_after_update(capsule_id)
+    except Exception as e:  # noqa: BLE001 —— 结构化字段补写失败不影响胶囊正文可用
+        logger.warning("胶囊 payload 补写失败 capsule=%s: %s", capsule_id, e)
+    try:
+        _get_store().update_payload(buf_nid, {"status": SESSION_BUFFER_STATUS_CLOSED})
+        _get_store().create_edge(buf_nid, capsule_id, SESSION_CAPSULE_EDGE_RELATION)
+    except Exception as e:  # noqa: BLE001 —— 关缓冲 / 建边失败只记日志不阻断
+        logger.warning("缓冲关闭/建边失败 buffer=%s capsule=%s: %s", buf_nid, capsule_id, e)
+    return {
+        "node_id": capsule_id,
+        "sections": composed["sections"],
+        "pending": composed["pending"],
+        "turns": composed["turns"],
+    }
 
 
 @app.post("/lifecycle/session-end")
 def lifecycle_session_end(req: SessionEndRequest):
-    """会话结束：本体提炼要点、去重、写 facts 层。"""
+    """会话结束：要点路径（type=memory，既有行为）+ 会话胶囊路径（kind=handoff）。
+
+    两条独立路径，互不阻断：
+
+    - 旧「会话要点」：messages 强信号提炼 → type=memory / facts 层。由
+      ``Config.SESSION_MEMORY_INGEST`` 开关控制，**默认开 = 行为完全不变**；
+      关闭后本路径可观测地跳过（skip_reason=session_memory_disabled）。
+    - 会话胶囊（新增）：session_id 命中活跃缓冲节点 → compose_session_capsule
+      → type=task + kind=handoff 胶囊 + 缓冲节点 closed + CONSOLIDATED_INTO 边。
+      返回体新增 ``capsule: {node_id, sections, pending, turns}``——仅在胶囊
+      **实际写出**时携带；无缓冲（老宿主 / 空 session_id）→ 不加该字段，
+      既有返回体逐字段不变。
+    """
     decision = _strategy_session_end(req.messages, auto_ingest=req.auto_ingest)
     decision["session_id"] = req.session_id
-    # 会话胶囊与要点路径互不阻断：胶囊任何失败都收进 capsule.error，不影响原返回字段。
-    decision["capsule"] = _build_session_capsule(req)
+
+    # 胶囊路径（新增）：与要点路径互不阻断，失败只记日志（capsule 字段缺席）。
+    capsule_out: dict | None = None
+    if req.session_id:
+        try:
+            capsule_out = _finalize_session_capsule(req.session_id)
+        except Exception as e:  # noqa: BLE001 —— 胶囊失败不阻断旧要点路径
+            logger.warning("会话胶囊生成失败 session=%s: %s", req.session_id, e)
+        if capsule_out is not None:
+            decision["capsule"] = capsule_out
+
     if not decision.get("store"):
-        decision.setdefault("stored", False)
-        decision.setdefault("tier_distribution", {})
+        return decision
+
+    if not Config.SESSION_MEMORY_INGEST:
+        # 兼容开关关闭：旧要点路径停用（胶囊路径不受影响），可观测地跳过。
+        decision["store"] = False
+        decision["skip_reason"] = "session_memory_disabled"
         return decision
 
     probe = _as_json(_mcp_mem_search(decision["content"], scope="memory", top_k=1))
     dup_hits = probe.get("results", []) if isinstance(probe, dict) else []
     if _strategy_is_near_duplicate(dup_hits):
-        return {
+        out = {
             "store": False,
             "points": decision["points"],
             "stored": False,
             "tier_distribution": {},
             "skip_reason": "near_duplicate",
             "session_id": req.session_id,
-            "capsule": decision["capsule"],
         }
+        if capsule_out is not None:
+            out["capsule"] = capsule_out
+        return out
 
     ingest = _as_json(
         _mcp_mem_ingest(
@@ -1582,15 +1684,17 @@ def lifecycle_session_end(req: SessionEndRequest):
             domain=_resolve_domain(""),
         )
     )
-    return {
+    out = {
         "store": True,
         "stored": bool(ingest.get("stored")),
         "node_id": ingest.get("node_id"),
         "points": decision["points"],
         "tier_distribution": {"facts": 1} if ingest.get("stored") else {},
         "session_id": req.session_id,
-        "capsule": decision["capsule"],
     }
+    if capsule_out is not None:
+        out["capsule"] = capsule_out
+    return out
 
 
 @app.post("/lifecycle/pre-compress")

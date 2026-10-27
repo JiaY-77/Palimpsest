@@ -215,6 +215,13 @@ class Config:
     # 0 = 永不跳过（等价于引入本项前的「启用即永远走 TDB」）。
     TDB_TEXT_FTS_FLOOR = int(os.getenv("TDB_TEXT_FTS_FLOOR", "3"))
 
+    # ---- lifecycle session-end：旧「会话要点」路径开关 ----
+    # 会话胶囊（type=task kind=handoff，由 session 缓冲合并）上线后保留的兼容
+    # 开关：默认开 = 既有行为完全不变（要点照旧写 facts 层）；关闭后 session-end
+    # 只走胶囊路径，要点不再写（可观测：skip_reason=session_memory_disabled）。
+    # 将来观察胶囊质量后再决定是否调整默认值。
+    SESSION_MEMORY_INGEST = os.getenv("SESSION_MEMORY_INGEST", "1") == "1"
+
     # ---- 记忆分层（tier）：检索侧视图，不改存储、不迁数据 ----
     # facts = 事实层（默认检索与注入池）；logs = 日志层（从默认池摘出）；
     # ""（空串）= 不过滤，回到改动前的全量行为（显式历史通道）。
@@ -230,7 +237,7 @@ class Config:
         if t.strip()
     )
     TIER_LOGS = frozenset(
-        t.strip() for t in os.getenv("TIER_LOGS", "record,event,git_commit,thought").split(",") if t.strip()
+        t.strip() for t in os.getenv("TIER_LOGS", "record,event,git_commit,thought,session").split(",") if t.strip()
     )
     DEFAULT_TIER = os.getenv("DEFAULT_TIER", "facts")
 
@@ -250,6 +257,8 @@ class Config:
     #     record      core/strategy.py（对话原话 capture）、core/task_state.py（任务状态
     #                 变更日志节点）、core/embedding_fingerprint.py（向量空间指纹记录）
     #     thought     core/strategy.py（THOUGHT_TYPE，思维底片，tier=logs 设计意图见该处注释）
+    #     session     main.py（会话缓冲节点：post-turn 累进各轮编号思考，session-end
+    #                 合并成 kind=handoff 胶囊后标 closed——过程簿记，tier=logs 同 thought）
     #     git_commit  scripts/palimpsest_cli.py（git 提交同步落库）
     # 例外（不入本清单）：kb_chunk / novel_chunk / skill_chunk —— 索引切片类走既有
     # scope / domain 隔离，不参与 tier 分层（见上方 TIER_FACTS 注释）。
@@ -269,6 +278,7 @@ class Config:
             "event",
             "git_commit",
             "thought",
+            "session",
         }
     )
 
