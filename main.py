@@ -28,6 +28,7 @@ import secrets
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -46,6 +47,9 @@ from core.strategy import (
 )
 from core.strategy import (
     clamp_max_topics as _strategy_clamp_max_topics,
+)
+from core.strategy import (
+    compose_session_capsule as _strategy_compose_session_capsule,
 )
 from core.strategy import (
     decide_post_turn as _strategy_post_turn,
@@ -67,6 +71,9 @@ from core.strategy import (
 )
 from core.strategy import (
     extract_graph_topics as _strategy_extract_graph_topics,
+)
+from core.strategy import (
+    extract_session_thoughts as _strategy_extract_session_thoughts,
 )
 from core.strategy import (
     format_graph_enhancement as _strategy_format_graph_enhancement,
@@ -1447,12 +1454,104 @@ def lifecycle_post_turn(req: PostTurnRequest):
     return decision
 
 
+# ---------------------------------------------------------------------------
+# 会话胶囊（「骨架即胶囊」收口）
+#
+# 宿主在 on_session_end 把整场 messages 交给本端点，每轮 assistant 的 <thought>
+# 段都在其中。提取（extract_session_thoughts）→ 解析（parse_thought_sections）→
+# 合并（compose_session_capsule）全在 core/strategy.py 的纯函数里，这里只做落库：
+# 一条 type=task + kind=handoff 的胶囊，走既有交接通道供新会话先读。文案与判定
+# 一律不在端点重复实现。
+# ---------------------------------------------------------------------------
+
+SESSION_CAPSULE_IMPORTANCE = 0.85
+SESSION_CAPSULE_DOMAIN = "hermes"
+
+
+def _find_session_capsule(session_id: str) -> Any:
+    """按 payload 定位该 session 已存在的胶囊（幂等更新用）；找不到返回 None。
+
+    定位失败（库忙等）只意味着失去幂等、不影响新建，因此异常一律吞掉返回 None。
+    """
+    if not session_id:
+        return None
+    try:
+        for nid, payload in _get_store().iter_payloads():
+            if (
+                payload.get("type") == "task"
+                and payload.get("kind") == "handoff"
+                and str(payload.get("session_id") or "") == session_id
+            ):
+                return nid
+    except Exception:  # noqa: BLE001 —— 定位失败不阻断新建
+        return None
+    return None
+
+
+def _build_session_capsule(req: SessionEndRequest) -> dict:
+    """从整场 messages 合并出会话胶囊并落库（同 session 幂等更新）。不抛异常。"""
+    out: dict = {
+        "created": False,
+        "node_id": None,
+        "sections": {},
+        "pending": [],
+        "turns": 0,
+        "error": None,
+    }
+    try:
+        turns = _strategy_extract_session_thoughts(req.messages)
+        out["turns"] = len(turns)
+        if not turns:
+            return out
+        capsule = _strategy_compose_session_capsule(turns, session_id=req.session_id)
+        out["sections"] = capsule.get("sections", {})
+        out["pending"] = capsule.get("pending", [])
+        payload_patch = {
+            "kind": "handoff",
+            "session_id": req.session_id,
+            "sections": capsule.get("sections", {}),
+            "pending": capsule.get("pending", []),
+            "turns": len(turns),
+        }
+        existing = _find_session_capsule(req.session_id)
+        if existing is not None:
+            _get_store().update_payload(int(existing), {"content": capsule["content"], **payload_patch})
+            out["node_id"] = existing
+            out["created"] = True
+            return out
+        ingest = _as_json(
+            _mcp_mem_ingest(
+                capsule["content"],
+                type="task",
+                importance=SESSION_CAPSULE_IMPORTANCE,
+                domain=SESSION_CAPSULE_DOMAIN,
+            )
+        )
+        out["created"] = bool(ingest.get("stored"))
+        out["node_id"] = ingest.get("node_id")
+        if ingest.get("node_id"):
+            # content 已落库（kind=handoff 由 ingest 按首行「接续点」自动打标）；
+            # 这里补结构化字段。失败只影响 payload 细节，不影响胶囊可读。
+            try:
+                _get_store().update_payload(int(ingest["node_id"]), payload_patch)
+            except Exception as exc:  # noqa: BLE001
+                out["error"] = f"update_payload: {exc}"
+        return out
+    except Exception as exc:  # noqa: BLE001 —— 胶囊生成失败不影响既有要点路径
+        out["error"] = f"{type(exc).__name__}: {exc}"
+        return out
+
+
 @app.post("/lifecycle/session-end")
 def lifecycle_session_end(req: SessionEndRequest):
     """会话结束：本体提炼要点、去重、写 facts 层。"""
     decision = _strategy_session_end(req.messages, auto_ingest=req.auto_ingest)
     decision["session_id"] = req.session_id
+    # 会话胶囊与要点路径互不阻断：胶囊任何失败都收进 capsule.error，不影响原返回字段。
+    decision["capsule"] = _build_session_capsule(req)
     if not decision.get("store"):
+        decision.setdefault("stored", False)
+        decision.setdefault("tier_distribution", {})
         return decision
 
     probe = _as_json(_mcp_mem_search(decision["content"], scope="memory", top_k=1))
@@ -1465,6 +1564,7 @@ def lifecycle_session_end(req: SessionEndRequest):
             "tier_distribution": {},
             "skip_reason": "near_duplicate",
             "session_id": req.session_id,
+            "capsule": decision["capsule"],
         }
 
     ingest = _as_json(
@@ -1482,6 +1582,7 @@ def lifecycle_session_end(req: SessionEndRequest):
         "points": decision["points"],
         "tier_distribution": {"facts": 1} if ingest.get("stored") else {},
         "session_id": req.session_id,
+        "capsule": decision["capsule"],
     }
 
 
