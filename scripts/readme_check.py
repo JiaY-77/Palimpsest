@@ -40,6 +40,11 @@ DOC_FILES = (
     "CONTRIBUTING.md",
     "SECURITY.md",
     "docs/HERMES_INTEGRATION.md",
+    # README 拆出来的四篇：纳入检查，否则搬家后的相对链接坏了没人发现
+    "docs/REFERENCE.md",
+    "docs/INSTALL.md",
+    "docs/DESIGN.md",
+    "docs/TESTING.md",
     "hermes-plugin/README.md",
 )
 # 文档版本号检查的扫描范围（CHANGELOG.md 是版本号的权威来源，不参与比对）
@@ -147,8 +152,9 @@ def check_mcp_tools(root: Path) -> Report:
     actual = actual_mcp_tools(root)
     report.info = f"代码注册 {len(actual)} 个"
     specs = (
-        ("README.md", r"^### MCP 工具（(\d+) 个）", "### CLI 命令"),
-        ("README_EN.md", r"^### MCP tools \((\d+)\)", "### CLI —"),
+        # 命令表已从两份 README 搬到 docs/REFERENCE.md（README 只留门面）。
+        # 英文版不再单独维护一份表——同一份参考表只写一次，避免中英漂移。
+        ("docs/REFERENCE.md", r"^### MCP 工具（(\d+) 个）", "### CLI 命令"),
     )
     for doc, head_re, end in specs:
         text = read_text(root, doc)
@@ -247,10 +253,7 @@ def check_cli_commands(root: Path) -> Report:
     report = Report("CLI 子命令")
     actual = actual_cli_commands(root)
     report.info = f"代码注册 {len(actual)} 个"
-    specs = (
-        ("README.md", "### CLI 命令", "### 区块"),
-        ("README_EN.md", "### CLI —", "### Blocks"),
-    )
+    specs = (("docs/REFERENCE.md", "### CLI 命令", "### 区块"),)
     for doc, head, end in specs:
         try:
             segment = section(read_text(root, doc), head, end, required=True)
@@ -301,8 +304,7 @@ def check_rest_routes(root: Path) -> Report:
     report.info = f"main.py 注册 {len(actual)} 条"
     # README 保留常用子集，docs/API.md 放全表；并集必须覆盖全部真实路由。
     specs = (
-        ("README.md", "### REST API", "## 测试", True),
-        ("README_EN.md", "### REST API", "## Tests", True),
+        ("docs/REFERENCE.md", "### REST API", None, True),
         ("docs/API.md", "## REST API", None, True),
     )
     documented_union: set[tuple[str, str]] = set()

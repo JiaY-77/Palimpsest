@@ -71,6 +71,10 @@ def _build_repo(
     (tmp_path / ".env.example").write_text(ENV_EXAMPLE + env_extra, encoding="utf-8")
     (tmp_path / "README.md").write_text(f"## 配置\n\n{_table(zh)}\n## 更换向量模型\n", encoding="utf-8")
     (tmp_path / "README_EN.md").write_text(f"## Configuration\n\n{_table(en)}\n## Swapping models\n", encoding="utf-8")
+    # 命令表已搬到 docs/REFERENCE.md（readme_check 的 section 锚点也指向它）；
+    # 建一个空文件，让「缺 section 必须报 warning」的用例仍然成立。
+    (tmp_path / "docs").mkdir(exist_ok=True)
+    (tmp_path / "docs" / "REFERENCE.md").write_text("", encoding="utf-8")
     # main() 会用 main.py 判断仓库根是否可用
     (tmp_path / "main.py").write_text(main_py, encoding="utf-8")
     (tmp_path / "CONTRIBUTING.md").write_text("", encoding="utf-8")
