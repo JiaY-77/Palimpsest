@@ -2,7 +2,7 @@
 
 # Palimpsest
 
-**All You Need Is Just Memory.** —— 你需要的只是一份自己的记忆。会话关了，记忆还在。
+**All You Need Is Just Memory.**
 
 **Local-first · 向量 / 全文 / 图谱 / 时间，四种索引一个内核 · MCP + REST + CLI 共用同一套工具**
 
