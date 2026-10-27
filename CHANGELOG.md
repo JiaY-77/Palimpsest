@@ -4,6 +4,19 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
+## [2.16.2] - 2026-10-27
+
+### 修复
+
+- **本地 embedding 并发调用会把整个进程 abort（无异常、无 5xx）**：`_LOCAL_LLM_LOCK` 此前只护住懒加载，真正的 `_LOCAL_LLM.embed(text)` 调用在锁外。REST 的 26 个端点里有 25 个是同步 `def`（Starlette 放进线程池执行），所以请求是真并发——多个线程同时进入同一个 Llama 实例的计算图，触发 C 层 `GGML_ASSERT` 后直接 `abort()`，客户端只看到连接断开。现把推理调用纳入同一把锁（加载路径在到达前已退出自己的 `with` 块，非重入锁不会死锁）。实测：10 个并发检索全部 200（各 3 条结果）、事后服务存活、日志中 `GGML_ASSERT` 为 0；代价是串行化——单次 0.56s，10 并发墙钟 3.61s。`--workers N` 不是替代方案（库文件被 triviumdb 独占打开，多进程直接 `Database locked`）；上游已报 `abetlen/llama-cpp-python#2392`。
+- **`thought` 节点类型两边都没登记，落进「未登记类型默认归 facts」的兜底**：`thought` 既不在 `TIER_FACTS` 也不在 `TIER_LOGS`，于是 388 个思维快照节点挤在默认检索 / 注入池里，而 `tier=logs` 一条都取不到——与设计正好相反。现将其并入 `TIER_LOGS`（与 record / event / git_commit 同层），并新增 `KNOWN_TYPES` 列出代码实际写入的全部类型；`tests/test_tier_registry.py` 用 ast 解析 `config.py` 的字面默认值做守护（防 CI 环境变量把默认值掩盖成假绿）。生产库实测：`tier=logs` 现在能取到 thought、默认层不再返回、不过滤通道无回归。
+
+### 文档
+
+- 新增 `docs/USAGE.md`：入口选择、记忆生命周期，以及「该记什么 / `importance` 怎么给 / `type` 怎么挑 / 何时声明取代」的判断手册，含四个日志层类型（record / event / thought / git_commit）与反模式清单；README 两处挂链。
+- README 按「agent 优先」重排：`What it is` → `Install`（5 步，每步给成功判据，单一默认路径）→ `What it solves` → `Why not the others` → `When it breaks` → `Report an issue` → `Deep dive`；原有内容全部保留后移，无内容丢失。
+- 修坏链：`docs/BITEMORAL.md` → `docs/BITEMPORAL.md`。
+
 ## [2.16.1] - 2026-10-26
 
 ### 修复
@@ -561,7 +574,8 @@
 
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
-[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.15.0...HEAD
+[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.16.2...HEAD
+[2.16.2]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.16.2
 [2.16.1]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.16.1
 [2.16.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.16.0
 [2.15.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.15.0
