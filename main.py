@@ -321,6 +321,7 @@ def root():
             "/mem/hybrid-search",
             "/mem/ingest",
             "/mem/purge-by-meta",
+            "/mem/retag-by-meta",
             "/mem/link",
             "/memoryhub/unpack",
             "/memoryhub/import",
@@ -634,6 +635,20 @@ class MemPurgeByMetaRequest(BaseModel):
     max_delete: int = 50  # 单次真实删除上限：匹配数超过即 409 拒绝执行
 
 
+class MemRetagByMetaRequest(BaseModel):
+    # 按「域名 + 自定义元数据」批量改写 meta 值（酒馆记忆桥：用户重命名聊天 →
+    # 同步改标，防止记忆按旧 chat_id 检索不到而变孤儿）。
+    # domain 是防误改的硬闸门：RP_MODE 关闭时缺失 / 空串一律 400。
+    # 必填项给空串默认值：缺失统一走端点自己的 400 护栏（而非 422），错误信息
+    # 能说明缺的是哪个字段，与 purge-by-meta 的护栏口径对齐。
+    domain: str = ""
+    meta_key: str = ""
+    old_value: str = ""
+    new_value: str = ""
+    dry_run: bool = True  # 默认干跑：只预览不改写
+    max_update: int = 500  # 单次真实改写上限：匹配数超过即 409 拒绝执行
+
+
 class MemHybridSearchRequest(BaseModel):
     query: str
     scope: str = "all"  # memory | kb | all
@@ -725,6 +740,32 @@ def _query_limit_rejected(query: str) -> bool:
     raise HTTPException(status_code=422, detail=result["error"])
 
 
+def _resolve_domain(requested: str) -> str:
+    """解析 domain 参数：RP_MODE 关闭时原样返回（旧行为不变）；开启时锁死 RP_DOMAIN。
+
+    RP 专用实例（config.RP_MODE=1）的域规则：
+      - 不传 / 空串 → 自动补 RP_DOMAIN（RP 实例下没有「跨域」语义，一切落 RP 域）；
+      - 传了别的 domain → 400 拒绝——域锁死，防止技术记忆误写进 RP 库，
+        也防止 RP 实例被当成通用记忆库查询旧域数据。
+    Config 的值在调用时读取（不在 import 期固化），切换 RP_MODE 无需重建应用。
+    """
+    if not Config.RP_MODE:
+        return requested
+    req_domain = (requested or "").strip()
+    if req_domain and req_domain.lower() != Config.RP_DOMAIN.lower():
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": (
+                    f"RP 专用实例：域已锁死为 {Config.RP_DOMAIN!r}，不接收其他 domain（请求传入 {req_domain!r}）"
+                ),
+                "requested_domain": req_domain,
+                "allowed_domain": Config.RP_DOMAIN,
+            },
+        )
+    return Config.RP_DOMAIN
+
+
 @app.post("/mem/search")
 def mem_search(req: MemSearchRequest):
     _query_limit_rejected(req.query)
@@ -732,7 +773,7 @@ def mem_search(req: MemSearchRequest):
         _mcp_mem_search(
             req.query,
             scope=req.scope,
-            domain=req.domain,
+            domain=_resolve_domain(req.domain),
             domain_bias=req.domain_bias,
             top_k=req.top_k,
             include_neighbors=req.include_neighbors,
@@ -757,7 +798,7 @@ def mem_hybrid_search(req: MemHybridSearchRequest):
         _mcp_mem_hybrid_search(
             req.query,
             scope=req.scope,
-            domain=req.domain,
+            domain=_resolve_domain(req.domain),
             domain_bias=req.domain_bias,
             top_k=req.top_k,
             mode=req.mode,
@@ -783,7 +824,7 @@ def mem_ingest(req: MemIngestRequest):
         req.content,
         type=req.type,
         importance=req.importance,
-        domain=req.domain,
+        domain=_resolve_domain(req.domain),
         source=req.source,
         replaces=req.replaces,
         meta=req.meta,
@@ -810,17 +851,19 @@ def mem_purge_by_meta(req: MemPurgeByMetaRequest):
     与 FTS/TDB 文本通道）。
 
     破坏性操作的三道护栏：
-      1. ``domain`` 必填非空（缺失 / 空串 400）——不允许针对全库删除；
+      1. ``domain`` 必填非空（RP_MODE 关闭时，缺失 / 空串 400）——不允许针对
+         全库删除；RP_MODE 开启时空 domain 自动补 RP_DOMAIN（域锁死语义）；
       2. ``dry_run`` 默认 true——缺省只预览（matched_count / ids / previews），
          不删任何节点；
       3. 匹配数 > ``max_delete`` 时 409 拒绝执行（附实际匹配数 + 预览），
          防止一次删爆。
-    每次真实删除写一条 ``type=record`` 审计节点（domain 同请求、importance=0.5、
-    content 含 meta 键值 / deleted_ids / 时间戳）；审计节点本身不带 meta，
-    不会被后续同条件的 purge 连坐删除。
+    每次真实删除写一条 ``type=record`` 审计节点（domain 同解析后的请求域、
+    importance=0.5、content 含 meta 键值 / deleted_ids / 时间戳）；审计节点
+    本身不带 meta，不会被后续同条件的 purge 连坐删除。
     """
-    if not (req.domain or "").strip():
+    if not Config.RP_MODE and not (req.domain or "").strip():
         raise HTTPException(status_code=400, detail="domain 必填且非空：本端点不允许针对全库删除")
+    domain = _resolve_domain(req.domain)
     if not req.meta_key or not req.meta_value:
         raise HTTPException(status_code=400, detail="meta_key 与 meta_value 必填且非空")
 
@@ -828,7 +871,7 @@ def mem_purge_by_meta(req: MemPurgeByMetaRequest):
     # 写入必报 Database locked（先 list() 物化后再批量删）。
     matched: list[tuple[int, str]] = []
     for node_id, payload in _get_store().iter_payloads():
-        if payload.get("domain") == req.domain and (payload.get("meta") or {}).get(req.meta_key) == req.meta_value:
+        if payload.get("domain") == domain and (payload.get("meta") or {}).get(req.meta_key) == req.meta_value:
             matched.append((int(node_id), (payload.get("content") or "")[:80]))
     matched.sort()
     matched_ids = [nid for nid, _ in matched]
@@ -859,7 +902,7 @@ def mem_purge_by_meta(req: MemPurgeByMetaRequest):
             logger.warning("purge-by-meta 删除节点 %s 失败: %s", node_id, e)
             failed_ids.append(node_id)
 
-    audit_node_id = _write_purge_audit_record(req, deleted_ids, failed_ids)
+    audit_node_id = _write_purge_audit_record(domain, req, deleted_ids, failed_ids)
     return {
         "dry_run": False,
         "matched_count": len(matched_ids),
@@ -870,23 +913,143 @@ def mem_purge_by_meta(req: MemPurgeByMetaRequest):
     }
 
 
-def _write_purge_audit_record(req: MemPurgeByMetaRequest, deleted_ids: list[int], failed_ids: list[int]) -> int | None:
+def _write_purge_audit_record(
+    domain: str, req: MemPurgeByMetaRequest, deleted_ids: list[int], failed_ids: list[int]
+) -> int | None:
     """真实删除后写一条 type=record 审计节点，返回其 node_id（写不出则 None）。
 
     审计节点不带 meta——自身不会被同条件的 purge 连坐删除。审计失败不回滚
     删除（节点已删、不可逆），仅审计链断档。
     """
     content = (
-        f"[purge-by-meta] domain={req.domain} meta.{req.meta_key}={req.meta_value} "
+        f"[purge-by-meta] domain={domain} meta.{req.meta_key}={req.meta_value} "
         f"deleted_ids={deleted_ids} failed={failed_ids} "
         f"at={datetime.now(timezone.utc).isoformat()}"
     )
-    result = _mcp_mem_ingest(content, type="record", importance=0.5, domain=req.domain)
+    result = _mcp_mem_ingest(content, type="record", importance=0.5, domain=domain)
     try:
         payload = json.loads(result)
     except Exception:  # noqa: BLE001 —— 解析失败按审计未写入处理
         payload = {}
     return payload.get("node_id") if payload.get("stored") else None
+
+
+def _write_retag_audit_record(
+    domain: str,
+    req: MemRetagByMetaRequest,
+    updated_ids: list[int],
+    failed_ids: list[int],
+) -> int | None:
+    """真实改写后写一条 type=record 审计节点，返回其 node_id（写不出则 None）。
+
+    审计节点不带 meta（见 purge 审计的同理由），改写失败的部分随 failed 记录。
+    """
+    content = (
+        f"[retag-by-meta] domain={domain} meta.{req.meta_key}={req.old_value}"
+        f"->{req.new_value} updated_ids={updated_ids} failed={failed_ids} "
+        f"at={datetime.now(timezone.utc).isoformat()}"
+    )
+    result = _mcp_mem_ingest(content, type="record", importance=0.5, domain=domain)
+    try:
+        payload = json.loads(result)
+    except Exception:  # noqa: BLE001 —— 解析失败按审计未写入处理
+        payload = {}
+    return payload.get("node_id") if payload.get("stored") else None
+
+
+@app.post("/mem/retag-by-meta")
+def mem_retag_by_meta(req: MemRetagByMetaRequest):
+    """按「域名 + 自定义元数据」批量改写 meta 值（不打向量、不重建索引）。
+
+    外置宿主（酒馆记忆桥）在用户重命名聊天后调用：写入端 ingest 时打了
+    ``{"chat_id": "..."}`` 标，重命名后把旧值统一改写为新值，同步改标。
+    匹配口径与 purge-by-meta 完全一致（``payload.domain == domain`` 且
+    ``payload.meta[meta_key] == old_value``）。
+
+    破坏性/误改防护的四道护栏：
+      1. ``domain`` 必填非空（RP_MODE 关闭时，缺失 / 空串 400）——不允许针对
+         全库改标；RP_MODE 开启时空 domain 自动补 RP_DOMAIN；
+      2. ``old_value == new_value`` → 400（无改写意义，防误触）；
+      3. ``dry_run`` 默认 true——缺省只预览（matched_count / ids / previews），
+         不改任何节点；
+      4. 匹配数 > ``max_update`` 时 409 拒绝执行（附实际匹配数 + 预览）。
+
+    meta 是合并式改写：先读回节点现有 meta 再浅合并
+    ``{**cur_meta, meta_key: new_value}``，其他 meta 键一律不冲掉；改写目标
+    {meta_key: new_value} 过 core.meta_guard 结构校验（非法键名 / 超长 → 400）。
+    每次真实改写写一条 ``type=record`` 审计节点（domain 同解析后的请求域、
+    importance=0.5、content 含 meta 键 / 新旧值 / updated_ids / 时间戳）。
+    """
+    if not Config.RP_MODE and not (req.domain or "").strip():
+        raise HTTPException(status_code=400, detail="domain 必填且非空：本端点不允许针对全库改标")
+    domain = _resolve_domain(req.domain)
+    if not req.meta_key or not req.old_value or not req.new_value:
+        raise HTTPException(status_code=400, detail="meta_key、old_value 与 new_value 必填且非空")
+    if req.old_value == req.new_value:
+        raise HTTPException(status_code=400, detail="old_value 与 new_value 相同：无改写意义")
+    meta_ok, meta_err = validate_meta({req.meta_key: req.new_value})
+    if not meta_ok:
+        raise HTTPException(status_code=400, detail=f"meta 结构不合法：{meta_err}")
+
+    # 先物化匹配结果再写库（同 purge：遍历期间占用连接，遍历中写入必报
+    # Database locked）。
+    matched: list[tuple[int, str]] = []
+    for node_id, payload in _get_store().iter_payloads():
+        if payload.get("domain") == domain and (payload.get("meta") or {}).get(req.meta_key) == req.old_value:
+            matched.append((int(node_id), (payload.get("content") or "")[:80]))
+    matched.sort()
+    matched_ids = [nid for nid, _ in matched]
+    previews = [snippet for _, snippet in matched]
+
+    if req.dry_run:
+        return {
+            "dry_run": True,
+            "matched_count": len(matched_ids),
+            "updated_count": 0,
+            "updated_ids": [],
+            "failed": [],
+            "ids": matched_ids,
+            "previews": previews,
+        }
+
+    if len(matched_ids) > req.max_update:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": f"匹配 {len(matched_ids)} 个节点，超过 max_update={req.max_update}，拒绝执行",
+                "matched_count": len(matched_ids),
+                "ids": matched_ids,
+                "previews": previews,
+            },
+        )
+
+    updated_ids: list[int] = []
+    failed_ids: list[int] = []
+    store = _get_store()
+    for node_id in matched_ids:
+        try:
+            # 改写前读回节点复核匹配态 + 合并 meta：更新间可能穿插其他写请求
+            # （FastAPI 线程池），条件复核防「匹配过但 meta 已被改写」的重叠失效。
+            node = store.get_node(node_id)
+            payload = (node or {}).get("payload") or {}
+            cur_meta = payload.get("meta") or {}
+            if payload.get("domain") != domain or cur_meta.get(req.meta_key) != req.old_value:
+                continue  # 复核失败不计 failed（节点本就不再匹配）
+            store.update_payload(node_id, {"meta": {**cur_meta, req.meta_key: req.new_value}})
+            updated_ids.append(node_id)
+        except Exception as e:  # noqa: BLE001 —— 单条失败不中断（记入 failed 继续）
+            logger.warning("retag-by-meta 改写节点 %s 失败: %s", node_id, e)
+            failed_ids.append(node_id)
+
+    audit_node_id = _write_retag_audit_record(domain, req, updated_ids, failed_ids)
+    return {
+        "dry_run": False,
+        "matched_count": len(matched_ids),
+        "updated_count": len(updated_ids),
+        "updated_ids": updated_ids,
+        "failed": failed_ids,
+        "audit_node_id": audit_node_id,
+    }
 
 
 @app.post("/mem/link")
@@ -965,7 +1128,7 @@ def mem_recent(req: MemRecentRequest):
 
     核心逻辑见 mcp_tools.memory.mem_recent（复用同一实现，不复制）。
     """
-    return _as_json(_mcp_mem_recent(domain=req.domain, limit=req.limit, as_of=req.as_of))
+    return _as_json(_mcp_mem_recent(domain=_resolve_domain(req.domain), limit=req.limit, as_of=req.as_of))
 
 
 @app.post("/mem/stats")
@@ -1135,7 +1298,7 @@ def lifecycle_pre_turn(req: PreTurnRequest):
         _mcp_mem_search(
             req.user_message,
             scope=req.scope,
-            domain=req.domain,
+            domain=_resolve_domain(req.domain),
             top_k=req.top_k,
             include_neighbors=req.include_neighbors,
             tier=req.tier,
@@ -1215,6 +1378,7 @@ def lifecycle_post_turn(req: PostTurnRequest):
     decision = _strategy_post_turn(req.user_message, auto_ingest=req.auto_ingest)
     decision["session_id"] = req.session_id
     decision["turn_index"] = req.turn_index
+    domain = _resolve_domain(req.domain)
 
     tier_dist: dict[str, int] = {}
     if decision.get("store"):
@@ -1223,7 +1387,7 @@ def lifecycle_post_turn(req: PostTurnRequest):
                 decision["content"],
                 type=decision["type"],
                 importance=decision["importance"],
-                domain=req.domain,
+                domain=domain,
             )
         )
         decision["stored"] = bool(ingest.get("stored"))
@@ -1267,7 +1431,7 @@ def lifecycle_post_turn(req: PostTurnRequest):
                     source=thought["source"],
                     skeleton_kind=thought["skeleton_kind"],
                     turn_index=req.turn_index,
-                    domain=req.domain,
+                    domain=domain,
                 )
             )
             thought_out["stored"] = bool(tingest.get("stored"))
@@ -1308,6 +1472,7 @@ def lifecycle_session_end(req: SessionEndRequest):
             decision["content"],
             type=decision["type"],
             importance=decision["importance"],
+            domain=_resolve_domain(""),
         )
     )
     return {

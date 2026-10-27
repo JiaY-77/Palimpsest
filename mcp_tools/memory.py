@@ -124,7 +124,12 @@ def _find_linked_kb_ids(emb: list[float]) -> list[int]:
     """v1.1 知识关联检测：找 score > 0.35 的 kb_chunk 节点 id（写入 payload.linked_from）。
 
     只读查询，必须在事务外做（事务内不重开连接）。
+
+    RP 专用实例（config.RP_MODE=1）整体关掉：RP 独立库里没有 kb_chunk，
+    检测与 REFERENCES 挂边纯属浪费（开关在调用时读取，默认关闭完全不变）。
     """
+    if Config.RP_MODE:
+        return []
     linked: list[int] = []
     similar = store.search_similar(emb, top_k=3, expand_depth=0, apply_decay=False)
     for r in similar:
