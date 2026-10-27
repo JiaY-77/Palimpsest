@@ -9,6 +9,7 @@ from typing import Any
 import triviumdb
 
 from config import Config
+from core import confidence
 from core import tdb_text_index as _tdb_text
 from core.fts_index import remove_node, sync_node
 from core.secret_scan import SecretScanError, scan_secret_classified
@@ -198,17 +199,23 @@ def _rerank_by_decay(scored: list[tuple[float, dict]]) -> list[tuple[float, dict
 
     eps = getattr(Config, "SOFT_RERANK_EPS", 0.02)
     kb_mult = getattr(Config, "KB_SOFT_RERANK_MULT", 1.5)
+    conf_eps = getattr(Config, "MEMORY_CONFIDENCE_EPS", 0.0)
+    conf_center = getattr(Config, "MEMORY_CONFIDENCE_CENTER", 0.27)
+    conf_span = getattr(Config, "MEMORY_CONFIDENCE_SPAN", 0.15)
     reranked = []
     for score, node in scored:
         payload = node.get("payload", {}) or {}
+        # 置信度只做 ε 级 tie-break，默认关闭（conf_eps=0 时零开销）。
+        # 不做硬门槛：实测按 b 过滤会让召回掉 4.81pp（见 docs/CONFIDENCE.md）。
+        conf_bonus = conf_eps * confidence.normalized(payload, conf_center, conf_span) if conf_eps else 0.0
         if payload.get("type") == "kb_chunk":
-            reranked.append((score + eps * kb_mult, node))
+            reranked.append((score + eps * kb_mult + conf_bonus, node))
             continue
         days = _days_since_created(payload.get("created_at"), now)
         importance = _to_float(payload.get("importance"), 0.5)
         importance_norm = max(-1.0, min(1.0, (importance - 0.5) / 0.5))
         recency_norm = decay ** (days / 30.0)
-        reranked.append((score + eps * (importance_norm + recency_norm), node))
+        reranked.append((score + eps * (importance_norm + recency_norm) + conf_bonus, node))
     return reranked
 
 

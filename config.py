@@ -68,6 +68,15 @@ class Config:
     MEMORY_RERANK_MODE = os.getenv("MEMORY_RERANK_MODE", "soft").strip().lower()
     # soft 模式的 ε：落在余弦分差区间的 15%-40%，只做 tie-break
     SOFT_RERANK_EPS = float(os.getenv("SOFT_RERANK_EPS", "0.02"))
+    # ---- 记忆置信度（可选，默认关闭）----
+    # 置信度由可观测证据按 Subjective Logic 公式算出（见 core/confidence.py），
+    # 只参与检索排序的 ε 级微调。实测：做成硬门槛会让召回掉 4.81pp，故不做门槛。
+    # 0 = 关闭（默认）；实测最优 0.05（56 题：MRR@5 +3.27pp / nDCG@5 +3.87pp，
+    # 语义类子集相对 +34.6%）。详见 docs/CONFIDENCE.md
+    MEMORY_CONFIDENCE_EPS = float(os.getenv("MEMORY_CONFIDENCE_EPS", "0"))
+    # b 映射到 [-1,1] 的中心与跨度：b == center → 0，b >= center + span → +1
+    MEMORY_CONFIDENCE_CENTER = float(os.getenv("MEMORY_CONFIDENCE_CENTER", "0.27"))
+    MEMORY_CONFIDENCE_SPAN = float(os.getenv("MEMORY_CONFIDENCE_SPAN", "0.15"))
     # 域软加权加分（加性，作用在语义分上；domain_boost 非空时对同域候选加此值）
     DOMAIN_BOOST_EPS = float(os.getenv("DOMAIN_BOOST_EPS", "0.10"))
     # kb_chunk（知识块不老化）在 soft 模式下的 ε 加成倍率
