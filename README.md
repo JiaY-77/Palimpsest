@@ -6,7 +6,7 @@
 
 **Local-first · 向量 / 全文 / 图谱 / 时间，四种索引一个内核 · MCP + REST + CLI 共用同一套工具**
 
-[![Version](https://img.shields.io/badge/Version-v2.16.2-4c6ef5.svg)](/)
+[![Version](https://img.shields.io/badge/Version-v2.17.0-4c6ef5.svg)](/)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Backends](https://img.shields.io/badge/Backends-DeepSeek%E2%80%A2Ollama%E2%80%A2Built--in-6f42c1.svg)](/)
@@ -91,7 +91,7 @@ Windows 可用 `scripts/start_rest.vbs` 隐藏窗口启动（日志写 `scripts/
 ```bash
 # ① 服务活着
 curl -s http://127.0.0.1:8090/
-# 返回 {"service":"Palimpsest","version":"v2.16.2","endpoints":[...]}
+# 返回 {"service":"Palimpsest","version":"v2.17.0","endpoints":[...]}
 
 # ② 体检全绿
 python scripts/palimpsest_cli.py doctor
