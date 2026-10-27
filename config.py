@@ -222,6 +222,14 @@ class Config:
     # 将来观察胶囊质量后再决定是否调整默认值。
     SESSION_MEMORY_INGEST = os.getenv("SESSION_MEMORY_INGEST", "1") == "1"
 
+    # ---- lifecycle post-turn：会话缓冲的实质轮筛选（issue #170，胶囊第二刀）----
+    # 判定在 core/strategy.is_substantive_turn（三条判据任一满足才进缓冲：
+    # ①本轮有工具调用；②思考正文 ≥ 此门槛且结论类字段非空；③用户消息含指令
+    # 动词）。这里只是判据 2 的思考正文长度门槛（strip 后字符数）：全不满足的
+    # 短轮（打招呼 / 确认 / 一句话回复）不进缓冲（skip_reason=non_substantive），
+    # session-end 胶囊不再被噪声塞满。纯函数不读环境——本值由端点注入。
+    SESSION_BUFFER_MIN_THOUGHT_CHARS = int(os.getenv("SESSION_BUFFER_MIN_THOUGHT_CHARS", "400"))
+
     # ---- 记忆分层（tier）：检索侧视图，不改存储、不迁数据 ----
     # facts = 事实层（默认检索与注入池）；logs = 日志层（从默认池摘出）；
     # ""（空串）= 不过滤，回到改动前的全量行为（显式历史通道）。

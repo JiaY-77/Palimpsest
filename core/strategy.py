@@ -1028,6 +1028,66 @@ _CAPSULE_SECTION_ORDER = ("thought", "outcome", "next", "pitfalls")
 # next 节的「下一步」信号词：句子里带这些字样才算交接需要的事（任务书口径）。
 _CAPSULE_NEXT_MARKERS = ("下一步", "待", "需", "再")
 
+# ---------------------------------------------------------------------------
+# 实质轮筛选（issue #170，胶囊第二刀）：会话缓冲只收「实质轮」
+#
+# 为什么是这三条判据（任一满足即实质轮）：三条分别覆盖「干活动作」「思考
+# 深度」「任务指派」三种实质性的来源，互为兜底——宿主可能拿不到工具信号
+# （老宿主，判据 1 失效），模型可能没照骨架写长思考（判据 2 失效），用户可
+# 能只丢一句话就指望动手（判据 3 失效）。短轮（打招呼 / 确认 / 一句话回复）
+# 三条全不中，被挡在缓冲外，胶囊不再被噪声塞满：
+#
+#   1. 该轮有工具调用（``tool_calls_count > 0``）——宿主在 post-turn 请求里能
+#      给的最硬的「干活了」信号：一条带工具调用的轮几乎总在操作或验证什么；
+#   2. 思考正文够长（strip 后 ≥ ``SESSION_BUFFER_MIN_THOUGHT_CHARS`` 字符）且
+#      解析出的结论类字段（``_SUBSTANTIVE_CONCLUSION_FIELDS`` 任一非空）——
+#      长思考且落在结论上，说明这轮真的想清楚了什么（只看长度会收进长复述，
+#      只看字段会收进「每问必答一两句」的短轮，两个条件合起来才各挡一面）；
+#   3. 用户消息含指令动词（词表见 ``_SUBSTANTIVE_ZH_VERBS`` / 正则）——
+#      「做/改/查/写/跑/验证/修/提/生成/整理/分析/对比」等执行类请求。指令
+#      ≠ 问句：整句是疑问形态（「要怎么改这个配置？」）不影响判定，问句里
+#      带指令动词也算指派了任务。
+#
+# 为什么老宿主缺字段要退化到判据 2：老宿主不传 ``tool_calls_count`` → 缺省
+# 0，「缺信号」不能反向推断成「有工具调用」——把缺字段当实质轮等于这刀白
+# 磨（所有老宿主请求全部照单全收）；判据 3 对缺省空串同理永不命中。于是老
+# 请求自动退化为「只看思考正文与结论字段」——这是不接新信号时唯一可判的
+# 实质性证据，行为可预期（不猜、不放宽），宿主升级接上新信号后判据 1/3 自动生效。
+# ---------------------------------------------------------------------------
+
+SESSION_BUFFER_MIN_THOUGHT_CHARS = 400  # 判据 2 的思考正文长度门槛（strip 后字符数）
+
+# 判据 2 的「结论类字段」：解析出的 sections 里任一非空即算落在结论上。
+# ``outcome`` 是当前三套骨架映射（_SKELETON_FIELD_MAP）之外的防御位——
+# code 骨架的对应字段叫 change，判据词表按任务书口径保留 outcome，
+# 未来模板扩展出该字段时不用再改判定。
+_SUBSTANTIVE_CONCLUSION_FIELDS: tuple[str, ...] = ("outcome", "conclusion", "judgement", "deliverable")
+
+# 判据 3 的指令动词词表（任务书口径，不做同义词扩表）。中文按子串匹配
+# （单字动词无法用词边界），因此**偏宽松**：「我做了个梦」也会命中「做」。
+# 这是有意的取向——判据 3 的作用是补上宿主没有工具信号时的缺口，宁可多收
+# 一条，也不漏掉真正的任务指派；拦寒暄主要靠判据 2（短轮的思考通常既短、
+# 也没有结论字段）。英文用词边界正则（``\bdo\b`` 不会误伤 docker / doing /
+# dot）。
+_SUBSTANTIVE_ZH_VERBS: tuple[str, ...] = (
+    "做",
+    "改",
+    "查",
+    "写",
+    "跑",
+    "验证",
+    "修",
+    "提",
+    "生成",
+    "整理",
+    "分析",
+    "对比",
+)
+_SUBSTANTIVE_EN_VERB_RE = re.compile(
+    r"\b(?:do|make|fix|add|check|run|verify|write|build|create|review|analyze)\b",
+    re.IGNORECASE,
+)
+
 
 def parse_thought_sections(text: str, skeleton_kind: str) -> dict[str, str]:
     """把 ``<thought>`` 段里的编号答案解析成「胶囊字段 → 文本」（纯解析）。
@@ -1077,7 +1137,50 @@ def parse_thought_sections(text: str, skeleton_kind: str) -> dict[str, str]:
     return sections
 
 
-def decide_session_buffer(text: str, *, skeleton_kind: str, session_id: str, turn_index: int) -> dict[str, Any]:
+def is_substantive_turn(
+    thought_text: str,
+    sections: dict[str, str],
+    *,
+    tool_calls_count: int = 0,
+    user_message: str = "",
+    min_thought_chars: int = SESSION_BUFFER_MIN_THOUGHT_CHARS,
+) -> bool:
+    """判一轮是不是「实质轮」（纯函数，三条判据任一满足即 True，依据见上方判据块）。
+
+    - ``thought_text``：该轮 ``<thought>`` 段正文（判据 2 的长度对象，strip 后量）；
+    - ``sections``：:func:`parse_thought_sections` 的解析结果（判据 2 的结论字段）；
+    - ``tool_calls_count``：本轮工具调用次数（判据 1；>0 即实质，0/负数不命中）；
+    - ``user_message``：本轮用户消息（判据 3；空串不命中）；
+    - ``min_thought_chars``：判据 2 的长度门槛（调用方从 Config 注入以可调，
+      缺省同 :data:`SESSION_BUFFER_MIN_THOUGHT_CHARS`；负数按 0 处理）。
+    """
+    # 判据 1：有工具调用 = 这轮在干活（最硬的宿主信号）
+    if tool_calls_count > 0:
+        return True
+    # 判据 2：思考正文够长 + 落在结论上（长度挡短轮，结论字段挡长复述）
+    body = (thought_text or "").strip()
+    has_conclusion = any(
+        isinstance(sections.get(name), str) and sections[name].strip() for name in _SUBSTANTIVE_CONCLUSION_FIELDS
+    )
+    if len(body) >= max(0, min_thought_chars) and has_conclusion:
+        return True
+    # 判据 3：用户消息指派了任务（指令 ≠ 问句：疑问形态不影响判定）
+    message = (user_message or "").strip()
+    return bool(
+        message and (any(verb in message for verb in _SUBSTANTIVE_ZH_VERBS) or _SUBSTANTIVE_EN_VERB_RE.search(message))
+    )
+
+
+def decide_session_buffer(
+    text: str,
+    *,
+    skeleton_kind: str,
+    session_id: str,
+    turn_index: int,
+    tool_calls_count: int = 0,
+    user_message: str = "",
+    min_thought_chars: int = SESSION_BUFFER_MIN_THOUGHT_CHARS,
+) -> dict[str, Any]:
     """判定本轮思考要不要进「会话缓冲」、进什么（post-turn 第三条路径，纯决策）。
 
     返回 ``{"buffer": bool, "reason": str, "skeleton_kind": str,
@@ -1087,13 +1190,23 @@ def decide_session_buffer(text: str, *, skeleton_kind: str, session_id: str, tur
       不落缓冲，行为与改动前一致）；
     - 解析不出任何字段 → ``buffer=False, reason="no_sections"``（保留原 thought
       落库路径兜底，本判定只管缓冲）；
+    - 解析出了字段但不是实质轮 → ``buffer=False, reason="non_substantive"``
+      （issue #170 实质轮筛选：短轮不进缓冲，但**不静默丢弃**——reason 留痕、
+      sections 随诊断返回，与另两种 skip_reason 同一可观测约定）；
     - 否则 ``buffer=True``（reason 为空串）：``sections`` 为解析结果
       （:func:`parse_thought_sections`），``raw`` 为 ``<thought>`` 段原文截断到
       ``SESSION_BUFFER_RAW_MAX_CHARS`` 字；``skeleton_kind`` 为归一后的骨架类型
       （:func:`normalize_skeleton_kind`）。
 
-    ``turn_index`` 不参与判定（要不要进缓冲只看 session_id 与解析结果）——它随
-    调用方语义留给执行层做缓冲内幂等覆盖的键。
+    「实质轮」判定委托 :func:`is_substantive_turn`（三条判据：工具调用 / 长思考
+    含结论字段 / 用户消息指令动词，依据见其上方判据块）。老宿主不传
+    ``tool_calls_count`` / 不传 ``user_message`` → 缺省 0 / 空串，判据 1/3 永不
+    命中，行为退化到只用判据 2——缺字段绝不当成实质轮。
+
+    ``turn_index`` 不参与判定（要不要进缓冲只看 session_id、解析结果与实质
+    性）——它随调用方语义留给执行层做缓冲内幂等覆盖的键。
+    ``min_thought_chars`` 由执行层从 ``Config.SESSION_BUFFER_MIN_THOUGHT_CHARS``
+    注入（环境变量可调），本函数不接配置——纯决策不碰环境。
     """
     kind = normalize_skeleton_kind(skeleton_kind)
     if not (session_id or "").strip():
@@ -1103,6 +1216,15 @@ def decide_session_buffer(text: str, *, skeleton_kind: str, session_id: str, tur
         return {"buffer": False, "reason": "no_sections", "skeleton_kind": kind, "sections": {}, "raw": ""}
     parsed = extract_thought(text or "")
     raw = parsed["text"][:SESSION_BUFFER_RAW_MAX_CHARS] if parsed["found"] else ""
+    if not is_substantive_turn(
+        parsed["text"] if parsed["found"] else "",
+        sections,
+        tool_calls_count=tool_calls_count,
+        user_message=user_message,
+        min_thought_chars=min_thought_chars,
+    ):
+        # 带上 sections 便于排查「解析出了什么却被判非实质」（可观测，不静默）。
+        return {"buffer": False, "reason": "non_substantive", "skeleton_kind": kind, "sections": sections, "raw": ""}
     return {"buffer": True, "reason": "", "skeleton_kind": kind, "sections": sections, "raw": raw}
 
 

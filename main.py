@@ -1262,6 +1262,11 @@ class PostTurnRequest(BaseModel):
     # 不变，隐式 general）；传了则落进 payload.domain，宿主可按自己的域检索
     # 底片（否则固定 domain=hermes 的宿主永远查不到自己的底片）。
     domain: str = ""
+    # 本轮工具调用次数（issue #170 实质轮筛选，可选）：宿主拿得到就传真实次数；
+    # 拿不到就不传 → 0（老宿主兼容）。缺字段 ≠ 有工具调用——「缺信号」不能
+    # 反向推断成「实质轮」（否则老宿主的每一轮都照单全收，筛选形同虚设），
+    # 此时退化到其余判据（长思考含结论字段 / 用户消息指令动词）。
+    tool_calls_count: int = 0
 
 
 class SessionEndRequest(BaseModel):
@@ -1375,10 +1380,11 @@ def _thought_already_stored(source: str, turn_index: int) -> bool:
 
 # ---------------------------------------------------------------------------
 # 会话缓冲（「骨架即胶囊」第二/三刀的执行层）：post-turn 把每轮编号思考解析成
-# 字段累进该 session 的缓冲节点（type="session"，同一 session_id 只一条）；
-# session-end 由 compose_session_capsule 合并成 type=task + kind=handoff 胶囊。
-# 判定全在 core/strategy.py（parse_thought_sections / decide_session_buffer /
-# compose_session_capsule 纯函数），这里只做落库执行。
+# 字段，经实质轮筛选（is_substantive_turn，issue #170）后累进该 session 的缓冲
+# 节点（type="session"，同一 session_id 只一条）；session-end 由
+# compose_session_capsule 合并成 type=task + kind=handoff 胶囊。
+# 判定全在 core/strategy.py（parse_thought_sections / is_substantive_turn /
+# decide_session_buffer / compose_session_capsule 纯函数），这里只做落库执行。
 # ---------------------------------------------------------------------------
 
 # 会话胶囊节点的固定档位（任务书口径）：接续点形态的任务卡，写进 hermes 域。
@@ -1472,6 +1478,11 @@ def lifecycle_post_turn(req: PostTurnRequest):
     ``skeleton_kind`` 为宿主上报的**事实字段**（本轮注入的骨架类型，缺省空串）；
     ``thought_origin`` 为本体按文本开头形态的**启发式**判定（skeleton / native /
     unknown，非精确归因）——两者交叉可查「注入了骨架但模型没照写」。
+
+    会话缓冲（第三条路径，issue #170 实质轮筛选）：``<thought>`` 编号答案解析后
+    经 :func:`core.strategy.is_substantive_turn` 判实质——工具调用 / 长思考含
+    结论字段 / 用户消息指令动词，任一满足才累进缓冲；短轮不进缓冲但可观测
+    （``session_buffer.reason="non_substantive"``，不静默丢弃）。
     """
     decision = _strategy_post_turn(req.user_message, auto_ingest=req.auto_ingest)
     decision["session_id"] = req.session_id
@@ -1543,8 +1554,11 @@ def lifecycle_post_turn(req: PostTurnRequest):
     decision["thought"] = thought_out
     decision["tier_distribution"] = tier_dist
 
-    # 会话缓冲（第三条独立路径，「骨架即胶囊」）：解析编号思考 → 累进缓冲节点。
-    # 与前两条落库路径互不阻断：独立 try/except，失败透传 session_buffer.error。
+    # 会话缓冲（第三条独立路径，「骨架即胶囊」）：解析编号思考 → 实质轮筛选
+    # （issue #170）→ 累进缓冲节点。实质判定在 strategy.is_substantive_turn
+    # （工具调用 / 长思考含结论字段 / 指令动词，任一满足即实质）；阈值从
+    # Config 注入（环境变量可调），端点只取值与执行。与前两条落库路径互不
+    # 阻断：独立 try/except，失败透传 session_buffer.error。
     session_buffer_out: dict = {"buffered": False, "node_id": None, "reason": "", "error": None}
     try:
         buf = _strategy_decide_session_buffer(
@@ -1552,6 +1566,9 @@ def lifecycle_post_turn(req: PostTurnRequest):
             skeleton_kind=req.skeleton_kind,
             session_id=req.session_id,
             turn_index=req.turn_index,
+            tool_calls_count=req.tool_calls_count,
+            user_message=req.user_message,
+            min_thought_chars=Config.SESSION_BUFFER_MIN_THOUGHT_CHARS,
         )
         session_buffer_out["reason"] = buf["reason"]
         if buf["buffer"]:

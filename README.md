@@ -208,6 +208,7 @@ python scripts/palimpsest_cli.py doctor
 |---|---|---|
 | `REST_PORT` | `8090` | FastAPI REST 服务端口 |
 | `DB_PATH` | `data/mh_memory.db` | 嵌入式 TriviumDB 数据库路径 |
+| `SESSION_BUFFER_MIN_THOUGHT_CHARS` | `400` | 会话缓冲只收实质轮的门槛：本轮有工具调用 / 思考正文 ≥ 此值且含结论字段 / 用户消息含指令动词，任一满足才进（详见 docs/CONFIGURATION.md） |
 | `EMBEDDING_PROVIDER` | *（空 = 自动探测）* | 向量后端：留空自动探测（有云端 key → `openai`，否则 → `local`），或显式 `local` / `ollama` / `openai` |
 | `DEEPSEEK_API_KEY` | *（空）* | 生成报告用；不配也能跑 |
 | `KNOWLEDGE_DIR` | *（可选）* | 知识库根目录（待索引的 Obsidian `.md` 文件） |

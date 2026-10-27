@@ -212,6 +212,7 @@ All configuration is read from environment variables (a `.env` file is loaded au
 |---|---|---|
 | `REST_PORT` | `8090` | Port for the FastAPI REST service |
 | `DB_PATH` | `data/mh_memory.db` | Path to the embedded TriviumDB database |
+| `SESSION_BUFFER_MIN_THOUGHT_CHARS` | `400` | Substantive-turn threshold for the session buffer: a turn enters only with tool calls, or thought body ≥ this length plus a conclusion field, or an imperative user message (see docs/CONFIGURATION.md) |
 | `EMBEDDING_PROVIDER` | *(empty = auto-detect)* | Embedding backend: empty auto-detects (cloud key → `openai`, otherwise `local`), or explicitly `local` / `ollama` / `openai` |
 | `DEEPSEEK_API_KEY` | *(empty)* | Used for report generation; optional |
 | `KNOWLEDGE_DIR` | *(optional)* | Root of the knowledge base (Obsidian `.md` files) to index |
