@@ -3,6 +3,16 @@ kind: standalone
 version: 1.0.0
 description: "Palimpsest memory backend for Hermes: swap the memory layer to local-first semantic recall + knowledge graph + auto-ingest over a private local REST service (port 8090). No API key, no third-party dependencies."
 pip_dependencies: []
-hooks:
+provides_hooks:
+  # Event hooks this plugin registers via ctx.register_hook() — the validator
+  # compares this list against what register() actually registers.
+  #
+  # on_session_end: memory-provider lifecycle (session close — extract
+  # highlights + merge the session capsule).
+  # pre_llm_call: feeds the thought skeleton for the current turn.
+  #
+  # NOTE: on_pre_compress is a *MemoryProvider method*, not an event hook — it
+  # is called through the provider interface and must not be declared here.
+  # Declaring it made `plugins doctor` report "unknown hook 'on_pre_compress'".
   - on_session_end
-  - on_pre_compress
+  - pre_llm_call
