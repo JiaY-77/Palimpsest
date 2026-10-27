@@ -4,7 +4,8 @@
 
   1. parse_thought_sections    <thought> 编号答案 → 胶囊字段（三种骨架正常样本 /
      缺编号 / 空值 / 无 <thought> / 全角半角混排 / 同行带内容 / 异常输入一律 {}）
-  2. decide_session_buffer     三种 reason：no_session_id / no_sections / 正常
+  2. decide_session_buffer     四种 reason：no_session_id / no_sections /
+     non_substantive（issue #170 实质轮筛选）/ 正常
   3. compose_session_capsule   四节合成（空节进 pending / 思路超 300 纯截断 /
      handles 拼进 outcome 末尾 / 去重 / next 信号词过滤）
   4. 端到端（临时库，不碰生产）：3 轮 post-turn（同 session_id 不同 turn_index）
@@ -256,7 +257,7 @@ class TestDecideSessionBuffer:
         assert r["buffer"] is False and r["reason"] == "no_sections"
 
     def test_normal_turn_is_buffered(self):
-        r = decide_session_buffer(_CODE_BLOCK, skeleton_kind="code", session_id="s1", turn_index=7)
+        r = decide_session_buffer(_CODE_BLOCK, skeleton_kind="code", session_id="s1", turn_index=7, tool_calls_count=1)
         assert r["buffer"] is True
         assert r["reason"] == ""
         assert r["skeleton_kind"] == "code"
@@ -271,7 +272,9 @@ class TestDecideSessionBuffer:
 
     def test_raw_truncated_to_4000(self):
         long_block = "<thought>\n1. 要的是什么（一句话）：" + "长" * 5000 + "\n</thought>"
-        r = decide_session_buffer(long_block, skeleton_kind="default", session_id="s1", turn_index=1)
+        r = decide_session_buffer(
+            long_block, skeleton_kind="default", session_id="s1", turn_index=1, tool_calls_count=1
+        )
         assert r["buffer"] is True
         assert len(r["raw"]) == SESSION_BUFFER_RAW_MAX_CHARS == 4000
 
@@ -411,6 +414,10 @@ def test_post_turn_three_turns_accumulate_into_one_buffer(db_path):
                 "user_message": f"第 {i} 轮：帮我看看胶囊相关的问题",
                 "assistant_message": f"正文开始\n{block}\n正文结束",
                 "skeleton_kind": kind,
+                # issue #170 实质轮筛选后，进缓冲需要实质轮——本组测的是缓冲
+                # 累进/幂等/合并机制（不是筛选判据，判据在 test_substantive_turn），
+                # 样本统一按「实质轮宿主」构造（带工具调用信号），断言不变。
+                "tool_calls_count": 1,
             },
         )
         assert r.status_code == 200, r.text
@@ -442,7 +449,7 @@ def test_post_turn_three_turns_accumulate_into_one_buffer(db_path):
 def test_post_turn_same_turn_index_is_idempotent(db_path):
     """同一 turn_index 重复提交：覆盖不追加（turns 仍 3 项，内容换成新答案）。"""
     client = _client()
-    base = {"session_id": "cap-e2e-2", "user_message": "看看幂等", "skeleton_kind": "default"}
+    base = {"session_id": "cap-e2e-2", "user_message": "看看幂等", "skeleton_kind": "default", "tool_calls_count": 1}
     for turn_index in (1, 2, 3):
         r = client.post(
             "/lifecycle/post-turn",
@@ -477,6 +484,7 @@ def test_session_end_writes_capsule_closes_buffer_and_links(db_path):
                 "user_message": f"第 {i} 轮",
                 "assistant_message": f"正文\n{_CODE_BLOCK}\n",
                 "skeleton_kind": "code",
+                "tool_calls_count": 1,  # issue #170：按实质轮宿主构造样本，断言不变
             },
         )
         assert r.json()["session_buffer"]["buffered"] is True
@@ -535,6 +543,7 @@ def test_capsule_reachable_via_tasks_active_channel(db_path):
                 "user_message": f"第 {i} 轮",
                 "assistant_message": f"正文\n{_DEFAULT_BLOCK}\n",
                 "skeleton_kind": "default",
+                "tool_calls_count": 1,  # issue #170：按实质轮宿主构造样本，断言不变
             },
         )
         assert r.json()["session_buffer"]["buffered"] is True
@@ -580,6 +589,7 @@ def test_session_memory_switch_off_skips_legacy_path_only(db_path):
                 "user_message": f"第 {i} 轮",
                 "assistant_message": f"正文\n{_DEFAULT_BLOCK}\n",
                 "skeleton_kind": "default",
+                "tool_calls_count": 1,  # issue #170：按实质轮宿主构造样本，断言不变
             },
         )
         assert r.json()["session_buffer"]["buffered"] is True
@@ -624,6 +634,7 @@ def test_session_buffer_failure_is_observable_not_blocking(db_path):
                 "user_message": "看看失败路径",
                 "assistant_message": f"正文\n{_DEFAULT_BLOCK}\n",
                 "skeleton_kind": "default",
+                "tool_calls_count": 1,  # issue #170：判实质后才会走到 mock 的落库失败
             },
         )
         assert r.status_code == 200, r.text
