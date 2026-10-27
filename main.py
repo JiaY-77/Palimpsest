@@ -22,12 +22,14 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import re
 import secrets
 import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -165,6 +167,22 @@ class _NormalizeMcpPath:
 app.mount("/mcp", _mcp_server.streamable_http_app())
 # 见 _NormalizeMcpPath 文档字符串：消除 307，兼容无尾斜杠接入。
 app.add_middleware(_NormalizeMcpPath, prefix="/mcp")
+
+# ---- CORS：供本机浏览器工具直连 REST（本地 HTML 面板、插件前端等）----
+# 这类工具多以 file:// 打开，浏览器发出的 Origin 是字面量 "null"（不会算作
+# localhost 同源），因此必须显式放行；同时放行酒馆前端（127.0.0.1:8000）。
+# 只列本机来源，不开放公网；需要别的来源时用 CORS_ALLOW_ORIGINS 覆盖（逗号分隔）。
+_DEFAULT_CORS_ORIGINS = "null,http://127.0.0.1:8000,http://localhost:8000"
+CORS_ALLOW_ORIGINS = [
+    origin.strip() for origin in os.getenv("CORS_ALLOW_ORIGINS", _DEFAULT_CORS_ORIGINS).split(",") if origin.strip()
+]
+# 注意：Starlette 中后 add 的中间件在外层，预检请求由 CORS 先应答。
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ALLOW_ORIGINS,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # API Key 鉴权开关：PALIMPSEST_API_KEY 默认空 = 不启用（localhost 本机直连）。
 # 设置后除 / 健康检查外所有请求须带 Bearer 或 X-API-Key，否则 401。
