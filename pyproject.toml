@@ -16,9 +16,10 @@ dependencies = [
     "python-dotenv==1.2.2",
     "python-multipart==0.0.27",
     "requests==2.33.1",
-    # 锁 0.8.10：0.8.11 的文本索引校验与「flush() 保留已有 .text」语义冲突，
-    # 会使整库写操作失败（读与 /doctor 均正常）。见 YoKONCy/TriviumDB#72。
-    "triviumdb==0.8.10",
+    # 锁 0.9.0b2：#72（0.8.11 文本索引校验与「flush() 保留已有 .text」语义冲突，
+    # 会导致含 .text 的整库写失败）已由上游修复，修复随 0.9.0-beta.2 落地；
+    # 勿回 0.8.11（问题版本）。0.9.0 正式版发布后再评估升正式版。
+    "triviumdb==0.9.0b2",
     "uvicorn==0.46.0",
 ]
 

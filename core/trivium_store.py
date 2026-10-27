@@ -339,6 +339,12 @@ class TriviumStore:
                 self.db_path,
                 dim=self.dim,
                 access_mode="read_only" if self.read_only else "read_write",
+                # 显式关闭 QuIVer 自动构图，不跟随上游默认值：
+                # TDB 0.9.0 起自动构建阈值收紧到 ceil(666667/dim)（dim=1024 → 652 节点），
+                # 本库 3000+ 节点会长期处于自动构图状态（首次查询多付约 88ms、flush 落
+                # 约 1.6MB `.quiver` 侧车）。小帕当前检索路径不依赖 QuIVer，显式关掉以
+                # 保持现状行为；将来要启用按需打开并单独评估。
+                auto_build_quiver=False,
             )
         except Exception as e:
             _DB_ACCESS_LOCK.release()

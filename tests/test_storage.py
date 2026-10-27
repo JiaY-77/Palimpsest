@@ -14,6 +14,7 @@ TriviumDB 0.8.3 特性测试 —— 存储层（P2）
 """
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,31 @@ import pytest
 import triviumdb
 
 _HARDKILL_CHILD = os.path.join(os.path.dirname(__file__), "_tdb_hardkill_child.py")
+
+
+def _ver_key(v: str):
+    """PEP 440 宽松归一，让 `0.9.0-beta.2` / `0.9.0b2` / `0.9.0.b2` 归到同一 key。
+
+    storage_info() 自报上游字面量（`0.9.0-beta.2`），importlib.metadata 给的是
+    PEP 440 归一形式（`0.9.0b2`）；断言的真实意图是「报的是真装的那版」，
+    比对归一形式即可，不必钉死其中一种写法。
+    """
+    m = re.match(
+        r"^v?(\d+(?:\.\d+)*)(?:[-_.]?(a|alpha|b|beta|c|rc|pre|preview)[-_.]?(\d+))?$",
+        v.strip().lower(),
+    )
+    assert m, f"无法解析版本号: {v!r}"
+    tag = {
+        "alpha": "a",
+        "a": "a",
+        "beta": "b",
+        "b": "b",
+        "c": "rc",
+        "rc": "rc",
+        "pre": "rc",
+        "preview": "rc",
+    }.get(m.group(2) or "", "")
+    return tuple(int(x) for x in m.group(1).split(".")), tag, int(m.group(3) or 0)
 
 
 @pytest.fixture
@@ -53,7 +79,7 @@ def test_storage_info_metadata(tdb):
     assert isinstance(info, dict)
     # 与安装版本动态比对：钉死字面量会让每次依赖升级都假红，
     # 而这条断言的真实意图是「storage_info 报的是真装的那版」，不是「装的必须是某版」。
-    assert info["package_version"] == pkg_version("triviumdb")
+    assert _ver_key(info["package_version"]) == _ver_key(pkg_version("triviumdb"))
     assert info["database_format_current"] == 9
     assert info["database_format_minimum"] <= info["database_format_current"]
     assert info["access_mode"] in ("read_write", "read_only", "immutable")

@@ -85,6 +85,9 @@ def _acquire(
                 dim=_dim(),
                 access_mode=access_mode,
                 load_text_index=load_text_index,
+                # 文本索引短连接不涉 QuIVer；显式关闭以不跟随上游默认阈值变化
+                # （0.9.0 起 dim=1024 在 652 节点即自动构图）。
+                auto_build_quiver=False,
             )
             return _LockedDB(db, _DB_ACCESS_LOCK)
         except Exception:
