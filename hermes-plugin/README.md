@@ -17,7 +17,7 @@ hermes-plugin/
 ├── context_engine.py    # Context Engine（图谱增强压缩）
 ├── cli.py               # hermes palimpsest status/test 子命令
 ├── config_schema.py     # 配置面板声明（Hermes dashboard 渲染用）
-└── plugin.yaml          # 插件清单（kind=standalone，hooks 声明）
+└── plugin.yaml          # 插件清单（kind=standalone，provides_hooks 声明）
 ```
 
 ## 安装
