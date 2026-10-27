@@ -20,6 +20,7 @@ from core.db_health import check_db_health, health_hint
 from core.fts_index import index_node, search_fts_status
 from core.judgment_metrics import record_ingest
 from core.memoryhub import apply_import, read_pack, summarize_pack
+from core.meta_guard import validate_meta
 from core.policy import check_ingest
 from core.search import is_exact_identifier_query
 from core.secret_scan import SecretScanError
@@ -277,6 +278,7 @@ def mem_ingest(
     replaces: str = "",
     skeleton_kind: str = "",
     turn_index: int | None = None,
+    meta: dict[str, str] | None = None,
 ) -> str:
     """
     写入新记忆。
@@ -311,6 +313,12 @@ def mem_ingest(
         内容被误吞。
       - 旧「相似度 >0.75 自动取代」行为仅在 ``CONFLICT_AUTO_SUPERSEDE=true`` 时启用
         （默认关闭，过渡兼容开关）。
+    自定义元数据打标（``meta``，可选）：键值均为字符串的字典，写入节点
+    payload 的 ``meta`` 子字典（如 ``{"chat_id": "..."}``），供外部宿主按
+    「域名 + meta 键值」精确定位并批量删除（REST ``/mem/purge-by-meta``）。
+    结构约束（超出即拒绝写入）：≤8 个键，键名限 ``^[a-zA-Z0-9_]{1,32}$``，
+    值必须是字符串且 ≤256 字符。不传（None）或空字典时 payload **不含**
+    ``meta`` 键，payload 形状与旧行为完全一致。
     v1.1：新增知识关联检测——score > 0.35 的 kb_chunk 记入 payload.linked_from，
     返回 linked_kb_ids 便于追溯关联的知识库块。
 
@@ -350,6 +358,15 @@ def mem_ingest(
         "created_at": now,
         "linked_from": linked_kb_ids,
     }
+    # 自定义元数据打标（可选 meta）：结构校验见 core.meta_guard——超出键数 /
+    # 键名 / 值长度的约束即拒绝写入（stored:False）。不传或空字典不写 meta
+    # 键，payload 形状与旧行为一致；合法时随节点同事务落库（避免「先写后补」
+    # 的两步非原子写入留下无 meta 半状态）。
+    if meta:
+        meta_ok, meta_err = validate_meta(meta)
+        if not meta_ok:
+            return _to_json({"stored": False, "error": meta_err})
+        node_data["meta"] = dict(meta)
     # 会话接续点写入层打标（幂等）：type=task 且 content 首行以「接续点」标题词
     # 开头 → 自动写 kind=handoff。判定复用 core.task_state._is_handoff 的首行判据
     # （PR #112 收紧过的「标题词开头」，与查询 / 回填同源，不另立识别规则）——
