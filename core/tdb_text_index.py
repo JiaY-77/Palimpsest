@@ -31,9 +31,7 @@ TDB（TriviumDB）BM25 文本通道 —— 第二路中文文本召回（默认�
 import logging
 import os
 import time
-from typing import Any, Literal
-
-import triviumdb
+from typing import Literal
 
 logger = logging.getLogger(__name__)
 
@@ -70,30 +68,30 @@ def _acquire(
     access_mode: Literal["read_write", "read_only"],
     load_text_index: bool,
 ):
-    """开一个持有进程级访问锁的短连接（与 TriviumStore 同锁、同排他语义）。
+    """取进程级**共享连接**的操作窗口代理（issue #167：不再自己开第二条连接）。
 
-    撞连接级排他（库被 REST/CLI 窗口占用）时短退避重试 `_OPEN_ATTEMPTS` 次，
-    仍败向上抛 RuntimeError，由调用方按契约降级/报错。
+    单例约束：同进程同一库在 TriviumDB 层只能有一条连接（reader/writer 互斥），
+    本模块与 TriviumStore 共用同一条共享连接（见 trivium_store._acquire_shared）。
+    两个旧参数保留签名兼容，但实际由共享层统一裁决：
+      - `load_text_index`：共享连接统一带 True（未加载内存态就写 + flush 会把
+        整个 .text 侧车洗成单条——单例没有「读连接不带侧车」的余地）；
+      - `access_mode`：统一按 read_write 走——驻留服务进程的主连接必是
+        read_write，read_only 请求会因「同库混用访问模式」被
+        AccessModeConflictError 拒绝（triviumdb 的 reader/writer 互斥，
+        无法各开一条）；文本检索本身只读，走 rw 连接不产生任何写。
+
+    撞锁重试契约保留：单例后同进程不会再自己撞自己，但共享连接**首次创建**
+    仍可能撞上其他进程（DatabaseBusyError）——短退避重试 `_OPEN_ATTEMPTS`
+    次，仍败向上抛 RuntimeError，由调用方按契约降级/报错。
     """
-    from core.trivium_store import _DB_ACCESS_LOCK, _LockedDB
+    from core.trivium_store import _acquire_shared
 
     for attempt in range(_OPEN_ATTEMPTS):
-        _DB_ACCESS_LOCK.acquire()
         try:
-            db: Any = triviumdb.TriviumDB(
-                _db_path(),
-                dim=_dim(),
-                access_mode=access_mode,
-                load_text_index=load_text_index,
-                # 文本索引短连接不涉 QuIVer；显式关闭以不跟随上游默认阈值变化
-                # （0.9.0 起 dim=1024 在 652 节点即自动构图）。
-                auto_build_quiver=False,
-            )
-            return _LockedDB(db, _DB_ACCESS_LOCK)
+            return _acquire_shared(_db_path(), "read_write", _dim())
         except Exception:
-            # 含 DatabaseBusyError（同库被占）与其他失败：本窗口锁先释放，
-            # 末次尝试才把异常上抛（由调用方按契约降级/报错）。
-            _DB_ACCESS_LOCK.release()
+            # 含 DatabaseBusyError（库被其他进程占用）与其他失败：重试耗尽才
+            # 上抛（由调用方按契约降级/报错）。
             if attempt == _OPEN_ATTEMPTS - 1:
                 raise
             time.sleep(_OPEN_RETRY_DELAY_S)
@@ -217,8 +215,9 @@ def rebuild(store) -> int:
     不从 payload 收文本——探针实测），所以重建必须显式逐条写。与
     `fts_index.rebuild(store)` 对称。返回索引条目数（有正文的节点数）。
     """
-    # 先在锁外收全 payloads：文本连接持有库期间，store 的第二个连接
-    # 会因 TriviumDB 库文件级排他直接打不开（连接必须先关再开）。
+    # 先收全 payloads 再写（issue #167 单例后：iter_payloads 与本函数的写窗口
+    # 复用同一条共享连接，顺序执行不再有「第二条连接打不开」的排他问题；
+    # 保持先收后写的结构是为了全量覆盖语义清晰：进入写窗口前先确定全集）。
     node_texts: list = []
     for nid, payload in store.iter_payloads():
         content = payload.get("content", "")

@@ -30,6 +30,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from config import Config  # noqa: E402
+from core import trivium_store as ts_mod  # noqa: E402
 from core.trivium_store import TriviumStore  # noqa: E402
 
 
@@ -39,9 +40,11 @@ def _isolated_store(**kw):
     tmp = tempfile.mkdtemp(prefix="palimpsest_reembed_iso_")
     old = Config.DB_PATH
     Config.DB_PATH = os.path.join(tmp, "iso.db")
+    ts_mod.reset_connections_for_test()  # 干净起点（issue #167 单例注册表）
     try:
         yield TriviumStore(**kw)
     finally:
+        ts_mod.reset_connections_for_test()  # 释放库文件（连接不再随操作关闭）
         Config.DB_PATH = old
 
 
@@ -156,11 +159,14 @@ class TestReadOnlyStore:
         try:
             w = TriviumStore()
             nid = w.insert_node({"type": "memory", "content": "seed"}, _fake_embed("seed"))
-            del w
+            # issue #167 单例：连接不随操作关闭，且同进程同一库只允许一种访问
+            # 模式——先关掉 rw 共享连接，read-only store 才能独占开库。
+            ts_mod.reset_connections_for_test()
             ro = TriviumStore(read_only=True)
             assert ro.read_only is True
             assert ro.get_node(nid) is not None
         finally:
+            ts_mod.reset_connections_for_test()
             Config.DB_PATH = old
 
     def test_read_only_store_rejects_writes(self):
@@ -173,12 +179,13 @@ class TestReadOnlyStore:
         try:
             w = TriviumStore()
             w.insert_node({"type": "memory", "content": "seed"}, _fake_embed("seed"))
-            del w
+            ts_mod.reset_connections_for_test()  # 同上：先释放 rw 共享连接（issue #167）
             ro = TriviumStore(read_only=True)
             # triviumdb raises RuntimeError("只读数据库不允许执行操作…") on write
             with pytest.raises(RuntimeError):
                 ro.insert_node({"type": "memory", "content": "nope"}, _fake_embed("nope"))
         finally:
+            ts_mod.reset_connections_for_test()
             Config.DB_PATH = old
 
     def test_dry_run_cli_uses_read_only_store(self):

@@ -30,6 +30,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from config import Config  # noqa: E402
+from core import trivium_store as ts_mod  # noqa: E402
 from core.trivium_store import TriviumStore  # noqa: E402
 
 
@@ -45,12 +46,18 @@ def _load_module():
 
 @pytest.fixture
 def iso_db():
-    """一个全新临时库的路径；退出时清理。"""
+    """一个全新临时库的路径；退出时清理。
+
+    单例后共享连接不再随操作关闭（issue #167）：teardown 必须 reset 释放
+    库文件，Windows 下 rmtree 才能删掉仍被打开的临时库。
+    """
     tmp = tempfile.mkdtemp(prefix="palimpsest_edges_iso_")
     db_path = os.path.join(tmp, "iso.db")
     try:
         yield db_path
     finally:
+        with contextlib.suppress(Exception):
+            ts_mod.reset_connections_for_test()
         shutil.rmtree(tmp, ignore_errors=True)
 
 

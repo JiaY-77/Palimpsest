@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Any
 
 from core.utils import _is_db_locked_error
 
@@ -41,14 +42,21 @@ def check_db_health(db_path: str | None = None, dim: int | None = None) -> dict:
         result["error"] = f"数据库文件不存在：{path}"
         return result
     try:
+        # 单例进程内优先复用共享连接（issue #167）：本进程已持有该库时，裸开
+        # 第二条连接必被连接级排他拒绝，会把「自己占着自己」误报成 busy。
+        # 共享连接不存在时（如校验备份恢复产物等外部路径）保持原裸开探测。
         # auto_build_quiver=False：体检只读 node_count，不应因上游默认阈值变化
         # 而顺带触发 QuIVer 构图（0.9.0 起 dim=1024 在 652 节点即自动触发）。
-        db = triviumdb.TriviumDB(path, dim=dim_val, auto_build_quiver=False)
+        from core.trivium_store import try_acquire_existing
+
+        db: Any = try_acquire_existing(path)
+        if db is None:
+            db = triviumdb.TriviumDB(path, dim=dim_val, auto_build_quiver=False)
         try:
             result["node_count"] = db.node_count()
             result["ok"] = True
         finally:
-            db.close()
+            db.close()  # 共享连接代理：只还操作窗口锁；裸开连接：真关闭
     except Exception as exc:  # noqa: BLE001 —— 探测失败即「不健康」，原样回报原因
         msg = f"{type(exc).__name__}: {exc}"
         result["error"] = msg

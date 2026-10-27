@@ -19,6 +19,7 @@ import re
 
 import pytest
 
+from core import trivium_store as ts_mod
 from mcp_tools import store
 
 
@@ -222,7 +223,11 @@ def test_reindex_db_real_dim_2560_probe_1024(iso_db, monkeypatch, tmp_path):
     assert code == 2
 
     # 一字节不写：库中所有节点向量仍为 2560 维原值
+    # （issue #167 单例：共享连接常开，_all_ids 的裸连接必须先 reset 释放库
+    # 文件才能打开；store 读回时会按需重建共享连接。）
+    ts_mod.reset_connections_for_test()
     old_vectors = {nid: _read_vectors(s, [nid])[nid] for nid in _all_ids(dim2560_db)}
+    ts_mod.reset_connections_for_test()
     new_vectors = {nid: _read_vectors(s, [nid])[nid] for nid in _all_ids(dim2560_db)}
     assert new_vectors == old_vectors
     for vec in new_vectors.values():

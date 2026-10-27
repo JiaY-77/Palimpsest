@@ -63,8 +63,12 @@ def iso_store():
     finally:
         Config.DB_PATH = old_db
         shared_store.db_path = old_shared
+        # 单例后 close 只还锁、连接仍被注册表持有（issue #167）：必须 reset
+        # 才会真正释放库文件，Windows 下 rmtree 才能删掉临时目录。
+        from core.trivium_store import reset_connections_for_test
+
         with contextlib.suppress(Exception):
-            s._acquire().close()
+            reset_connections_for_test()
         shutil.rmtree(tmp, ignore_errors=True)
 
 

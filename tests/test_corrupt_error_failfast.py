@@ -61,6 +61,9 @@ class TestInitIndexesFailsFast:
 
     def test_corruption_not_swallowed(self, iso_db_path, monkeypatch):
         store = TriviumStore()
+        # 构造已把真实连接登记进注册表（issue #167 单例）；清空后 _init_indexes
+        # 才会真的走到（被 mock 的）开库点，而不是复用既有连接让 mock 落空。
+        ts_mod.reset_connections_for_test()
 
         def _boom(*args, **kwargs):
             raise RuntimeError(_REAL_CORRUPT)
@@ -73,6 +76,7 @@ class TestInitIndexesFailsFast:
     def test_benign_index_error_still_degrades(self, iso_db_path, monkeypatch):
         """基准：与损坏无关的索引错误仍应静默降级（不回归既有行为）。"""
         store = TriviumStore()
+        ts_mod.reset_connections_for_test()  # 同上：让被 mock 的开库点真的被走到
 
         def _boom(*args, **kwargs):
             raise RuntimeError("某个无关的索引创建失败")

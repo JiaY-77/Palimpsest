@@ -33,7 +33,10 @@ _REPO_ROOT = __import__("pathlib").Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+import pytest  # noqa: E402
+
 from config import Config  # noqa: E402
+from core import trivium_store as ts_mod  # noqa: E402
 from core.trivium_store import TriviumStore  # noqa: E402
 
 
@@ -42,9 +45,13 @@ def _isolated_store(**kw):
     tmp = tempfile.mkdtemp(prefix="palimpsest_mw_iso_")
     old = Config.DB_PATH
     Config.DB_PATH = os.path.join(tmp, "iso.db")
+    ts_mod.reset_connections_for_test()  # 干净起点：注册表不残留其他库的共享连接
     try:
         yield TriviumStore(**kw)
     finally:
+        # 单例共享连接不再随操作关闭：reset 释放库文件（Windows 下不 reset 则
+        # 临时目录里的库文件保持打开），再还原 DB_PATH。
+        ts_mod.reset_connections_for_test()
         Config.DB_PATH = old
 
 
@@ -63,19 +70,47 @@ class TestDryRunNeverWrites:
     def test_read_only_store_cannot_advance_generation(self):
         """A read-only store is the CLI's dry-run mode: it must not write.
 
-        This is the contract behind #53 — a preview that silently opened
-        read_write and advanced the generation could not run alongside REST.
+        This is the contract behind #53. Under the #167 singleton it has two
+        halves: on a path where the read-only store owns the connection,
+        reads work and writes are rejected; when a read_write shared
+        connection already exists for the same path (the resident REST
+        store), a read_only request fails loudly with AccessModeConflictError
+        instead of silently reusing the wrong connection (covered by
+        ``test_mixed_access_mode_on_same_path_raises``).
         """
-        import pytest
-
-        with _isolated_store() as seed:
-            nid = seed.insert_node({"type": "memory", "content": "seed"}, _fake_embed("seed"))
-            # a second store on the SAME path (Config.DB_PATH is the iso db here)
+        tmp = tempfile.mkdtemp(prefix="palimpsest_ro_dry_")
+        old = Config.DB_PATH
+        Config.DB_PATH = os.path.join(tmp, "ro.db")
+        try:
+            w = TriviumStore()
+            nid = w.insert_node({"type": "memory", "content": "seed"}, _fake_embed("seed"))
+            ts_mod.reset_connections_for_test()  # 关掉 rw 共享连接，让 ro 连接独占开库
             ro = TriviumStore(read_only=True)
             assert ro.read_only is True
             assert ro.get_node(nid) is not None  # reads work
             with pytest.raises(RuntimeError):
                 ro.insert_node({"type": "memory", "content": "nope"}, _fake_embed("nope"))
+        finally:
+            ts_mod.reset_connections_for_test()
+            Config.DB_PATH = old
+
+    def test_mixed_access_mode_on_same_path_raises(self):
+        """同进程同库已有 read_write 共享连接时，read_only 请求必须明确报错。
+
+        reader 与 writer 在 triviumdb 层互斥，单例只能取一种模式（issue #167
+        约束 3）：既不能静默复用错的连接，也不能静默失败。
+        """
+        from core.trivium_store import AccessModeConflictError
+
+        with _isolated_store() as seed:
+            seed.insert_node({"type": "memory", "content": "seed"}, _fake_embed("seed"))
+            ro = TriviumStore(read_only=True)
+            with pytest.raises(AccessModeConflictError) as ei:
+                ro.get_node(999999)
+            msg = str(ei.value)
+            assert "同一进程" in msg and "访问模式" in msg
+            assert Config.DB_PATH in msg, "消息应点名是哪个库"
+            assert "REST" in msg, "消息应给出出路（复用实例或改用 REST）"
 
     def test_dry_run_consolidate_does_not_add_nodes(self):
         """consolidate(dry_run=True) must leave the node set unchanged."""
@@ -104,16 +139,20 @@ class TestLockConflictIsReadable:
     def test_busy_error_names_the_path_and_suggests_action(self):
         """When the DB is held, the error must name the DB and suggest what to do.
 
-        Rather than race a second process (non-deterministic), this holds a
-        connection in-process and asserts the error our CLI/REST callers see
-        is the guided ``DatabaseBusyError``. The cross-process timing itself is
-        covered by ``test_concurrency.py``.
+        Under the #167 singleton, same-process contention queues on the shared
+        connection instead of failing — so the held connection here is a RAW
+        triviumdb connection (registry bypass), equivalent to another process
+        holding the DB. The cross-process timing itself is covered by
+        ``test_concurrency.py``.
         """
+        import triviumdb
+
         from core.trivium_store import DatabaseBusyError
 
         with _isolated_store() as holder:
             holder.insert_node({"type": "memory", "content": "held"}, _fake_embed("held"))
-            held = holder._acquire()
+            ts_mod.reset_connections_for_test()  # 关共享连接，让裸连接能独占开库
+            raw = triviumdb.TriviumDB(Config.DB_PATH, dim=holder.dim)
             try:
                 # a second store on the same path must fail fast, with guidance
                 try:
@@ -127,7 +166,8 @@ class TestLockConflictIsReadable:
                     assert "占用" in msg or "busy" in msg.lower()
                 assert not opened, "a held connection must make the conflicting open fail fast with a guided error"
             finally:
-                held.close()
+                raw.close()
+                ts_mod.reset_connections_for_test()
 
 
 # ---------------------------------------------------------------------------

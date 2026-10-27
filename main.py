@@ -83,6 +83,7 @@ from core.strategy import (
 )
 from core.task_state import apply_task_patch
 from core.trivium_store import DatabaseBusyError, EmbeddingInputTooLongError, EmbeddingUnavailableError, TriviumStore
+from core.trivium_store import shutdown as _shutdown_shared_db
 from core.version import get_version
 from mcp_tools import (
     graph_neighbors as _mcp_graph_neighbors,
@@ -135,7 +136,13 @@ async def _lifespan(app: FastAPI):
     """
     async with _mcp_server.session_manager.run():
         await _startup_self_check()
-        yield
+        try:
+            yield
+        finally:
+            # ASGI shutdown：进程级共享连接（issue #167 单例长连接）flush 全量
+            # 落盘后关闭。flush 失败只记日志、不阻塞退出（WAL 模式下已提交事务
+            # 不丢）；atexit 已注册兜底，覆盖脚本/CLI 等非 lifespan 退出路径。
+            _shutdown_shared_db()
 
 
 app = FastAPI(title="Palimpsest", lifespan=_lifespan)

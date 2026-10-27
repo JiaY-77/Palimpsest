@@ -1,10 +1,12 @@
 """TriviumDB 存储封装"""
 
+import atexit
 import contextlib
 import logging
+import os
 import threading
 import time
-from typing import Any
+from typing import Any, Literal
 
 import triviumdb
 
@@ -21,20 +23,38 @@ from core.utils import _DB_LOCK_MARKERS, _is_db_corrupt_error, _is_db_locked_err
 logger = logging.getLogger(__name__)
 
 
-# 进程内 DB 访问串行锁
-# --------------------
+# 进程内 DB 访问串行锁 + 共享连接注册表（issue #167 单例长连接）
+# ------------------------------------------------------------
 # triviumdb 是**连接级排他**的：只要有一个连接持着库，第二个连接连打开都会失败
-# （报 `Database locked / already opened`）。而 Palimpsest 的模式是「每操作开-关库」。
+# （报 `Database locked / already opened`）。
 #
 # 此前 REST 端点是 `async def` + 阻塞同步代码，被事件循环**顺带串行化**，这个冲突
 # 被掩盖了。端点改同步 def（FastAPI 丢线程池）后请求真并发，并发 open 会失败——
 # 而检索类失败路径「吞掉 + 返回空列表」，表现为**静默返回空结果**（实测 4 并发
 # 100 次检索：命中 44、静默空结果 56）。
 #
-# 这把锁让同进程内的 DB 访问**排队而不是失败**：慢的那部分（embedding HTTP）在锁外，
-# 仍然并发；只有真正碰库的窗口串行。RLock 而非 Lock：同一线程嵌套取连接时不至于
-# 自锁死（嵌套取连接仍会因连接级排他失败，与改动前一致，不是本次引入的）。
+# 两件套解法：
+#   1) 进程级共享连接注册表（_SHARED_CONNECTIONS）——每个 (库路径, 访问模式)
+#      只开**一条长连接**，全程复用。不再每操作重开库、重读侧车、走 generation
+#      记账（历史实测单次开库 ~20-60ms，检索热路径纯浪费）。
+#   2) 这把锁——让同进程内的 DB 访问**排队而不是失败**：慢的那部分（embedding
+#      HTTP）在锁外，仍然并发；只有真正碰库的操作窗口串行（锁语义见 _LockedDB）。
+# RLock 而非 Lock：同一线程嵌套取连接时不自锁死；单例后嵌套取到的是同一条
+# 连接（每层代理各持一个窗口，close 各释放一次，计数平衡）。
+# 注册表的读写只发生在 _DB_ACCESS_LOCK 持有期间（_acquire_shared /
+# try_acquire_existing / shutdown），故不需要第二把注册表锁。
 _DB_ACCESS_LOCK = threading.RLock()
+
+# 进程级共享连接注册表：{(归一化库路径, 访问模式): TriviumDB 实例}。
+# 同一 db_path 实际只会有一种模式的连接：reader 与 writer 在 triviumdb 层互斥，
+# 第二种模式的请求会被 AccessModeConflictError 拒绝（见 _acquire_shared）。
+_SHARED_CONNECTIONS: dict[tuple[str, str], Any] = {}
+
+
+def _norm_db_path(path: str) -> str:
+    """注册表键归一：绝对路径 + Windows 大小写/分隔符归一（同库不同写法视为同库）。"""
+    return os.path.normcase(os.path.abspath(path))
+
 
 # 进程内本地 embedding 模型（provider=local）单例：
 # 懒加载 + 双重检查锁——TriviumStore() 构造时绝不装模型（GGUF 700MB 级内存），
@@ -44,12 +64,21 @@ _LOCAL_LLM_LOCK = threading.Lock()
 
 
 class _LockedDB:
-    """持有进程级 DB 访问锁的连接代理：连接 close 时释放锁。
+    """DB 访问锁的「操作窗口」代理：close / with 退出 = 窗口结束，**只释放锁**。
+
+    issue #167 前锁跟着连接走（连接 close 即关库 + 释锁，每操作开关一次）；
+    单例长连接后连接不再关（由模块级注册表持有复用），锁改为跟着**操作窗口**
+    走：``_acquire()`` 取到代理即开窗，``close()`` / ``with`` 退出 / 生成器
+    ``finally`` close 即关窗释放锁——底层连接**不关闭**。若 close 仍关闭连接，
+    下一次 ``_acquire()`` 就得重开库，单例失去意义；且同线程嵌套取连接时内层
+    close 会把外层正用的连接关掉。
+
+    close 幂等：同一代理多次 close 不得重复 release（RLock 过量 release 会
+    RuntimeError），靠置空 ``_release_lock`` 保证只释放一次。
 
     为什么用代理而不是锁在方法里：既有代码有三类连接用法——`with self._acquire()
-    as db:`、显式 `db.close()`、生成器（`iter_payloads` 等）在 `finally` 里 close——
-    锁必须**跟着连接的整个生命周期**，才能在三条路径上都不泄漏。代理让所有这些
-    调用点一行都不用改。
+    as db:`、显式 `db.close()`、生成器（`iter_payloads` 等）在 `finally` 里
+    close——代理让所有这些调用点一行都不用改。
     """
 
     __slots__ = ("_release_lock", "_wrapped")
@@ -62,12 +91,10 @@ class _LockedDB:
         return getattr(self._wrapped, item)
 
     def close(self) -> None:
-        try:
-            self._wrapped.close()
-        finally:
-            lock, self._release_lock = self._release_lock, None
-            if lock is not None:
-                lock.release()
+        """结束操作窗口：只释放锁，**不关闭底层连接**（连接由注册表持有复用）。"""
+        lock, self._release_lock = self._release_lock, None
+        if lock is not None:
+            lock.release()
 
     def __enter__(self) -> "_LockedDB":
         return self
@@ -118,6 +145,150 @@ class DatabaseBusyError(RuntimeError):
     抛出本异常即 fail-fast：把「不知为何失败」变成「明确告知被占用 + 怎么处理」。
     异常消息含库路径与处理指引。
     """
+
+
+class AccessModeConflictError(RuntimeError):
+    """同一进程内同一库被以第二种访问模式请求（issue #167）。
+
+    背景：注册表按 (库路径, 访问模式) 分键，但 TriviumDB 的 reader 与 writer
+    **互斥**——同一 db_path 在进程内只能存在一条连接，单例长连接只能取一种
+    模式。若同一路径已被以 read_write 打开、又来一个 read_only 请求（或反之），
+    既不能静默复用错的连接（read_only 连接上写会失败；read_write 连接不满足
+    「只读不推进 generation」的 #53 契约），也不能静默失败——fail-fast 抛出
+    本异常，消息写清原因与出路。继承 RuntimeError：与 DatabaseBusyError 同理，
+    既有按 RuntimeError 捕获的调用方（REST 503 映射等）继续生效。
+    """
+
+
+def _open_shared_connection(db_path: str, dim: int, access_mode: Literal["read_write", "read_only"]) -> Any:
+    """进程内共享连接的**唯一**开库点：所有构造参数集中在此（issue #167）。
+
+    - load_text_index=True（**必须**，不许 False）：
+      同一库在进程内只此一条连接，读（TDB 文本检索）写（index_text）共用；
+      而 TriviumDB **未加载内存态就写 + flush 会把整个 .text 侧车洗成单条**
+      （破坏性，见 core/tdb_text_index.index_node 的注释）。单例没有「读连接
+      不带侧车」的余地，必须统一带上。成本可忽略：无侧车时 open(load=True)
+      63ms vs open(load=False) 18ms，一次性差 45ms（2026-10 实测；当前
+      TDB_TEXT_ENABLED 默认 0、生产库无 .text 侧车，几乎零成本）。
+      ★ 将来若启用 TDB 文本（TDB_TEXT_ENABLED=1）且侧车长大（历史峰值
+      11.4MB），**必须重测**侧车加载耗时与常驻内存，再决定是否仍值得常驻。
+    - auto_build_quiver=False：与既有行为一致——不跟随上游 0.9.0 收紧的自动
+      构图默认阈值（dim=1024 在 652 节点即触发，本库 3000+ 节点会长期处于
+      自动构图状态；小帕当前检索路径不依赖 QuIVer）。
+    - sync_mode 保持上游默认 normal：写 WAL 到 OS 缓冲区，进程崩溃不丢已提交
+      数据；全量落盘 .tdb 靠 flush()（进程退出路径见 shutdown）。
+    """
+    return triviumdb.TriviumDB(
+        db_path,
+        dim=dim,
+        access_mode=access_mode,
+        load_text_index=True,
+        auto_build_quiver=False,
+    )
+
+
+def _acquire_shared(db_path: str, access_mode: Literal["read_write", "read_only"], dim: int) -> "_LockedDB":
+    """取 (库路径, 访问模式) 共享连接的操作窗口代理；没有则开一条并登记。
+
+    调用方必须以代理 close()/with 退出结束窗口（释放 _DB_ACCESS_LOCK）。
+    - 库被**其他进程**占用（连接级排他）→ fail-fast 抛 DatabaseBusyError；
+    - 同库已被以**另一种访问模式**打开 → 抛 AccessModeConflictError（说明见类）。
+    """
+    key_path = _norm_db_path(db_path)
+    _DB_ACCESS_LOCK.acquire()
+    try:
+        for p, m in _SHARED_CONNECTIONS:
+            if p == key_path and m != access_mode:
+                raise AccessModeConflictError(
+                    f"同一进程内同一记忆库只允许一种访问模式：{db_path} 已以 "
+                    f"{m} 打开（进程内单例长连接，reader/writer 在 TriviumDB 层互斥，"
+                    f"不能并存第二条），不能再以 {access_mode} 请求。"
+                    f"请复用已有 TriviumStore 实例，或改用 REST 服务"
+                    f"（http://127.0.0.1:8090，含 /mcp）。"
+                )
+        conn = _SHARED_CONNECTIONS.get((key_path, access_mode))
+        if conn is None:
+            conn = _open_shared_connection(db_path, dim, access_mode)
+            _SHARED_CONNECTIONS[(key_path, access_mode)] = conn
+        return _LockedDB(conn, _DB_ACCESS_LOCK)  # 锁随代理交棒，close 时释放
+    except Exception as e:
+        _DB_ACCESS_LOCK.release()  # 未交棒成功：本窗口自释，防锁泄漏
+        if _is_db_locked_error(e):
+            raise DatabaseBusyError(
+                f"记忆库被其他进程占用，无法打开：{db_path}\n"
+                f"底层错误：{e}\n"
+                f"处理：同一时刻只允许一个进程访问该库。请先停止占用它的进程"
+                f"（常见为 Palimpsest REST 服务 / dashboard / 另一个 CLI 调用），"
+                f"或改为访问已运行的 REST 服务（http://127.0.0.1:8090，含 /mcp）。\n"
+                f"提示：同进程内的并发访问由共享长连接排队（issue #167），"
+                f"不会触发本错误——它只可能来自另一个进程。"
+            ) from e
+        raise
+
+
+def try_acquire_existing(db_path: str) -> "_LockedDB | None":
+    """该库在本进程已有共享连接时取一个窗口代理；没有则返回 None（**绝不新开**）。
+
+    供 db_health / dims 等「探测类」调用方复用共享连接——单例常开后，它们若
+    裸开第二条连接必被连接级排他拒绝，会把「自己占着自己」误报成库被占用。
+    """
+    key_path = _norm_db_path(db_path)
+    _DB_ACCESS_LOCK.acquire()
+    try:
+        for (p, _m), conn in _SHARED_CONNECTIONS.items():
+            if p == key_path:
+                return _LockedDB(conn, _DB_ACCESS_LOCK)  # 锁随代理交棒
+    except BaseException:
+        _DB_ACCESS_LOCK.release()
+        raise
+    _DB_ACCESS_LOCK.release()  # 未找到、未交棒：本窗口自释
+    return None
+
+
+def shutdown() -> None:
+    """flush 并关闭进程内**所有**共享连接，清空注册表（issue #167 退出落盘）。
+
+    三个入口：main.py 的 ASGI lifespan shutdown（优雅退出）、atexit 兜底
+    （脚本 / CLI / 测试进程退出）、测试隔离钩子 reset_connections_for_test。
+
+    - 持 _DB_ACCESS_LOCK 执行：等在飞操作窗口结束、阻止新窗口；
+    - read_write 连接先 flush()（WAL → .tdb 全量落盘）再 close()；flush 失败
+      只记日志**不抛**——sync_mode=normal 下已提交事务在 WAL 里不依赖本次
+      flush 持久化，绝不因落盘失败阻塞进程退出；
+    - 关闭后清空注册表：下一次 _acquire() 会重新建连接（测试复位语义）。
+    """
+    _DB_ACCESS_LOCK.acquire()
+    try:
+        entries = list(_SHARED_CONNECTIONS.items())
+        _SHARED_CONNECTIONS.clear()
+        for (path, mode), conn in entries:
+            if mode == "read_write":
+                try:
+                    conn.flush()
+                except Exception as e:  # noqa: BLE001 —— flush 失败不阻塞退出
+                    logger.warning("共享连接 flush 失败（不阻塞退出）: %s: %s", path, e)
+            try:
+                conn.close()
+            except Exception as e:  # noqa: BLE001 —— 关闭失败同样不阻塞退出
+                logger.warning("共享连接关闭失败（忽略）: %s: %s", path, e)
+    finally:
+        _DB_ACCESS_LOCK.release()
+
+
+def reset_connections_for_test() -> None:
+    """测试隔离钩子：关闭并清空全部共享连接（等价 shutdown，命名表意给测试用）。
+
+    单例后 ``_acquire().close()`` 只释放操作窗口、连接仍被注册表持有——既有
+    测试里「close 掉以释放库文件」的清理语义必须改用本钩子：fixture teardown
+    在 rmtree 临时库**之前**、子进程/裸连接要接管库文件**之前**调用。
+    """
+    shutdown()
+
+
+# 进程退出兜底落盘：优雅路径走 main.py lifespan 的 ASGI shutdown；这里兜住
+# 脚本 / CLI / 测试进程等非 lifespan 退出。shutdown 内部吞掉 flush/close 异常，
+# 不干扰解释器退出。
+atexit.register(shutdown)
 
 
 # 图谱扩散参数来自 Config（性能优化）：每节点最多扩散最强 N 条边；弱边阈值。
@@ -310,8 +481,8 @@ class TriviumStore:
             db.create_ordered_index("importance")
             db.create_composite_index(("type", "domain"))
             db.create_bitmap_index("status")
-        except DatabaseBusyError:
-            raise  # 库被占用 → fail-fast，不伪装成「索引降级」
+        except (DatabaseBusyError, AccessModeConflictError):
+            raise  # 库被其他进程占用 / 访问模式冲突 → fail-fast，不伪装成「索引降级」
         except Exception as e:
             if _is_db_corrupt_error(e):
                 # 存储 generation 损坏 → fail-fast：静默降级会让「库已损坏」伪装成
@@ -324,40 +495,21 @@ class TriviumStore:
                     db.close()
 
     def _acquire(self) -> Any:
-        """获取数据库连接（仅存在于 with 块内部）。
+        """获取共享连接的操作窗口代理（with 块 / 显式 close 结束窗口）。
 
-        triviumdb 自带 `py.typed` 与 `triviumdb.pyi`，mypy 可直接解析其类型，
-        无需 `type: ignore` 抑制。返回 `_LockedDB` 代理（见其 docstring）：连接
-        持有期间锁住进程内 DB 访问，连接 close 时释放。
+        issue #167 单例长连接：每个 (库路径, 访问模式) 进程内只开**一条**连接、
+        全程复用（此前每操作开-关库，重开要重读侧车、走 generation 记账）。
+        返回 `_LockedDB` 代理（见其 docstring）：
+          - 代理持有期间锁住进程内 DB 访问（排队而不是失败）；
+          - close()/with 退出**只释放锁、不关闭连接**——连接由模块级注册表持有，
+            供下一次 _acquire 复用。
 
-        库被其他进程占用时（连接级排他）fail-fast 抛 `DatabaseBusyError`，
-        附带库路径与处理指引，而不是把底层 RuntimeError 原样抛给上层。
+        库被其他进程占用时（连接级排他）fail-fast 抛 `DatabaseBusyError`，附带
+        库路径与处理指引（跨进程排他不变）；同一库被以另一种访问模式请求时抛
+        `AccessModeConflictError`（reader/writer 在 triviumdb 层互斥，单例只能
+        取其一）。
         """
-        _DB_ACCESS_LOCK.acquire()
-        try:
-            db = triviumdb.TriviumDB(
-                self.db_path,
-                dim=self.dim,
-                access_mode="read_only" if self.read_only else "read_write",
-                # 显式关闭 QuIVer 自动构图，不跟随上游默认值：
-                # TDB 0.9.0 起自动构建阈值收紧到 ceil(666667/dim)（dim=1024 → 652 节点），
-                # 本库 3000+ 节点会长期处于自动构图状态（首次查询多付约 88ms、flush 落
-                # 约 1.6MB `.quiver` 侧车）。小帕当前检索路径不依赖 QuIVer，显式关掉以
-                # 保持现状行为；将来要启用按需打开并单独评估。
-                auto_build_quiver=False,
-            )
-        except Exception as e:
-            _DB_ACCESS_LOCK.release()
-            if _is_db_locked_error(e):
-                raise DatabaseBusyError(
-                    f"记忆库被其他进程占用，无法打开：{self.db_path}\n"
-                    f"底层错误：{e}\n"
-                    f"处理：同一时刻只允许一个进程访问该库。请先停止占用它的进程"
-                    f"（常见为 Palimpsest REST 服务 / dashboard / 另一个 CLI 调用），"
-                    f"或改为访问已运行的 REST 服务（http://127.0.0.1:8090，含 /mcp）。"
-                ) from e
-            raise
-        return _LockedDB(db, _DB_ACCESS_LOCK)
+        return _acquire_shared(self.db_path, "read_only" if self.read_only else "read_write", self.dim)
 
     def embed_text(self, text: str) -> list[float]:
         """生成文本向量，按 EMBEDDING_PROVIDER 分发（默认进程内 local，隐私优先）。"""
