@@ -18,7 +18,8 @@ def get_db_dim(store):
         # storage_info()["dim"] 而不是信任入参的原因。
         # 风险提示：若 triviumdb 将来改为校验 dim 与库内实际维度的一致性，
         # 此处会开始抛错，届时需改为「先探测维度再开库」的两段式。
-        db = triviumdb.TriviumDB(store.db_path, dim=store.dim)
+        # auto_build_quiver=False：只探测维度，不触发 QuIVer 构图（见 trivium_store 同处注释）。
+        db = triviumdb.TriviumDB(store.db_path, dim=store.dim, auto_build_quiver=False)
         info = db.storage_info()
         return info.get("dim"), None
     except Exception as e:  # noqa: BLE001 —— 读维度失败返回错误信息交由体检汇总提示

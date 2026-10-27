@@ -41,7 +41,9 @@ def check_db_health(db_path: str | None = None, dim: int | None = None) -> dict:
         result["error"] = f"数据库文件不存在：{path}"
         return result
     try:
-        db = triviumdb.TriviumDB(path, dim=dim_val)
+        # auto_build_quiver=False：体检只读 node_count，不应因上游默认阈值变化
+        # 而顺带触发 QuIVer 构图（0.9.0 起 dim=1024 在 652 节点即自动触发）。
+        db = triviumdb.TriviumDB(path, dim=dim_val, auto_build_quiver=False)
         try:
             result["node_count"] = db.node_count()
             result["ok"] = True
