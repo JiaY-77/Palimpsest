@@ -93,6 +93,11 @@ def fake_embedder():
 def smoke_env():
     """占位夹具：确保临时环境已建立；session 结束统一清理临时目录。"""
     yield
+    # 先关单例共享连接（issue #167）：连接由进程级注册表持有、不再随操作关闭，
+    # 不先 reset 则 Windows 删不掉仍被打开的临时库文件。
+    from core.trivium_store import reset_connections_for_test
+
+    reset_connections_for_test()
     # triviumdb 连接在 with 块退出/显式 close 后已释放；失败忽略（Windows 文件锁偶发）
     shutil.rmtree(_TMP_DIR, ignore_errors=True)
 

@@ -168,9 +168,15 @@ def test_store_write_rejected_while_another_writer_holds_db():
     节点 ID 由应用层按「当前最大 id + 1」分配，能撞车的前提是两个写者同时握有
     连接 —— 而 triviumdb 在第二个写连接构造时就拒绝。所以多 worker / 多实例并发
     写同一库不是「静默产生重复 ID」，而是写请求直接报错（详见 README「单进程写入约束」）。
+
+    issue #167 单例后：同进程并发经共享连接排队、不再失败；这里的裸连接绕过
+    注册表，等价模拟「另一个进程持着库」——先 reset 共享连接，让写入方真的
+    需要重开库、真的撞上排他。
     """
+    from core import trivium_store as ts_mod
     from mcp_tools._common import store as pstore
 
+    ts_mod.reset_connections_for_test()
     holder = triviumdb.TriviumDB(pstore.db_path, dim=pstore.dim)
     try:
         with pytest.raises(RuntimeError) as ei:
@@ -181,3 +187,4 @@ def test_store_write_rejected_while_another_writer_holds_db():
         assert "锁" in str(ei.value), ei.value
     finally:
         holder.close()
+        ts_mod.reset_connections_for_test()
