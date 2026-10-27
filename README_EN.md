@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| Version | v2.16.2 |
+| Version | v2.17.0 |
 | Python | 3.10+ |
 | License | MIT |
 | Storage | TriviumDB 0.8.10 (vector + graph + document, embedded) |
@@ -95,7 +95,7 @@ On Windows, `scripts/start_rest.vbs` launches it in a hidden window (logs to `sc
 ```bash
 # (1) the service is alive
 curl -s http://127.0.0.1:8090/
-# returns {"service":"Palimpsest","version":"v2.16.2","endpoints":[...]}
+# returns {"service":"Palimpsest","version":"v2.17.0","endpoints":[...]}
 
 # (2) the health check is all green
 python scripts/palimpsest_cli.py doctor

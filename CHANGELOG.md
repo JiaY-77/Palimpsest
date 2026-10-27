@@ -6,13 +6,37 @@
 
 ## [Unreleased]
 
+## [2.17.0] - 2026-10-28
+
 ### 新增
 
+- **思维骨架重构为「胶囊字段导向」，并改为逐轮累进会话缓冲**（#166 → #180）：骨架的每个编号问题现在就是一个胶囊字段——`code` 问「改了什么 / 失败路径 / 怎么验 / 交付物」，`research` 问「要查清什么 / 已有证据 / 反例 / 结论」，`default` 问「要什么 / 已知未知 / 该不该动手 / 产出」。`post-turn` 把当轮答案解析成结构化字段，累进该 `session_id` 的缓冲节点（`type=session`，logs 层，同一 session 只一条，条目按 `turn_index` 覆盖而非重复）；`session-end` 把缓冲合并成**一条** `type=task` + `kind=handoff` 胶囊，缓冲标 `closed`，并以 `CONSOLIDATED_INTO` 建边。宿主不传 `session_id` 时行为与旧版完全一致（不建缓冲、逐轮 `thought` 节点不变）。新增 `SESSION_MEMORY_INGEST` 开关（默认开）保留旧「会话要点」路径，关掉时以 `skip_reason=session_memory_disabled` 可观测地跳过。骨架起手式、kind 白名单与 `detect_thought_origin()` 均从骨架表派生，老文案历史节点降级为 `thought_origin=unknown` 且不抛异常。胶囊响应体**有意不含 `created` 字段**——字段存在即成功信号，调用方以 `capsule.node_id` 为准。
+- **记忆置信度（evidence-based confidence）作为 ε 级 tie-break**（#159）：相似度接近时用证据量做最后一级排序，不改变主排序。
+- **REST 允许本地浏览器工具跨源访问**（#162）：CORS 放行本地页面工具（如 dashboard、浏览器插件）直连 REST。
 - **REST `/mem/ingest` 支持可选 `meta` 自定义元数据（MCP `mem_ingest` 同步支持）**：键值均为字符串的字典，校验通过后原样写入节点 payload 的 `meta` 子字典，供外部宿主把记忆绑定到自己的会话实体上（如 `{"chat_id": "..."}`）。结构约束（不合法拒绝写入，REST 侧 422）：键 ≤8 个、键名 `^[a-zA-Z0-9_]{1,32}$`、值为字符串且 ≤256 字符（护栏集中在 `core/meta_guard.py`）。不传 / 空字典时 payload 不含 `meta` 键，payload 形状与旧行为完全一致。
 - **新 REST 端点 `POST /mem/purge-by-meta`：按「域名 + 自定义元数据」精确定位并批量删除**。典型场景：外置宿主（如酒馆 / SillyTavern 记忆桥）在用户删除聊天记录时，同步清空该聊天在记忆库里写入的节点。破坏性操作三道护栏：`domain` 必填非空（缺失 / 空串 400，不存在全库级删除）；`dry_run` 默认 true（缺省只返回 `matched_count` / `ids` / 每条 80 字 `previews` 预览，不删任何节点）；匹配数 > `max_delete`（默认 50）时 409 拒绝执行（附实际匹配数 + 预览）。真实删除逐条走节点删除链（级联清理关联边 + FTS/TDB 文本通道），单条失败记入 `failed` 不中断；每次执行写一条 `type=record` 审计节点（domain 同请求、importance 0.5、content 含 meta 键值 / deleted_ids / 时间戳），审计节点本身不带 `meta`，不会被同条件的 purge 连坐删除。
 
+### 性能
+
+- **每个进程只保留一条长连接，取代「每操作开-关库」**（#177）：`TriviumStore` 此前每次操作都构造并关闭一个 TriviumDB 连接——连接级排他又迫使每次窗口都要过进程锁，重开时重读侧车、重走 generation 记账，成本在每次调用上重复支付。实测（一次性库、60 次连续 insert）：复用连接 **0.1 ms/op**，`open → insert → close` **63.1 ms/op**；大头不是开闭文件（4.5 ms），而是**新连接首次操作的索引加载（约 58 ms）**，库越大越明显。现按 `(库路径, 访问模式)` 在进程内注册一条共享连接，所有 `TriviumStore` 实例复用；访问锁从「跟着连接」改为「跟着操作窗口」——代理解锁不再关闭句柄。共享连接统一 `load_text_index=True`（`index_text` 是文本索引唯一写入口，未加载内存态就写 + flush 会把 `.text` 侧车洗成单条），当前文本通道默认关闭故成本可忽略，代码内注明侧车长大后需重测。同一路径请求第二种访问模式时抛 `AccessModeConflictError`（消息含原因与出路），不再被索引初始化的兜底分支静默吞掉。共享连接在 ASGI shutdown 与 `atexit` 时先 `flush()` 再关闭，flush 失败只记日志、不阻塞退出；`db_health` / `dims` 等探测方改为复用共享连接，避免「自己占着自己」误报 busy。**这是性能改造而非缺陷修复**：既有进程锁已保证并发正确性（改造前实测 20/20 命中、0 静默空结果）。
+
+### 修复
+
+- **插件清单的 hooks 声明与实际注册不符**（#178）：`plugin.yaml` 声明了 `on_pre_compress`——它是 MemoryProvider 的**方法**（压缩前由 provider 接口调用），不是事件 hook，导致 `plugins doctor` / `plugins validate` 报 `unknown hook 'on_pre_compress'`；而真正注册的 `pre_llm_call`（喂当轮思考骨架）却没声明。校验器比对的是 `provides_hooks` 字段（不是 `hooks`）。现改为 `provides_hooks: [on_session_end, pre_llm_call]`，provider 接口不变。
+
+### 变更
+
+- **embedding 进程内化后，停止为 Ollama 加守卫**（#161）：Ollama 不再是必需依赖，健康检查与看门狗不再以它为对象。
+
+### 依赖
+
+- **TriviumDB 0.9.0b2**（#165）：并用真实现场库（`11.4 MB` 文本侧车 / 2877 节点）复现并修复了 0.8.11 下 `flush` / `build_text_index` / `close` 全部失败且重开后锁死的问题；4 个开库点显式 `auto_build_quiver=False`（0.9.0 起 dim=1024 在 652 节点即自动构图，本库 3000+ 节点会长期处于自动构图状态，而当前检索不依赖 QuIVer）。
+
 ### 测试
 
+- 新增 `tests/test_singleton_connection.py`（8 条）：同进程共享连接身份（跨调用 / 跨 store 实例 / 关窗后）、并发检索零空结果（带死锁守卫）、并发写零失败且 ID 唯一、访问模式冲突双向报错且消息含约束与出路、代理 `close()` 幂等且锁释放平衡、`shutdown()` 先 flush 再 close 且之后可重建、`load_text_index=True` 与 `auto_build_quiver=False` 确实抵达构造函数。
+- 多写者 / DB-busy 系列测试改锚：单例后「同进程第二个连接」不再失败，用例改为用绕过注册表的裸连接模拟**另一个进程**——跨进程独占语义不变。
+- `tests/test_session_capsule.py` 按缓冲-合并链路重写（骨架解析 / 逐轮累进 / 合并胶囊 / 兼容开关 / 无 session_id 旧行为）。
 - 新增 `tests/test_meta_tag_purge.py`（12 条）：meta 写入与非打标旧行为、三项结构校验拒绝（非法键名 / 值超长 / 键过多）、MCP 与 REST 同构共享写入路径、purge 的干跑缺省基线 / 精确命中删除 / 误删防护（同 meta 不同 domain 不删、同 domain 不同 meta 不删）/ 超限 409 一个不删 / 关联边级联清理 / `type=record` 审计节点且不带 `meta`。
 
 ## [2.16.2] - 2026-10-27
@@ -585,7 +609,8 @@
 
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
-[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.16.2...HEAD
+[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.17.0...HEAD
+[2.17.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.17.0
 [2.16.2]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.16.2
 [2.16.1]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.16.1
 [2.16.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.16.0
