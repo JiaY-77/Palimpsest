@@ -190,6 +190,16 @@ class Config:
     # 仅对判定为标识符查询的请求用本权重，普通自然语言 query 仍走 RRF_FTS_WEIGHT。
     RRF_FTS_EXACT_WEIGHT = float(os.getenv("RRF_FTS_EXACT_WEIGHT", "1.5"))
 
+    # ---- RP 专用实例（酒馆记忆桥专用部署，默认关闭 = 行为完全不变）----
+    # RP_MODE=1 时服务变成「RP 专用实例」，行为变化只有两条：
+    #   1. 域锁死：所有带 domain 参数（或不带）的入口，域一律强制为 RP_DOMAIN
+    #      （不传自动补、传别的 domain → 400 拒绝，解析逻辑见 main._resolve_domain）；
+    #   2. ingest 不再挂知识库关联边（RP 独立库里没有 kb_chunk，挂边纯属浪费，
+    #      见 mcp_tools.memory._find_linked_kb_ids 的开关）。
+    # 未设置时两条都不生效，默认行为 100% 不变。
+    RP_MODE = os.getenv("RP_MODE", "").strip().lower() in ("1", "true", "yes", "on")
+    RP_DOMAIN = os.getenv("RP_DOMAIN", "rp").strip() or "rp"
+
     # ---- TDB（TriviumDB）BM25 文本通道：第二路中文文本召回，默认关闭 ----
     # 背景：FTS5 trigram 对 2 字短词与 6~8 字长短语召回明显弱于 TDB 的
     # CJK 2-gram（2026-10-24 生产库副本实测）。三件套默认关闭，线上行为与

@@ -28,6 +28,7 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8090
 | `POST` | `/mem/hybrid-search` | FTS5 + 向量混合检索 |
 | `POST` | `/mem/ingest` | 写入新记忆（含冲突检测 + 敏感扫描；`replaces` 字段显式声明取代；可选 `meta` 是键值均为字符串的元数据字典——键 ≤8 / 键名 `^[a-zA-Z0-9_]{1,32}$` / 值 ≤256 字符，通过校验原样落 payload 的 `meta` 子字典，不传则 payload 不含该键） |
 | `POST` | `/mem/purge-by-meta` | 按「域名 + 自定义元数据」精确定位并批量删除（body：`domain` 必填非空（缺失/空串 400，不存在全库级删除）、`meta_key` / `meta_value` 必填、`dry_run`（默认 true 只预览）/ `max_delete`（默认 50，匹配数超出 409 拒绝执行）；真实删除逐条走节点级联删除（边 + FTS/TDB 文本通道一并清理），每次写一条不带 `meta` 的 `type=record` 审计节点） |
+| `POST` | `/mem/retag-by-meta` | 按「域名 + 自定义元数据」批量改写 `meta` 值——重命名聊天后同步改标，防记忆变孤儿（body：`domain` 必填非空、`meta_key` / `old_value` / `new_value` 必填、`old_value == new_value` → 400、`dry_run`（默认 true 只预览）/ `max_update`（默认 500，匹配数超出 409 拒绝执行）；改写为合并式 `{**cur_meta, key: new_value}`，其他 meta 键不冲掉；写一个 `meta_key: new_value` 不合法 → 400；每次写一条不带 `meta` 的 `type=record` 审计节点） |
 | `POST` | `/mem/link` | 创建图边 |
 | `POST` | `/memoryhub/unpack` | 只读解开 MemoryHub 记忆包（body：`path` / `preview_chars`；校验格式 / 版本 + 敏感扫描 + 人读摘要） |
 | `POST` | `/memoryhub/import` | 把记忆包里的节点入籍（body：`path` / `select` / `include_secrets`；`select` 为空 = 只预览不写） |
@@ -53,6 +54,11 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8090
 curl -X POST http://127.0.0.1:8090/mem/purge-by-meta \
   -H "Content-Type: application/json" \
   -d '{"domain": "rp", "meta_key": "chat_id", "meta_value": "chat-42"}'
+
+# 重命名聊天后同步改标（dry_run 默认 true，这里显式真改）
+curl -X POST http://127.0.0.1:8090/mem/retag-by-meta \
+  -H "Content-Type: application/json" \
+  -d '{"domain": "rp", "meta_key": "chat_id", "old_value": "chat-42", "new_value": "chat-43", "dry_run": false}'
 ```
 
 ```bash
