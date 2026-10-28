@@ -4,3 +4,6 @@ pytest-cov==7.1.0
 ruff==0.16.7
 mypy==2.3.1
 types-requests==2.33.0.20260906
+# tests/test_plugin_manifest_hooks.py 要读 hermes-plugin/plugin.yaml（外部格式，不用正则硬解）。
+# 只进开发依赖：生产运行时完全不碰 YAML。
+PyYAML==6.0.3

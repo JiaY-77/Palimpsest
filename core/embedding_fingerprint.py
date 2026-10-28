@@ -32,8 +32,15 @@ logger = logging.getLogger(__name__)
 # record 节点的唯一标识（payload.source 字段；检索/统计按它过滤）
 FINGERPRINT_SOURCE = "embedding-fingerprint"
 
-# 可直接复制的修复命令（compare 的 hint 必须包含它）
-FIX_CMD = "python scripts/palimpsest_cli.py reindex --force"
+# 可直接复制的修复命令（compare 的 hint 必须包含它）。
+#
+# `--yes` 不能省：`--force` 只跳「指纹不一致」那一层确认，最后那次
+# 「即将重嵌 N 个节点的向量，确认？[y/N]」由独立的 `--yes/-y` 控制，无 TTY 的
+# 脚本 / CI / agent 里会直接 `EOF when reading a line`（issue #185）。
+FIX_CMD = "python scripts/palimpsest_cli.py reindex --force --yes"
+# reindex 以独占写模式直连库（不走 REST，本库单写者），所以这条命令只在
+# REST 停下时可用；每条给用户的 hint 都要带上这个前置条件（issue #185）。
+FIX_PRECONDITION = "需先停 REST 服务，完成后重启"
 
 
 def compute_space_id(provider: str, model: str, dim: int, pooling: str) -> str:
@@ -162,7 +169,7 @@ def compare(stored: dict | None, current: dict) -> dict:
         return {
             "ok": False,
             "reason": "库内未记录向量空间指纹（存量库升级或从未重算过）",
-            "hint": f"执行一次全量重算并写入指纹: {FIX_CMD}",
+            "hint": f"执行一次全量重算并写入指纹（{FIX_PRECONDITION}）: {FIX_CMD}",
             "soft_warnings": [],
         }
 
@@ -177,7 +184,7 @@ def compare(stored: dict | None, current: dict) -> dict:
                 "hint": "",
                 "soft_warnings": [
                     f"引擎版本已从 {old_engine} 变为 {new_engine}（向量空间未变）。"
-                    f"若检索质量变差，可执行 {FIX_CMD} 重算"
+                    f"若检索质量变差，可停 REST 后执行 {FIX_CMD} 重算"
                 ],
             }
         return {"ok": True, "reason": "", "hint": "", "soft_warnings": []}
@@ -194,6 +201,6 @@ def compare(stored: dict | None, current: dict) -> dict:
     return {
         "ok": False,
         "reason": reason,
-        "hint": f"接受当前向量空间并全量重算: {FIX_CMD}",
+        "hint": f"接受当前向量空间并全量重算（{FIX_PRECONDITION}）: {FIX_CMD}",
         "soft_warnings": [],
     }

@@ -47,7 +47,13 @@ def cmd_status(args: argparse.Namespace) -> None:
         print("  请先启动 Palimpsest REST 服务（详见仓库 docs/HERMES_INTEGRATION.md），")
         print("  或设置 PALIMPSEST_BASE_URL 指向已运行的实例")
         return
-    print(f"✓ Palimpsest REST {base} 正常：{root.get('service', 'Palimpsest')} v{root.get('version', '?')}")
+    # REST `/` already reports the version with its `v` prefix ("v2.17.0"), so
+    # do not prepend another one — `vv2.17.0` (issue #184). Tolerate a bare
+    # version too, in case a caller strips the prefix.
+    version = str(root.get("version", "?") or "?")
+    if not version.startswith("v"):
+        version = f"v{version}"
+    print(f"✓ Palimpsest REST {base} 正常：{root.get('service', 'Palimpsest')} {version}")
     endpoints = root.get("endpoints", [])
     have_semantic = any(e in endpoints for e in ("/mem/search", "/mem/ingest"))
     print(

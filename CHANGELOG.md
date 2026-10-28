@@ -6,6 +6,19 @@
 
 ## [Unreleased]
 
+### 修复
+
+- **插件清单里最后一条误声明的钩子清掉**（#183）：`provides_hooks` 还留着 `on_session_end`——它与 `on_pre_compress` 同类，是 `MemoryProvider` 的**方法**（会话结束时由宿主经 provider 接口调用），不是事件钩子。上一轮 #178 只清掉了 `on_pre_compress`，校验器于是换一条 WARN 继续报（`declares hook 'on_session_end' but registration did not add it`），`plugins doctor` 因此永远到不了全绿，常驻 WARN 又把真正的注册问题盖住。现 `provides_hooks` 只留 `pre_llm_call`（`register()` 唯一真正 `ctx.register_hook()` 的钩子），两个 provider 方法改为在 YAML 注释里说明。功能侧无任何变化（会话沉淀本来就正常生效）。
+- **`hermes palimpsest status` 不再打印双 `v`**（#184）：REST `/` 的 `version` 字段本身就带 `v` 前缀（`v2.17.0`），CLI 又拼了一个字面 `v`，输出成 `vv2.17.0`。改为先规整（已带 `v` 就原样用，裸版本号才补前缀），这样两种上游形状都正确，也不动 REST 字段（改它会波及所有调用方）。`-N-gSHA` 后缀是 `git describe` 的正常输出，不是问题。
+
+### 变更
+
+- **`reindex` 的修复命令补齐 `--yes` 与前置条件**（#185）：`--force` 只跳「指纹不一致」那一层确认，最后那次「即将重嵌 N 个节点，确认？[y/N]」由独立的 `--yes/-y` 控制——无 TTY 的脚本 / CI / agent 里会直接 `EOF when reading a line`。指纹守卫的 `FIX_CMD` 与 `doctor` 的修复提示、`README` / `README_EN` / `docs/CONFIGURATION` / `docs/INSTALL` / `docs/USAGE` 全部改为 `reindex --force --yes`；同时补上「reindex 直连库（不走 REST，本库单写者），须先停 REST、跑完再启动」这个前置条件——原先的提示让用户在服务运行时执行，只会撞 `Database locked`。bug 报告的模板也改为：服务在跑时默认贴 `curl http://127.0.0.1:8090/doctor`，需要 CLI 时先说明要停 REST。
+
+### 测试
+
+- 新增 `tests/test_plugin_manifest_hooks.py`（4 条）：静态解析 `plugin.yaml` 的 `provides_hooks` 与 `register()` 里的 `ctx.register_hook(<字面量>)`，断言两者**相等**（双向：多声明 → doctor WARN，少声明 → 未声明的注册），并要求 `on_pre_compress` / `on_session_end` 这两个 provider 方法两边都不出现——把 #173 的验收标准（声明 == 注册，由测试钉住）落地。另有一条防空转基线（两边都空时不得静默通过）。`requirements-dev.txt` 加 `PyYAML`（只进开发依赖，运行时完全不碰 YAML）。
+
 ## [2.17.0] - 2026-10-28
 
 ### 新增

@@ -181,7 +181,7 @@ python scripts/palimpsest_cli.py doctor
 |---|---|---|
 | `Embedding` 项失败 | 内置模型缺失 / 损坏；或 Ollama 未启动；或云端 key 未配 | 删掉模型文件重下；`ollama pull qwen3-embedding:0.6b`；或填 `EMBEDDING_API_KEY` |
 | `Database locked` / REST `503` | 同一库被第二个进程打开 | 只留一个写进程，先停掉旧的 REST / CLI |
-| 向量维度不一致 | 换过 embedding 模型或 provider | `reindex --force` 全量重算并写入新指纹 |
+| 向量维度不一致 | 换过 embedding 模型或 provider | `reindex --force --yes` 全量重算并写入新指纹 |
 | `pip install llama-cpp-python` 编译失败 | 走了源码编译路径 | 用官方 CPU wheel 索引（见 Install 步骤 2） |
 | 端口被占用 | 8090 已被别的进程监听 | `uvicorn --port <其他>`，或先查出占用进程 |
 
@@ -219,7 +219,7 @@ python scripts/palimpsest_cli.py doctor
 
 ## 更换向量模型
 
-切换 embedding 模型或 provider 会改变向量空间，**必须重嵌全库**。库内记录一条**向量空间指纹**（`provider` / `model` / `dim` / `pooling` 的哈希）；启动自检、`doctor` 与 `reindex` 开跑前都会比对它——不一致时 `doctor` 该项判失败并直接给出修复命令。换模型 / 换 provider 后跑 `reindex --force` 一次到位：放弃断点、跳过指纹确认、全量重算，完成时写入新指纹。完整操作顺序见 [`docs/INSTALL.md`](docs/INSTALL.md)。
+切换 embedding 模型或 provider 会改变向量空间，**必须重嵌全库**。库内记录一条**向量空间指纹**（`provider` / `model` / `dim` / `pooling` 的哈希）；启动自检、`doctor` 与 `reindex` 开跑前都会比对它——不一致时 `doctor` 该项判失败并直接给出修复命令。换模型 / 换 provider 后跑 `reindex --force --yes` 一次到位（`--yes` 跳最后那次重嵌确认；命令直连库，需先停 REST）：放弃断点、跳过指纹确认、全量重算，完成时写入新指纹。完整操作顺序见 [`docs/INSTALL.md`](docs/INSTALL.md)。
 
 ---
 

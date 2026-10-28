@@ -26,11 +26,18 @@ body:
     attributes:
       label: "`doctor` output"
       description: |
-        Run `python scripts/palimpsest_cli.py doctor` and paste the **whole** output here.
-        It reports every failing check with its fix command, which is usually enough for us to
-        pinpoint the problem. Secrets are not printed, but give it one more look before pasting.
+        With the REST service running (the normal state), paste the output of
+        `curl -s http://127.0.0.1:8090/doctor`. The CLI opens the store directly and cannot do so
+        while the service holds it, so `python scripts/palimpsest_cli.py doctor` only works with
+        REST stopped — if that is how you ran it, paste that output instead.
+        Either way paste the **whole** output: it reports every failing check with its fix command,
+        which is usually enough for us to pinpoint the problem. Secrets are not printed, but give
+        it one more look before pasting.
       render: shell
       placeholder: |
+        $ curl -s http://127.0.0.1:8090/doctor
+        ...
+        # or, with the REST service stopped:
         $ python scripts/palimpsest_cli.py doctor
         ...
     validations:

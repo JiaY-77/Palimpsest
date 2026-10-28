@@ -185,7 +185,7 @@ python scripts/palimpsest_cli.py doctor
 |---|---|---|
 | The `Embedding` check fails | the built-in model is missing / corrupt, or Ollama is not running, or the cloud key is unset | delete the model file and re-download; `ollama pull qwen3-embedding:0.6b`; or fill in `EMBEDDING_API_KEY` |
 | `Database locked` / REST `503` | a second process opened the same store | keep exactly one writing process; stop the old REST / CLI first |
-| Vector dimension mismatch | the embedding model or provider was switched | `reindex --force` re-embeds everything and writes the new fingerprint |
+| Vector dimension mismatch | the embedding model or provider was switched | `reindex --force --yes` re-embeds everything and writes the new fingerprint |
 | `pip install llama-cpp-python` fails to build | it went down the compile-from-source path | use the official CPU wheel index (see Install, step 2) |
 | The port is taken | 8090 is already listened on by another process | switch `uvicorn --port`, or find the occupying process first |
 
@@ -223,7 +223,7 @@ The full 62-key table (defaults and activation conditions) is in [`docs/CONFIGUR
 
 ## Swapping models / re-embedding
 
-Switching the embedding model or provider changes the vector space, so you **must re-embed the full store**. The store keeps a **vector-space fingerprint** (a hash of `provider` / `model` / `dim` / `pooling`); the startup self-check, `doctor` and `reindex` all compare against it — on a mismatch `doctor` fails that item and prints the fix command. After changing the model or provider, run `reindex --force`: it drops the resume checkpoint, skips the fingerprint prompt, re-embeds everything and writes the new fingerprint when done. Full sequence in [`docs/INSTALL.md`](docs/INSTALL.md).
+Switching the embedding model or provider changes the vector space, so you **must re-embed the full store**. The store keeps a **vector-space fingerprint** (a hash of `provider` / `model` / `dim` / `pooling`); the startup self-check, `doctor` and `reindex` all compare against it — on a mismatch `doctor` fails that item and prints the fix command. After changing the model or provider, run `reindex --force --yes`: it drops the resume checkpoint, skips the fingerprint prompt, re-embeds everything and writes the new fingerprint when done. `--yes` is required because `--force` does not skip the final `reindex N nodes? [y/N]` prompt (non-interactive callers would hit `EOF when reading a line`); the command opens the store directly, so stop the REST service first. Full sequence in [`docs/INSTALL.md`](docs/INSTALL.md).
 
 ---
 
