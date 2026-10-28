@@ -244,7 +244,66 @@ python scripts/palimpsest_cli.py kb search "你的知识库里的任意主题"
 | 检索结果为空 | 记忆库为空，或 Embedding 后端未就绪 | 先写入几条记忆；`startup-check` 检查 Embedding |
 | 换向量后端后检索错乱 | 未重建索引 | 执行 `build_kb_index.py --full` |
 | 自动沉淀没有触发 | 内容未命中强信号词 | 属正常（启发式克制设计）；或用 `palimpsest_ingest` 手动写入 |
+| MCP 工具报会话过期（expired session） | Palimpsest 进程重启，旧 MCP 会话已失效 | 属传输生命周期现象：重连 / 重启 MCP 客户端；Hermes 侧可改走 `palimpsest_*` 插件路径（见附录） |
 | 插件命令不存在 | 插件未启用或未复制到目录 | 回到第三步，确认目录与 `plugins enable` |
+
+---
+
+## 附录：工具入口的唯一性（插件 vs MCP）
+
+同一份记忆能力在 Hermes 侧有两个入口，本节写清分工，并消除重名工具。
+
+### 两个入口为什么都在
+
+| 入口 | 形态 | 不可替代的原因 |
+|---|---|---|
+| **插件**（`hermes-plugin/`） | 进程内：`palimpsest_*` 工具 + Memory Provider + Context Engine | 除工具外还持有 **hooks**：每轮自动召回注入（prefetch）、思维骨架（`pre_llm_call`）、会话胶囊（`post-turn` / `session-end`）。删插件 = 丢这些功能 |
+| **MCP**（REST 进程的 `/mcp` 端点，或纯 MCP 场景的 stdio） | 跨进程协议入口 | 非 Hermes 的 MCP 客户端（Claude Desktop 等）只能走协议入口。删 MCP = 外部客户端进不来 |
+
+### 结论：同一能力只认一个名字
+
+两套入口**不是双份实现**（插件走 REST，MCP 走协议，各自一套参数转换，刻意不做 re-export 以免两份代码漂移）。在 **Hermes 侧只认插件名**：下表中每项能力，Hermes 内一律用 `palimpsest_*`；MCP 服务保留同名工具是为了外部 MCP 客户端，Hermes 侧应通过 `tools.exclude` 关掉它们：
+
+| 能力 | Hermes 内用（插件） | MCP 侧同名工具（应在 Hermes 的 mcp_servers 中 exclude） |
+|---|---|---|
+| 检索记忆/知识库 | `palimpsest_search` | `mem_search` |
+| 写入记忆（带冲突检测） | `palimpsest_ingest` | `mem_ingest` |
+| 记忆间建链 | `palimpsest_link` | `mem_link` |
+| 图谱邻居展开 | `palimpsest_graph` | `graph_neighbors` |
+
+> 每项排除的原因都一样：与插件工具是**同一能力的重复入口**。MCP 里其余工具（`kb_search`、`mem_recent`、`mem_review`、`mem_stats` 等）没有插件对应物，属 MCP 独有能力，无需排除。
+>
+> 注意：Hermes 会给 MCP 工具加宿主前缀（形如 `mcp__palimpsest_mem_search`），**exclude 列表里写的是 MCP 服务器侧的原始工具名**（不带前缀）。
+
+### 推荐的 Hermes `mcp_servers` 配置片段
+
+（写进 `~/.hermes/config.yaml`；以下仅为示例，具体以你本机配置为准）
+
+```yaml
+mcp_servers:
+  palimpsest:
+    url: "http://127.0.0.1:8090/mcp"
+    enabled: true
+    tools:
+      exclude:
+        # 与插件 palimpsest_search 同能力（检索）——只留插件入口
+        - mem_search
+        # 与插件 palimpsest_ingest 同能力（写入 + 冲突检测）——只留插件入口
+        - mem_ingest
+        # 与插件 palimpsest_link 同能力（建链）——只留插件入口
+        - mem_link
+        # 与插件 palimpsest_graph 同能力（图谱邻居）——只留插件入口
+        - graph_neighbors
+```
+
+### 重启后 MCP 会话过期（expired session）
+
+Palimpsest 服务重启后，长连的 MCP 客户端仍持有旧会话 ID，下一次调用会得到 opaque 的会话过期错误（而插件走 REST 每次都是新请求，不受影响）。这是 **MCP 传输的生命周期现象**，不是数据故障：
+
+- **MCP 客户端**：重连（或重启客户端进程）即可拿到新会话；
+- **Hermes 侧**：遇到该错误可直接改走插件路径（`palimpsest_*` 工具 / hooks），无需等服务恢复。
+
+本项目当前仅以文档处理，不改代码。
 
 ---
 
