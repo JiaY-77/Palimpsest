@@ -170,11 +170,17 @@ def _check_embedding() -> str:
     if source == "auto:fallback" and _has_existing_nodes(store):
         # 老库 + 靠默认值落到 local：升级风险最高的一种组合（2.16.0 把默认从
         # ollama 改成了 local，老 .env 通常没写 PROVIDER）。
-        detail += (
-            "；⚠ 未显式设置 EMBEDDING_PROVIDER，当前按默认 local 运行。"
+        #
+        # 除了写进 detail（doctor / 自检输出里看得到），还必须**打一条 WARNING**：
+        # 这是「用户没选过，却被默认值换了后端」的情形，只在 detail 里当脚注太轻，
+        # 启动日志里扫不到就等于没通知（issue #192）。
+        message = (
+            "EMBEDDING_PROVIDER 未显式设置，当前按默认 local（内置 llama.cpp）运行。"
             "2.16.0 起默认值已从 ollama 改为 local——若你原本用 Ollama / 云端，"
-            "请在 .env 显式写上 EMBEDDING_PROVIDER"
+            "请在 .env 显式写 EMBEDDING_PROVIDER，否则升级后可能悄悄换了后端而不自知。"
         )
+        logger.warning("⚠ %s", message)
+        detail += f"；⚠ {message}"
     return detail
 
 

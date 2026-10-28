@@ -124,3 +124,30 @@ def test_has_existing_nodes_never_raises(monkeypatch, broken):
             raise broken
 
     assert sc._has_existing_nodes(Boom()) is False
+
+
+def test_migration_hint_is_a_real_warning_record(monkeypatch, caplog):
+    """光有 detail 一行不够——启动日志里必须是 WARNING，扫得到才算通知。"""
+    import logging
+
+    import core.startup_check as sc
+
+    with caplog.at_level(logging.WARNING, logger=sc.logger.name):
+        detail = _run_embedding_check(monkeypatch, has_nodes=True, source="auto:fallback")
+
+    assert "2.16.0" in detail
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warnings, "老库落默认值时必须有 WARNING 记录"
+    assert any("EMBEDDING_PROVIDER" in r.getMessage() for r in warnings)
+
+
+def test_no_warning_record_for_fresh_install(monkeypatch, caplog):
+    """新装的空库不该被 WARNING 打扰。"""
+    import logging
+
+    import core.startup_check as sc
+
+    with caplog.at_level(logging.WARNING, logger=sc.logger.name):
+        _run_embedding_check(monkeypatch, has_nodes=False, source="auto:fallback")
+
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
