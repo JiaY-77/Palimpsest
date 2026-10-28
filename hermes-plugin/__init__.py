@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 import urllib.request
 from typing import Any, ClassVar
 
@@ -31,18 +32,70 @@ logger = logging.getLogger(__name__)
 _DEFAULT_BASE_URL = "http://127.0.0.1:8090"
 
 
-def _http_post(url: str, payload: dict, timeout: float = 5.0) -> dict:
+# 写请求默认超时（issue #191）：**与服务端自留的预算对齐**。
+#
+# 历史：这里是硬编码 5 秒。而服务端写库要**同步算 embedding**
+# （core/trivium_store.py:1074），对 Ollama 的超时是 30 秒——模型冷启动、CPU
+# 推理、并发排队（本地 embedding 串行加锁）都可能几秒到几十秒。5 秒预算下
+# 写入会超时，而插件是 fail-open 的，于是**内容被静默丢弃**，用户只感觉
+# 「有时候记忆没进去」。现改为可配 + 默认 30 秒。
+_DEFAULT_WRITE_TIMEOUT = 30.0
+
+# 超过这个耗时打一条 warning：不是失败，只为让「一直很慢」的部署可见。
+_SLOW_WRITE_WARN_SECONDS = 5.0
+
+
+def _write_timeout() -> float:
+    """写请求超时（秒）：``PALIMPSEST_WRITE_TIMEOUT`` 优先，非法值回退默认。
+
+    每次调用现读环境变量（不在 import 时固化）——宿主运行中可能改配置，测试也
+    需要临时覆盖。
+    """
+    raw = os.environ.get("PALIMPSEST_WRITE_TIMEOUT", "")
+    if not raw.strip():
+        return _DEFAULT_WRITE_TIMEOUT
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        logger.warning("PALIMPSEST_WRITE_TIMEOUT=%r 不是数字，回退 %.0f 秒", raw, _DEFAULT_WRITE_TIMEOUT)
+        return _DEFAULT_WRITE_TIMEOUT
+    return value if value > 0 else _DEFAULT_WRITE_TIMEOUT
+
+
+def _http_post(url: str, payload: dict, timeout: float | None = None) -> dict:
     """REST POST 到 Palimpsest :8090，返回解析后的 JSON；失败返回 {"error": ...}。
 
-    fail-open：记忆后端不可用时静默降级（返回空、不阻塞宿主）。
+    ``timeout=None`` → 用 :func:`_write_timeout`（默认 30 秒）；思考骨架那条热路径
+    显式传更短的预算（它不能拖住每轮 LLM 调用）。
+
+    fail-open：记忆后端不可用时降级（返回空、不阻塞宿主）——但**失败要看得见**：
+    异常与偏慢（≥5 秒）都打 warning 并带耗时，否则「写入被吞掉」在用户侧无痕。
     """
+    effective = _write_timeout() if timeout is None else float(timeout)
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    started = time.perf_counter()
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        with urllib.request.urlopen(req, timeout=effective) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        elapsed = time.perf_counter() - started
+        if elapsed >= _SLOW_WRITE_WARN_SECONDS:
+            logger.warning(
+                "Palimpsest 写请求偏慢：%s 耗时 %.1fs（预算 %.0fs）——可调大 PALIMPSEST_WRITE_TIMEOUT",
+                url,
+                elapsed,
+                effective,
+            )
+        return body
     except Exception as exc:  # noqa: BLE001 — 记忆后端必须 fail-open
-        logger.debug("Palimpsest REST %s failed: %s", url, exc)
+        elapsed = time.perf_counter() - started
+        logger.warning(
+            "Palimpsest REST 写入失败（fail-open，本轮内容不落库）：%s 耗时 %.1fs 预算 %.0fs：%s",
+            url,
+            elapsed,
+            effective,
+            exc,
+        )
         return {"error": str(exc)}
 
 

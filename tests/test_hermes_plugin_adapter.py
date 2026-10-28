@@ -468,3 +468,79 @@ def _fake_config_schema_module() -> types.ModuleType:
     sys.modules.setdefault("plugins", pkg)
     sys.modules.setdefault("plugins.memory", mem)
     return mod
+
+
+# ---------------------------------------------------------------------------
+# 写请求超时（issue #191）：默认对齐服务端 30 秒、可配、非法回退、失败可见
+# ---------------------------------------------------------------------------
+
+
+class _FakeResp:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self) -> bytes:
+        return b'{"ok": true}'
+
+
+def test_write_timeout_defaults_to_server_budget(monkeypatch):
+    """旧版是硬编码 5 秒；现在默认与服务端自留的 30 秒对齐。"""
+    monkeypatch.delenv("PALIMPSEST_WRITE_TIMEOUT", raising=False)
+    assert _mod._write_timeout() == 30.0
+
+
+def test_write_timeout_reads_env(monkeypatch):
+    monkeypatch.setenv("PALIMPSEST_WRITE_TIMEOUT", "45")
+    assert _mod._write_timeout() == 45.0
+
+
+def test_write_timeout_falls_back_on_invalid_value(monkeypatch):
+    monkeypatch.setenv("PALIMPSEST_WRITE_TIMEOUT", "abc")
+    assert _mod._write_timeout() == 30.0
+    monkeypatch.setenv("PALIMPSEST_WRITE_TIMEOUT", "-5")
+    assert _mod._write_timeout() == 30.0
+
+
+def test_http_post_default_uses_write_timeout(monkeypatch):
+    """未显式传 timeout → 用 _write_timeout（不是旧的 5 秒硬编码）。"""
+    seen: dict = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen["timeout"] = timeout
+        return _FakeResp()
+
+    monkeypatch.setenv("PALIMPSEST_WRITE_TIMEOUT", "42")
+    monkeypatch.setattr(_mod.urllib.request, "urlopen", fake_urlopen)
+    assert _mod._http_post("http://127.0.0.1:8090/x", {}) == {"ok": True}
+    assert seen["timeout"] == 42.0
+
+
+def test_http_post_explicit_timeout_wins(monkeypatch):
+    """思考骨架那条热路径显式传更短预算，不被默认值覆盖。"""
+    seen: dict = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen["timeout"] = timeout
+        return _FakeResp()
+
+    monkeypatch.setenv("PALIMPSEST_WRITE_TIMEOUT", "42")
+    monkeypatch.setattr(_mod.urllib.request, "urlopen", fake_urlopen)
+    _mod._http_post("http://127.0.0.1:8090/x", {}, timeout=2.0)
+    assert seen["timeout"] == 2.0
+
+
+def test_http_post_failure_logged_at_warning(monkeypatch, caplog):
+    """失败不能只 debug（旧行为）——否则「写入被吞掉」在用户侧完全无痕。"""
+    import logging
+
+    def boom(req, timeout=None):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(_mod.urllib.request, "urlopen", boom)
+    with caplog.at_level(logging.WARNING, logger=_mod.logger.name):
+        out = _mod._http_post("http://127.0.0.1:8090/lifecycle/post-turn", {})
+    assert "error" in out
+    assert any(r.levelno >= logging.WARNING for r in caplog.records), "失败必须留下 warning"
