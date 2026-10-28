@@ -46,7 +46,15 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8090
 | `POST` | `/lifecycle/pre-compress` | **记忆策略**：压缩前抽取要点（只回文本，不写库） |
 | `POST` | `/lifecycle/recover-orphan-capsules` | **断线自愈**：扫描静默超过 `SESSION_CAPSULE_RECOVER_AFTER_SECONDS` 的活跃会话缓冲（`type=session` / `status=active`），按 session 补产成 `type=task` + `kind=handoff` 胶囊（进程被硬砍、session-end 没跑时的兜底）；`dry_run=true` 只报告不写库。单 session 失败只记 warning 并计入 `failed`，不中断整批 |
 | `POST` | `/lifecycle/context-enhance` | **记忆策略**：压缩前挑主题、查图谱关键链、组装注入文本（只回文本，不写库） |
-| `POST` | `/mem/consolidate` | 容量合并候选预览（只读 dry-run；请求体可选 `threshold`（默认 0.85）、`max_importance`（默认 0.8）；不接受 apply） |
+| `POST` | `/mem/consolidate` | 容量合并（请求体可选 `apply`（默认 false=只读 dry-run 预览；true 才执行合并）、`threshold`（默认 0.85）、`max_importance`（默认 0.8）） |
+| `POST` | `/mem/promote` | 高频记忆自动升级（请求体可选 `apply`（默认 false=dry-run 预览；true 才升权打标）、`days`（默认 30）、`min_hits`（默认 5）） |
+| `POST` | `/tasks/backfill` | 存量 task 节点回填 `task_state`（请求体可选 `apply`（默认 false=dry-run 预览；true 才写库）） |
+| `POST` | `/tasks/archive` | 已完成任务节点归档到知识库 `05_任务归档/`（请求体可选 `apply`（默认 false=dry-run 预览；true 才写文件+删节点）、`knowledge_dir`（空 = 服务端 `KNOWLEDGE_DIR`）） |
+| `POST` | `/mem/review` | 复盘盘点（只读；body：`days`（默认 7）/ `domain` / `tier`；返回近 N 天 ingest + 治理候选 + 全库 decision 计数） |
+| `POST` | `/mem/ingest-git` | 将 git commit 入库为 `git_commit` 节点（幂等；body：`repo`（空 = 服务端项目根，git log 由服务端执行）、`since`（默认 7 天）；返回 `{added, skipped, total}`） |
+| `POST` | `/fts/rebuild` | 全量重建 FTS5 全文索引（返回 `{indexed}`） |
+| `POST` | `/fts/search` | FTS5 全文搜索（trigram 中文子串；body：`query` 必填、`limit`（默认 10）；返回 `{results:[{node_id, content}]}`） |
+| `POST` | `/mem/reindex` | 全库向量重嵌入（换 embedding 模型 / provider 后使用；复用 `scripts.reindex` 既有实现，body：`check` / `dry_run` / `restart` / `force` / `resume` / `only` / `skip` / `batch` / `yes`；返回 `{exit_code, output}`——output 为脚本原样 stdout。`dry_run` / `check` 不写库） |
 | `GET` | `/doctor` | 部署体检（只读，返回 `{"ok", "checks"}`） |
 
 ## 示例

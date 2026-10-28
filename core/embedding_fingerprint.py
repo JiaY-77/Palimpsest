@@ -38,9 +38,9 @@ FINGERPRINT_SOURCE = "embedding-fingerprint"
 # 「即将重嵌 N 个节点的向量，确认？[y/N]」由独立的 `--yes/-y` 控制，无 TTY 的
 # 脚本 / CI / agent 里会直接 `EOF when reading a line`（issue #185）。
 FIX_CMD = "python scripts/palimpsest_cli.py reindex --force --yes"
-# reindex 以独占写模式直连库（不走 REST，本库单写者），所以这条命令只在
-# REST 停下时可用；每条给用户的 hint 都要带上这个前置条件（issue #185）。
-FIX_PRECONDITION = "需先停 REST 服务，完成后重启"
+# reindex 经 REST 业务端点在服务端执行（issue #168），REST 在跑即可直接修；
+# hint 里的前置条件改为「REST 服务在线」。
+FIX_PRECONDITION = "需 REST 服务在线（CLI 经 REST 执行 reindex，不再直连库）"
 
 
 def compute_space_id(provider: str, model: str, dim: int, pooling: str) -> str:
