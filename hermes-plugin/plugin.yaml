@@ -7,12 +7,12 @@ provides_hooks:
   # Event hooks this plugin registers via ctx.register_hook() — the validator
   # compares this list against what register() actually registers.
   #
-  # on_session_end: memory-provider lifecycle (session close — extract
-  # highlights + merge the session capsule).
   # pre_llm_call: feeds the thought skeleton for the current turn.
   #
-  # NOTE: on_pre_compress is a *MemoryProvider method*, not an event hook — it
-  # is called through the provider interface and must not be declared here.
-  # Declaring it made `plugins doctor` report "unknown hook 'on_pre_compress'".
-  - on_session_end
+  # NOTE: on_pre_compress and on_session_end are *MemoryProvider methods*, not
+  # event hooks — the host calls them through the provider interface, so they
+  # must not be declared here. Declaring on_pre_compress made `plugins doctor`
+  # report "unknown hook 'on_pre_compress'"; declaring on_session_end made it
+  # report "declares hook but registration did not add it". Neither changes
+  # behaviour — only the accuracy of this declaration.
   - pre_llm_call

@@ -116,4 +116,4 @@ python scripts/palimpsest_cli.py doctor
 
 ## 更换向量模型 / 重嵌全库
 
-切换 embedding 模型或 provider 会改变向量空间，**必须重嵌全库**。库内会记录一条**向量空间指纹**（`provider` / `model` / `dim` / `pooling` 的哈希）；启动自检、`doctor` 与 `reindex` 开跑前都会比对它——不一致时 `doctor` 该项判失败并直接给出修复命令。换模型 / 换 provider 后跑 `reindex --force` 一次到位：放弃断点、跳过指纹确认、全量重算，完成时写入新指纹。完整操作顺序（`--check` / `--dry-run` / `--yes`）与换维度的重建流程见 [`docs/CONFIGURATION.md`](CONFIGURATION.md)。
+切换 embedding 模型或 provider 会改变向量空间，**必须重嵌全库**。库内会记录一条**向量空间指纹**（`provider` / `model` / `dim` / `pooling` 的哈希）；启动自检、`doctor` 与 `reindex` 开跑前都会比对它——不一致时 `doctor` 该项判失败并直接给出修复命令。换模型 / 换 provider 后跑 `reindex --force --yes` 一次到位：放弃断点、跳过指纹确认、全量重算，完成时写入新指纹。完整操作顺序（`--check` / `--dry-run` / `--yes`）与换维度的重建流程见 [`docs/CONFIGURATION.md`](CONFIGURATION.md)。

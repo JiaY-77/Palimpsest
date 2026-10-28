@@ -222,7 +222,7 @@ mem_ingest(content="[doing] 修 tier 分层遗漏", type="task", importance=0.8)
 | 复盘 | `palimpsest_cli.py review --days 7` | 近期写入 + 治理候选 |
 | 合并近似重复 | `palimpsest_cli.py consolidate` → 确认后 `--apply` | 默认阈值 0.85；`importance ≥ 0.8` 受保护不合并 |
 | 高频升权 | `palimpsest_cli.py promote --apply` | 默认 30 天 / `hit_count ≥ 5` |
-| 全量重嵌 | `palimpsest_cli.py reindex --force` | **换 embedding 模型 / provider 后必跑** |
+| 全量重嵌 | `palimpsest_cli.py reindex --force --yes` | **换 embedding 模型 / provider 后必跑**（先停 REST） |
 
 **全部默认 dry-run**，先看预览再 `--apply`。
 
