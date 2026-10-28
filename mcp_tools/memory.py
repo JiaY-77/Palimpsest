@@ -15,6 +15,7 @@ from typing import Any
 from config import Config
 from core import tdb_text_index as _tdb_text
 from core.bitemporal import is_valid_at, stamp_new_fact, time_fields
+from core.capsule_guard import validate_capsule_fields
 from core.conflict import resolve_conflict
 from core.db_health import check_db_health, health_hint
 from core.fts_index import index_node, search_fts_status
@@ -284,6 +285,8 @@ def mem_ingest(
     skeleton_kind: str = "",
     turn_index: int | None = None,
     meta: dict[str, str] | None = None,
+    sections: dict[str, str] | None = None,
+    pending: list[str] | None = None,
 ) -> str:
     """
     写入新记忆。
@@ -326,6 +329,16 @@ def mem_ingest(
     ``meta`` 键，payload 形状与旧行为完全一致。
     v1.1：新增知识关联检测——score > 0.35 的 kb_chunk 记入 payload.linked_from，
     返回 linked_kb_ids 便于追溯关联的知识库块。
+
+    手写胶囊结构字段（可选 ``sections`` / ``pending``）：与自动胶囊
+    （``core.strategy.compose_session_capsule`` 产出，POST /lifecycle/session-end
+    写入）形状一致——``sections`` 为四节文本字典（键限 thought / outcome /
+    next / pitfalls，值为字符串），``pending`` 为待补节名列表。未传
+    ``pending`` 而传了 ``sections`` 时自动算（缺失或值为空白的节，固定
+    顺序）；显式传入原样使用、不做自动推断覆盖。校验见 ``core.capsule_guard``
+    （与 REST ``/mem/ingest`` 同一份实现）：键 / 元素出白名单、值非字符串、
+    pending 列了 sections 中非空的节，一律拒绝写入（stored:false，不落库）。
+    两个键均不传（None）时 payload 不含这两个键，形状与旧行为完全一致。
 
     思维底片来源标记（``type="thought"`` 专属）：``skeleton_kind`` 为给侧上报的
     **事实字段**（本轮注入的思考骨架类型，``""`` / code / research / default，
@@ -372,6 +385,20 @@ def mem_ingest(
         if not meta_ok:
             return _to_json({"stored": False, "error": meta_err})
         node_data["meta"] = dict(meta)
+    # 手写胶囊结构字段（可选 sections / pending）：校验见 core.capsule_guard——
+    # 与自动胶囊（compose_session_capsule）形状同源；键 / 元素出白名单、值
+    # 非字符串、pending 列了非空节，一律拒绝写入（stored:False，不落库，
+    # 走下方事务异常前的既有拒绝路径）。不传（None）或空字典时不写对应键，
+    # payload 形状与旧行为一致；pending 未传而 sections 非空时由校验函数
+    # 自动算（缺失或空白节，固定顺序），显式传入原样落库。
+    if sections is not None or pending is not None:
+        cap_ok, cap_err, pending_resolved = validate_capsule_fields(sections, pending)
+        if not cap_ok:
+            return _to_json({"stored": False, "error": cap_err})
+        if sections:
+            node_data["sections"] = dict(sections)
+        if pending_resolved is not None:
+            node_data["pending"] = list(pending_resolved)
     # 会话接续点写入层打标（幂等）：type=task 且 content 首行以「接续点」标题词
     # 开头 → 自动写 kind=handoff。判定复用 core.task_state._is_handoff 的首行判据
     # （PR #112 收紧过的「标题词开头」，与查询 / 回填同源，不另立识别规则）——

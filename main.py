@@ -36,6 +36,7 @@ from pydantic import BaseModel
 
 from config import Config
 from core import tdb_text_index as _tdb_text
+from core.capsule_guard import validate_capsule_fields
 from core.fts_index import sync_node
 from core.meta_guard import validate_meta
 from core.policy import check_search_query
@@ -640,6 +641,11 @@ class MemIngestRequest(BaseModel):
     # 可选自定义元数据（如 {"chat_id": "..."}）：结构校验见 core.meta_guard，
     # 通过后原样写入 payload 的 meta 子字典；不传 / 空字典时 payload 不含 meta 键。
     meta: dict[str, str] | None = None
+    # 可选手写胶囊结构字段：形状与自动胶囊（core.strategy.compose_session_capsule）
+    # 一致，校验见 core.capsule_guard（pending 未传时自动算空节）；不传时
+    # payload 不含这两个键，行为与旧版完全一致。
+    sections: dict[str, str] | None = None
+    pending: list[str] | None = None
 
 
 class MemPurgeByMetaRequest(BaseModel):
@@ -837,6 +843,14 @@ def mem_ingest(req: MemIngestRequest):
         meta_ok, meta_err = validate_meta(req.meta)
         if not meta_ok:
             raise HTTPException(status_code=422, detail=meta_err)
+    # 手写胶囊结构校验（core.capsule_guard）：不合法直接 422，不去打 embedding。
+    # 裁决仍在 MCP 写入路径（转调时原样透传，由同一校验函数再兜一道），这里
+    # 提前拦只为把拒绝映射成 422——stored:false 响应不带 node_id 键，下方
+    # 的 422 兜底不会触发，与 meta 校验的既有范式同构。
+    if req.sections is not None or req.pending is not None:
+        cap_ok, cap_err, _ = validate_capsule_fields(req.sections, req.pending)
+        if not cap_ok:
+            raise HTTPException(status_code=422, detail=cap_err)
     result = _mcp_mem_ingest(
         req.content,
         type=req.type,
@@ -845,6 +859,8 @@ def mem_ingest(req: MemIngestRequest):
         source=req.source,
         replaces=req.replaces,
         meta=req.meta,
+        sections=req.sections,
+        pending=req.pending,
     )
     # 校验类拒绝（空内容 / 超长）：REST 侧映射为 422，返回友好 message；
     # 其余 stored:false（如事务失败/secret 强拒，不携带 node_id 键）仍按 JSON 原样返回，不改语义。
