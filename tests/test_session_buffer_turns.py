@@ -20,7 +20,7 @@ import contextlib
 
 import pytest
 
-from core.strategy import SESSION_BUFFER_TYPE
+from core.strategy import SESSION_BUFFER_STATUS_CLOSED, SESSION_BUFFER_TYPE
 
 
 @pytest.fixture(autouse=True)
@@ -176,10 +176,14 @@ def test_free_text_thought_round_is_buffered_not_dropped(db_path):
     assert len(turns) == 1
     assert "单调计数" in turns[0]["sections"]["thought"]
 
+    # issue #219 厚度门槛：1 个实质轮是薄会话 → 不产胶囊但缓冲关闭，可观测。
+    # 轮被接纳进缓冲（本测试钉的 #216 行为）与胶囊本身的厚度门槛是两层，互不冲突。
     end = client.post("/lifecycle/session-end", json={"session_id": "buf-turns-3", "messages": []})
     assert end.status_code == 200, end.text
-    capsule = end.json()["capsule"]
-    assert capsule["turns"] == 1
-    assert capsule["sections"]["thought"] != "（待补）"
-    assert "单调计数" in capsule["sections"]["thought"]
-    assert "thought" not in capsule["pending"]
+    body = end.json()
+    assert body.get("capsule") is None
+    skipped = body["capsule_skipped"]
+    assert skipped["skipped"] == "too_thin"
+    assert skipped["substantive_turns"] == 1
+    assert skipped["filled_sections"] == 1
+    assert _buffer_by_session("buf-turns-3")[1]["status"] == SESSION_BUFFER_STATUS_CLOSED

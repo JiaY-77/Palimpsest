@@ -304,6 +304,47 @@ class TestSyncTurnTurnIndex:
         assert [p["turn_index"] for _, p in cap.sent] == [1, 1, 2]
 
 
+class TestTurnIndexResumeAfterReload:
+    """重载续接（issue #219）：服务端回传解析序号，插件 max 校正本地计数。
+
+    插件重载（部署同步 / 网关重启）后本地计数桶从 1 重计 → 第一轮 post-turn
+    会覆盖活跃缓冲的第 1 轮。服务端在返回体里带 ``turn_index_resolved``，
+    sync_turn 拿它把本地桶顶上去（``max(本地, 服务端值)``，只推不拉）——
+    重载后第一轮就对齐到缓冲离点。``setup_method`` 清桶 = 模拟重载。
+    """
+
+    def setup_method(self):
+        PalimpsestMemoryProvider._turn_index_by_session.clear()
+
+    def test_server_gives_5_next_post_turn_sends_6(self):
+        """服务端给 5 → 下一轮发 6（重载模拟 = 清桶后第一轮先发 1）。"""
+        cap = _CapturingProvider(response={"turn_index_resolved": 5})
+        cap._enabled = True
+        cap._run("sync_turn", "重载后的第一轮", "好的", session_id="s-resume")
+        assert cap.sent[0][1]["turn_index"] == 1, "重载后本地确实从 1 重计"
+        cap._run("sync_turn", "重载后的第二轮", "好的", session_id="s-resume")
+        assert cap.sent[1][1]["turn_index"] == 6, "服务端给 5，下一轮必须接 6"
+
+    def test_seeding_only_pushes_never_pulls(self):
+        """max 只推不拉：服务端 0 / 缺失 / 非法值不把本地计数拉回。"""
+        cap = _CapturingProvider(response={"turn_index_resolved": 2})
+        cap._enabled = True
+        cap._run("sync_turn", "a", "好的", session_id="s-push")
+        cap._run("sync_turn", "b", "好的", session_id="s-push")
+        assert [p["turn_index"] for _, p in cap.sent] == [1, 3]  # 2 校正后 2→3
+
+        stale = _CapturingProvider(response={"error": "backend down"})
+        stale._enabled = True
+        stale._run("sync_turn", "c", "好的", session_id="s-push")
+        assert stale.sent[0][1]["turn_index"] == 4, "服务端不可用（无 resolved）→ 本地继续单调"
+
+        zero = _CapturingProvider(response={"turn_index_resolved": 0})
+        zero._enabled = True
+        zero._run("sync_turn", "d", "好的", session_id="s-push")
+        assert zero.sent[0][1]["turn_index"] == 5, "resolved=0 不算服务端给号"
+        assert PalimpsestMemoryProvider._turn_index_by_session["s-push"] == 5, "本地计数不被拉回"
+
+
 class TestSyncTurnSkeletonKind:
     """sync_turn 上报本轮骨架类型（事实字段，供本体写进 thought 节点 payload）。
 
