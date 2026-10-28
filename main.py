@@ -81,6 +81,9 @@ from core.strategy import (
     extract_graph_topics as _strategy_extract_graph_topics,
 )
 from core.strategy import (
+    extract_handles as _strategy_extract_handles,
+)
+from core.strategy import (
     format_graph_enhancement as _strategy_format_graph_enhancement,
 )
 from core.strategy import (
@@ -1536,11 +1539,13 @@ SESSION_CAPSULE_EDGE_RELATION = "CONSOLIDATED_INTO"  # 缓冲节点 → 胶囊�
 
 
 def _find_active_session_buffer(session_id: str) -> tuple[int, dict] | None:
-    """按 payload 定位该 session 的活跃缓冲节点。
+    """按 payload 定位该 session 的**活跃**缓冲节点。
 
     判据：``type=session`` + ``payload.session_id`` 相等 + ``status=active``。
     缓冲按 payload 字段定位（不走向量 / FTS 检索），单用户库 iter_payloads
-    全遍历足够；同 session 理论上只有一条（写入路径保证），多则取先见的一条。
+    全遍历足够；中途 session-end（issue #187）后同 session 可能有多条缓冲，
+    这里只要**活跃**那条（追加轮次的目标），全部缓冲的合并在胶囊落地侧
+    （``_find_session_buffers``）。
     """
     for nid, payload in _get_store().iter_payloads():
         if not isinstance(payload, dict):
@@ -1721,41 +1726,114 @@ def lifecycle_post_turn(req: PostTurnRequest):
     return decision
 
 
-def _finalize_session_capsule(session_id: str) -> dict | None:
-    """会话胶囊落地（session-end 新路径）：缓冲节点 → 合并 → 胶囊 + 关缓冲 + 建边。
+def _find_session_buffers(session_id: str) -> list[tuple[int, dict]]:
+    """定位该 session 的**全部**缓冲节点（active + closed，按节点 id 升序）。
 
-    - 无活跃缓冲（老宿主 / 空 session_id / 已合并过）→ ``None``：调用方不给
-      返回体加 ``capsule`` 字段，行为与改动前完全一致。
-    - 有 → :func:`compose_session_capsule` 合并 → ``mem_ingest`` 写胶囊（走标准
-      入籍：embedding / FTS / 接续点打标——content 首行「接续点 / 会话接续
-      <session_id>」命中 ``_is_handoff``，kind=handoff 的两条识别路都通）。
-      ``mem_ingest`` 的固定入参写不了结构化字段，session_id / sections / pending /
-      turns 随后补写进 payload（kind 显式再打一遍，幂等双保险）。
-    - 缓冲节点标 ``status=closed`` 并建 ``CONSOLIDATED_INTO`` 边指向胶囊——失败
-      只记日志不阻断（胶囊正文此时已可用）。
+    issue #187：session-end 可能在会话中途发生过一次（缓冲被 closed），之后又
+    有实质轮 → ``_append_session_buffer_turn`` 找不到活跃缓冲会另建新缓冲。
+    合成胶囊必须取**全部**缓冲的轮次，否则中途 closed 那批轮会被丢出胶囊；
+    节点 id 升序即创建顺序，供轮次合并保持稳定。
+    """
+    out = [
+        (nid, payload)
+        for nid, payload in _get_store().iter_payloads()
+        if isinstance(payload, dict)
+        and payload.get("type") == SESSION_BUFFER_TYPE
+        and payload.get("session_id") == session_id
+    ]
+    out.sort(key=lambda item: item[0])
+    return out
+
+
+def _find_session_capsule(session_id: str) -> tuple[int, dict] | None:
+    """定位该 session 已有的会话胶囊（issue #187「先查后建」）。
+
+    判据：``type=task`` + ``payload.kind="handoff"`` + ``payload.session_id`` 相等。
+    查的是**本链路自己产出的**胶囊——kind / session_id 是本链路显式写入的
+    payload 字段，必然齐全，比 content 首行判据更精确（首行判据是给手写接续点
+    的形态兜底，两者不混用）。
+    """
+    for nid, payload in _get_store().iter_payloads():
+        if (
+            isinstance(payload, dict)
+            and payload.get("type") == SESSION_CAPSULE_TYPE
+            and payload.get("kind") == HANDOFF_KIND
+            and payload.get("session_id") == session_id
+        ):
+            return nid, payload
+    return None
+
+
+def _merge_session_turns(buffers: list[tuple[int, dict]]) -> list[dict]:
+    """合并该 session 全部缓冲里的 turns（按轮次升序，跨缓冲逐字去重）。
+
+    去重键是整条轮次（turn_index + skeleton_kind + sections + raw）的逐字相等：
+    同一轮同内容在多个缓冲里重复出现只留一条；**同 turn_index 不同内容的轮两
+    条都留**——宿主可能不传真实序号（恒 0），按 turn_index 判重会误吞不同的
+    轮，宁可重复不可丢轮。排序稳定，turn_index 相同时保持缓冲创建顺序。
+    """
+    seen: dict[tuple, dict] = {}
+    for _nid, payload in buffers:
+        for turn in payload.get("turns") or []:
+            if not isinstance(turn, dict):
+                continue
+            key = (
+                turn.get("turn_index"),
+                turn.get("skeleton_kind"),
+                json.dumps(turn.get("sections") or {}, sort_keys=True, ensure_ascii=False),
+                turn.get("raw"),
+            )
+            if key not in seen:
+                seen[key] = turn
+    turns = list(seen.values())
+    turns.sort(key=lambda t: t.get("turn_index") if isinstance(t.get("turn_index"), int) else 0)
+    return turns
+
+
+def _finalize_session_capsule(session_id: str) -> dict | None:
+    """会话胶囊落地（session-end 路径）：全部缓冲 → 合成 → 写胶囊 + 关缓冲 + 建边。
+
+    - 无缓冲（老宿主 / 空 session_id）→ ``None``；缓冲全部 closed 且胶囊已存在
+      → 同样 ``None``（重复 session-end 幂等空操作：不重写、不新建、返回体不加
+      ``capsule`` 字段，与改动前一致）。
+    - 有活跃缓冲（或缓冲在而胶囊缺失——历史写入失败残留的自愈）→ 合成。轮次取
+      **全部缓冲**合并（issue #187：中途 session-end 把缓冲切成了多条，只取活跃
+      那条会把前半段轮丢出胶囊）；该 session 已有胶囊 → **原节点更新**（正文重
+      合成 + payload 覆盖，node_id 不变），没有 → 才新建。
+    - 新建走 ``mem_ingest`` **单次写**（issue #198）：sections / pending 随入参
+      一次落库，消掉「先建节点再补写结构化字段」两步之间留下半状态胶囊的窗口；
+      ``turns`` / ``session_id`` 这类 mem_ingest 固定入参不支持的字段随后补写，
+      失败只记日志（正文与四节此时已可用）。更新路径不走 mem_ingest（它只会
+      新建节点）：``update_content``（同步 FTS / TDB，向量标 stale）+ 尽力重嵌 +
+      ``update_payload``，node_id 稳定是硬要求。
+    - handles（可核验句柄，M2）：各轮 sections 值 + raw 混拼后经
+      :func:`core.strategy.extract_handles` 抽取，经 compose 拼进 outcome 节。
+    - **全部**缓冲标 ``closed`` + 建 ``CONSOLIDATED_INTO`` 边（幂等：已建的边不
+      重建）——失败只记日志不阻断（胶囊正文此时已可用）。
 
     胶囊写入失败 → 抛出（调用方 catch 后只记日志，不影响旧要点路径）。
     """
-    existing = _find_active_session_buffer(session_id)
-    if existing is None:
+    store = _get_store()
+    buffers = _find_session_buffers(session_id)
+    if not buffers:
         return None
-    buf_nid, buf_payload = existing
-    turns = [t for t in (buf_payload.get("turns") or []) if isinstance(t, dict)]
-    composed = _strategy_compose_session_capsule(turns, session_id=session_id)
-    ingest = _as_json(
-        _mcp_mem_ingest(
-            composed["content"],
-            type=SESSION_CAPSULE_TYPE,
-            importance=SESSION_CAPSULE_IMPORTANCE,
-            domain=SESSION_CAPSULE_DOMAIN,
-        )
+    has_active = any(payload.get("status") == SESSION_BUFFER_STATUS_ACTIVE for _nid, payload in buffers)
+    existing = _find_session_capsule(session_id)
+    if not has_active and existing is not None:
+        return None  # 已合并过且无新轮：重复 session-end 幂等空操作
+    turns = _merge_session_turns(buffers)
+    # 句柄文本源：各轮 sections 的值 + thought 原文（raw）混拼（M2 任务书口径）。
+    handle_blobs: list[str] = []
+    for turn in turns:
+        sections = turn.get("sections")
+        if isinstance(sections, dict):
+            handle_blobs.extend(value for value in sections.values() if isinstance(value, str))
+        raw = turn.get("raw")
+        if isinstance(raw, str) and raw:
+            handle_blobs.append(raw)
+    composed = _strategy_compose_session_capsule(
+        turns, session_id=session_id, handles=_strategy_extract_handles(handle_blobs)
     )
-    if not (isinstance(ingest, dict) and ingest.get("stored") and ingest.get("node_id") is not None):
-        error = (
-            str(ingest.get("error") or "capsule_ingest_failed") if isinstance(ingest, dict) else "capsule_ingest_failed"
-        )
-        raise RuntimeError(f"会话胶囊写入失败: {error}")
-    capsule_id = int(ingest["node_id"])
     structured = {
         "kind": HANDOFF_KIND,  # 显式写进 payload（_is_handoff 首行判据之外的显式路）
         "session_id": session_id,
@@ -1763,16 +1841,51 @@ def _finalize_session_capsule(session_id: str) -> dict | None:
         "pending": composed["pending"],
         "turns": composed["turns"],
     }
-    try:
-        _get_store().update_payload(capsule_id, structured)
-        _sync_fts_after_update(capsule_id)
-    except Exception as e:  # noqa: BLE001 —— 结构化字段补写失败不影响胶囊正文可用
-        logger.warning("胶囊 payload 补写失败 capsule=%s: %s", capsule_id, e)
-    try:
-        _get_store().update_payload(buf_nid, {"status": SESSION_BUFFER_STATUS_CLOSED})
-        _get_store().create_edge(buf_nid, capsule_id, SESSION_CAPSULE_EDGE_RELATION)
-    except Exception as e:  # noqa: BLE001 —— 关缓冲 / 建边失败只记日志不阻断
-        logger.warning("缓冲关闭/建边失败 buffer=%s capsule=%s: %s", buf_nid, capsule_id, e)
+    if existing is not None:
+        # 更新路径（issue #187）：node_id 不变，正文重合成 + payload 覆盖。
+        capsule_id = existing[0]
+        store.update_content(capsule_id, composed["content"])  # 内部同步 FTS / TDB，向量标 stale
+        try:
+            store.reembed_node(capsule_id)  # 尽力重嵌：失败保持 stale，由 reembed 通道兜底
+        except Exception as e:  # noqa: BLE001 —— 重嵌失败不阻断胶囊更新
+            logger.warning("胶囊重嵌失败 capsule=%s: %s", capsule_id, e)
+        try:
+            store.update_payload(capsule_id, structured)
+        except Exception as e:  # noqa: BLE001 —— 结构化字段覆盖失败不影响正文已更新
+            logger.warning("胶囊 payload 覆盖失败 capsule=%s: %s", capsule_id, e)
+    else:
+        # 新建路径（issue #198 单次写）：sections / pending 随 mem_ingest 一次落库。
+        ingest = _as_json(
+            _mcp_mem_ingest(
+                composed["content"],
+                type=SESSION_CAPSULE_TYPE,
+                importance=SESSION_CAPSULE_IMPORTANCE,
+                domain=SESSION_CAPSULE_DOMAIN,
+                sections=composed["sections"],
+                pending=composed["pending"],
+            )
+        )
+        if not (isinstance(ingest, dict) and ingest.get("stored") and ingest.get("node_id") is not None):
+            error = (
+                str(ingest.get("error") or "capsule_ingest_failed")
+                if isinstance(ingest, dict)
+                else "capsule_ingest_failed"
+            )
+            raise RuntimeError(f"会话胶囊写入失败: {error}")
+        capsule_id = int(ingest["node_id"])
+        try:
+            store.update_payload(capsule_id, structured)
+        except Exception as e:  # noqa: BLE001 —— 簿记字段补写失败不影响胶囊正文/四节可用
+            logger.warning("胶囊 payload 补写失败 capsule=%s: %s", capsule_id, e)
+    for buf_nid, _buf_payload in buffers:
+        try:
+            store.update_payload(buf_nid, {"status": SESSION_BUFFER_STATUS_CLOSED})
+            # 幂等建边：更新路径下老缓冲的边第一次 session-end 就建过了，不重建。
+            linked = {(getattr(e, "label", ""), getattr(e, "target_id", None)) for e in store.get_edges(buf_nid)}
+            if (SESSION_CAPSULE_EDGE_RELATION, capsule_id) not in linked:
+                store.create_edge(buf_nid, capsule_id, SESSION_CAPSULE_EDGE_RELATION)
+        except Exception as e:  # noqa: BLE001 —— 关缓冲 / 建边失败只记日志不阻断
+            logger.warning("缓冲关闭/建边失败 buffer=%s capsule=%s: %s", buf_nid, capsule_id, e)
     return {
         "node_id": capsule_id,
         "sections": composed["sections"],

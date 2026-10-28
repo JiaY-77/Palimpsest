@@ -613,7 +613,7 @@ _THOUGHT_RESEARCH_RE = re.compile(r"(调研|评估|对比|选型|可行性|证�
 # 标记**（thought_origin 仍能区分当时判成哪一类），骨架正文三套共用一份。
 _CAPSULE_QUESTIONS: tuple[tuple[str, str], ...] = (
     ("thought", "这一轮的核心判断 / 思路（一句话）"),
-    ("outcome", "做了什么（改了什么 / 查清了什么）"),
+    ("outcome", "做了什么（改了什么 / 查清了什么，带可核验句柄：PR 号 / commit / 路径）"),
     ("next", "下一步 / 待办"),
     ("pitfalls", "踩的坑 / 风险"),
 )
@@ -1266,6 +1266,89 @@ def decide_session_buffer(
         # 带上 sections 便于排查「解析出了什么却被判非实质」（可观测，不静默）。
         return {"buffer": False, "reason": "non_substantive", "skeleton_kind": kind, "sections": sections, "raw": ""}
     return {"buffer": True, "reason": "", "skeleton_kind": kind, "sections": sections, "raw": raw}
+
+
+# ---------------------------------------------------------------------------
+# 可核验句柄抽取（M2）：自动胶囊的 outcome 节此前没有任何句柄（handles 参数
+# 早就支持但调用方没传），对比手写接续点（有 PR 号 / commit / 路径）少了对账
+# 依据。抽取是纯函数（不 import agent.*、不碰网络、不读环境），按固定正则的
+# 模板匹配——与 _strip_question_echo 同一取向：命中才算数，绝不猜。
+# ---------------------------------------------------------------------------
+
+CAPSULE_HANDLE_LIMIT = 12  # 胶囊 outcome 里的句柄条数上限（超出按首次出现顺序截断）
+
+# 形态表：**优先级序**（先出现的形态先认领文本区间）。表序兼作重叠消解依据——
+# 同一段文本被多个形态命中时留高优先级形态，如 ``D:/a/b`` 整体按 Windows 路径
+# 收，不再让 unix_path 把里面的 ``/a/b`` 碎片重复产出；``http://127.0.0.1:8090``
+# 留 ``127.0.0.1:8090`` 而不是 ``//127.0.0.1`` 碎片。所以 unix_path 这种最宽泛
+# 的形态排最后，向其余所有形态让路。
+_HANDLE_EXTRACTORS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    # Windows 绝对路径：盘符 + 斜杠起头，吃到空白 / 引号 / 括号为止。lookbehind
+    # 挡掉「前面紧跟字母的盘符」——``http://`` 不得从 ``p:/`` 起头被咬成路径。
+    # 在任务书正则基础上额外排除**全角标点**（，。、；：！？等）：中文正文里路径
+    # 后面紧跟全角标点是常态，不排除会把后半句整句吞进句柄；CJK 汉字本身保留
+    # （路径里有中文目录名是真实形态，如 Novel/乾元风云录）。
+    ("win_path", re.compile(r"(?<![A-Za-z])[A-Za-z]:[\\/][^\s`\"'）)，。、；：！？【】《》「」『』]+")),
+    ("sha_full", re.compile(r"\b[0-9a-f]{40}\b")),  # 完整 commit sha
+    ("sha_short", re.compile(r"(?<=`)[0-9a-f]{7,12}(?=`)")),  # 短 sha 必须被反引号包住（裸短串不认）
+    ("addr", re.compile(r"\b(?:127\.0\.0\.1|localhost):\d{2,5}\b")),  # 服务地址
+    ("pid", re.compile(r"\bPID[= ]\d+\b", re.IGNORECASE)),  # 进程号（PID 123 / pid=123）
+    ("node", re.compile(r"(?:节点|node)\s?\d+", re.IGNORECASE)),  # 节点号（节点 3564 / node 42）
+    ("pr_issue", re.compile(r"#\d+")),  # PR / issue 号
+    # Unix 绝对路径：最宽泛（\w 含 CJK），排最后给上面所有形态让路。lookbehind
+    # 挡掉「前面紧跟 ASCII 词字符的斜杠」——``core/strategy.py`` 里的相对路径
+    # 不得咬出 ``/strategy.py`` 这种不存在的碎片句柄；中文紧贴路径（「检查/var/log」）
+    # 不受影响（CJK 不在挡除表里）。
+    ("unix_path", re.compile(r"(?<![a-zA-Z0-9_.-])/[\w./-]{6,}")),
+)
+
+# 路径类句柄尾部的句读标点是行文带的、不是路径的一部分（「见 /a/b.py。」），
+# 剥掉；路径合法尾字符（字母数字 / - _）不在表里，不受影响。
+_HANDLE_TRAILING_PUNCT = ".,;:!?，。、；：！？…）】》"
+
+
+def extract_handles(text_blobs: list[str], *, limit: int = CAPSULE_HANDLE_LIMIT) -> list[str]:
+    """从若干段文本里抽取可核验句柄（纯函数，见上方形态表；M2）。
+
+    - 输出**按首次出现位置**排序、跨段去重，超过 ``limit`` 截断；
+    - 无命中返回 ``[]``（绝不返回 ``["无"]`` 之类的噪音占位）；
+    - 非字符串元素按字符串处理（调用方传 raw / sections 值的混拼，容忍脏值），
+      空白输入同样安全。
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for blob in text_blobs:
+        text = blob if isinstance(blob, str) else str(blob or "")
+        if not text:
+            continue
+        # 先按优先级认领区间（同段内被高优先级形态占住的区间，低优先级不再产
+        # 碎片），再把幸存者按出现位置排序——输出序 = 首次出现序。
+        candidates: list[tuple[int, int, int, str]] = []  # (优先级, start, end, 句柄)
+        for priority, (_name, pattern) in enumerate(_HANDLE_EXTRACTORS):
+            for match in pattern.finditer(text):
+                handle = _trim_trailing_punct(match.group(0))
+                if handle:
+                    candidates.append((priority, match.start(), match.end(), handle))
+        kept: list[tuple[int, str]] = []
+        claimed: list[tuple[int, int]] = []
+        for _priority, start, end, handle in sorted(candidates, key=lambda c: (c[0], c[1], -c[2])):
+            if any(start < c_end and end > c_start for c_start, c_end in claimed):
+                continue
+            claimed.append((start, end))
+            kept.append((start, handle))
+        for _start, handle in sorted(kept, key=lambda k: k[0]):
+            if handle in seen:
+                continue
+            seen.add(handle)
+            out.append(handle)
+            if len(out) >= limit:
+                return out
+    return out
+
+
+def _trim_trailing_punct(handle: str) -> str:
+    """剥掉句柄尾部行文带的句读标点（路径后紧跟句号 / 逗号是正文常态）。"""
+    return handle.rstrip(_HANDLE_TRAILING_PUNCT)
 
 
 def compose_session_capsule(turns: list[dict], *, session_id: str, handles: list[str] | None = None) -> dict:
