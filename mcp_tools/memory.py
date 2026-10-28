@@ -597,6 +597,12 @@ def tasks_active(
     排序：``doing > blocked > todo`` → ``last_touched_at`` 倒序 → ``importance`` 倒序。
     默认排除 ``payload.legacy = true`` 的老节点（见 CLI ``tasks backfill``）。
 
+    接手留痕（issue #208）：条目若被其他会话接手过（POST /memory/{id}/open
+    记录的胶囊接手痕迹），带 ``opened_at``（首次被接手时间）和 ``open_count``
+    （接手过的新会话个数，同会话重复接手不重复计数）——胶囊「被几个会话
+    接着用 / 何时第一次被接手」由此可读；从未被接手过的条目**不带**这两个
+    键（靠键缺席区分「从未接手」与「接过手」）。
+
     核心逻辑见 core.task_state.list_active_tasks（REST 端点复用同一实现，不复制）。
     """
     from core.task_state import list_active_tasks

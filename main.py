@@ -89,7 +89,7 @@ from core.strategy import (
 from core.strategy import (
     is_near_duplicate as _strategy_is_near_duplicate,
 )
-from core.task_state import HANDOFF_KIND, apply_task_patch
+from core.task_state import HANDOFF_KIND, _now_iso, apply_task_patch
 from core.trivium_store import DatabaseBusyError, EmbeddingInputTooLongError, EmbeddingUnavailableError, TriviumStore
 from core.trivium_store import shutdown as _shutdown_shared_db
 from core.version import get_version
@@ -340,6 +340,7 @@ def root():
             "/memory/{node_id}",
             "/memory/{node_id}/vector",
             "/memory/{node_id}/reembed",
+            "/memory/{node_id}/open",
             "/mem/search",
             "/skill/search",
             "/mem/hybrid-search",
@@ -570,6 +571,77 @@ def patch_memory_payload(node_id: int, payload: dict):
     现已与 PUT 合并到 ``_apply_payload_update``。响应字段与 PUT 完全一致。
     """
     return _apply_payload_update(node_id, payload)
+
+
+# 胶囊接手留痕（issue #208）：opened_by 最多记多少个接手会话。留足够追溯线索
+# 又不让 payload 无界膨胀；超限丢最老（保留最近接手的会话）。
+CAPSULE_OPENED_BY_LIMIT = 10
+
+
+class CapsuleOpenRequest(BaseModel):
+    """POST /memory/{id}/open 请求体：接手会话的 session_id。
+
+    ``None`` / 缺省 / 空串一律按「未知会话」处理（宿主侧拿不到 id 也得能留痕）。
+    """
+
+    session_id: str | None = None
+
+
+def _open_capsule(node_id: int, session_id: str) -> dict:
+    """记录「胶囊被会话接手」（issue #208）：opened_at / open_count / opened_by。
+
+    为什么不走 PUT/PATCH 的任务写路径：``apply_task_patch`` 会补
+    ``last_touched_at``——那会让胶囊看起来「刚动过」，污染新鲜度判据
+    （``fresh_days`` 折叠会把刚被接手的老胶囊误判成活跃）。接手留痕只需要
+    三个 payload 字段，直连 ``store.update_payload`` 合并，content /
+    ``last_touched_at`` 零改动；FTS/TDB 索引的是 content，本次不碰 content，
+    也无需同步索引。
+
+    语义：
+    - ``opened_at`` 只在首次写入，之后**永不刷新**——「首次被接手」是事实，
+      不随后续接手变化（payload 里已有值就保留，含手工预置的历史值）；
+    - ``open_count`` 只在**新**会话首调时 +1（与 ``opened_by`` 去重同判据）；
+    - ``opened_by`` 按首次接手顺序去重，超 :data:`CAPSULE_OPENED_BY_LIMIT`
+      丢最老；
+    - 幂等：同一 ``session_id`` 重复调用不重复计数；空串 ``session_id``
+      按「未知会话」走同一套去重 / 计数逻辑（空名会话），不做特判分支。
+    """
+    store = _get_store()
+    node = store.get_node(node_id)
+    if node is None:
+        # 404 + 固定提示（不泄漏内部异常，安全审计要求；与 PUT 端点同一口径）
+        raise HTTPException(status_code=404, detail="更新失败：节点不存在或数据格式错误")
+    payload = node.get("payload") or {}
+    opened_by = [str(sid) for sid in (payload.get("opened_by") or [])]
+    open_count = int(payload.get("open_count") or 0)
+    if session_id not in opened_by:
+        # 新会话首调：计数 +1 并登记（append 后截尾 = 丢最老）
+        open_count += 1
+        opened_by = [*opened_by, session_id][-CAPSULE_OPENED_BY_LIMIT:]
+    update = {
+        # opened_at 只在首次写：payload 里已有（含手工预置的历史值）就不覆盖
+        "opened_at": payload.get("opened_at") or _now_iso(),
+        "open_count": open_count,
+        "opened_by": opened_by,
+    }
+    store.update_payload(node_id, update)
+    return {"status": "ok", **update}
+
+
+@app.post("/memory/{node_id}/open")
+def open_memory_node(node_id: int, req: CapsuleOpenRequest | None = None):
+    """记录胶囊被当前会话接手（issue #208）。
+
+    胶囊（``type=task`` + ``kind=handoff`` 的会话交接节点）被新会话接手时调用：
+    首次写 ``opened_at``，每个**新**会话首调 ``open_count`` +1，``opened_by``
+    记接手过的 session_id（去重、按首次顺序、上限 10、超限丢最老）。
+    同一 ``session_id`` 重复调用幂等不重复计数。不动 content /
+    ``last_touched_at``——那两处一个是要紧正文、一个是新鲜度判据，接手不该
+    碰（检索命中计数 ``hit_count`` / ``last_hit_at`` 是 ``mem_search`` 自动
+    +1 的另一回事，与本端点的「接手」语义互不代替）。
+    """
+    body = req or CapsuleOpenRequest()
+    return _open_capsule(node_id, (body.session_id or "").strip())
 
 
 @app.post("/memory/{node_id}/reembed")
@@ -1843,6 +1915,10 @@ def _finalize_session_capsule(session_id: str) -> dict | None:
     }
     if existing is not None:
         # 更新路径（issue #187）：node_id 不变，正文重合成 + payload 覆盖。
+        # 收口时打 closed_at（#208 配套）：一场会话的接受到此为止。新建路径
+        # 刻意不写——刚产出的胶囊此刻还没有任何会话接手过它，写 closed_at
+        # 会自相矛盾（opened_at 为空却有 closed_at）。
+        structured["closed_at"] = _now_iso()
         capsule_id = existing[0]
         store.update_content(capsule_id, composed["content"])  # 内部同步 FTS / TDB，向量标 stale
         try:

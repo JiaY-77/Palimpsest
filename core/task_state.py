@@ -27,6 +27,7 @@ Palimpsest 里的任务节点（``type=task``）长期把「任务当前处于�
 匹配范围到首行末尾（真实语料里状态词常常在正文中间，如 ``T-73：… → [待办，…]``）。
 """
 
+import contextlib
 import logging
 import re
 import time
@@ -669,7 +670,7 @@ def _parse_states(states) -> set:
 
 def _brief(nid: int, payload: dict, state: str | None) -> dict:
     """任务节点 → 精简条目（只给跟进要用的字段，不复制整包 payload）。"""
-    return {
+    item = {
         "id": nid,
         "task_key": payload.get("task_key") or "",
         "title": payload.get("title") or _task_label(payload),
@@ -682,6 +683,16 @@ def _brief(nid: int, payload: dict, state: str | None) -> dict:
         "importance": payload.get("importance", 0.5),
         "kind": payload.get("kind") or "",
     }
+    # 胶囊接手留痕（issue #208）：有则带、没有就不带这些键——绝大多数任务
+    # 节点从未被接手过，塞 None / 0 会把「从未接手」伪装成「接过手」；
+    # 消费者靠键缺席区分两种状态。
+    if payload.get("opened_at"):
+        item["opened_at"] = payload["opened_at"]
+    opened_count = payload.get("open_count")
+    if opened_count is not None:
+        with contextlib.suppress(TypeError, ValueError):
+            item["open_count"] = int(opened_count)  # 脏值不进返回体——读路径绝不因 payload 脏数据炸
+    return item
 
 
 # 接续点首行判据（2026-10-16 收紧）：``^`` 锚定行首，跳过前导空白与若干
