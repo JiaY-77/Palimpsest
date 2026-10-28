@@ -250,12 +250,18 @@ class TestDecideSessionBuffer:
         r = decide_session_buffer("普通回复", skeleton_kind="default", session_id="s1", turn_index=1)
         assert r["buffer"] is False and r["reason"] == "no_sections"
 
-    def test_free_text_thought_no_sections(self):
-        """有 <thought> 但没有编号答案 → 解析不出字段 → no_sections（thought 路径照旧兜底）。"""
+    def test_free_text_thought_falls_back_to_thought_section(self):
+        """有 <thought> 原文但没有编号答案 → 原文截断进 thought 节照收（宁粗不空，issue #216）。
+
+        旧行为是整轮 no_sections 丢弃——原生思考轮全被挡在缓冲外；连
+        <thought> 原文都没有的轮才维持 no_sections（见 test_no_thought_block_no_sections）。
+        """
         r = decide_session_buffer(
             "<thought>\n自由思考，没有编号。\n</thought>", skeleton_kind="code", session_id="s1", turn_index=1
         )
-        assert r["buffer"] is False and r["reason"] == "no_sections"
+        assert r["buffer"] is True and r["reason"] == ""
+        assert r["sections"] == {"thought": "自由思考，没有编号。"}
+        assert r["raw"] == "自由思考，没有编号。"
 
     def test_normal_turn_is_buffered(self):
         r = decide_session_buffer(_CODE_BLOCK, skeleton_kind="code", session_id="s1", turn_index=7)

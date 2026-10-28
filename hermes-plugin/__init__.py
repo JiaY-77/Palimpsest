@@ -121,8 +121,8 @@ def _message_text(message: Any) -> str:
     return ""
 
 
-def _last_assistant_reasoning(messages: list[dict[str, Any]] | None = None) -> str:
-    """本轮（最后一条 ``user`` 之后）最近的一段思考字段。
+def _assistant_reasoning(messages: list[dict[str, Any]] | None = None) -> str:
+    """本轮（最后一条 ``user`` 之后）的全部思考字段，按消息时间序拼接。
 
     Hermes 把 ``<thought>`` 内容剥进 assistant 消息的 ``reasoning`` 字段
     （``agent/think_scrubber.py``；落库到 state.db 同名列、UI 显示为
@@ -133,8 +133,11 @@ def _last_assistant_reasoning(messages: list[dict[str, Any]] | None = None) -> s
     （工具循环），写思考的往往不是最后那条——末尾那条正式回答常没有 reasoning，
     只看最后一条会让整轮思考被丢掉（2026-10-17 生产实测：给侧注入已生效、
     框架也把思考写进了前面几条 assistant 的 reasoning，但落库 0 条）。这里从
-    末尾往前扫，遇到本轮起点（``user`` 消息）即停，取最近一段非空 reasoning。
+    末尾往前扫，遇到本轮起点（``user`` 消息）即停；一轮里的**多段** reasoning
+    全部收进、按消息时间序以空行拼接（此前只取最近一段，工具循环里前面几段
+    的思考会漏，issue #216 同期修正）。
     """
+    segments: list[str] = []
     for msg in reversed(messages or []):
         if not isinstance(msg, dict):
             continue
@@ -146,8 +149,10 @@ def _last_assistant_reasoning(messages: list[dict[str, Any]] | None = None) -> s
         for key in ("reasoning", "reasoning_content"):
             value = msg.get(key)
             if isinstance(value, str) and value.strip():
-                return value.strip()
-    return ""
+                segments.append(value.strip())
+                break
+    segments.reverse()  # reversed 扫描是倒序收集，拼回消息时间序
+    return "\n\n".join(segments)
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +374,17 @@ class PalimpsestMemoryProvider(MemoryProvider):
     _skeleton_turn_injected: ClassVar[dict[str, str]] = {}
     _SKELETON_TURN_BUCKETS_MAX: ClassVar[int] = 256
 
+    # 轮次计数桶（类级，理由同 ``_skeleton_kind_by_session``）：宿主给不了轮次号
+    # ——``memory_manager`` 的 ``sync_turn`` 调用只带 ``session_id`` / ``messages``
+    # （``turn_id`` 只到得了 ``pre_llm_call`` 钩子）。插件自己维护每会话单调计数
+    # 随请求上送，服务端才有幂等去重的键（issue #216：此前缺省恒 0 被当「同一
+    # 轮」，会话缓冲每轮覆盖上一轮，turns 恒为 1）。
+    # 诚实边界：计数是进程内存活物——插件重启后同会话从 1 重计，若该会话缓冲
+    # 仍活跃，新一轮会按「同序号覆盖」顶掉第 1 轮（thought 落库同理判重跳过）；
+    # 换来的是正常重试的幂等保护。跨进程重启不保证续接，属已知取舍。
+    _turn_index_by_session: ClassVar[dict[str, int]] = {}
+    _TURN_INDEX_BUCKETS_MAX: ClassVar[int] = 256
+
     def thought_skeleton_context(self, *, user_message: Any = None, session_id: str = "", **kwargs) -> str:
         """``pre_llm_call`` 钩子回调：返回本轮思考骨架（思维预设层给侧）。
 
@@ -441,6 +457,19 @@ class PalimpsestMemoryProvider(MemoryProvider):
             "严格按下面的骨架逐项填写（写完整、不要跳过任何一项），然后再给出正式回答：\n" + skeleton
         )
 
+    def _next_turn_index(self, session_id: str) -> int:
+        """本会话下一个轮次序号（单调 +1，只在真发请求时推进）。
+
+        满桶丢最旧会话（插入序即最老，与 ``_skeleton_turn_injected`` 同款修剪）；
+        被修剪的会话若复活会从 1 重计（见桶注释的诚实边界）。
+        """
+        buckets = type(self)._turn_index_by_session
+        if len(buckets) >= type(self)._TURN_INDEX_BUCKETS_MAX and session_id not in buckets:
+            buckets.pop(next(iter(buckets)), None)
+        next_index = buckets.get(session_id, 0) + 1
+        buckets[session_id] = next_index
+        return next_index
+
     def sync_turn(
         self,
         user_content: str,
@@ -450,6 +479,10 @@ class PalimpsestMemoryProvider(MemoryProvider):
         messages: list[dict[str, Any]] | None = None,
     ) -> None:
         """每轮沉淀：转发 ``/lifecycle/post-turn``（命中判定 / importance / 分层在本体）。
+
+        轮次序号：宿主给不了轮次号（``memory_manager`` 的调用只带 session_id /
+        messages），插件维护每会话单调计数随请求上送（见类级桶注释），本体拿它
+        做缓冲幂等覆盖与 thought 判重的键（issue #216）。
 
         思维预设层收侧：Hermes 已把 ``<thought>`` 内容剥进最后一条 assistant
         消息的 ``reasoning`` 字段（正文里没有），原样还原成 ``<thought>`` 块
@@ -469,7 +502,7 @@ class PalimpsestMemoryProvider(MemoryProvider):
         if not self._enabled or not self._auto_ingest:
             return
         assistant_message = assistant_content or ""
-        reasoning = _last_assistant_reasoning(messages)
+        reasoning = _assistant_reasoning(messages)
         if reasoning:
             if assistant_message.strip():
                 assistant_message = f"{assistant_message}\n<thought>{reasoning}</thought>"
@@ -487,6 +520,9 @@ class PalimpsestMemoryProvider(MemoryProvider):
                 # 事实字段：本轮给侧注入的骨架类型（"" = 未注入）。本体侧另有
                 # thought_origin 形态启发式（文本长得像什么），两者交叉核对。
                 "skeleton_kind": kind,
+                # 每会话单调轮次计数（宿主给不了轮次号，见类级桶注释）：本体
+                # 按显式非 0 序号做缓冲幂等覆盖与 thought 判重。
+                "turn_index": self._next_turn_index(session_id or self._session_id or ""),
             },
         )
 
