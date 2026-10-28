@@ -777,6 +777,34 @@ def test_capsule_scenario_a_one_session_one_capsule(db_path):
     assert "closed_at" not in payload
 
 
+def test_session_end_with_partial_sections_still_writes_capsule(db_path):
+    """回归（2026-10-28 生产）：只要有一节为空，compose 就会把「（待补）」写进
+    sections 并把该节列进 pending；胶囊护栏的旧判定把它当「非空却列待补」判矛盾，
+    于是**整条胶囊被拒写入**（生产日志：会话胶囊生成失败 … pending 与 sections 矛盾）。
+    自动胶囊天然常有空节（原料是每轮 <thought>，多数轮只填一两问），这条必须绿。
+    """
+    client = _client()
+    partial = "<thought>\n1. 这一轮的核心判断 / 思路（一句话）：只填第一格\n</thought>"
+    r = client.post(
+        "/lifecycle/post-turn",
+        json={
+            "session_id": "cap-partial",
+            "turn_index": 1,
+            "user_message": "改一下胶囊空节处理",
+            "assistant_message": f"正文\n{partial}\n",
+            "skeleton_kind": "default",
+        },
+    )
+    assert r.json()["session_buffer"]["buffered"] is True
+    end = client.post("/lifecycle/session-end", json={"session_id": "cap-partial", "messages": []})
+    body = end.json()
+    assert body.get("capsule"), f"部分节为空的会话必须仍能产出胶囊，实际返回：{body}"
+    cap = body["capsule"]
+    assert cap["sections"]["thought"], "有内容的那节要保留"
+    assert cap["sections"]["outcome"] == "（待补）"
+    assert set(cap["pending"]) == {"outcome", "next", "pitfalls"}
+
+
 def test_capsule_scenario_b_mid_session_end_still_one_capsule(db_path):
     """场景 B（#187 回归）：post-turn → session-end → post-turn → session-end
     → 仍只 1 条胶囊、turns 累积为 2、node_id 未变。改动前第二次 session-end 会
