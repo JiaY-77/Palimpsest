@@ -265,9 +265,13 @@ DB_PATH=<生产库路径> venv/Scripts/python.exe eval/freshness_sweep.py \
 
 - 旧题集 138 题（semantic 72 / entity 46 / negative 20）的 `gold_ids` 是裸节点 id；
 - 实测：118 条正样本里，gold id 仍在库的 84 条；其中过 split 口径（id 在库且
-  `created_at` 非 None）的 54 条——但**内容级验证后 0 条仍正确**：id 重排后
-  「id 存活、内容已换」（例：q001 的 gold=118，原内容「为什么本地部署/为什么选
-  0.6b」现在位于节点 2899，而 118 现在是另一段内容）；
+  `created_at` 非 None）的 54 条——但在**内容级验证**（query 与该节点 content 的余弦
+  必须是该题 top1 且领先 runner-up ≥0.06）下，**没有一条原 gold 同时满足这两个条件**：
+  id 重排后「id 存活、内容已换」是常态（例：q001 的 gold=118 现为一段压测反思，
+  与其原内容「为什么本地部署/为什么选 0.6b」无关，后者现在位于节点 2899）；
+- 这是**严格口径**，不等于「每条原 gold 都离谱」：个别原 gold 与题面仍有弱相关
+  （q001 即一例，118 讲的仍是压测反思），只是达不到「可判卷」的无歧义标准。
+  旧题集的根本问题是**判卷不可靠**，不是每条都错得彻底；
 - 结论：旧题集跑出的任何数字都不构成证据，这正是「先修尺子」（#174）的原因。
 
 ### 8.2 重建方法（`eval/reresolve_gold.py`）
@@ -288,47 +292,53 @@ DB_PATH=<生产库路径> venv/Scripts/python.exe eval/freshness_sweep.py \
 
 | 状态 | 条数 | 说明 |
 |---|---|---|
-| reresolved | 28 | gold 无歧义改判成功（原 gold 记录在 `original_gold_ids`） |
-| quarantined | 39 | top1 达阈值但 margin 不足，隔离待人工，不判卷 |
+| reresolved | 27 | gold 无歧义改判成功（原 gold 记录在 `original_gold_ids`） |
+| quarantined | 40 | top1 达阈值但 margin 不足或人工否决，隔离待查，不判卷 |
 | dropped | 51 | 库中无明确目标（阈值下）或候选池为空 |
 | live | 20 | 全部为负样本（negative 不依赖 gold id） |
 
-人工抽查：28 条 reresolved 逐条目视比对，~26 条语义明确对应，2 条存疑
-（q006 / q062，弱相关但阈值达标）；是否人工回拉 quarantine 由验收人决定。
+人工抽查（验收人，2026-10-29）：抽 reresolved 4 条目视比对 query 与库内 actual content——
+q005（→316「先做1，2，优先考虑开源的大众使用情况」）、q011（→414 路由/图 B5 送审
+记录）、q062（→257 飞书知识空间节点字段）三条明确对得上；**q006 判错**：题面是
+「怎么避免推荐一个官方根本没有的模型」，top1=2900 讲的是「检索增强 vs 微调」，
+不是同一件事，已按裁决改为 quarantined（`gold_ids` 置空、`reasons` 留复核说明）。
+校准后判卷集从 28 条降到 27 条，本页数字按 27 条重跑（`results_20261028T170114Z.json`）。
 
 ### 8.4 新参考点（vec 模式；每个数字标注子集与规模）
 
 跑法：`run_eval.py --eval-set eval/eval_set_v2.json --modes vec`（库副本，
-SHA256 跑前跑后一致）。判卷集合 = **28 条 reresolved**（hermes 13 / kb 5 /
+SHA256 跑前跑后一致）。判卷集合 = **27 条 reresolved**（hermes 13 / kb 4 /
 novel 1 / other 9）+ 20 条负样本；quarantined / dropped 的 `gold_ids` 已置空，
 不判卷。
 
-| 指标 | 全部正样本 (n=28) | hermes (n=13) | kb (n=5) | novel (n=1) | other (n=9) |
+| 指标 | 全部正样本 (n=27) | hermes (n=13) | kb (n=4) | novel (n=1) | other (n=9) |
 |---|---|---|---|---|---|
-| recall@1 | 0.5357 | – | – | – | – |
-| recall@5 | 0.6786 | 0.9231 | 1.0000 | 1.0000 | 0.1111 |
-| mrr@10 | 0.6012 | 0.8846 | 0.8000 | 1.0000 | 0.0370 |
-| ndcg@5 | 0.6212 | – | – | – | – |
-| doc_recall@5（仅 kb 题 n=5） | 1.0000 | | | | |
-| 正/负可分离度 AUC (n_pos=28 / n_neg=20) | 0.9750 | | | | |
+| recall@1 | 0.5556 | – | – | – | – |
+| recall@3 | 0.6667 | – | – | – | – |
+| recall@5 | 0.6667 | 0.9231 | 1.0000 | 1.0000 | 0.1111 |
+| mrr@10 | 0.6049 | 0.8846 | 0.8750 | 1.0000 | 0.0370 |
+| ndcg@5 | 0.6208 | – | – | – | – |
+| doc_recall@5（仅 kb 题 n=4） | 1.0000 | | | | |
+| 正/负可分离度 AUC (n_pos=27 / n_neg=20) | 0.9759 | | | | |
 
 **解释纪律（防自欺，读数前必看）**：
 
-1. 这 28 条的 gold 由与 vec 模式**同款 embedding** 无歧义选出，vec 在其上的
+1. 这 27 条的 gold 由与 vec 模式**同款 embedding** 无歧义选出，vec 在其上的
    分数天然乐观——vec 数字**不能**与旧题集横向比较；模式间对照（fts / rrf /
    cascade 共用同一 gold）仍然公平；跨时间重跑同一题集也公平；
 2. 负样本 AUC 同样受「正样本已过无歧义阈值」影响，读数时注意。
 
 **确定性**：同库同配置连跑两次，`results_20261028T164216Z.json` 与
-`results_20261028T164232Z.json` **逐字节一致**（diff 为空）。
+`results_20261028T164232Z.json` **逐字节一致**（diff 为空）；复核重跑
+（`results_20261028T170114Z.json`）的库 SHA256 跑前跑后同为 `8c80e5fc…aa27d`。
 
 ### 8.5 时间切分现状（tune 14 / held-out 4；目标未达成，原因如实说）
 
 - 规模目标 tune ≥ 60 / held-out ≥ 30 **未达成**。根因两条：
-  1. 可救条目上限：118 条正样本经内容级验证后仅 28 条可救（0 条原 gold 仍正确）；
+  1. 可救条目上限：118 条正样本里仅 27 条改判到无歧义 gold（人工复核后再减 1 条）；
   2. **上游缺口**：kb_chunk（938 个）/ novel_chunk（124 个）/ git_commit（23 个）
      节点的 `payload.created_at` 全为 None——core 写入路径没写时间戳。改判落点
-     在这三类节点的 10 条题因此进不了切分（28 条救回 → 18 条 placed → 14 + 4）。
+     在这三类节点的 10 条题因此进不了切分（27 条救回 → 18 条 placed → 14 + 4）。
 - 治本要在 `core/` 的写入路径补 `created_at`（本任务禁改 core/，另行开 issue）；
   在那之前切分子集只够做方向性参考，不足以做显著性检验。
 - 切分可复现且防搬动：manifest 钉 **qid**（含 unplaced 名单）；
