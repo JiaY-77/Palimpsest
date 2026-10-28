@@ -35,6 +35,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from config import Config
+from core import pin as _pin
 from core import tdb_text_index as _tdb_text
 from core.fts_index import sync_node
 from core.meta_guard import validate_meta
@@ -1280,6 +1281,75 @@ class PreCompressRequest(BaseModel):
     messages: list[dict] = []
 
 
+# ---------------------------------------------------------------------------
+# 常驻域注入（issue #176）：某 domain 的 active 节点**每轮无条件**拼在语义召回
+# 之前。语义召回是 relevance-gated 的——与当前消息无关的常驻规则永远进不了注入，
+# 这里补上「不参与相似度竞争」的第三条路。配置 `PIN_DOMAIN` 为空即完全关闭。
+# ---------------------------------------------------------------------------
+
+
+def _pin_entries() -> list[tuple[int, dict]]:
+    """取常驻域候选节点。TQL 快路径优先，失败/不可用时退化为全遍历（不漏判）。"""
+    domain = (getattr(Config, "PIN_DOMAIN", "") or "").strip()
+    if not domain:
+        return []
+    store = _get_store()
+    db = None
+    try:
+        if re.fullmatch(r"[A-Za-z0-9_:-]+", domain):
+            db = store._acquire()
+            rows: list[tuple[int, dict]] = []
+            for r in db.tql(f'FIND {{domain: "{domain}"}} RETURN *'):
+                nd = r.row.get("_", {})
+                nid = nd.get("id")
+                if nid is not None:
+                    rows.append((int(nid), nd.get("payload", {}) or {}))
+            return rows
+    except DatabaseBusyError:
+        raise
+    except Exception as e:  # noqa: BLE001 —— TQL 失败退化为全遍历保证不漏判
+        logger.warning("常驻域 TQL 查询失败，退化为 iter_payloads: %s", e)
+    finally:
+        if db is not None:
+            with contextlib.suppress(Exception):
+                db.close()
+    return [(nid, pl) for nid, pl in store.iter_payloads()]
+
+
+def _collect_pin() -> dict:
+    """收集并拼装常驻块；**fail-open**——任何异常都退化为「无常驻块」，绝不拖垮整轮。"""
+    domain = (getattr(Config, "PIN_DOMAIN", "") or "").strip()
+    empty = {"text": "", "node_count": 0, "chars": 0, "truncated": False, "dropped": 0, "ids": []}
+    if not domain:
+        return empty
+    try:
+        nodes = _pin.select_pin_nodes(_pin_entries(), domain=domain)
+        return _pin.compose_pin_block(
+            nodes,
+            domain=domain,
+            budget_chars=int(getattr(Config, "PIN_BUDGET_CHARS", _pin.PIN_DEFAULT_BUDGET_CHARS)),
+        )
+    except DatabaseBusyError:
+        raise
+    except Exception as e:  # noqa: BLE001 —— 常驻注入失败跳过即可，召回照常
+        logger.warning("常驻域注入失败（已跳过，不影响语义召回）: %s", e)
+        return empty
+
+
+def _attach_pin(probe: dict, pin_block: dict) -> dict:
+    """把常驻块拼到注入文本**最前面**（优先级高于语义召回），并写诊断字段。"""
+    probe["pin"] = _pin.pin_diagnostics(pin_block)
+    text = str(pin_block.get("text") or "")
+    if not text:
+        return probe
+    existing = str(probe.get("inject_text") or "")
+    probe["inject_text"] = f"{text}\n\n{existing}" if existing else text
+    blocks = list(probe.get("inject_blocks") or [])
+    blocks.insert(0, {"content": text, "priority": 1.0, "source": "pin"})
+    probe["inject_blocks"] = blocks
+    return probe
+
+
 @app.post("/lifecycle/pre-turn")
 def lifecycle_pre_turn(req: PreTurnRequest):
     """每轮模型调用前：本体决定召回什么，返回可注入 prompt 的文本。
@@ -1293,6 +1363,8 @@ def lifecycle_pre_turn(req: PreTurnRequest):
     全在本体（core/strategy.py），宿主零判定。
     """
     skeleton = _strategy_decide_thought_skeleton(req.user_message, enabled=req.thought_skeleton)
+    # 常驻块与 query 无关：每轮都取（trivial / 超长 query 也一样——「无条件」就是无条件）
+    pin_block = _collect_pin()
     probe = _strategy_pre_turn(req.user_message, hits=None, top_k=req.top_k, min_score=req.min_score)
     # issue #124：早退分支同样回显请求的 session_id / turn_index（此前只在正常分支回显）。
     probe["session_id"] = req.session_id
@@ -1300,7 +1372,7 @@ def lifecycle_pre_turn(req: PreTurnRequest):
     if probe["skip"] and probe["skip_reason"] in ("trivial", "too_short"):
         probe["thought_skeleton"] = skeleton["skeleton"]
         probe["thought_skeleton_kind"] = skeleton["kind"]
-        return probe
+        return _attach_pin(probe, pin_block)
 
     # issue #121：内部召回那一路同样受 query 上限约束——fail-open 但可观测。
     # 超长 query 不送 embedding（模型侧会报 exceeds the context length 并被
@@ -1314,7 +1386,7 @@ def lifecycle_pre_turn(req: PreTurnRequest):
         probe["decision_log"] = {"reason": "query_too_long", "detail": qcheck["error"]}
         probe["thought_skeleton"] = skeleton["skeleton"]
         probe["thought_skeleton_kind"] = skeleton["kind"]
-        return probe
+        return _attach_pin(probe, pin_block)
 
     raw = _as_json(
         _mcp_mem_search(
@@ -1327,12 +1399,16 @@ def lifecycle_pre_turn(req: PreTurnRequest):
         )
     )
     hits = raw.get("results", []) if isinstance(raw, dict) else []
+    # 去重：常驻块已经无条件注入过的节点，不再在语义召回里重复出现（省 token）
+    pinned_ids = set(pin_block.get("ids") or [])
+    if pinned_ids:
+        hits = [h for h in hits if h.get("id") not in pinned_ids]
     result = _strategy_pre_turn(req.user_message, hits=hits, top_k=req.top_k, min_score=req.min_score)
     result["session_id"] = req.session_id
     result["turn_index"] = req.turn_index
     result["thought_skeleton"] = skeleton["skeleton"]
     result["thought_skeleton_kind"] = skeleton["kind"]
-    return result
+    return _attach_pin(result, pin_block)
 
 
 def _thought_already_stored(source: str, turn_index: int) -> bool:
