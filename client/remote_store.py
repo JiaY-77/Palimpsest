@@ -33,6 +33,15 @@ import httpx
 _DEFAULT_BASE_URL = "http://127.0.0.1:8090"
 
 
+# `POST /mem/ingest` 的**可选**字段（与服务端 `main.MemIngestRequest` 同步）。
+#
+# 硬编码在这里而不是「把 node_data 全透传」：客户端不该把自己认识的所有键都塞给
+# 服务端（服务端会忽略未知键，但白名单能让我们在**新增可选字段时被迫同步一处**，
+# 而不是静默丢字段——#197 就是这么丢的）。
+# 新增可选字段时必须同时改：本元组 + 服务端模型 + test_remote_store_contract 的用例。
+_OPTIONAL_INGEST_KEYS: tuple[str, ...] = ("replaces", "meta", "sections", "pending")
+
+
 class RemoteStoreError(RuntimeError):
     """REST 访问失败（不可达 / 非 2xx / 响应格式不符）。
 
@@ -246,14 +255,26 @@ class RemoteStore:
 
         REST 的 ingest 由服务端自行生成向量（内容优先），``embedding`` 参数
         在远程路径下不使用——保留它是为了接口一致。
+
+        **可选字段必须逐个透传**（issue #197）：服务端 `MemIngestRequest` 接受
+        `replaces` / `meta` / `sections` / `pending`，这里原来是硬编码五项白名单，
+        于是经 RemoteStore 写入的调用方**静默丢字段**（`meta` 丢 = 外部宿主绑不上
+        自己的会话实体；`sections` 丢 = 手写胶囊与自动胶囊形状分裂）。白名单与
+        服务端字段集必须同步——新增可选字段时两处一起改，`test_remote_store_contract`
+        有回归用例钉着。
         """
-        payload = {
+        payload: dict[str, Any] = {
             "content": node_data.get("content", ""),
             "type": node_data.get("type", "memory"),
             "importance": node_data.get("importance", 0.5),
             "domain": node_data.get("domain", ""),
             "source": node_data.get("source", ""),
         }
+        # 只在调用方真的给了值时才带上这些键——保持「不传则 payload 形状与旧版一致」。
+        for key in _OPTIONAL_INGEST_KEYS:
+            value = node_data.get(key)
+            if value is not None:
+                payload[key] = value
         data = self._req("POST", "/mem/ingest", json=payload)
         if isinstance(data, dict) and "node_id" in data:
             return int(data["node_id"])

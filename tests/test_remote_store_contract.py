@@ -237,3 +237,48 @@ def test_iter_nodes_matches_iter_payloads_semantics(http, rs):
     assert paths == {"/export"}, paths
     assert node_pairs == payload_pairs == [(3, {"content": "x", "domain": "hero"}), (9, {"content": "y"})]
     assert all("vector" not in dict(payload) for _, payload in node_pairs), "iter_nodes 不该伪装返回向量"
+
+
+# ---- insert_node：可选字段必须透传（issue #197）----
+
+
+def test_insert_node_passes_optional_fields_through(http, rs):
+    """``replaces`` / ``meta`` / ``sections`` / ``pending`` 都必须进 body。
+
+    原来这里是硬编码五项白名单，经 RemoteStore 写入的调用方**静默丢字段**：
+    `meta` 丢 = 外部宿主绑不上自己的会话实体；`sections` 丢 = 手写胶囊与自动胶囊
+    形状分裂。这条用例就是那条漏的回归护栏。
+    """
+    http["responses"][("POST", "/mem/ingest")] = _Resp(200, {"node_id": 9})
+
+    rs.insert_node(
+        {
+            "type": "task",
+            "content": "手写胶囊",
+            "importance": 0.85,
+            "domain": "hermes",
+            "source": "pytest",
+            "replaces": "1,2",
+            "meta": {"chat_id": "c1"},
+            "sections": {"thought": "思路", "outcome": "做了"},
+            "pending": ["next", "pitfalls"],
+        },
+        [0.0],
+    )
+
+    _method, _path, kwargs = http["calls"][0]
+    body = kwargs["json"]
+    assert body["replaces"] == "1,2", body
+    assert body["meta"] == {"chat_id": "c1"}, body
+    assert body["sections"] == {"thought": "思路", "outcome": "做了"}, body
+    assert body["pending"] == ["next", "pitfalls"], body
+
+
+def test_insert_node_omits_optional_keys_when_absent(http, rs):
+    """不传可选字段时 body 形状与旧版逐键一致——不塞 None、不塞空容器。"""
+    http["responses"][("POST", "/mem/ingest")] = _Resp(200, {"node_id": 9})
+
+    rs.insert_node({"content": "普通节点"}, [0.0])
+
+    _method, _path, kwargs = http["calls"][0]
+    assert set(kwargs["json"]) == {"content", "type", "importance", "domain", "source"}, kwargs["json"]
