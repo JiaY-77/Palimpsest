@@ -114,6 +114,42 @@ python scripts/palimpsest_cli.py doctor
 
 **备份与恢复**：`python scripts/backup_db.py --keep 7` 做整文件组冷备份 + 回读校验（默认保留 7 份）。备份必须**整组**（`.db` / `.vec` / `.gidx` / `.pidx` / `.flush_ok` / `.pld.*` / `.wal`，同属一个 generation），脚本拷贝后会回读校验，不通过即报错退出。
 
+## 从 2.15 及更早版本升级
+
+升级路径上有三个**静默**陷阱（都不报错，只让你觉得「功能坏了」）：
+
+### 1. `EMBEDDING_PROVIDER` 必须显式写
+
+2.16.0 起默认值从 `ollama` 改成 `local`（进程内 llama.cpp）。老 `.env` 通常**没有**这一项，升级后会静默切到内置后端——缺 `llama-cpp-python` 或 GGUF 模型文件时 embedding 直接不可用，而配置文件上**看不出任何变化**。
+
+```bash
+grep EMBEDDING_PROVIDER .env    # 没输出 → 补上你原本在用的那个（ollama / openai）
+```
+
+启动自检会回显来源：看到 `provider=local，.env 未显式设置 → 自动探测` 就说明它在用默认值；老库还会多一句 WARN。
+
+### 2. 存量库必须重跑一次 reindex
+
+向量空间指纹是 2.16.0 才引入的，存量库没有这条记录 → `/doctor` 第 9 项「向量空间一致性」**必然 FAIL**（与有没有换过 provider 无关）。
+
+规模参考（免得被另一处「2880 条约 40 分钟」劝退）：
+
+| 节点数 | 环境 | 实测耗时 |
+|---|---|---|
+| 700 | Ollama 本地，模型热态 | **约 70 秒**（≈0.1 秒/条） |
+
+### 3. 正确顺序
+
+```bash
+# 1) 确认 provider（见第 1 条）
+# 2) 停 REST 服务——reindex 直连库，服务在跑会报 Database locked
+# 3) 全量重嵌。--yes 不可省：--force 只跳「指纹确认」，不跳最后那次「确认？」
+python scripts/palimpsest_cli.py reindex --force --yes
+# 4) 起 REST 服务
+# 5) 体检应回到 9/9
+curl -s http://127.0.0.1:8090/doctor
+```
+
 ## 更换向量模型 / 重嵌全库
 
 切换 embedding 模型或 provider 会改变向量空间，**必须重嵌全库**。库内会记录一条**向量空间指纹**（`provider` / `model` / `dim` / `pooling` 的哈希）；启动自检、`doctor` 与 `reindex` 开跑前都会比对它——不一致时 `doctor` 该项判失败并直接给出修复命令。换模型 / 换 provider 后跑 `reindex --force --yes` 一次到位：放弃断点、跳过指纹确认、全量重算，完成时写入新指纹。完整操作顺序（`--check` / `--dry-run` / `--yes`）与换维度的重建流程见 [`docs/CONFIGURATION.md`](CONFIGURATION.md)。

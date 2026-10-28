@@ -29,6 +29,30 @@ def _detect_embedding_provider() -> str:
     return "local"
 
 
+def embedding_provider_source() -> str:
+    """``EMBEDDING_PROVIDER`` 的**来源**（issue #192）——供启动自检回显。
+
+    返回值：
+      - ``"env"``           用户显式设置了 `EMBEDDING_PROVIDER`
+      - ``"auto:api-key"``  未设置，但检测到可用的 `EMBEDDING_API_KEY` → openai
+      - ``"auto:fallback"`` 未设置且无可用 key → 落到默认 ``local``
+
+    为什么需要它：2.16.0 把默认值从 ``ollama`` 改成 ``local``，老 `.env` 里通常
+    没写这一项，升级后会**静默切到内置后端**（缺 llama-cpp-python / GGUF 就起不来），
+    而配置面上看不出任何变化。把来源回显出来，「我以为是 ollama，其实是自动探测的
+    local」才看得见。
+
+    刻意做成模块级函数而不是 ``Config`` 属性：它不是配置项、也不该出现在
+    `.env.example` 里，落进 ``Config`` 会被配置项一致性检查当成漏登记的旋钮。
+    """
+    if os.getenv("EMBEDDING_PROVIDER", "").strip():
+        return "env"
+    key = os.getenv("EMBEDDING_API_KEY", "").strip()
+    if key.lower() not in _PLACEHOLDER_KEYS:
+        return "auto:api-key"
+    return "auto:fallback"
+
+
 # 项目根 = config.py 所在目录（直接运行时为仓库根，pip 安装后为 site-packages 下包目录）。
 # DB_PATH 等相对路径一律以它为基准解析为绝对路径，不再依赖/修改进程当前工作目录
 # （此前依赖 mcp_tools 里 os.chdir 切换到项目根来解析相对路径，作为包安装后会污染

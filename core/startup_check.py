@@ -127,10 +127,11 @@ def _check_embedding() -> str:
     三条路最后**都必须实算一次**：HTTP 可达 ≠ 能用（模型没拉取时照样返回全零，
     那正是「自检全绿、检索全废」的静默失败来源）。
     """
-    from config import Config  # 延迟导入，避免重 import 副作用
+    from config import Config, embedding_provider_source  # 延迟导入，避免重 import 副作用
     from core.trivium_store import EmbeddingUnavailableError, TriviumStore
 
     provider = getattr(Config, "EMBEDDING_PROVIDER", "local") or "local"
+    source = embedding_provider_source()
     store = TriviumStore()
 
     if provider == "local":
@@ -162,7 +163,29 @@ def _check_embedding() -> str:
         raise RuntimeError(f"{fail_detail}（实际错误: {e}）") from e
     if _all_zero(emb):
         raise RuntimeError(f"{fail_detail}（返回全零向量）")
-    return f"Embedding 服务可用 (provider={provider}, dim={len(emb)})"
+    # 回显来源（issue #192）：只看 ``provider=local`` 分不清是「用户显式配的」
+    # 还是「.env 没写、自动落到默认值」——后者正是升级静默换后端的入口。
+    source_note = "" if source == "env" else "，.env 未显式设置 → 自动探测"
+    detail = f"Embedding 服务可用 (provider={provider}{source_note}, dim={len(emb)})"
+    if source == "auto:fallback" and _has_existing_nodes(store):
+        # 老库 + 靠默认值落到 local：升级风险最高的一种组合（2.16.0 把默认从
+        # ollama 改成了 local，老 .env 通常没写 PROVIDER）。
+        detail += (
+            "；⚠ 未显式设置 EMBEDDING_PROVIDER，当前按默认 local 运行。"
+            "2.16.0 起默认值已从 ollama 改为 local——若你原本用 Ollama / 云端，"
+            "请在 .env 显式写上 EMBEDDING_PROVIDER"
+        )
+    return detail
+
+
+def _has_existing_nodes(store: object) -> bool:
+    """库里有没有节点（只看第一条就够）。异常一律当作「没有」，绝不影响自检。"""
+    try:
+        for _ in store.iter_payloads():  # type: ignore[attr-defined]
+            return True
+    except Exception:  # noqa: BLE001
+        return False
+    return False
 
 
 def _check_tdb_text() -> str:
