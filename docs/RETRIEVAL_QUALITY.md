@@ -254,9 +254,108 @@ DB_PATH=<生产库路径> venv/Scripts/python.exe eval/freshness_sweep.py \
 - **工具链实跑（2026-10-28，题集重建前的预跑）**：`freshness_sweep.py` 在库副本上跑通，118 条正样本 × 2 组合（`w0/exp/d30` 基线、`w0.1/exp/d30`），逐题结果落 `eval/.tmp/freshness_sweep_<ts>.json`。所有指标为 0、配对 bootstrap `p=1.0`，与上一条归因一致：**是题集失效，不是检索失效，也不是加权失效**（基线 w=0 同样为 0）。
 - 因此**权重取值暂无法定**，按数据优先纪律保持默认 0（关闭）发布；待 issue #221 重建题集并切分 tune / held-out 后，再跑完整网格（`--weights 0,0.05,0.1,0.2 --decays exp,linear --scales 7,30,90`），由 tune 集选型、held-out 集报告，结果回填本节。
 
+## 八、题集重建与新参考点（#221，2026-10-28）
+
+> 重建后的题集（`eval/eval_set_v2.json`）取代旧题集作为**判卷依据**：旧题集的 gold
+> 存的是裸节点 id，2026-09-10 库 rebuild 后 id 全部重排，已无法判卷（见 8.1）。
+> 但它目前只够作**方向性参考**——切分规模（tune 14 / held-out 4）远低于显著性检验
+> 下限，原因如实写在 8.5；旧题集时代的数字保留作历史对照。
+
+### 8.1 为什么旧题集作废
+
+- 旧题集 138 题（semantic 72 / entity 46 / negative 20）的 `gold_ids` 是裸节点 id；
+- 实测：118 条正样本里，gold id 仍在库的 84 条；其中过 split 口径（id 在库且
+  `created_at` 非 None）的 54 条——但在**内容级验证**（query 与该节点 content 的余弦
+  必须是该题 top1 且领先 runner-up ≥0.06）下，**没有一条原 gold 同时满足这两个条件**：
+  id 重排后「id 存活、内容已换」是常态（例：q001 的 gold=118 现为一段压测反思，
+  与其原内容「为什么本地部署/为什么选 0.6b」无关，后者现在位于节点 2899）；
+- 这是**严格口径**，不等于「每条原 gold 都离谱」：个别原 gold 与题面仍有弱相关
+  （q001 即一例，118 讲的仍是压测反思），只是达不到「可判卷」的无歧义标准。
+  旧题集的根本问题是**判卷不可靠**，不是每条都错得彻底；
+- 结论：旧题集跑出的任何数字都不构成证据，这正是「先修尺子」（#174）的原因。
+
+### 8.2 重建方法（`eval/reresolve_gold.py`）
+
+- 判定口径与 `split_eval_set.py` 一致（id 在库 + `created_at` 非 None = id 级
+  存活），并在此之上做**内容级验证**；
+- 对每条正样本，在**库副本**上按题集声明的 `gold_type` 取候选池（domain 只做
+  窄池优先、不做硬过滤——题集 domain 标签与节点实际 domain 失配实测 35%+）；
+- 用库内同款 embedding（Qwen3-Embedding，`iter_nodes` 读存量向量，query 侧
+  `embed_text`）对 query 与候选 content 算余弦；
+- 只在无歧义时改判：`top1 ≥ 0.60 且 top1 − runner-up ≥ 0.06`（runner-up 含原
+  gold——改判必须赢过旧答案）。阈值取自全量打分分布的中位上沿（top1 p50=0.620、
+  margin p75=0.068，分布表见 `eval/reresolve_report_*.md`），不是拍脑袋定值；
+- 三分类：reresolved（改判成功）/ quarantined（有歧义，隔离不硬指）/ dropped
+  （救不回）。每条记状态 + 原因 + 原 gold，无静默消失。
+
+### 8.3 现题集构成（138 题，每条显式状态）
+
+| 状态 | 条数 | 说明 |
+|---|---|---|
+| reresolved | 27 | gold 无歧义改判成功（原 gold 记录在 `original_gold_ids`） |
+| quarantined | 40 | top1 达阈值但 margin 不足或人工否决，隔离待查，不判卷 |
+| dropped | 51 | 库中无明确目标（阈值下）或候选池为空 |
+| live | 20 | 全部为负样本（negative 不依赖 gold id） |
+
+人工抽查（验收人，2026-10-29）：抽 reresolved 4 条目视比对 query 与库内 actual content——
+q005（→316「先做1，2，优先考虑开源的大众使用情况」）、q011（→414 路由/图 B5 送审
+记录）、q062（→257 飞书知识空间节点字段）三条明确对得上；**q006 判错**：题面是
+「怎么避免推荐一个官方根本没有的模型」，top1=2900 讲的是「检索增强 vs 微调」，
+不是同一件事，已按裁决改为 quarantined（`gold_ids` 置空、`reasons` 留复核说明）。
+校准后判卷集从 28 条降到 27 条，本页数字按 27 条重跑（`results_20261028T170114Z.json`）。
+
+### 8.4 新参考点（vec 模式；每个数字标注子集与规模）
+
+跑法：`run_eval.py --eval-set eval/eval_set_v2.json --modes vec`（库副本，
+SHA256 跑前跑后一致）。判卷集合 = **27 条 reresolved**（hermes 13 / kb 4 /
+novel 1 / other 9）+ 20 条负样本；quarantined / dropped 的 `gold_ids` 已置空，
+不判卷。
+
+| 指标 | 全部正样本 (n=27) | hermes (n=13) | kb (n=4) | novel (n=1) | other (n=9) |
+|---|---|---|---|---|---|
+| recall@1 | 0.5556 | – | – | – | – |
+| recall@3 | 0.6667 | – | – | – | – |
+| recall@5 | 0.6667 | 0.9231 | 1.0000 | 1.0000 | 0.1111 |
+| mrr@10 | 0.6049 | 0.8846 | 0.8750 | 1.0000 | 0.0370 |
+| ndcg@5 | 0.6208 | – | – | – | – |
+| doc_recall@5（仅 kb 题 n=4） | 1.0000 | | | | |
+| 正/负可分离度 AUC (n_pos=27 / n_neg=20) | 0.9759 | | | | |
+
+**解释纪律（防自欺，读数前必看）**：
+
+1. 这 27 条的 gold 由与 vec 模式**同款 embedding** 无歧义选出，vec 在其上的
+   分数天然乐观——vec 数字**不能**与旧题集横向比较；模式间对照（fts / rrf /
+   cascade 共用同一 gold）仍然公平；跨时间重跑同一题集也公平；
+2. 负样本 AUC 同样受「正样本已过无歧义阈值」影响，读数时注意。
+
+**确定性**：同库同配置连跑两次，`results_20261028T164216Z.json` 与
+`results_20261028T164232Z.json` **逐字节一致**（diff 为空）；复核重跑
+（`results_20261028T170114Z.json`）的库 SHA256 跑前跑后同为 `8c80e5fc…aa27d`。
+
+### 8.5 时间切分现状（tune 14 / held-out 4；目标未达成，原因如实说）
+
+- 规模目标 tune ≥ 60 / held-out ≥ 30 **未达成**。根因两条：
+  1. 可救条目上限：118 条正样本里仅 27 条改判到无歧义 gold（人工复核后再减 1 条）；
+  2. **上游缺口**：kb_chunk（938 个）/ novel_chunk（124 个）/ git_commit（23 个）
+     节点的 `payload.created_at` 全为 None——core 写入路径没写时间戳。改判落点
+     在这三类节点的 10 条题因此进不了切分（27 条救回 → 18 条 placed → 14 + 4）。
+- 治本要在 `core/` 的写入路径补 `created_at`（本任务禁改 core/，另行开 issue）；
+  在那之前切分子集只够做方向性参考，不足以做显著性检验。
+- 切分可复现且防搬动：manifest 钉 **qid**（含 unplaced 名单）；
+  `split_eval_set.py --pin-manifest <旧manifest>` 重跑时按 qid 冻结分配，
+  新增题只进 `unplaced.new_qids_not_in_manifest`，已有切分不会被新增题悄悄
+  搬动（首轮实测：pin 复跑 tune/held-out 与首切完全一致，new_qids 为空）。
+
+### 8.6 候选题池（只出清单，未入集）
+
+`eval/candidate_questions_<ts>.json`：从 `hit_count`（`mem_search` 每次真实
+命中自动 +1，见 `core/trivium_store.py::_bump_hit_counts`）挖出的候选题，
+每条带 `"pending_human_confirm": true`，且 query 仅为首行草稿（未过「禁抄
+原文 ≥6 字」校验）——**人工确认并润色前不许并入题集**。
+
 ---
 
-## 八、小结
+## 九、小结
 
 | 设计决策 | 依据 |
 |---|---|
@@ -267,6 +366,7 @@ DB_PATH=<生产库路径> venv/Scripts/python.exe eval/freshness_sweep.py \
 | 语义为主、元数据为辅（ε 级加性） | 消融实验：原乘性加权存在尺度失配，修正后记忆层 R@5 0.263 → 0.684 |
 | 评测在库副本上跑 + SHA256 自证 | 评测会触发写入路径，不能碰真实数据 |
 | 显著性检验 + 时间切分 held-out | 点估计无法区分真提升与噪声；在调参集上自评必然乐观 |
+| 题集每条带显式状态（live/reresolved/quarantined/dropped） | 库 rebuild 后裸 id 全失效，静默留坏 gold 比没有 gold 更糟（#221） |
 | 新鲜度权重默认 0，非零取值须 sweep 数据背书 | 时效信号有价值，但常数必须来自真实查询集（issue #175） |
 
 *本页只公开方法与汇总结论；原始题集、逐题结果与含个人数据的报告保留在本地。*

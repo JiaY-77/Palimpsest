@@ -68,6 +68,16 @@ def temporal_split(
     held_out = [it for _, _, it in placed[n_tune:]]
     boundary = placed[n_tune - 1][0] if n_tune > 0 else None
 
+    # unplaced 也要钉 qid：pin 复跑时区分「本来就不在两侧」和「真正的新增」
+    neg_qids = [str(it.get("qid", "")) for it in items if it.get("kind") == "negative" or not it.get("gold_ids")]
+    no_ts_qids = [
+        str(it.get("qid", ""))
+        for it in items
+        if it.get("kind") != "negative"
+        and it.get("gold_ids")
+        and not [g for g in it["gold_ids"] if g in created_by_gold]
+    ]
+
     manifest: dict = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "source_eval_set": source_eval_set,
@@ -79,6 +89,10 @@ def temporal_split(
         "unplaced": {
             "negative_or_no_gold": n_negative_or_no_gold,
             "missing_timestamp": n_missing_timestamp,
+        },
+        "unplaced_qids": {
+            "negative_or_no_gold": neg_qids,
+            "missing_timestamp": no_ts_qids,
         },
         "boundary_created_at": boundary,
         "boundary_created_at_iso": (
@@ -166,6 +180,15 @@ def main() -> int:
     parser.add_argument(
         "--timestamps-json", default=None, help='JSON file {"<node_id>": created_at} to use instead of reading the DB'
     )
+    parser.add_argument(
+        "--pin-manifest",
+        default=None,
+        help=(
+            "reuse an existing split_manifest.json: items are assigned BY QID exactly as pinned there, "
+            "so adding items later never silently reshuffles the existing split. QIDs not present in "
+            "the manifest are reported as unplaced_new and require an explicit re-split decision."
+        ),
+    )
     args = parser.parse_args()
 
     eval_dir = Path(__file__).parent
@@ -177,24 +200,79 @@ def main() -> int:
     with open(eval_set_path, encoding="utf-8") as f:
         eval_set = json.load(f)
 
-    if args.timestamps_json:
-        with open(args.timestamps_json, encoding="utf-8") as f:
-            created_by_gold = {int(k): float(v) for k, v in json.load(f).items()}
-    elif args.skip_db:
-        created_by_gold = {}
+    if args.pin_manifest:
+        # ── Pinned re-split: qid assignment is frozen by the old manifest ──
+        # 为什么钉 qid：按 (created_at, qid) 排序切分时，任何新增题目都可能改变
+        # 已有题目相对位置 -> 已有 qid 在 tune/held-out 之间悄悄搬家，held-out
+        # 不再「未被调参触碰」。钉住 qid 后新增题只进 unplaced_new，等待显式重切。
+        with open(args.pin_manifest, encoding="utf-8") as f:
+            old_manifest = json.load(f)
+        pinned_tune = {str(q) for q in old_manifest.get("tune_qids", [])}
+        pinned_held = {str(q) for q in old_manifest.get("held_out_qids", [])}
+        overlap = pinned_tune & pinned_held
+        if overlap:
+            print(f"[split] ERROR: manifest has qids in both sides: {sorted(overlap)}")
+            return 1
+        tune = [it for it in eval_set["items"] if str(it.get("qid")) in pinned_tune]
+        held_out = [it for it in eval_set["items"] if str(it.get("qid")) in pinned_held]
+        placed_qids = pinned_tune | pinned_held
+        old_unplaced = {str(q) for q in old_manifest.get("unplaced_qids", {}).get("missing_timestamp", [])}
+        old_unplaced |= {str(q) for q in old_manifest.get("unplaced_qids", {}).get("negative_or_no_gold", [])}
+        # 真正的新增 = 正样本 qid 不在两侧、也不在旧 unplaced 名单里
+        new_qids = [
+            str(it.get("qid"))
+            for it in eval_set["items"]
+            if it.get("kind") != "negative"
+            and str(it.get("qid")) not in placed_qids
+            and str(it.get("qid")) not in old_unplaced
+        ]
+        manifest: dict = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "source_eval_set": str(eval_set_path),
+            "pinned_from": str(args.pin_manifest),
+            "pinned": True,
+            "split_field": old_manifest.get("split_field", ""),
+            "tune_fraction": old_manifest.get("tune_fraction"),
+            "n_placed": len(tune) + len(held_out),
+            "n_tune": len(tune),
+            "n_held_out": len(held_out),
+            "unplaced": {
+                **old_manifest.get("unplaced", {}),
+                "new_qids_not_in_manifest": new_qids,
+            },
+            "boundary_created_at": old_manifest.get("boundary_created_at"),
+            "boundary_created_at_iso": old_manifest.get("boundary_created_at_iso"),
+            "tune_qids": [str(it.get("qid", "")) for it in tune],
+            "held_out_qids": [str(it.get("qid", "")) for it in held_out],
+            "notes": [
+                "Pinned re-split: qid assignments are frozen from the pinned manifest; new qids are NOT",
+                "auto-assigned (unplaced.new_qids_not_in_manifest) so existing splits never move silently.",
+                *(old_manifest.get("notes", []) or []),
+            ],
+        }
+        print(
+            f"[split] pinned from {args.pin_manifest}: tune={len(tune)}, "
+            f"held-out={len(held_out)}, new unassigned qids={len(new_qids)}"
+        )
     else:
-        print("[split] Copying DB to a safe location (the original production DB is never touched)")
-        tmp_db = _copy_db_to_tmp(Path(_PROJECT_ROOT))
-        print(f"[split] DB copy at: {tmp_db}")
-        created_by_gold = load_gold_timestamps(tmp_db)
-    print(f"[split] timestamped nodes available: {len(created_by_gold)}")
+        if args.timestamps_json:
+            with open(args.timestamps_json, encoding="utf-8") as f:
+                created_by_gold = {int(k): float(v) for k, v in json.load(f).items()}
+        elif args.skip_db:
+            created_by_gold = {}
+        else:
+            print("[split] Copying DB to a safe location (the original production DB is never touched)")
+            tmp_db = _copy_db_to_tmp(Path(_PROJECT_ROOT))
+            print(f"[split] DB copy at: {tmp_db}")
+            created_by_gold = load_gold_timestamps(tmp_db)
+        print(f"[split] timestamped nodes available: {len(created_by_gold)}")
 
-    tune, held_out, manifest = temporal_split(
-        eval_set["items"],
-        created_by_gold,
-        tune_fraction=args.tune_fraction,
-        source_eval_set=str(eval_set_path),
-    )
+        tune, held_out, manifest = temporal_split(
+            eval_set["items"],
+            created_by_gold,
+            tune_fraction=args.tune_fraction,
+            source_eval_set=str(eval_set_path),
+        )
 
     manifest_path = out_dir / "split_manifest.json"
     _write_subset(out_dir / "eval_set_tune.json", eval_set, tune, "tune")
@@ -202,10 +280,10 @@ def main() -> int:
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
 
-    print("[split] boundary created_at:", manifest["boundary_created_at_iso"])
+    print("[split] boundary created_at:", manifest.get("boundary_created_at_iso"))
     print(f"[split] tune set: {manifest['n_tune']} items -> eval_set_tune.json")
     print(f"[split] held-out set: {manifest['n_held_out']} items -> eval_set_heldout.json")
-    print(f"[split] unplaced (negative / no gold / missing timestamp): {manifest['unplaced']}")
+    print(f"[split] unplaced: {manifest.get('unplaced')}")
     print(f"[split] manifest written to: {manifest_path}")
     return 0
 

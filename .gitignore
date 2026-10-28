@@ -26,6 +26,7 @@ eval/.tmp_fusion/
 eval/*.json
 !eval/fusion_set_manual.example.json
 eval/report_*.md
+eval/*_report_*.md
 
 
 # TriviumDB 数据库文件（本地测试用）
