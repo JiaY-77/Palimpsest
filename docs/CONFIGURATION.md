@@ -64,6 +64,9 @@
 | `DEFAULT_TIER` | `facts` | 检索与注入的默认分层；`logs` 只回日志层，空串 = 不过滤（全量历史通道） | 未显式指定 `tier` 时 |
 | `SESSION_MEMORY_INGEST` | `1` | lifecycle session-end 旧「会话要点」路径开关（`type=memory` / facts 层）：`1` = 既有行为完全不变（默认）；`0` = 停用要点路径（`skip_reason="session_memory_disabled"`），只走会话胶囊路径（缓冲合并出的 `type=task` + `kind=handoff` 胶囊，不受本开关影响） | `/lifecycle/session-end` |
 | `SESSION_BUFFER_MIN_THOUGHT_CHARS` | `400` | **已废弃**（2026-10-28，#188）：实质轮判据不再看正文长度，改成「胶囊四问任填一格即进缓冲」。常量为签名兼容保留，下个大版本连同 `is_substantive_turn(min_thought_chars=...)` 一起删。当前仍生效的两条判据：①`<thought>` 解析出的 `sections` 任一非空；②用户消息含指令动词（指令 ≠ 问句）。工具调用判据已删（#194，宿主恒不填） | `/lifecycle/post-turn` |
+| `SESSION_CAPSULE_RECOVER_ENABLED` | `1` | 会话胶囊断线自愈总开关：`1` = 服务启动后（延迟 5 秒）与每 `INTERVAL` 秒扫描一次；`0` = 后台循环不启动，`POST /lifecycle/recover-orphan-capsules` 手动端点仍可用 | `/lifecycle/post-turn`（缓冲写入）/ 服务启动 |
+| `SESSION_CAPSULE_RECOVER_AFTER_SECONDS` | `1800` | **孤儿判定阈值**（秒）：缓冲的 `updated_at`（缺时间戳的老数据回退 `started_at`）距今 ≥ 此值才判为断线孤儿并补产成胶囊。30 分钟刻意保守——正聊着的会话轮间隔远小于它，不误伤；即使误判也**不丢轮次**（session-end 合并全部缓冲，胶囊节点 id 不变，只是中间多一条半截产物）。胶囊 payload 会打 `recovered=true` + `recovered_at` 留痕 | 后台循环 / `POST /lifecycle/recover-orphan-capsules` |
+| `SESSION_CAPSULE_RECOVER_INTERVAL_SECONDS` | `300` | 后台扫描间隔（秒） | `SESSION_CAPSULE_RECOVER_ENABLED=1` 时 |
 | `MEM_INGEST_MAX_LENGTH` | `50000` | 单条记忆 content 最大字符数，超长拒绝写入 | `mem_ingest` 写入时 |
 | `MEM_SEARCH_MAX_QUERY_CHARS` | `8000` | 检索 query 最大字符数，超长在检索入口直接拒绝（REST 422 / pre-turn fail-open 并标 `skip_reason="query_too_long"`），不再打到 embedding 模型侧报「exceeds the context length」 | `/mem/search`、`/mem/hybrid-search`、`/lifecycle/pre-turn` |
 | `POLICY_MODE` | `warn` | 写入口护栏模式：`warn` = 只记日志与结果字段，不改写行为（默认）；`enforce` = 策略真正拦截；非法值回退 `warn` | `mem_ingest` 写入时 |

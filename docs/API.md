@@ -44,6 +44,7 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8090
 | `POST` | `/lifecycle/post-turn` | **记忆策略 + 思维底片**：每轮回复后决定是否沉淀、写什么内容、写哪一层（logs/facts）；并从 `assistant_message` 抽取 `<thought>...</thought>` 段写 `type="thought"`（tier=logs，不命中不落库但响应可观测） |
 | `POST` | `/lifecycle/session-end` | **记忆策略**：会话结束提炼要点、去重、写入 facts 层 |
 | `POST` | `/lifecycle/pre-compress` | **记忆策略**：压缩前抽取要点（只回文本，不写库） |
+| `POST` | `/lifecycle/recover-orphan-capsules` | **断线自愈**：扫描静默超过 `SESSION_CAPSULE_RECOVER_AFTER_SECONDS` 的活跃会话缓冲（`type=session` / `status=active`），按 session 补产成 `type=task` + `kind=handoff` 胶囊（进程被硬砍、session-end 没跑时的兜底）；`dry_run=true` 只报告不写库。单 session 失败只记 warning 并计入 `failed`，不中断整批 |
 | `POST` | `/lifecycle/context-enhance` | **记忆策略**：压缩前挑主题、查图谱关键链、组装注入文本（只回文本，不写库） |
 | `POST` | `/mem/consolidate` | 容量合并候选预览（只读 dry-run；请求体可选 `threshold`（默认 0.85）、`max_importance`（默认 0.8）；不接受 apply） |
 | `GET` | `/doctor` | 部署体检（只读，返回 `{"ok", "checks"}`） |

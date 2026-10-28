@@ -1351,6 +1351,23 @@ def _trim_trailing_punct(handle: str) -> str:
     return handle.rstrip(_HANDLE_TRAILING_PUNCT)
 
 
+def format_capsule_content(session_id: str, sections: dict[str, str]) -> str:
+    """按固定四节格式拼胶囊正文（首行「接续点 / 会话接续 <session>」与
+    ``core.task_state._is_handoff`` 的首行判据对齐）。
+
+    抽成函数是因为正文有两个产出点：纯合成（``compose_session_capsule``）与
+    「已有胶囊 + 新轮次」的合并（``merge_capsule_with_existing``）——两处各拼一遍
+    格式必然漂移，四节标题又是逐字判据。
+    """
+    return (
+        f"接续点 / 会话接续 {session_id}\n"
+        f"【思路】{sections['thought']}\n"
+        f"【做了什么】{sections['outcome']}\n"
+        f"【下一步】{sections['next']}\n"
+        f"【踩的坑】{sections['pitfalls']}"
+    )
+
+
 def compose_session_capsule(turns: list[dict], *, session_id: str, handles: list[str] | None = None) -> dict:
     """把会话缓冲的 turns 合并成胶囊内容（纯合成，不写库）。
 
@@ -1441,11 +1458,61 @@ def compose_session_capsule(turns: list[dict], *, session_id: str, handles: list
     }
     sections = {name: raw[name] or CAPSULE_SECTION_TBD for name in _CAPSULE_SECTION_ORDER}
     pending = [name for name in _CAPSULE_SECTION_ORDER if not raw[name]]
-    content = (
-        f"接续点 / 会话接续 {session_id}\n"
-        f"【思路】{sections['thought']}\n"
-        f"【做了什么】{sections['outcome']}\n"
-        f"【下一步】{sections['next']}\n"
-        f"【踩的坑】{sections['pitfalls']}"
-    )
+    content = format_capsule_content(session_id, sections)
     return {"content": content, "sections": sections, "pending": pending, "turns": merged}
+
+
+def _merge_capsule_section_lines(old: str, new: str) -> str:
+    """两段节正文按**行**合并：追加去重，保序（旧在前）。
+
+    返回空串表示「这一节最终什么都没有」，由调用方决定是否落
+    ``CAPSULE_SECTION_TBD``。为什么按行而不是按字符 / 整段替换：节的正文本来就是
+    「每项一行」或「每轮一段」的形态（outcome / next 逐项一行，thought 逐轮一段），
+    行级去重既能挡住重复项，又不会把两轮的内容粘连成一句。
+    """
+    if not old or old == CAPSULE_SECTION_TBD:
+        return new if new and new != CAPSULE_SECTION_TBD else ""
+    if not new or new == CAPSULE_SECTION_TBD:
+        return old
+    seen: set[str] = set()
+    out: list[str] = []
+    for line in f"{old}\n{new}".splitlines():
+        key = line.strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(line)
+    return "\n".join(out)
+
+
+def merge_capsule_with_existing(composed: dict, existing_sections: dict | None, *, session_id: str) -> dict:
+    """把新合成的胶囊与**已有**胶囊的四节按行合并，返回新的 composed。
+
+    为什么必须有这一步（2026-10-28 实测事故）：``_finalize_session_capsule`` 的更新
+    路径原先无条件用新合成覆盖正文。而胶囊正文里可能含**人补写的内容**——收口时按
+    接续点口径补的 outcome / next / pitfalls 并不在缓冲 turns 里，机器合成不出来。
+    一次正常的 session-end、或断线自愈的补产，都会把那些手写内容静默盖掉（实测：
+    节点 3665 的 1761 字手写接续点，会在一次 1 轮缓冲的补产下被覆盖）。
+
+    规则（取向 = 什么都不丢，宁可节变长）：
+    - 新节为空（``（待补）``）→ 保留旧节；
+    - 旧节为空 / 缺失 → 用新节；
+    - 两者都有 → 按行追加去重（旧在前，保序）；
+    - 合并结果为空 → 该节落 ``（待补）`` 并进 ``pending``。
+
+    ``turns`` 沿用新合成的值（它是「缓冲里的轮数」这一事实，不是内容并集）。
+    """
+    incoming = composed.get("sections") if isinstance(composed, dict) else None
+    if not isinstance(incoming, dict):
+        return composed
+    previous = existing_sections if isinstance(existing_sections, dict) else {}
+    merged: dict[str, str] = {}
+    for name in _CAPSULE_SECTION_ORDER:
+        body = _merge_capsule_section_lines(str(previous.get(name) or ""), str(incoming.get(name) or ""))
+        merged[name] = body or CAPSULE_SECTION_TBD
+    return {
+        "content": format_capsule_content(session_id, merged),
+        "sections": merged,
+        "pending": [name for name in _CAPSULE_SECTION_ORDER if merged[name] == CAPSULE_SECTION_TBD],
+        "turns": composed.get("turns"),
+    }

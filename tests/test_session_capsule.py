@@ -1030,3 +1030,162 @@ def test_capsule_outcome_carries_extracted_handles(db_path):
     payload = client.get(f"/memory/{end.json()['capsule']['node_id']}").json()["payload"]
     assert "#187" in payload["sections"]["outcome"]
     assert "D:/repo/main.py" in payload["sections"]["outcome"]
+
+
+# ---------------------------------------------------------------------------
+# 胶囊更新路径：手写补写内容不得被机器合成覆盖（2026-10-28 实测事故）
+#
+# 背景：`_finalize_session_capsule` 的更新路径原先是 update_content 硬覆盖，而胶囊
+# 正文里可能有人按接续点口径补写的四节（不在缓冲 turns 里，机器合成不出来）。一次
+# 1 轮缓冲的 session-end 或断线自愈补产就会把 1761 字手写接续点静默盖掉。现改为
+# core.strategy.merge_capsule_with_existing 按行追加去重。
+# ---------------------------------------------------------------------------
+
+from core.strategy import CAPSULE_SECTION_TBD, merge_capsule_with_existing  # noqa: E402
+
+_SECTION_NAMES = ("thought", "outcome", "next", "pitfalls")
+
+
+def _tbd_composed():
+    return {
+        "sections": dict.fromkeys(_SECTION_NAMES, CAPSULE_SECTION_TBD),
+        "pending": list(_SECTION_NAMES),
+        "turns": 1,
+    }
+
+
+def test_merge_keeps_existing_when_incoming_is_tbd():
+    """新合成全是「（待补）」→ 四节原样保留旧内容，pending 清空。"""
+    existing = {
+        "thought": "手写的思路",
+        "outcome": "手写的产出：PR #214（0f9d52c）",
+        "next": "手写的下一步：重启服务验证",
+        "pitfalls": "手写的坑：只测了 happy path",
+    }
+    merged = merge_capsule_with_existing(_tbd_composed(), existing, session_id="s-merge-1")
+
+    assert merged["sections"] == existing
+    assert merged["pending"] == []
+    assert merged["content"].startswith("接续点 / 会话接续 s-merge-1\n")
+    assert "手写的产出：PR #214（0f9d52c）" in merged["content"]
+
+
+def test_merge_appends_and_dedupes_lines():
+    """两者都有内容 → 按行追加去重（旧在前、保序），重复行只留一条。"""
+    existing = {"thought": "旧思路", "outcome": "旧产出\n共同产出", "next": "旧下一步", "pitfalls": "旧坑"}
+    composed = {
+        "sections": {
+            "thought": "新思路",
+            "outcome": "共同产出\n新产出",
+            "next": CAPSULE_SECTION_TBD,
+            "pitfalls": "新坑",
+        },
+        "pending": ["next"],
+        "turns": 2,
+    }
+    merged = merge_capsule_with_existing(composed, existing, session_id="s-merge-2")
+
+    assert merged["sections"]["thought"] == "旧思路\n新思路"
+    assert merged["sections"]["outcome"] == "旧产出\n共同产出\n新产出"  # 共同产出 只一次
+    assert merged["sections"]["next"] == "旧下一步"  # 新的空 → 保留旧
+    assert merged["sections"]["pitfalls"] == "旧坑\n新坑"
+    assert merged["pending"] == []
+    assert merged["turns"] == 2  # turns 是缓冲事实，不从旧值并集来
+
+
+def test_merge_without_existing_uses_incoming():
+    """没有已有胶囊（新建路径的语义）→ 行为与纯合成一致。"""
+    composed = {
+        "sections": {
+            "thought": "新思路",
+            "outcome": "新产出",
+            "next": CAPSULE_SECTION_TBD,
+            "pitfalls": CAPSULE_SECTION_TBD,
+        },
+        "pending": ["next", "pitfalls"],
+        "turns": 1,
+    }
+    merged = merge_capsule_with_existing(composed, None, session_id="s-merge-3")
+
+    assert merged["sections"]["thought"] == "新思路"
+    assert merged["sections"]["next"] == CAPSULE_SECTION_TBD
+    assert merged["pending"] == ["next", "pitfalls"]
+
+
+def test_session_end_does_not_overwrite_handwritten_content(db_path):
+    """端到端：胶囊已存在且含手写四节 → 再来一轮 + session-end → 手写内容仍在、新轮也进来。"""
+    from mcp_tools import store
+
+    client = _client()
+    sid = "cap-e2e-merge"
+    r = client.post(
+        "/lifecycle/post-turn",
+        json={
+            "session_id": sid,
+            "turn_index": 1,
+            "user_message": "第一轮：先看缓冲",
+            "assistant_message": f"正文\n{_DEFAULT_BLOCK}\n",
+            "skeleton_kind": "default",
+        },
+    )
+    assert r.json()["session_buffer"]["buffered"] is True
+    first = client.post("/lifecycle/session-end", json={"session_id": sid, "messages": [], "auto_ingest": True})
+    capsule_id = first.json()["capsule"]["node_id"]
+
+    handwritten = {
+        "thought": "手写思路：这一轮真正要解决的是断线自愈",
+        "outcome": "手写产出：capsule 更新改为按行合并",
+        "next": "手写下一步：重启服务验证孤儿补产",
+        "pitfalls": "手写坑：验收只测 happy path 会漏空节分支",
+    }
+    store.update_payload(
+        capsule_id,
+        {"sections": handwritten, "content": f"接续点 / 会话接续 {sid}\n【思路】{handwritten['thought']}"},
+    )
+
+    # 第二轮：缓冲在上次 session-end 已 closed，post-turn 另建一条 active 缓冲
+    r = client.post(
+        "/lifecycle/post-turn",
+        json={
+            "session_id": sid,
+            "turn_index": 2,
+            "user_message": "第二轮：再补一轮",
+            "assistant_message": f"正文\n{_DEFAULT_BLOCK}\n",
+            "skeleton_kind": "default",
+        },
+    )
+    assert r.json()["session_buffer"]["buffered"] is True
+
+    second = client.post("/lifecycle/session-end", json={"session_id": sid, "messages": [], "auto_ingest": True})
+    body = second.json()
+    assert "capsule" in body, body
+    assert body["capsule"]["node_id"] == capsule_id  # 同一节点，不新建
+
+    payload = store.get_node(capsule_id)["payload"]
+    sections = payload["sections"]
+    for name, text in handwritten.items():
+        assert text in sections[name], f"{name} 的手写内容被机器合成覆盖了：{sections[name]!r}"
+    assert payload["pending"] == []
+    # 新轮内容也确实进了正文（不是只有手写部分）
+    assert "要的是什么" in sections["thought"]
+
+
+def test_session_end_new_capsule_still_creates(db_path):
+    """对照：新建路径不受合并影响（无既有胶囊 → 正常产出四节 + pending）。"""
+    client = _client()
+    sid = "cap-e2e-merge-new"
+    client.post(
+        "/lifecycle/post-turn",
+        json={
+            "session_id": sid,
+            "turn_index": 1,
+            "user_message": "只填一格",
+            "assistant_message": "正文\n<thought>\n1. 本轮改什么：只填了第一格\n</thought>\n",
+            "skeleton_kind": "default",
+        },
+    )
+    r = client.post("/lifecycle/session-end", json={"session_id": sid, "messages": [], "auto_ingest": True})
+    capsule = r.json()["capsule"]
+    assert capsule["turns"] == 1
+    assert "只填了第一格" in capsule["sections"]["thought"]
+    assert set(capsule["pending"]) == {"outcome", "next", "pitfalls"}

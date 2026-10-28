@@ -213,6 +213,9 @@ All configuration is read from environment variables (a `.env` file is loaded au
 | `REST_PORT` | `8090` | Port for the FastAPI REST service |
 | `DB_PATH` | `data/mh_memory.db` | Path to the embedded TriviumDB database |
 | `SESSION_BUFFER_MIN_THOUGHT_CHARS` | `400` | Substantive-turn threshold for the session buffer: a turn enters only with tool calls, or thought body ≥ this length plus a conclusion field, or an imperative user message (see docs/CONFIGURATION.md) |
+| `SESSION_CAPSULE_RECOVER_ENABLED` | `1` | Crash-recovery switch for session capsules: a background loop finalizes active session buffers idle past the threshold into capsules (covers a hard kill where session-end never ran); `0` = no background loop, the manual endpoint still works |
+| `SESSION_CAPSULE_RECOVER_AFTER_SECONDS` | `1800` | Orphan threshold (seconds): a buffer is finalized only when its last activity is older than this. Deliberately conservative -- a false positive loses no turns, since session-end re-merges all buffers into the same node |
+| `SESSION_CAPSULE_RECOVER_INTERVAL_SECONDS` | `300` | Background scan interval (seconds) |
 | `EMBEDDING_PROVIDER` | *(empty = auto-detect)* | Embedding backend: empty auto-detects (cloud key → `openai`, otherwise `local`), or explicitly `local` / `ollama` / `openai` |
 | `DEEPSEEK_API_KEY` | *(empty)* | Used for report generation; optional |
 | `KNOWLEDGE_DIR` | *(optional)* | Root of the knowledge base (Obsidian `.md` files) to index |

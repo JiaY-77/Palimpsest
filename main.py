@@ -89,6 +89,9 @@ from core.strategy import (
 from core.strategy import (
     is_near_duplicate as _strategy_is_near_duplicate,
 )
+from core.strategy import (
+    merge_capsule_with_existing as _strategy_merge_capsule_with_existing,
+)
 from core.task_state import HANDOFF_KIND, _now_iso, apply_task_patch
 from core.trivium_store import DatabaseBusyError, EmbeddingInputTooLongError, EmbeddingUnavailableError, TriviumStore
 from core.trivium_store import shutdown as _shutdown_shared_db
@@ -146,9 +149,18 @@ async def _lifespan(app: FastAPI):
     """
     async with _mcp_server.session_manager.run():
         await _startup_self_check()
+        # 断线自愈（孤儿缓冲补产）：常驻服务的后台周期扫描，Config 可关。
+        recover_task: asyncio.Task[None] | None = None
+        if Config.SESSION_CAPSULE_RECOVER_ENABLED:
+            recover_task = asyncio.create_task(_orphan_recovery_loop())
         try:
             yield
         finally:
+            if recover_task is not None:
+                # cancel + 吞 CancelledError：lifespan 退出的正常路径，不算错误。
+                recover_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await recover_task
             # ASGI shutdown：进程级共享连接（issue #167 单例长连接）flush 全量
             # 落盘后关闭。flush 失败只记日志、不阻塞退出（WAL 模式下已提交事务
             # 不丢）；atexit 已注册兜底，覆盖脚本/CLI 等非 lifespan 退出路径。
@@ -364,6 +376,7 @@ def root():
             "/lifecycle/session-end",
             "/lifecycle/pre-compress",
             "/lifecycle/context-enhance",
+            "/lifecycle/recover-orphan-capsules",
         ],
     }
 
@@ -1640,6 +1653,9 @@ def _append_session_buffer_turn(session_id: str, turn_index: int, buf: dict) -> 
     - 已有 → 追加本轮 turn；**同一 turn_index 重复提交幂等覆盖**（原位替换，
       不追加第二条）。
     - ``started_at`` 记缓冲创建时刻（首个 turn 的落库时刻，数值）；更新时保留。
+    - ``updated_at`` 记最后活动时刻（新建 = started_at，每次追加都刷新）：孤儿
+      恢复扫描（``_recover_orphan_session_buffers``）靠它判断缓冲静默多久——
+      此前 payload 只有 started_at、追加也不刷新任何时间戳，断线自愈无从判定。
     """
     store = _get_store()
     turn_entry = {
@@ -1650,6 +1666,7 @@ def _append_session_buffer_turn(session_id: str, turn_index: int, buf: dict) -> 
     }
     existing = _find_active_session_buffer(session_id)
     if existing is None:
+        now = time.time()
         content = f"[会话缓冲] session={session_id}（进行中，session-end 合并为会话胶囊）"
         nid = store.insert_node(
             {
@@ -1658,7 +1675,8 @@ def _append_session_buffer_turn(session_id: str, turn_index: int, buf: dict) -> 
                 "importance": SESSION_BUFFER_IMPORTANCE,
                 "session_id": session_id,
                 "status": SESSION_BUFFER_STATUS_ACTIVE,
-                "started_at": time.time(),
+                "started_at": now,
+                "updated_at": now,  # 与 started_at 同值：新建这一刻即最后一次活动
                 "turns": [turn_entry],
                 "last_turn_index": turn_index,
             },
@@ -1673,7 +1691,7 @@ def _append_session_buffer_turn(session_id: str, turn_index: int, buf: dict) -> 
             break
     else:
         turns.append(turn_entry)
-    store.update_payload(nid, {"turns": turns, "last_turn_index": turn_index})
+    store.update_payload(nid, {"turns": turns, "last_turn_index": turn_index, "updated_at": time.time()})
     _sync_fts_after_update(nid)
     return nid
 
@@ -1906,6 +1924,12 @@ def _finalize_session_capsule(session_id: str) -> dict | None:
     composed = _strategy_compose_session_capsule(
         turns, session_id=session_id, handles=_strategy_extract_handles(handle_blobs)
     )
+    if existing is not None:
+        # 更新路径的正文与四节**按行合并**，不覆盖（2026-10-28 实测）：胶囊里可能
+        # 含人补写的内容（收口时按接续点口径补的 outcome / next / pitfalls），它们
+        # 不在缓冲 turns 里、机器合成不出来；一次 1 轮缓冲的 session-end 或断线自愈
+        # 补产就会把 1761 字手写接续点静默盖掉。规则见 merge_capsule_with_existing。
+        composed = _strategy_merge_capsule_with_existing(composed, existing[1].get("sections"), session_id=session_id)
     structured = {
         "kind": HANDOFF_KIND,  # 显式写进 payload（_is_handoff 首行判据之外的显式路）
         "session_id": session_id,
@@ -1968,6 +1992,112 @@ def _finalize_session_capsule(session_id: str) -> dict | None:
         "pending": composed["pending"],
         "turns": composed["turns"],
     }
+
+
+def _session_buffer_activity_ts(payload: dict) -> float:
+    """缓冲的最后活动时间（epoch 秒）：updated_at 优先，缺失回退 started_at，都缺失返回 0.0（视为最老，可补）。
+
+    0.0 兜底的取向：连 started_at 都没有的缓冲只可能是更老的数据形态或脏数据，
+    宁可多补不可漏补——补产不丢数据（session-end 语义幂等），漏补才真悬空。
+    """
+    for key in ("updated_at", "started_at"):
+        value = payload.get(key)
+        if isinstance(value, (int, float)):
+            return float(value)
+    return 0.0
+
+
+def _recover_orphan_session_buffers(*, dry_run: bool = False, stale_after: float | None = None) -> dict:
+    """孤儿会话缓冲扫描与补产：进程硬砍（session-end 没跑）后把悬空缓冲补成胶囊。
+
+    为什么需要它：胶囊只在 session-end 落地，post-turn 累进的缓冲若赶上进程被硬砍
+    （计划内关机 / 崩溃）就永远 status=active 悬空，胶囊不产。这里把「静默超过
+    stale_after 秒」的活跃缓冲按 session 逐个调 ``_finalize_session_capsule`` 补产
+    ——该函数幂等（无缓冲 / 已合并过且无新轮都返回 None），晚到的正常 session-end
+    与补产结果天然合流，不丢轮次。
+
+    - ``dry_run=True``：一个字节都不写库，只报告将要处理哪些 session（recovered
+      条目 node_id=None、turns 为合并轮数预览）。
+    - 单 session 补产失败只记 warning 并计入 failed，绝不中断其余 session——
+      单点失败不能拖垮整批。
+    - 返回键名固定（端点与测试断言依赖）：ok / dry_run / stale_after / scanned /
+      recovered / skipped / failed；``scanned`` 为本轮扫到的 type=session 缓冲
+      节点总数（含 active / closed）。
+    """
+    threshold = float(Config.SESSION_CAPSULE_RECOVER_AFTER_SECONDS) if stale_after is None else stale_after
+    store = _get_store()
+    now = time.time()
+    scanned = 0
+    stale_by_session: dict[str, tuple[int, dict]] = {}
+    for nid, payload in store.iter_payloads():
+        if not isinstance(payload, dict) or payload.get("type") != SESSION_BUFFER_TYPE:
+            continue
+        scanned += 1
+        if payload.get("status") != SESSION_BUFFER_STATUS_ACTIVE:
+            continue
+        if now - _session_buffer_activity_ts(payload) < threshold:
+            continue
+        session_id = str(payload.get("session_id") or "")
+        if not session_id:
+            continue  # 无主缓冲没有合并归属（写入侧不会产生），防御脏数据
+        # 同一 session 理论只一条 active；多条时留活动时间最新的一条占位即可——
+        # 合并走 _find_session_buffers 取全部缓冲，轮次不会丢。
+        prev = stale_by_session.get(session_id)
+        if prev is None or _session_buffer_activity_ts(payload) > _session_buffer_activity_ts(prev[1]):
+            stale_by_session[session_id] = (nid, payload)
+
+    result: dict = {
+        "ok": True,
+        "dry_run": dry_run,
+        "stale_after": threshold,
+        "scanned": scanned,
+        "recovered": [],
+        "skipped": [],
+        "failed": [],
+    }
+    for session_id in stale_by_session:
+        if dry_run:
+            merged = _merge_session_turns(_find_session_buffers(session_id))
+            result["recovered"].append({"session_id": session_id, "node_id": None, "turns": len(merged)})
+            continue
+        try:
+            capsule = _finalize_session_capsule(session_id)
+        except Exception as e:  # noqa: BLE001 —— 单 session 失败不拖垮整批
+            logger.warning("孤儿会话缓冲补产失败 session=%s: %s", session_id, e)
+            result["failed"].append({"session_id": session_id, "error": str(e)})
+            continue
+        if capsule is None:
+            # 无缓冲 / 已合并过且无新轮的幂等空操作
+            result["skipped"].append(session_id)
+            continue
+        capsule_id = int(capsule["node_id"])
+        try:
+            # 留痕：这条胶囊是断线补产的，不是正常 session-end 产的——检索侧据此
+            # 能区分「半截产物」，排查时不用猜它是怎么来的。
+            store.update_payload(capsule_id, {"recovered": True, "recovered_at": _now_iso()})
+        except Exception as e:  # noqa: BLE001 —— 留痕失败不影响胶囊已产出（尽力而为）
+            logger.warning("孤儿补产留痕失败 capsule=%s: %s", capsule_id, e)
+        logger.info("孤儿会话缓冲已补产成胶囊 session=%s capsule=%s turns=%s", session_id, capsule_id, capsule["turns"])
+        result["recovered"].append({"session_id": session_id, "node_id": capsule_id, "turns": capsule["turns"]})
+    return result
+
+
+async def _orphan_recovery_loop() -> None:
+    """后台周期扫描：服务常驻时的断线自愈（Config.SESSION_CAPSULE_RECOVER_ENABLED 才启动）。
+
+    - 启动先 sleep 5 秒再首轮扫描：等 store 懒加载就绪，也避免与启动后的首批
+      请求挤在同一时刻做全库扫描。
+    - 同步扫描经 to_thread 下放，不阻塞事件循环（同 ``_startup_self_check``）。
+    - 单轮异常只记 warning 继续循环，绝不退出——自愈循环自己挂了，孤儿缓冲就
+      永远没人补了。CancelledError 不在 Exception 体系内，cancel 照常穿透。
+    """
+    await asyncio.sleep(5)
+    while True:
+        try:
+            await asyncio.to_thread(_recover_orphan_session_buffers)
+        except Exception as e:  # noqa: BLE001 —— 扫描失败只记日志，下轮重试
+            logger.warning("孤儿会话缓冲周期扫描失败（下轮重试）: %s", e)
+        await asyncio.sleep(Config.SESSION_CAPSULE_RECOVER_INTERVAL_SECONDS)
 
 
 @app.post("/lifecycle/session-end")
@@ -2047,6 +2177,21 @@ def lifecycle_session_end(req: SessionEndRequest):
 def lifecycle_pre_compress(req: PreCompressRequest):
     """压缩前抽取要点，贡献给压缩 prompt（**不写库**，只保上下文）。"""
     return _strategy_pre_compress(req.messages)
+
+
+class RecoverCapsulesRequest(BaseModel):
+    """POST /lifecycle/recover-orphan-capsules 请求体：dry_run 只报告不写库。"""
+
+    dry_run: bool = False
+
+
+@app.post("/lifecycle/recover-orphan-capsules")
+def lifecycle_recover_orphan_capsules(req: RecoverCapsulesRequest) -> dict:
+    """手动触发孤儿缓冲补产（验收与人工补救；与后台循环共用同一套扫描实现）。
+
+    同步 def：FastAPI 自动放线程池，不阻塞事件循环（与其他 lifecycle 端点一致）。
+    """
+    return _recover_orphan_session_buffers(dry_run=req.dry_run)
 
 
 class ContextEnhanceRequest(BaseModel):

@@ -262,6 +262,23 @@ class Config:
     # session-end 胶囊不再被噪声塞满。纯函数不读环境——本值由端点注入。
     SESSION_BUFFER_MIN_THOUGHT_CHARS = int(os.getenv("SESSION_BUFFER_MIN_THOUGHT_CHARS", "400"))
 
+    # ---- 会话胶囊断线自愈（孤儿缓冲补产）----
+    # 背景：胶囊只在 session-end 落地；进程被硬砍（计划内关机 / 桌面 app 崩溃）时
+    # session-end 不会跑，post-turn 累进的缓冲永远 status=active 悬空在库里，胶囊
+    # 永远不产。三项配置构成自愈：后台循环（ENABLED）每 INTERVAL 秒扫一次，把静默
+    # 超过 AFTER_SECONDS 的活跃缓冲按 session 补产成胶囊；也可经
+    # POST /lifecycle/recover-orphan-capsules 手动触发（验收 / 人工补救）。
+    # 总开关：1=启用（默认）；0=后台循环不启动（手动端点仍可用）。
+    SESSION_CAPSULE_RECOVER_ENABLED = os.getenv("SESSION_CAPSULE_RECOVER_ENABLED", "1") == "1"
+    # 孤儿判定的静默阈值（秒）：缓冲 updated_at（缺时间戳的老数据回退 started_at）
+    # 距今超过它才判孤儿。30 分钟刻意保守——正聊着的会话轮间隔远小于它，不能误伤；
+    # 即使误判也**不丢数据**：session-end 合并的是全部缓冲轮次，误补的「半截胶囊」
+    # 会在真 session-end 时原节点重合成（node_id 不变），代价只是中间多一条可观测
+    # 的中间产出，而不是丢轮次。
+    SESSION_CAPSULE_RECOVER_AFTER_SECONDS = int(os.getenv("SESSION_CAPSULE_RECOVER_AFTER_SECONDS", "1800"))
+    # 后台扫描间隔（秒）：服务常驻时每 5 分钟自愈一轮——肉眼可等，又不至于空转。
+    SESSION_CAPSULE_RECOVER_INTERVAL_SECONDS = int(os.getenv("SESSION_CAPSULE_RECOVER_INTERVAL_SECONDS", "300"))
+
     # ---- 记忆分层（tier）：检索侧视图，不改存储、不迁数据 ----
     # facts = 事实层（默认检索与注入池）；logs = 日志层（从默认池摘出）；
     # ""（空串）= 不过滤，回到改动前的全量行为（显式历史通道）。
