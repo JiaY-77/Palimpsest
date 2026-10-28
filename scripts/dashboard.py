@@ -18,6 +18,12 @@ import os
 import time
 
 import httpx
+
+# 项目根注入：必须放在任何本项目 import 之前（scripts/_common.py 的统一约定）。
+# 少了这一步时 `python scripts/dashboard.py`（文档里给的启动方式）会直接崩在
+# `from config import Config` 上——`ModuleNotFoundError: No module named 'config'`
+# ——因为脚本模式下 sys.path[0] 是 scripts/ 而不是仓库根。
+from _common import PROJECT_ROOT  # noqa: F401  # 导入即注入 sys.path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
