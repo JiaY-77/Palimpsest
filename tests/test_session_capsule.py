@@ -773,6 +773,8 @@ def test_capsule_scenario_a_one_session_one_capsule(db_path):
     assert set(payload["sections"]) == {"thought", "outcome", "next", "pitfalls"}
     assert all(body != "（待补）" for body in payload["sections"].values())
     assert payload["pending"] == []
+    # #208 配套：新建路径不写 closed_at（此刻还没有会话接手过它）
+    assert "closed_at" not in payload
 
 
 def test_capsule_scenario_b_mid_session_end_still_one_capsule(db_path):
@@ -813,6 +815,8 @@ def test_capsule_scenario_b_mid_session_end_still_one_capsule(db_path):
     assert nid == first_id, "node_id 必须不变（原节点更新，不是新建）"
     assert end2.json()["capsule"]["node_id"] == nid
     assert payload["turns"] == 2, "轮次要全量累积（中途 session-end 之前的轮不能丢）"
+    # #208 配套：更新路径要打 closed_at（这场会话的接手到此为止）
+    assert payload.get("closed_at"), "更新已有胶囊时必须写 closed_at"
     # 重复 session-end：幂等空操作——不产第二条、返回体不加 capsule 字段
     end3 = client.post("/lifecycle/session-end", json={"session_id": "cap-m1-b", "messages": []})
     assert len(_capsules_by_session("cap-m1-b")) == 1

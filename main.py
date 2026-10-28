@@ -1915,6 +1915,10 @@ def _finalize_session_capsule(session_id: str) -> dict | None:
     }
     if existing is not None:
         # 更新路径（issue #187）：node_id 不变，正文重合成 + payload 覆盖。
+        # 收口时打 closed_at（#208 配套）：一场会话的接受到此为止。新建路径
+        # 刻意不写——刚产出的胶囊此刻还没有任何会话接手过它，写 closed_at
+        # 会自相矛盾（opened_at 为空却有 closed_at）。
+        structured["closed_at"] = _now_iso()
         capsule_id = existing[0]
         store.update_content(capsule_id, composed["content"])  # 内部同步 FTS / TDB，向量标 stale
         try:
