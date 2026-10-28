@@ -369,6 +369,14 @@ def root():
             "/mem/fact-history",
             "/mem/recent",
             "/tasks/active",
+            "/tasks/backfill",
+            "/tasks/archive",
+            "/fts/rebuild",
+            "/fts/search",
+            "/mem/review",
+            "/mem/promote",
+            "/mem/ingest-git",
+            "/mem/reindex",
             "/graph/neighbors",
             "/graph/communities",
             "/mem/stats",
@@ -826,6 +834,51 @@ class MemFactHistoryRequest(BaseModel):
 class MemConsolidateRequest(BaseModel):
     threshold: float = 0.85
     max_importance: float = 0.8
+    # apply=true 才执行合并；缺省保持既有「只读预览」语义（dry-run 不推进 generation / 不写库）
+    apply: bool = False
+
+
+class MemPromoteRequest(BaseModel):
+    apply: bool = False
+    days: int = 30
+    min_hits: int = 5
+
+
+class MemReviewRequest(BaseModel):
+    days: int = 7
+    domain: str = ""
+    tier: str = "facts"
+
+
+class MemIngestGitRequest(BaseModel):
+    repo: str = ""  # 空 = 服务端项目根
+    since: int = 7
+
+
+class FtsSearchRequest(BaseModel):
+    query: str
+    limit: int = 10
+
+
+class TaskBackfillRequest(BaseModel):
+    apply: bool = False
+
+
+class TaskArchiveRequest(BaseModel):
+    apply: bool = False
+    knowledge_dir: str = ""  # 空 = 服务端 KNOWLEDGE_DIR 约定位置
+
+
+class MemReindexRequest(BaseModel):
+    check: bool = False
+    dry_run: bool = False
+    restart: bool = False
+    force: bool = False
+    resume: bool = True
+    only: str = ""
+    skip: str = ""
+    batch: int = 64
+    yes: bool = False
 
 
 class MemoryHubUnpackRequest(BaseModel):
@@ -1325,18 +1378,140 @@ app.include_router(
 
 @app.post("/mem/consolidate")
 def mem_consolidate(req: MemConsolidateRequest):
-    """只读预览：不修改任何节点。dry-run 合并候选报告（不接受 apply，写操作不暴露）。
+    """合并候选报告。dry-run（缺省）只读预览；``apply=true`` 才真正执行合并。
 
-    核心逻辑见 core.consolidator.consolidate（dry_run=True）。
+    核心逻辑见 core.consolidator.consolidate。
     """
     from core.consolidator import consolidate
 
     return consolidate(
         _get_store(),
-        dry_run=True,
+        dry_run=not req.apply,
         sim_threshold=req.threshold,
         max_importance=req.max_importance,
     )
+
+
+@app.post("/mem/promote")
+def mem_promote(req: MemPromoteRequest):
+    """高频记忆自动升级。dry-run（缺省）只预览候选；``apply=true`` 才升权打标。"""
+    from core.promoter import promote
+
+    return promote(
+        _get_store(),
+        dry_run=not req.apply,
+        days=req.days,
+        min_hits=req.min_hits,
+    )
+
+
+@app.post("/tasks/backfill")
+def tasks_backfill(req: TaskBackfillRequest):
+    """存量 task 节点回填 task_state。dry-run（缺省）只读预览；``apply=true`` 才写库。"""
+    from core.task_state import backfill_task_state
+
+    return backfill_task_state(_get_store(), dry_run=not req.apply)
+
+
+@app.post("/tasks/archive")
+def tasks_archive(req: TaskArchiveRequest):
+    """已完成任务节点归档到知识库。dry-run（缺省）只预览；``apply=true`` 才写文件+删节点。
+
+    knowledge_dir 空串 = 服务端 ``KNOWLEDGE_DIR``（core.task_archive 自行解析）。
+    """
+    from core.task_archive import archive_tasks
+
+    return archive_tasks(
+        _get_store(),
+        dry_run=not req.apply,
+        knowledge_dir=req.knowledge_dir or None,
+    )
+
+
+@app.post("/mem/review")
+def mem_review(req: MemReviewRequest):
+    """复盘盘点（近 N 天记忆 + 治理候选 + 全库 decision 计数）。
+
+    复用 ``mcp_tools.memory.mem_review`` 的同一实现（_mem_review_impl），
+    外加经同一份服务端 store 统计 ``type=decision`` 节点数——与 CLI 旧行为一致。
+    """
+    import json
+
+    from mcp_tools.memory import _mem_review_impl
+
+    data = json.loads(_mem_review_impl(_get_store(), days=req.days, domain=req.domain, tier=req.tier))
+    decision_count = 0
+    for _nid, payload in _get_store().iter_payloads():
+        if isinstance(payload, dict) and payload.get("type") == "decision":
+            decision_count += 1
+    stats = data.get("stats", {})
+    stats["decision"] = decision_count
+    data["stats"] = stats
+    return data
+
+
+@app.post("/mem/ingest-git")
+def mem_ingest_git(req: MemIngestGitRequest):
+    """将 git commit 入库为 ``git_commit`` 节点（幂等）。git log 在服务端执行。
+
+    repo 空串 = 服务端项目根（``scripts._common.PROJECT_ROOT``）。
+    """
+    from core.git_ingest import ingest_git_commits
+
+    repo = req.repo
+    if not repo:
+        from scripts._common import PROJECT_ROOT as _PROJECT_ROOT
+
+        repo = _PROJECT_ROOT
+    return ingest_git_commits(_get_store(), repo, req.since)
+
+
+@app.post("/fts/rebuild")
+def fts_rebuild_endpoint():
+    """全量重建 FTS5 全文索引（服务端执行，返回索引节点数）。"""
+    from core.fts_index import rebuild as fts_rebuild_impl
+
+    return {"indexed": fts_rebuild_impl(_get_store())}
+
+
+@app.post("/fts/search")
+def fts_search_endpoint(req: FtsSearchRequest):
+    """FTS5 全文搜索（trigram 中文子串匹配）。只读，不在服务端拿写锁。"""
+    from core.fts_index import search_fts
+
+    return {"results": search_fts(req.query, limit=req.limit)}
+
+
+@app.post("/mem/reindex")
+def mem_reindex(req: MemReindexRequest):
+    """全库向量重嵌入（换 embedding 模型后使用）。
+
+    复用 ``scripts.reindex`` 的既有实现（含指纹比对 / 断点进度 / 退出码语义），
+    stdout 捕获进 ``output`` 返回。``check`` / ``dry_run`` 路径不写库；
+    非交互环境未传 ``yes`` 时交互确认会拒绝执行（与脚本旧行为一致）。
+    """
+    import contextlib
+    import io
+
+    from scripts import reindex as reindex_mod
+
+    store = _get_store()
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        if req.check:
+            code = reindex_mod.cmd_check(store)
+        else:
+            code = reindex_mod.cmd_reindex(
+                store,
+                only=[s.strip() for s in req.only.split(",") if s.strip()] or None,
+                skip=[s.strip() for s in req.skip.split(",") if s.strip()] or None,
+                batch=req.batch,
+                restart=req.restart,
+                dry_run=req.dry_run,
+                yes=req.yes,
+                force=req.force,
+            )
+    return {"exit_code": code, "output": buf.getvalue()}
 
 
 @app.get("/doctor")

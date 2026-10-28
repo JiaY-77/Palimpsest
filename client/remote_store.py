@@ -363,6 +363,105 @@ class RemoteStore:
             return data.get("results", [])
         return data or []
 
+    # ---- 业务级批操作端点（issue #168）----
+    #
+    # 每个操作一个请求、事务边界留在服务端；不镜像 per-node 写方法。
+    # dry-run 语义：dry_run=True 走只读请求（服务端不写库、不推进 generation）。
+
+    def tasks_backfill(self, dry_run: bool = True) -> dict:
+        """存量 task 节点回填 task_state —— 经 ``POST /tasks/backfill``。"""
+        data = self._req("POST", "/tasks/backfill", json={"apply": not dry_run})
+        return data if isinstance(data, dict) else {}
+
+    def mem_review(self, days: int = 7, domain: str = "", tier: str = "facts") -> dict:
+        """复盘盘点 —— 经 ``POST /mem/review``（只读）。"""
+        data = self._req("POST", "/mem/review", json={"days": days, "domain": domain, "tier": tier})
+        return data if isinstance(data, dict) else {}
+
+    def consolidate(
+        self,
+        dry_run: bool = True,
+        threshold: float = 0.85,
+        max_importance: float = 0.8,
+    ) -> dict:
+        """合并候选报告 / 执行合并 —— 经 ``POST /mem/consolidate``。"""
+        data = self._req(
+            "POST",
+            "/mem/consolidate",
+            json={"apply": not dry_run, "threshold": threshold, "max_importance": max_importance},
+        )
+        return data if isinstance(data, dict) else {}
+
+    def promote(self, dry_run: bool = True, days: int = 30, min_hits: int = 5) -> dict:
+        """高频记忆自动升级 —— 经 ``POST /mem/promote``。"""
+        data = self._req(
+            "POST",
+            "/mem/promote",
+            json={"apply": not dry_run, "days": days, "min_hits": min_hits},
+        )
+        return data if isinstance(data, dict) else {}
+
+    def ingest_git(self, repo: str = "", since: int = 7) -> dict:
+        """git commit 入库（幂等）—— 经 ``POST /mem/ingest-git``（服务端执行 git log）。"""
+        data = self._req("POST", "/mem/ingest-git", json={"repo": repo, "since": since})
+        return data if isinstance(data, dict) else {}
+
+    def fts_rebuild(self) -> dict:
+        """全量重建 FTS5 索引 —— 经 ``POST /fts/rebuild``。"""
+        data = self._req("POST", "/fts/rebuild")
+        return data if isinstance(data, dict) else {}
+
+    def fts_search(self, query: str, limit: int = 10) -> list:
+        """FTS5 全文搜索 —— 经 ``POST /fts/search``（只读）。"""
+        data = self._req("POST", "/fts/search", json={"query": query, "limit": limit})
+        if isinstance(data, dict):
+            return data.get("results", [])
+        return data or []
+
+    def task_archive(self, dry_run: bool = True, knowledge_dir: str = "") -> dict:
+        """已完成任务归档 —— 经 ``POST /tasks/archive``。"""
+        data = self._req(
+            "POST",
+            "/tasks/archive",
+            json={"apply": not dry_run, "knowledge_dir": knowledge_dir},
+        )
+        return data if isinstance(data, dict) else {}
+
+    def reindex(
+        self,
+        check: bool = False,
+        dry_run: bool = False,
+        restart: bool = False,
+        force: bool = False,
+        resume: bool = True,
+        only: str = "",
+        skip: str = "",
+        batch: int = 64,
+        yes: bool = False,
+        timeout: float | None = None,
+    ) -> dict:
+        """全库向量重嵌入 —— 经 ``POST /mem/reindex``。
+
+        返回 ``{"exit_code", "output"}``（与 ``scripts.reindex`` 的退出码约定一致）。
+        全量重嵌可能远超本地默认超时，``timeout`` 缺省放宽到 3600s。
+        """
+        body = {
+            "check": check,
+            "dry_run": dry_run,
+            "restart": restart,
+            "force": force,
+            "resume": resume,
+            "only": only,
+            "skip": skip,
+            "batch": batch,
+            "yes": yes,
+        }
+        kwargs: dict[str, Any] = {}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        data = self._req("POST", "/mem/reindex", json=body, **kwargs)
+        return data if isinstance(data, dict) else {}
+
     # ---- 收尾 ----
 
     def close(self) -> None:

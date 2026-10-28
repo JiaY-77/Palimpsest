@@ -117,7 +117,7 @@ python scripts/palimpsest_cli.py reindex --yes
 
 # 换了模型 / provider 之后：一条命令到位（放弃断点 + 跳过指纹确认 + 全量重算 + 写新指纹）
 # `--yes` 不可省：它跳的是「即将重嵌 N 个节点」那次确认（`--force` 不管这一步）
-# 另：reindex 直连库，须先停 REST 服务，跑完再启动
+# 另：reindex 经 REST 业务端点在服务端执行（issue #168），REST 在跑即可，无需停服
 python scripts/palimpsest_cli.py reindex --force --yes
 
 # 4. 验证：跑一次检索冒烟

@@ -146,11 +146,10 @@ grep EMBEDDING_PROVIDER .env    # 没输出 → 补上你原本在用的那个�
 
 ```bash
 # 1) 确认 provider（见第 1 条）
-# 2) 停 REST 服务——reindex 直连库，服务在跑会报 Database locked
-# 3) 全量重嵌。--yes 不可省：--force 只跳「指纹确认」，不跳最后那次「确认？」
+# 2) 全量重嵌。--yes 不可省：--force 只跳「指纹确认」，不跳最后那次「确认？」
+#    reindex 经 REST 业务端点在服务端执行（issue #168），REST 在跑即可，无需停服
 python scripts/palimpsest_cli.py reindex --force --yes
-# 4) 起 REST 服务
-# 5) 体检应回到 9/9
+# 3) 体检应回到 9/9
 curl -s http://127.0.0.1:8090/doctor
 ```
 

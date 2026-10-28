@@ -619,26 +619,11 @@ def tasks_active(
     )
 
 
-@mcp.tool()
-def mem_review(days: int = 7, domain: str = "", tier: str = DEFAULT_TIER) -> str:
-    """复盘盘点（复盘机制融入系统，复盘=记忆治理）。
+def _mem_review_impl(store, days: int = 7, domain: str = "", tier: str = DEFAULT_TIER) -> str:
+    """mem_review 的核心实现（不含 @mcp.tool 装饰），供 REST 端点同款复用。
 
-    统计全库节点 + 盘点最近 days 天 ingest 的记忆，输出复盘草稿：
-      - recent_ingests：窗口内新增记忆（type=memory，按 created_at 倒序）
-      - high_value_candidates：importance>=0.6 且 active（升级知识库候选）
-      - stale_outdated：outdated 节点（版本链历史，可清理候选）
-      - low_value_candidates：importance<=0.4 且 active 的非知识节点（清理候选）
-    供每日复盘使用：维护者裁决后升级/清理，再存 type=review 节点。
-
-    tier：记忆分层视图，仅作用于 recent_ingests（与 mem_search 同款判定，
-    复用 _tier_matches）——"facts"（默认）只回事实层 / "logs" 只回日志层 /
-    ""（空串）不过滤（等价改动前行为）。kb_chunk / novel_chunk 不入本体系，
-    走既有 scope 隔离；未登记的 type 一律归 facts。
-
-    A3 候选集回退全遍历：triviumdb 0.8.3 的 TQL FIND/MATCH 硬截断 5000 条，且
-    TQL 返回顺序为 id 升序、不同于 iter_payloads 的 all_node_ids 顺序——对
-    stale/low_value 这类旧实现「不排序、保持遍历序」的候选集，走 TQL 无法与旧实现
-    逐字段一致。故四类候选与 stats 统一来自单次全遍历（与旧实现同一数据源）。
+    ``store`` 由调用方传入（MCP 路径传 _common.store，REST 路径传服务端 store），
+    逻辑本身不感知存储来源。issue #168。
     """
     now = time.time()
     window = max(1, int(days)) * 86400.0
@@ -722,6 +707,30 @@ def mem_review(days: int = 7, domain: str = "", tier: str = DEFAULT_TIER) -> str
             "low_value_candidates": low_value[:20],
         }
     )
+
+
+@mcp.tool()
+def mem_review(days: int = 7, domain: str = "", tier: str = DEFAULT_TIER) -> str:
+    """复盘盘点（复盘机制融入系统，复盘=记忆治理）。
+
+    统计全库节点 + 盘点最近 days 天 ingest 的记忆，输出复盘草稿：
+      - recent_ingests：窗口内新增记忆（type=memory，按 created_at 倒序）
+      - high_value_candidates：importance>=0.6 且 active（升级知识库候选）
+      - stale_outdated：outdated 节点（版本链历史，可清理候选）
+      - low_value_candidates：importance<=0.4 且 active 的非知识节点（清理候选）
+    供每日复盘使用：维护者裁决后升级/清理，再存 type=review 节点。
+
+    tier：记忆分层视图，仅作用于 recent_ingests（与 mem_search 同款判定，
+    复用 _tier_matches）——"facts"（默认）只回事实层 / "logs" 只回日志层 /
+    ""（空串）不过滤（等价改动前行为）。kb_chunk / novel_chunk 不入本体系，
+    走既有 scope 隔离；未登记的 type 一律归 facts。
+
+    A3 候选集回退全遍历：triviumdb 0.8.3 的 TQL FIND/MATCH 硬截断 5000 条，且
+    TQL 返回顺序为 id 升序、不同于 iter_payloads 的 all_node_ids 顺序——对
+    stale/low_value 这类旧实现「不排序、保持遍历序」的候选集，走 TQL 无法与旧实现
+    逐字段一致。故四类候选与 stats 统一来自单次全遍历（与旧实现同一数据源）。
+    """
+    return _mem_review_impl(store, days=days, domain=domain, tier=tier)
 
 
 # ---- 版本历史查询（REVISED_BY 修订链）----

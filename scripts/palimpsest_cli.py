@@ -1,6 +1,5 @@
 """
 Palimpsest CLI —— 本地 CLI 薄封装（2026-08-25）。
-
 设计：
   - 直接复用 mcp_server.py 的工具函数（mem_search / mem_ingest / mem_link 等），
     不复制冲突检测/规则加权逻辑，避免漂移。
@@ -29,9 +28,9 @@ Palimpsest CLI —— 本地 CLI 薄封装（2026-08-25）。
 """
 
 import argparse
+import contextlib
 import json
 import os
-import subprocess
 import sys
 from urllib.parse import quote
 
@@ -44,23 +43,18 @@ try:
     except ImportError:  # 直接运行 scripts/palimpsest_cli.py 时退化为同目录导入
         from _common import PROJECT_ROOT as _PROJECT_ROOT
 
-    # 复用 mcp_tools 的工具函数（config 已基于项目根解析绝对路径，与 cwd 无关）
+    # -----------------------------------------------------------------------
+    # mcp_tools 本身**不在此处 import**：它的 _common 模块级就会构造全局 store 实例，
+    # 仅 import 就会初始化库（实测会创建 data/ 目录），故本文件一律不 import 它。
     #
-    # 注意：读命令（search / hybrid-search / recent / graph / kb / stats / ingest / link）
-    # 已改走 REST（见下方 _rest_call），不再 import 对应的 mcp_tools 函数 —— 那些函数
-    # 内部用 mcp_tools._common.store，会在本进程开库、与 REST 争抢同一份库文件。
-    #
-    # mcp_tools 本身**也不在此处 import**：它的 _common 模块级就有
-    # `store = TriviumStore()`，仅 import 就会初始化库（实测会创建 data/ 目录）。
-    # 仍有本地需求的符号（kb_index / mem_review）改为在各自命令内**惰性 import**，
-    # 这样读命令跑完不会碰库。
-    from core.consolidator import consolidate
+    # issue #168：九个 admin/batch 命令（tasks-backfill / review / consolidate /
+    # promote / ingest-git / fts-rebuild / fts-search / reindex / task-archive）
+    # 也改走 REST 业务级端点，本文件不再出现同类 Trivium Store 构造——
+    # CLI 进程完全不碰库文件，所有开库都被服务端独占。
     from core.doctor import render_text as doctor_render
     from core.doctor import run_doctor
-    from core.fts_index import rebuild as fts_rebuild
-    from core.fts_index import search_fts
     from core.startup_check import run_startup_check
-    from core.trivium_store import TriviumStore, is_valid_block
+    from core.trivium_store import is_valid_block
 except ImportError as _import_err:
     _hint = (
         "\n"
@@ -109,13 +103,18 @@ def _validate_block(block: str) -> str:
 # REST 端点内部复用的正是同一套 _mem_search_impl / 检索逻辑，所以结果逐字段一致，
 # 既守住了本文件开头「不复制逻辑、避免漂移」的设计，又不再制造第二个写者。
 #
-# 未覆盖的命令（consolidate / reindex / fts-* / task-archive 等）仍走原路径，
-# 等 REST 补上业务端点后再逐个迁移。
+# 未覆盖的命令：无——九个 admin/batch 命令也已迁到 REST 业务级端点（issue #168）。
 
 _REST_TIMEOUT = 30.0
+_REINDEX_TIMEOUT = 3600.0  # 全量重嵌可能远超默认 30s，放宽一个数量级
 
 
-def _rest_call(method: str, path: str, body: dict | None = None) -> str:
+def _shorten_cli(text: str, length: int) -> str:
+    """FTS 搜索摘要截断（本地纯函数，不 import mcp_tools._common——它模块级开库）。"""
+    return text[:length] if text else ""
+
+
+def _rest_call(method: str, path: str, body: dict | None = None, timeout: float | None = None) -> str:
     """调用 REST 并返回其 JSON 文本。
 
     失败时返回一条 JSON 错误对象（而不是抛栈），与其它命令的输出形态保持一致，
@@ -125,7 +124,7 @@ def _rest_call(method: str, path: str, body: dict | None = None) -> str:
 
     base = (os.getenv("PALIMPSEST_BASE_URL") or "http://127.0.0.1:8090").rstrip("/")
     try:
-        with httpx.Client(base_url=base, timeout=_REST_TIMEOUT) as client:
+        with httpx.Client(base_url=base, timeout=timeout or _REST_TIMEOUT) as client:
             resp = client.request(method, path, json=body)
     except Exception as exc:  # noqa: BLE001 —— 统一转成可读错误，不向上抛栈
         return json.dumps(
@@ -276,13 +275,12 @@ def cmd_tasks_active(args):
 
 
 def cmd_tasks_backfill(args):
-    """存量 task 节点回填 task_state（默认 dry-run，--apply 才写库）。"""
-    from core.task_state import backfill_task_state
-    from core.trivium_store import TriviumStore
-
-    store = TriviumStore(read_only=not args.apply)  # dry-run 只读，不推进 generation
-    result = backfill_task_state(store, dry_run=not args.apply)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    """存量 task 节点回填 task_state（默认 dry-run，--apply 才写库）：走 REST。"""
+    raw = _rest_call("POST", "/tasks/backfill", {"apply": args.apply})
+    try:
+        print(json.dumps(json.loads(raw), ensure_ascii=False, indent=2))
+    except json.JSONDecodeError:
+        print(raw)
 
 
 def cmd_kb(args):
@@ -300,40 +298,34 @@ def cmd_kb(args):
 
 
 def cmd_review(args):
-    # 惰性 import：mcp_tools._common 模块级会初始化库，只有本命令才需要它
-    from mcp_tools import mem_review
-
-    raw = mem_review(days=args.days, domain=args.domain, tier=args.tier)
+    """复盘盘点：走 REST ``POST /mem/review``（服务端复用 mem_review 同一实现）。"""
+    raw = _rest_call(
+        "POST",
+        "/mem/review",
+        {"days": args.days, "domain": args.domain, "tier": args.tier},
+    )
     try:
         data = json.loads(raw)
-        # 统计 decision 节点数
-        from core.trivium_store import TriviumStore
-
-        _store = TriviumStore()
-        decision_count = 0
-        for _nid, payload in _store.iter_payloads():
-            if payload.get("type") == "decision":
-                decision_count += 1
-        stats = data.get("stats", {})
-        stats["decision"] = decision_count
-        data["stats"] = stats
         print(json.dumps(data, ensure_ascii=False, indent=2))
-    except (json.JSONDecodeError, KeyError):
+    except json.JSONDecodeError:
         print(raw)
 
 
 def cmd_consolidate(args):
-    from core.trivium_store import TriviumStore
-
-    # issue #53：dry-run 只读打开，不再推进 generation、不与 REST 争写锁。
-    store = TriviumStore(read_only=not args.apply)
-    result = consolidate(
-        store,
-        dry_run=not args.apply,
-        sim_threshold=args.threshold,
-        max_importance=args.max_importance,
+    """容量自动合并：走 REST ``POST /mem/consolidate``（dry-run 只读预览）。"""
+    raw = _rest_call(
+        "POST",
+        "/mem/consolidate",
+        {
+            "apply": args.apply,
+            "threshold": args.threshold,
+            "max_importance": args.max_importance,
+        },
     )
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    try:
+        print(json.dumps(json.loads(raw), ensure_ascii=False, indent=2))
+    except json.JSONDecodeError:
+        print(raw)
 
 
 def cmd_stats(args):
@@ -365,113 +357,73 @@ def cmd_stats(args):
 
 
 def cmd_promote(args):
-    """高频记忆自动升级：默认 dry-run 只打印候选，--apply 才升权打标。"""
-    from core.promoter import promote
-    from core.trivium_store import TriviumStore
-
-    store = TriviumStore()
-    result = promote(
-        store,
-        dry_run=not args.apply,
-        days=args.days,
-        min_hits=args.min_hits,
+    """高频记忆自动升级：走 REST ``POST /mem/promote``（dry-run 只读预览）。"""
+    raw = _rest_call(
+        "POST",
+        "/mem/promote",
+        {
+            "apply": args.apply,
+            "days": args.days,
+            "min_hits": args.min_hits,
+        },
     )
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    try:
+        print(json.dumps(json.loads(raw), ensure_ascii=False, indent=2))
+    except json.JSONDecodeError:
+        print(raw)
 
 
 def cmd_ingest_git(args):
-    """将 git commit 作为 git_commit 类型节点入库（幂等：已有则跳过）。"""
-    repo = args.repo or _PROJECT_ROOT
-    since = args.since
+    """将 git commit 作为 git_commit 类型节点入库（幂等）：走 REST ``POST /mem/ingest-git``。
 
-    # 运行 git log 获取最近 N 天的 commit
-    fmt = "%H|%ad|%s"
-    cmd = [
-        "git",
-        "-C",
-        repo,
-        "log",
-        f"--since={since} days ago",
-        f"--pretty=format:{fmt}",
-        "--date=short",
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if result.returncode != 0:
-        print(f"git log 失败：{result.stderr.strip()}")
-        sys.exit(1)
-
-    # 解析 commit 行
-    lines = result.stdout.strip().splitlines()
-    commits = []
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        parts = line.split("|", 2)
-        if len(parts) == 3:
-            commits.append(
-                {
-                    "commit_hash": parts[0],
-                    "commit_time": parts[1],
-                    "subject": parts[2],
-                }
-            )
-
-    # 幂等检查：遍历库中已有节点，收集已有的 commit_hash
-    store = TriviumStore()
-    existing_hashes = set()
-    for _nid, payload in store.iter_payloads():
-        ch = payload.get("commit_hash")
-        if ch:
-            existing_hashes.add(ch)
-
-    added = 0
-    skipped = 0
-    for c in commits:
-        if c["commit_hash"] in existing_hashes:
-            skipped += 1
-            continue
-        node_data = {
-            "type": "git_commit",
-            "content": c["subject"],
-            "importance": 0.5,
-            "commit_hash": c["commit_hash"],
-            "commit_time": c["commit_time"],
-            "repo": repo,
-            "source": "git_memory",
-        }
-        emb = store.embed_text(c["subject"])
-        store.insert_node(node_data, emb)
-        added += 1
-
-    print(f"ingest-git 完成：新增 {added} 条，跳过 {skipped} 条（已存在）")
+    git log 由服务端执行（repo 路径须对 REST 进程可读）。
+    """
+    raw = _rest_call(
+        "POST",
+        "/mem/ingest-git",
+        {"repo": args.repo or _PROJECT_ROOT, "since": args.since},
+    )
+    try:
+        result = json.loads(raw)
+        print(f"ingest-git 完成：新增 {result.get('added', 0)} 条，跳过 {result.get('skipped', 0)} 条（已存在）")
+    except (json.JSONDecodeError, AttributeError):
+        print(raw)
 
 
 def cmd_fts_rebuild(args):
-    store = TriviumStore()
-    count = fts_rebuild(store)
-    print(f"FTS 索引重建完成，已索引 {count} 个节点")
+    """FTS 索引重建：走 REST ``POST /fts/rebuild``（服务端执行，不再开本地库）。"""
+    raw = _rest_call("POST", "/fts/rebuild")
+    try:
+        count = json.loads(raw).get("indexed", 0)
+        print(f"FTS 索引重建完成，已索引 {count} 个节点")
+    except (json.JSONDecodeError, AttributeError):
+        print(raw)
 
 
 def cmd_fts_search(args):
-    results = search_fts(args.query, limit=args.limit)
+    """FTS5 全文搜索：走 REST ``POST /fts/search``（只读）+ ``GET /memory/{id}`` 取 payload。"""
+    raw = _rest_call("POST", "/fts/search", {"query": args.query, "limit": args.limit})
+    try:
+        results = json.loads(raw).get("results", [])
+    except (json.JSONDecodeError, AttributeError):
+        print(raw)
+        return
     if not results:
         print(f"FTS 搜索「{args.query}」：无命中")
         return
-    from core.trivium_store import TriviumStore
-    from mcp_tools._common import _shorten
-
-    store = TriviumStore()
     for r in results:
         nid = r["node_id"]
         # 摘要设计：只输出 node_id + 截断摘要（不复读全文 content）；
         # 带 secret_hint 标记的条目打 [secret 已隐藏]，不展示内容明文。
-        node = store.get_node(nid)
+        node = None
+        raw_node = _rest_call("GET", f"/memory/{nid}")
+        with contextlib.suppress(json.JSONDecodeError):
+            node = json.loads(raw_node)
         payload = (node or {}).get("payload", {}) or {}
         if payload.get("secret_hint"):
             print(f"  node_id={nid}  [secret 已隐藏]")
         else:
-            print(f"  node_id={nid}  {_shorten(r.get('content', ''), 120)}")
+            print(f"  node_id={nid}  {_shorten_cli(r.get('content', ''), 120)}")
     print(f"共 {len(results)} 条命中")
 
 
@@ -493,38 +445,49 @@ def cmd_doctor(args):
 
 
 def cmd_task_archive(args):
-    """已完成任务节点自动归档到知识库（05_任务归档/），默认 dry-run 预览"""
-    from core.task_archive import archive_tasks
-    from mcp_tools._common import KNOWLEDGE_DIR
-
-    store = TriviumStore(read_only=not args.apply)  # issue #53：dry-run 只读
-    kb_dir = args.knowledge_dir or KNOWLEDGE_DIR
-    result = archive_tasks(store, dry_run=not args.apply, knowledge_dir=kb_dir)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    """已完成任务节点自动归档到知识库：走 REST ``POST /tasks/archive``（dry-run 只预览）。"""
+    raw = _rest_call(
+        "POST",
+        "/tasks/archive",
+        {"apply": args.apply, "knowledge_dir": args.knowledge_dir or ""},
+    )
+    try:
+        print(json.dumps(json.loads(raw), ensure_ascii=False, indent=2))
+    except json.JSONDecodeError:
+        print(raw)
 
 
 def cmd_reindex(args):
-    """全库向量重嵌入（换 embedding 模型后使用）。"""
-    from scripts.reindex import cmd_check
-    from scripts.reindex import cmd_reindex as _cmd_reindex
+    """全库向量重嵌入：走 REST ``POST /mem/reindex``（复用 scripts.reindex 既有实现）。
 
-    store = TriviumStore()
-    if args.check:
-        code = cmd_check(store)
-        sys.exit(code)
-    only = [s.strip() for s in args.only.split(",") if s.strip()] or None
-    skip = [s.strip() for s in args.skip.split(",") if s.strip()] or None
-    code = _cmd_reindex(
-        store,
-        only=only,
-        skip=skip,
-        batch=args.batch,
-        restart=args.restart,
-        dry_run=args.dry_run,
-        yes=args.yes,
-        force=getattr(args, "force", False),
+    返回 ``{"exit_code", "output"}``；output 为脚本原样 stdout，exit_code 为退出码
+    （0 正常 / 2 维度不匹配 / 3 库被占用 / 4 embedding 不可用）。
+    """
+    raw = _rest_call(
+        "POST",
+        "/mem/reindex",
+        {
+            "check": args.check,
+            "dry_run": args.dry_run,
+            "restart": args.restart,
+            "force": getattr(args, "force", False),
+            "resume": True,
+            "only": args.only,
+            "skip": args.skip,
+            "batch": args.batch,
+            "yes": args.yes,
+        },
+        timeout=_REINDEX_TIMEOUT,
     )
-    sys.exit(code)
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError:
+        print(raw)
+        sys.exit(1)
+    output = result.get("output", "")
+    if output:
+        print(output, end="")
+    sys.exit(int(result.get("exit_code", 1)))
 
 
 def build_parser() -> argparse.ArgumentParser:

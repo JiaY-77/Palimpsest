@@ -188,8 +188,14 @@ class TestReadOnlyStore:
             ts_mod.reset_connections_for_test()
             Config.DB_PATH = old
 
-    def test_dry_run_cli_uses_read_only_store(self):
-        """The CLI's dry-run commands must construct read_only=not apply."""
+    def test_dry_run_cli_uses_rest_read_only_request(self):
+        """Dry-run no longer opens the store from the CLI — it is a read-only REST request.
+
+        Issue #168: the dry-run-defaulting admin commands (task-archive /
+        consolidate / promote / tasks-backfill) were migrated off local
+        ``TriviumStore(...)`` entirely; the CLI now sends one business-level
+        REST request each and the server keeps the transaction boundary.
+        """
         src = (_REPO_ROOT / "scripts" / "palimpsest_cli.py").read_text(encoding="utf-8")
-        # both dry-run-defaulting commands must gate read_only on --apply
-        assert "TriviumStore(read_only=not args.apply)" in src
+        # the CLI process must not construct a store at all any more
+        assert "TriviumStore(" not in src
