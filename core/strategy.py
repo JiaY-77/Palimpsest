@@ -1535,3 +1535,32 @@ def merge_capsule_with_existing(composed: dict, existing_sections: dict | None, 
         "pending": [name for name in _CAPSULE_SECTION_ORDER if merged[name] == CAPSULE_SECTION_TBD],
         "turns": composed.get("turns"),
     }
+
+
+def capsule_thickness(turns: list[dict] | None, sections: dict | None) -> dict:
+    """量化会话胶囊的「厚度」（issue #219）：多实的轮 + 多满的节。
+
+    纯函数，供落地前的门槛判定用（``_finalize_session_capsule``）：
+
+    - ``substantive_turns``：缓冲里有**至少一节非「（待补）」实质内容**的轮数。
+      占位正文（``CAPSULE_SECTION_TBD``）与空白都不算——一两句闲聊的骨架轮
+      四节全空，按 0 计。
+    - ``filled_sections``：合成结果（已与既有胶囊合并后）四节里真实内容
+      ≥ 1 节的节数。
+
+    返回 ``{"substantive_turns": int, "filled_sections": int}``。
+    """
+
+    def _filled(value: object) -> bool:
+        text = value.strip() if isinstance(value, str) else ""
+        return bool(text) and text != CAPSULE_SECTION_TBD
+
+    substantive_turns = 0
+    for turn in turns or []:
+        if not isinstance(turn, dict):
+            continue
+        turn_sections = turn.get("sections")
+        if isinstance(turn_sections, dict) and any(_filled(v) for v in turn_sections.values()):
+            substantive_turns += 1
+    filled_sections = sum(1 for v in sections.values() if _filled(v)) if isinstance(sections, dict) else 0
+    return {"substantive_turns": substantive_turns, "filled_sections": filled_sections}

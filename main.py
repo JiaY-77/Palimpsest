@@ -51,6 +51,9 @@ from core.strategy import (
     SESSION_BUFFER_TYPE,
 )
 from core.strategy import (
+    capsule_thickness as _strategy_capsule_thickness,
+)
+from core.strategy import (
     clamp_max_topics as _strategy_clamp_max_topics,
 )
 from core.strategy import (
@@ -1625,6 +1628,12 @@ SESSION_CAPSULE_IMPORTANCE = 0.85
 SESSION_CAPSULE_DOMAIN = "hermes"
 SESSION_CAPSULE_EDGE_RELATION = "CONSOLIDATED_INTO"  # 缓冲节点 → 胶囊节点
 
+# 厚度门槛（issue #219，口径主人定的，先用常量不加 env 配置项）：胶囊只在会话
+# 真干了活时才值得产。薄会话（一两句闲聊）合成出的四节几乎全「（待补）」，只会
+# 污染「新会话先读」的列表。
+CAPSULE_MIN_SUBSTANTIVE_TURNS = 2
+CAPSULE_MIN_FILLED_SECTIONS = 2
+
 
 def _find_active_session_buffer(session_id: str) -> tuple[int, dict] | None:
     """按 payload 定位该 session 的**活跃**缓冲节点。
@@ -1647,8 +1656,8 @@ def _find_active_session_buffer(session_id: str) -> tuple[int, dict] | None:
     return None
 
 
-def _append_session_buffer_turn(session_id: str, turn_index: int, buf: dict) -> int:
-    """把本轮解析出的 sections 累进该 session 的缓冲节点，返回缓冲节点 id。
+def _append_session_buffer_turn(session_id: str, turn_index: int, buf: dict) -> tuple[int, int]:
+    """把本轮解析出的 sections 累进该 session 的缓冲节点，返回 ``(节点 id, 解析序号)``。
 
     - 无缓冲节点 → 新建（``store.insert_node`` 一次原子写入，payload 一次成形）：
       不走 ``mem_ingest``——它的固定入参写不了 ``payload.turns`` 这类结构化字段，
@@ -1663,6 +1672,9 @@ def _append_session_buffer_turn(session_id: str, turn_index: int, buf: dict) -> 
     - ``updated_at`` 记最后活动时刻（新建 = started_at，每次追加都刷新）：孤儿
       恢复扫描（``_recover_orphan_session_buffers``）靠它判断缓冲静默多久——
       此前 payload 只有 started_at、追加也不刷新任何时间戳，断线自愈无从判定。
+    - 解析序号随 ``(nid, index)`` 一并返回（issue #219）：``turn_index <= 0`` 的
+      宿主在请求里本来就没有真序号，端点要把落库用的真实序号回传，插件重载后才
+      能从缓冲离点续接，而不是从 1 重计覆盖第 1 轮。
     """
     store = _get_store()
     existing = _find_active_session_buffer(session_id)
@@ -1693,7 +1705,7 @@ def _append_session_buffer_turn(session_id: str, turn_index: int, buf: dict) -> 
             },
             store.embed_text(content),
         )
-        return nid
+        return nid, index
     nid, payload = existing
     prev_last = int(payload.get("last_turn_index") or 0)
     turns = [t for t in (payload.get("turns") or []) if isinstance(t, dict)]
@@ -1705,7 +1717,7 @@ def _append_session_buffer_turn(session_id: str, turn_index: int, buf: dict) -> 
         turns.append(turn_entry)
     store.update_payload(nid, {"turns": turns, "last_turn_index": max(prev_last, index), "updated_at": time.time()})
     _sync_fts_after_update(nid)
-    return nid
+    return nid, index
 
 
 @app.post("/lifecycle/post-turn")
@@ -1819,12 +1831,18 @@ def lifecycle_post_turn(req: PostTurnRequest):
         )
         session_buffer_out["reason"] = buf["reason"]
         if buf["buffer"]:
-            session_buffer_out["node_id"] = _append_session_buffer_turn(req.session_id, req.turn_index, buf)
+            buf_nid, resolved = _append_session_buffer_turn(req.session_id, req.turn_index, buf)
+            session_buffer_out["node_id"] = buf_nid
             session_buffer_out["buffered"] = True
+            session_buffer_out["turn_index_resolved"] = resolved
     except Exception as e:  # noqa: BLE001 —— 缓冲失败绝不拖垮既有两条落库路径
         logger.warning("session 缓冲累计失败 session=%s turn=%s: %s", req.session_id, req.turn_index, e)
         session_buffer_out["error"] = str(e)
     decision["session_buffer"] = session_buffer_out
+    # 解析后的真实序号（issue #219）：缓冲路径里**落库用**的那个序号。
+    # 加字段、不改 ``turn_index``（那仍是请求值，老消费者零感知）——宿主不发
+    # 序号（恒 0）时它在请求里本来就没有真序号，只有这里能学到该接几号。
+    decision["turn_index_resolved"] = session_buffer_out.get("turn_index_resolved", req.turn_index)
     return decision
 
 
@@ -1942,6 +1960,32 @@ def _finalize_session_capsule(session_id: str) -> dict | None:
         # 不在缓冲 turns 里、机器合成不出来；一次 1 轮缓冲的 session-end 或断线自愈
         # 补产就会把 1761 字手写接续点静默盖掉。规则见 merge_capsule_with_existing。
         composed = _strategy_merge_capsule_with_existing(composed, existing[1].get("sections"), session_id=session_id)
+    # 厚度门槛（issue #219）：只判这次**要写出的**合成结果（含与既有胶囊合并后
+    # 的四节——既有正文是真内容时不该被薄缓冲拖成跳过）。门槛不过 → **不创建也
+    # 不更新胶囊节点**；但必须把缓冲关掉（status=closed）：否则断线自愈扫描器
+    # （``_recover_orphan_session_buffers``）会认为它还悬空，每 5 分钟反复重试，
+    # 永远产不出胶囊、日志刷屏。要点/摘要路径不在这里，完全不受影响。
+    thickness = _strategy_capsule_thickness(turns, composed["sections"])
+    if (
+        thickness["substantive_turns"] < CAPSULE_MIN_SUBSTANTIVE_TURNS
+        or thickness["filled_sections"] < CAPSULE_MIN_FILLED_SECTIONS
+    ):
+        for buf_nid, _buf_payload in buffers:
+            try:
+                store.update_payload(buf_nid, {"status": SESSION_BUFFER_STATUS_CLOSED})
+            except Exception as e:  # noqa: BLE001 —— 关缓冲失败只记日志不阻断
+                logger.warning("薄会话缓冲关闭失败 buffer=%s: %s", buf_nid, e)
+        logger.info(
+            "会话胶囊跳过（太薄）session=%s substantive_turns=%s filled_sections=%s",
+            session_id,
+            thickness["substantive_turns"],
+            thickness["filled_sections"],
+        )
+        return {
+            "skipped": "too_thin",
+            "substantive_turns": thickness["substantive_turns"],
+            "filled_sections": thickness["filled_sections"],
+        }
     structured = {
         "kind": HANDOFF_KIND,  # 显式写进 payload（_is_handoff 首行判据之外的显式路）
         "session_id": session_id,
@@ -2082,6 +2126,19 @@ def _recover_orphan_session_buffers(*, dry_run: bool = False, stale_after: float
             # 无缓冲 / 已合并过且无新轮的幂等空操作
             result["skipped"].append(session_id)
             continue
+        if isinstance(capsule, dict) and capsule.get("skipped"):
+            # 厚度门槛跳过（issue #219）：``_finalize_session_capsule`` 已经把
+            # 缓冲关掉了——下一轮扫描不会再命中这条（status≠active），不会
+            # 每 5 分钟反复刷 skip。带 session 与厚度数字留在 skipped 里可观测。
+            result["skipped"].append(
+                {
+                    "session_id": session_id,
+                    "skipped": capsule["skipped"],
+                    "substantive_turns": capsule.get("substantive_turns"),
+                    "filled_sections": capsule.get("filled_sections"),
+                }
+            )
+            continue
         capsule_id = int(capsule["node_id"])
         try:
             # 留痕：这条胶囊是断线补产的，不是正常 session-end 产的——检索侧据此
@@ -2126,17 +2183,28 @@ def lifecycle_session_end(req: SessionEndRequest):
       返回体新增 ``capsule: {node_id, sections, pending, turns}``——仅在胶囊
       **实际写出**时携带；无缓冲（老宿主 / 空 session_id）→ 不加该字段，
       既有返回体逐字段不变。
+    - 太薄的会话（issue #219 厚度门槛）不产胶囊：返回体 ``capsule_skipped`` 带
+      原因与两个厚度数字（``{"skipped": "too_thin", ...}``），不静默；缓冲
+      **仍然关闭**（否则自愈扫描器会永远重试）。
     """
     decision = _strategy_session_end(req.messages, auto_ingest=req.auto_ingest)
     decision["session_id"] = req.session_id
 
     # 胶囊路径（新增）：与要点路径互不阻断，失败只记日志（capsule 字段缺席）。
     capsule_out: dict | None = None
+    capsule_skipped_out: dict | None = None
     if req.session_id:
         try:
             capsule_out = _finalize_session_capsule(req.session_id)
         except Exception as e:  # noqa: BLE001 —— 胶囊失败不阻断旧要点路径
             logger.warning("会话胶囊生成失败 session=%s: %s", req.session_id, e)
+        # 厚度门槛跳过（issue #219）不伪装成「胶囊已产出」：把 skip 返回体单独
+        # 透传 ``capsule_skipped``，``capsule`` 仍只在真写出时携带。
+        if isinstance(capsule_out, dict) and capsule_out.get("skipped"):
+            capsule_skipped_out = capsule_out
+            capsule_out = None
+        if capsule_skipped_out is not None:
+            decision["capsule_skipped"] = capsule_skipped_out
         if capsule_out is not None:
             decision["capsule"] = capsule_out
 
