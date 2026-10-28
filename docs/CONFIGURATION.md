@@ -46,6 +46,9 @@
 | `DOMAIN_BOOST_EPS` | `0.10` | 域软加权加分（加性，作用在语义分上）：`domain_boost` 非空时对同域候选加此值 | `domain_boost` 参数非空 |
 | `KB_SOFT_RERANK_MULT` | `1.5` | `kb_chunk`（知识块不老化）在 `soft` 模式下的 ε 加成倍率 | `MEMORY_RERANK_MODE=soft` |
 | `DOMAIN_BIAS_WEIGHT` | `1.15` | 域偏置检索的额外权重 | `domain_bias` 参数非空 |
+| `MEM_SEARCH_FRESHNESS_WEIGHT` | `0` | `mem_search` 新鲜度加权强度：`score += weight × decay(节点年龄)`，在过滤后、排序前应用（默认 0 = 关闭，行为与未引入前逐位一致）。**数据优先**：非零取值必须以 `eval/freshness_sweep.py` 在真实查询集上的输出为依据，不许拍脑袋定常数 | `> 0`（默认关闭） |
+| `MEM_SEARCH_FRESHNESS_SCALE_DAYS` | `30` | 衰减时间尺度（天）：`exp` 形式为半衰期，`linear` 形式为归零天数 | `MEM_SEARCH_FRESHNESS_WEIGHT > 0` |
+| `MEM_SEARCH_FRESHNESS_DECAY` | `exp` | 衰减形式：`exp`（半衰期）或 `linear`（线性归零）；其他值按 `exp` 处理 | `MEM_SEARCH_FRESHNESS_WEIGHT > 0` |
 | `PIN_DOMAIN` | *（空 = 关闭）* | **常驻域**：该 domain 的 `active` 节点**每轮无条件**注入进 `/lifecycle/pre-turn`，不参与语义相似度竞争——用于「必须每轮生效」的规则（与当前消息零关键词重叠也照样到达）。空串 = 完全关闭，行为与未引入前一致 | — |
 | `PIN_BUDGET_CHARS` | `3000` | 常驻块的字符预算：节点按 `importance` 倒序装入，**按节点边界截断**（绝不切半个节点）；超预算在响应的 `pin.truncated` / `pin.dropped` 里如实报告，不静默少注入 | `PIN_DOMAIN` 非空 |
 | `EXPAND_MAX_EDGES_PER_NODE` | `20` | 图谱扩散时每节点最多扩散的最强边数 | 图扩散启用（`RETRIEVAL_EXPAND_DEPTH≥1` 或检索附带邻居） |

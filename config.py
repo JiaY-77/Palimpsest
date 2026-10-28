@@ -117,6 +117,19 @@ class Config:
     # ---- 检索权重（魔法数字配置化）----
     DOMAIN_BIAS_WEIGHT = float(os.getenv("DOMAIN_BIAS_WEIGHT", "1.15"))
 
+    # ---- mem_search 新鲜度加权（数据优先，默认关闭）----
+    # 语义分之外的时效信号：score += WEIGHT × decay(节点年龄)，在过滤之后、
+    # 排序之前应用（与 domain_bias/domain_boost 同层）。衰减信号 ∈ [0,1]，
+    # 事实类节点按世界时间 valid_at（缺省 created_at），其余按 created_at。
+    # 默认 0 = 关闭（行为与改动前逐位一致，有回归测试保证）；非零取值必须
+    # 由真实查询集的数据定出（eval/freshness_sweep.py），不许拍脑袋定常数。
+    MEM_SEARCH_FRESHNESS_WEIGHT = float(os.getenv("MEM_SEARCH_FRESHNESS_WEIGHT", "0"))
+    # 衰减时间尺度（天）：exp 形式下为半衰期，linear 形式下为归零天数
+    MEM_SEARCH_FRESHNESS_SCALE_DAYS = float(os.getenv("MEM_SEARCH_FRESHNESS_SCALE_DAYS", "30"))
+    # 衰减形式：exp（默认）| linear；填了别的值按 exp 处理
+    _FRESHNESS_DECAY_RAW = os.getenv("MEM_SEARCH_FRESHNESS_DECAY", "exp").strip().lower()
+    MEM_SEARCH_FRESHNESS_DECAY = _FRESHNESS_DECAY_RAW if _FRESHNESS_DECAY_RAW in ("exp", "linear") else "exp"
+
     # ---- 图谱扩散精馏（魔法数字配置化）----
     # 每节点最多扩散的最强边数（防高节点全量扩散撑爆计算/污染结果）
     EXPAND_MAX_EDGES_PER_NODE = int(os.getenv("EXPAND_MAX_EDGES_PER_NODE", "20"))

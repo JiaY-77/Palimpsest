@@ -213,7 +213,50 @@ venv/Scripts/python.exe eval/significance.py \
 
 ---
 
-## 七、小结
+## 七、新鲜度加权（freshness weighting）
+
+> 动机：`mem_search` 主线排序只看语义相似度（外加 fusion），没有时效概念——被 `REVISED_BY` 链显式取代的事实走 `outdated` 过滤处理了，但**没被标注、内容也不冲突的陈旧记忆**仍可能压住更新的真话。新鲜度是缺失的排序信号。
+
+### 7.1 机制
+
+在 `_mem_search_impl` 的过滤之后、排序之前（与 `domain_bias` / `domain_boost` 同层）应用：
+
+```
+score += MEM_SEARCH_FRESHNESS_WEIGHT × decay(节点年龄)
+```
+
+- 衰减信号 `decay ∈ [0,1]`，由 `core/bitemporal.py` 的 `freshness_decay` 计算：事实类节点（memory/task/plan）优先用世界时间 `valid_at`（缺省 `created_at`），其余节点（kb_chunk / record 等）用 `created_at`；
+- 衰减形式：`exp`（半衰期，默认）或 `linear`（归零天数），尺度由 `MEM_SEARCH_FRESHNESS_SCALE_DAYS`（默认 30 天）控制；
+- **默认权重 0 = 完全跳过**，行为与未引入前逐位一致（有回归测试保证）；
+- **`as_of` 历史视图下不生效**——双时间线回看按「当时为真」排序，与今天的记忆新鲜度无关（验收红线）；
+- 与 `MEMORY_DECAY_FACTOR` 的关系：后者只作用于 soft 重排的 ε 级微调项（量级 ≤0.02，近乎 tie-break）；本机制是检索主线上的独立加性信号，两者正交。
+
+### 7.2 数据优先纪律
+
+**非零权重必须由数据定出，不许拍脑袋定常数**。评测工具链：
+
+```bash
+venv/Scripts/python.exe eval/gen_eval_set.py     # 重建题集（需 LLM API）
+venv/Scripts/python.exe eval/split_eval_set.py   # 重切 tune / held-out
+DB_PATH=<生产库路径> venv/Scripts/python.exe eval/freshness_sweep.py \
+    --weights 0,0.05,0.1,0.2 --decays exp,linear --scales 7,30,90 \
+    --split-manifest eval/split_manifest.json
+```
+
+`freshness_sweep.py` 在库副本上走真实检索入口（`_mem_search_impl`）扫 (weight × decay × scale) 组合，输出每组 recall@k / MRR@10 / nDCG@5，并对每个非零组对 w=0 基线做配对 bootstrap 检验（复用第六章协议：tune 集选型、held-out 集报告）。副本只读，结束打印 SHA256 自证。
+
+### 7.3 实测记录（2026-10-28）
+
+> 如实记录，包括失败的尝试。
+
+- **旧题集 gold 过期发现**：对 2026-09-10 生成的旧题集（118 条正样本）跑 sweep，指标全为 0。归因：库在 9-10 之后经历过 rebuild，节点 id 全部重排——34/118 条的 gold id 在库中已不存在，其余的 gold id 指向了内容移位后的其他节点（例：`q001` 的 gold=118，其原内容「为什么本地部署？为什么选 0.6b」现位于节点 2899）。检索本身工作正常（正确内容可被召回，只是 id 对不上）。**结论：全 0 是题集失效，不是检索失效**——这也是 issue #174「先修评测尺子」的直接证据之一。
+- 处置：用 `gen_eval_set.py` 基于现库重建题集（gold 自动取现势节点 id），再切分、再 sweep。
+- **工具链实跑（2026-10-28，题集重建前的预跑）**：`freshness_sweep.py` 在库副本上跑通，118 条正样本 × 2 组合（`w0/exp/d30` 基线、`w0.1/exp/d30`），逐题结果落 `eval/.tmp/freshness_sweep_<ts>.json`。所有指标为 0、配对 bootstrap `p=1.0`，与上一条归因一致：**是题集失效，不是检索失效，也不是加权失效**（基线 w=0 同样为 0）。
+- 因此**权重取值暂无法定**，按数据优先纪律保持默认 0（关闭）发布；待 issue #221 重建题集并切分 tune / held-out 后，再跑完整网格（`--weights 0,0.05,0.1,0.2 --decays exp,linear --scales 7,30,90`），由 tune 集选型、held-out 集报告，结果回填本节。
+
+---
+
+## 八、小结
 
 | 设计决策 | 依据 |
 |---|---|
@@ -224,5 +267,6 @@ venv/Scripts/python.exe eval/significance.py \
 | 语义为主、元数据为辅（ε 级加性） | 消融实验：原乘性加权存在尺度失配，修正后记忆层 R@5 0.263 → 0.684 |
 | 评测在库副本上跑 + SHA256 自证 | 评测会触发写入路径，不能碰真实数据 |
 | 显著性检验 + 时间切分 held-out | 点估计无法区分真提升与噪声；在调参集上自评必然乐观 |
+| 新鲜度权重默认 0，非零取值须 sweep 数据背书 | 时效信号有价值，但常数必须来自真实查询集（issue #175） |
 
 *本页只公开方法与汇总结论；原始题集、逐题结果与含个人数据的报告保留在本地。*
