@@ -212,6 +212,8 @@ python scripts/palimpsest_cli.py doctor
 | `EMBEDDING_PROVIDER` | *（空 = 自动探测）* | 向量后端：留空自动探测（有云端 key → `openai`，否则 → `local`），或显式 `local` / `ollama` / `openai` |
 | `DEEPSEEK_API_KEY` | *（空）* | 生成报告用；不配也能跑 |
 | `KNOWLEDGE_DIR` | *（可选）* | 知识库根目录（待索引的 Obsidian `.md` 文件） |
+| `PIN_DOMAIN` | *（空 = 关闭）* | 常驻域：该 domain 的 `active` 节点每轮**无条件**注入（不参与语义相似度竞争），用于「必须每轮生效」的规则 |
+| `PIN_BUDGET_CHARS` | `3000` | 常驻块字符预算，按节点边界截断；超预算在 `pin.truncated` / `pin.dropped` 报告 |
 
 完整配置表（62 项，含默认值与生效条件）见 [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)。
 

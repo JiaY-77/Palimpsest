@@ -66,6 +66,14 @@ class Config:
     MEMORY_DECAY_FACTOR = float(os.getenv("MEMORY_DECAY_FACTOR", "0.95"))
     # 重排模式：soft = 语义分为主线 + ε 级元数据微调（默认）；hard = 旧版乘性硬加权（可回退）
     MEMORY_RERANK_MODE = os.getenv("MEMORY_RERANK_MODE", "soft").strip().lower()
+    # ---- 常驻域（issue #176）------------------------------------------------
+    # 每轮**无条件**注入的 domain：该 domain 的 active 节点按 importance 倒序拼进
+    # pre-turn 的注入文本，不参与语义相似度竞争——解决「常驻规则与当前消息语义无关
+    # 就永远检索不到」这个硬缺口。空串 = 关闭，行为与改动前完全一致。
+    PIN_DOMAIN = os.getenv("PIN_DOMAIN", "").strip()
+    # 常驻块字符预算：按**节点边界**截断（绝不切半个节点），超预算在响应的
+    # `pin.truncated` / `pin.dropped` 里如实报告，不静默少注入。
+    PIN_BUDGET_CHARS = int(os.getenv("PIN_BUDGET_CHARS", "3000"))
     # soft 模式的 ε：落在余弦分差区间的 15%-40%，只做 tie-break
     SOFT_RERANK_EPS = float(os.getenv("SOFT_RERANK_EPS", "0.02"))
     # ---- 记忆置信度（可选，默认关闭）----

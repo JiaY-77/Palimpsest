@@ -6,6 +6,10 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **常驻域（pin domain）：每轮无条件注入的规则块**（#176）：`PIN_DOMAIN` 指定的 domain 里 `status=active` 的节点会**无条件**拼进 `/lifecycle/pre-turn` 注入文本的**最前面**，不参与语义相似度竞争——解决「常驻规则与当前消息零关键词重叠就永远检索不到」这个硬缺口（`MEMORY.md` 每轮全量注入，但有 2200 字硬顶且已用满）。成本用**节点边界的字符预算**（`PIN_BUDGET_CHARS`，默认 3000）兜住：节点按 `importance` 倒序装入，超预算时**整条不放、绝不切半个节点**，并在响应的 `pin.truncated` / `pin.dropped` 里如实报告，不静默少注入。与语义召回去重（常驻节点同时被召回命中时只保留常驻那份）。`PIN_DOMAIN` 为空 = 完全关闭，行为与改动前逐位一致；常驻域查询异常 fail-open（跳过常驻块，召回照常）。
+
 ### 破坏性变更
 
 - **思考骨架统一为「四问 = 胶囊四节」**（#188）：原先 code / research / default 三套骨架各有一套字段名（`change` / `failure_path` / `verify` / `deliverable` 等），而胶囊四节是 `thought` / `outcome` / `next` / `pitfalls` —— 任何单骨架轮都填不满四节。实测全库自动胶囊 3 条**全部**只有【思路】有正文、另三节恒为「（待补）」（`pending` 三项），而同期手写接续点 121 条。现四问固定为「①核心判断 / 思路 ②做了什么 ③下一步 / 待办 ④踩的坑 / 风险」，编号直接对应四节；`skeleton_kind` 仍按消息情境分类（`code` / `research` / `default`），但只作归因标记、不再影响骨架正文。
@@ -33,6 +37,8 @@
 - `tests/test_session_capsule.py` / `tests/test_substantive_turn.py` / `tests/test_strategy_engine.py` / `tests/test_thought_lifecycle.py` 按统一骨架与放宽后的判据重写：解析断言改为「编号 → 四节」映射；判据 2 的正样本从「450 字长思考」换成「四问短填」、反样本换成「四问全空」；新增「三情境骨架正文完全相同、`kind` 仍分类」的断言；判据 1/3 的直接调用用例保留。`tests/test_thought_origin.py` 现有用例原样通过（旧起手式走兼容判据）。
 
 
+
+- 新增 `tests/test_pin_domain.py`（20 条）：纯函数层覆盖域/状态筛选、`importance` 倒序 + `id` 倒序、**节点边界截断不切半条**、单条上限、预算小于头部时不注入、溢出在正文里可见；端点层覆盖默认关闭、与当前消息**零语义重叠仍注入**、trivial 轮也注入、常驻块排在语义召回块之前、与召回去重、超预算报告、store 异常 fail-open、响应里 `pin` 诊断字段形状稳定。端点用例一律用 monkeypatch 注入构造数据、**不往临时库写节点**——同 session 内临时库共享，写入会污染其它模块的计数断言（实测曾把 `test_smoke::test_consolidate_dryrun` 打红）。
 ## [2.17.0] - 2026-10-28
 
 ### 新增
