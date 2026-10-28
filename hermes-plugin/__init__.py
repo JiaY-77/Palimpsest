@@ -359,6 +359,16 @@ class PalimpsestMemoryProvider(MemoryProvider):
     # 写入；收侧取值即消费（pop）。
     _skeleton_kind_by_session: ClassVar[dict[str, str]] = {}
 
+    # 双注入闸门（issue #206）：宿主把插件加载两次（插件加载器 + scoped memory
+    # provider），两次 ``register()`` 各挂一个 ``pre_llm_call`` 回调，宿主又把
+    # 各回调返回的文本 ``"\n\n".join`` 后整段注入 user 消息 —— 结果每轮**两份**
+    # 完全相同的骨架（2026-10-28 生产实测）。这里按 ``(session_id, turn_id)``
+    # 做一次性闸门：同一轮第二个回调直接返回空串。
+    # 同样放类级（跨实例共享，理由与 ``_skeleton_kind_by_session`` 一致）；
+    # 每会话只保留最近一轮的 turn_id，故大小随会话数增长而非轮数。
+    _skeleton_turn_injected: ClassVar[dict[str, str]] = {}
+    _SKELETON_TURN_BUCKETS_MAX: ClassVar[int] = 256
+
     def thought_skeleton_context(self, *, user_message: Any = None, session_id: str = "", **kwargs) -> str:
         """``pre_llm_call`` 钩子回调：返回本轮思考骨架（思维预设层给侧）。
 
@@ -376,7 +386,21 @@ class PalimpsestMemoryProvider(MemoryProvider):
         # 每轮先重置本会话的桶（在一切闸门之前）：本轮没走到给侧（关闸 / cron /
         # 空消息）时本会话键必须是空串——sync_turn 会把它作为事实字段上报，
         # 残留上一轮的 kind 会写脏本轮节点。桶在类上（跨实例共享），见类体注释。
-        type(self)._skeleton_kind_by_session[session_id or self._session_id or ""] = ""
+        sid = session_id or self._session_id or ""
+        turn_id = str(kwargs.get("turn_id") or "")
+        # 双注入闸门（issue #206）：同一轮的第二次调用直接返回空串。判定必须在
+        # 重置 kind **之前**——否则第二个实例会把第一个实例写好的 kind 清空，
+        # 收侧 ``skeleton_kind`` 又变回空串（2026-10-17 修过的老 bug 会复现）。
+        if turn_id and type(self)._skeleton_turn_injected.get(sid) == turn_id:
+            return ""
+        type(self)._skeleton_kind_by_session[sid] = ""
+        # 一旦接手本轮就把 turn_id 记下（连 HTTP 都不再发）：第一次若失败返回空，
+        # 第二次也只会是空，等价；第一次已注入时则必须挡住第二次。
+        if turn_id:
+            buckets = type(self)._skeleton_turn_injected
+            if len(buckets) > type(self)._SKELETON_TURN_BUCKETS_MAX:
+                buckets.pop(next(iter(buckets)), None)  # 插入序即最老会话
+            buckets[sid] = turn_id
         # 闸门刻意**不**看 ``self._enabled``：宿主会把插件加载两次（插件加载器一次 +
         # scoped memory provider 一次），``initialize()`` 只调后者，而 ``pre_llm_call``
         # 钩子挂在前者上——用 ``_enabled`` 当闸门会让骨架**永远**不注入（2026-10-17 生产
