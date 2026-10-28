@@ -273,6 +273,37 @@ class TestSyncTurnForwarding:
         assert cap.sent == []
 
 
+class TestSyncTurnTurnIndex:
+    """sync_turn 自带每会话单调轮次计数（issue #216）。
+
+    宿主给不了轮次号：``memory_manager`` 的 ``sync_turn`` 调用只带
+    ``session_id`` / ``messages``（``turn_id`` 只到得了 ``pre_llm_call`` 钩子）。
+    插件自己计数上送，服务端才有幂等去重的键——此前缺省恒 0 被当「同一轮」，
+    会话缓冲每轮覆盖上一轮（turns 恒为 1）。
+
+    计数是类级跨实例状态（宿主双加载，理由与 ``_skeleton_kind_by_session``
+    一致），用例前置清桶保证确定性。
+    """
+
+    def setup_method(self):
+        PalimpsestMemoryProvider._turn_index_by_session.clear()
+
+    def test_monotonic_within_session(self):
+        cap = _CapturingProvider()
+        cap._enabled = True
+        cap._run("sync_turn", "第一轮", "好的", session_id="s-idx-1")
+        cap._run("sync_turn", "第二轮", "好的", session_id="s-idx-1")
+        assert [p["turn_index"] for _, p in cap.sent] == [1, 2]
+
+    def test_buckets_independent_per_session(self):
+        cap = _CapturingProvider()
+        cap._enabled = True
+        cap._run("sync_turn", "a", "好的", session_id="s-idx-a")
+        cap._run("sync_turn", "b", "好的", session_id="s-idx-b")
+        cap._run("sync_turn", "a2", "好的", session_id="s-idx-a")
+        assert [p["turn_index"] for _, p in cap.sent] == [1, 1, 2]
+
+
 class TestSyncTurnSkeletonKind:
     """sync_turn 上报本轮骨架类型（事实字段，供本体写进 thought 节点 payload）。
 
@@ -374,7 +405,9 @@ class TestSyncTurnSkeletonKind:
 
 
 class TestThoughtExtractionFromReasoning:
-    """收侧取思考：本轮任意一条 assistant 的 reasoning 都算，不只看最后一条。"""
+    """收侧取思考：本轮任意一条 assistant 的 reasoning 都算，不只看最后一条；
+    一轮里的多段全部收进、按消息时间序拼接（issue #216，工具循环里此前只留
+    最后一段）。"""
 
     def test_takes_reasoning_from_earlier_assistant_in_same_turn(self):
         msgs = [
@@ -382,15 +415,26 @@ class TestThoughtExtractionFromReasoning:
             {"role": "assistant", "content": "先看代码", "reasoning": "1. 要的是什么：改函数"},
             {"role": "assistant", "content": "最终答案"},  # 末尾这条没有 reasoning
         ]
-        assert _mod._last_assistant_reasoning(msgs) == "1. 要的是什么：改函数"
+        assert _mod._assistant_reasoning(msgs) == "1. 要的是什么：改函数"
 
-    def test_prefers_most_recent_non_empty(self):
+    def test_all_reasoning_segments_joined_in_order(self):
+        """一轮的多段 reasoning 全收、按消息时间序拼接（此前只取最近一段）。"""
         msgs = [
             {"role": "assistant", "content": "早期", "reasoning": "早期思考"},
             {"role": "assistant", "content": "稍后", "reasoning": "稍后思考"},
             {"role": "assistant", "content": "末尾"},
         ]
-        assert _mod._last_assistant_reasoning(msgs) == "稍后思考"
+        assert _mod._assistant_reasoning(msgs) == "早期思考\n\n稍后思考"
+
+    def test_empty_reasoning_segment_skipped(self):
+        """空白段不进拼接结果，非空段之间以空行相连。"""
+        msgs = [
+            {"role": "user", "content": "问题"},
+            {"role": "assistant", "content": "a", "reasoning": "第一段"},
+            {"role": "assistant", "content": "b", "reasoning": "   "},
+            {"role": "assistant", "content": "c", "reasoning": "第二段"},
+        ]
+        assert _mod._assistant_reasoning(msgs) == "第一段\n\n第二段"
 
     def test_does_not_leak_across_turns(self):
         msgs = [
@@ -398,14 +442,14 @@ class TestThoughtExtractionFromReasoning:
             {"role": "user", "content": "新问题"},
             {"role": "assistant", "content": "答"},
         ]
-        assert _mod._last_assistant_reasoning(msgs) == ""
+        assert _mod._assistant_reasoning(msgs) == ""
 
     def test_reasoning_content_key_compatible(self):
         msgs = [
             {"role": "user", "content": "问题"},
             {"role": "assistant", "content": "答", "reasoning_content": "另一种键名"},
         ]
-        assert _mod._last_assistant_reasoning(msgs) == "另一种键名"
+        assert _mod._assistant_reasoning(msgs) == "另一种键名"
 
 
 # ---------------------------------------------------------------------------

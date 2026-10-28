@@ -18,6 +18,7 @@
   - **老缓冲节点仍能合成胶囊**：`compose_session_capsule` 保留旧字段名取值（`judgement` / `conclusion` / `goal`、`change` / `deliverable`、`verify` / `output`、`failure_path`）作为兜底；
   - `is_substantive_turn(...)` 的 `min_thought_chars` 参数与 `Config.SESSION_BUFFER_MIN_THOUGHT_CHARS` **已废弃**（保留签名与配置项以免破坏调用方，下个大版本删除）。
 
+- **会话缓冲轮次不再恒为 1**（#216）：宿主不发 `turn_index`（缺省 0）时，服务端不再把 0 当「同一轮」幂等覆盖（此前每轮顶掉上一轮，缓冲只剩最后一轮），改为按 `last_turn_index + 1` 追加（新建缓冲从 1 起；显式非 0 序号保留同序号覆盖去重）；Hermes 插件 `sync_turn` 随请求上送每会话单调轮次计数（宿主的 provider 调用不传轮次号）。`<thought>` 解析不出编号小节时不再整轮按 `no_sections` 丢弃：无编号行的原生思考轮原文截断进 thought 节照收（宁粗不空），含编号行但四问全空（照抄问句没写内容）仍视为无内容；插件收侧把本轮**全部** reasoning 段按消息时间序拼接（此前只留最近一段，工具循环里前面几段的思考会漏）。
 ### 修复
 
 - **思考骨架每轮被注入两次**（#206）：宿主把插件加载两次（插件加载器 + scoped memory provider），两次 `register()` 各挂一个 `pre_llm_call` 回调，宿主再把各回调返回的文本 `"\n\n".join` 后整段拼进 user 消息——于是每轮 user 消息里出现**两份完全相同**的骨架，白烧 token，模型还会看到两条重复的建流程指令。修在插件侧：`thought_skeleton_context` 按 `(session_id, turn_id)` 做一次性闸门（类级 dict、跨实例共享，与既有 `_skeleton_kind_by_session` 同款理由），同一轮第二个回调直接返回空串且**不再发 HTTP**；闸门判定刻意放在重置 `skeleton_kind` **之前**——否则第二个实例会把第一个实例写好的 kind 清空，收侧上报的 `skeleton_kind` 又变回空串（2026-10-17 修过的老 bug 会复现）。拿不到 `turn_id` 的调用方（旧宿主 / 非钩子调用）不做去重，行为与改动前逐位一致。

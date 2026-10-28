@@ -1410,6 +1410,9 @@ class PreTurnRequest(BaseModel):
 
 class PostTurnRequest(BaseModel):
     session_id: str = ""
+    # 轮次序号：显式 >0 → 同序号重复提交幂等覆盖（防重）；<=0（宿主未提供真实
+    # 序号，含老宿主缺省 0）→ 服务端按缓冲 last_turn_index+1 追加，绝不把 0 当
+    # 「同一轮」（issue #216：每轮恒 0 互相覆盖曾让缓冲 turns 恒为 1）。
     turn_index: int = 0
     user_message: str
     assistant_message: str = ""
@@ -1650,21 +1653,29 @@ def _append_session_buffer_turn(session_id: str, turn_index: int, buf: dict) -> 
     - 无缓冲节点 → 新建（``store.insert_node`` 一次原子写入，payload 一次成形）：
       不走 ``mem_ingest``——它的固定入参写不了 ``payload.turns`` 这类结构化字段，
       且机器簿记不该参与冲突检测 / 记忆检索池。
-    - 已有 → 追加本轮 turn；**同一 turn_index 重复提交幂等覆盖**（原位替换，
-      不追加第二条）。
+    - 已有 → 追加本轮 turn；**显式非 0 序号同序重复提交幂等覆盖**（原位替换，
+      不追加第二条）。``turn_index <= 0``（宿主未提供真实序号，老宿主恒 0）不当
+      「同一轮」：按 ``last_turn_index + 1`` 追加（新建缓冲从 1 起）——否则每轮
+      恒 0 互相覆盖，缓冲只剩最后一轮（issue #216，全库实测 turns 恒为 1）。
+    - ``last_turn_index`` 单调不回退（显式低序号重试不把游标拉回旧值，兜底
+      追加的序号才不会与存量轮次相撞）。
     - ``started_at`` 记缓冲创建时刻（首个 turn 的落库时刻，数值）；更新时保留。
     - ``updated_at`` 记最后活动时刻（新建 = started_at，每次追加都刷新）：孤儿
       恢复扫描（``_recover_orphan_session_buffers``）靠它判断缓冲静默多久——
       此前 payload 只有 started_at、追加也不刷新任何时间戳，断线自愈无从判定。
     """
     store = _get_store()
+    existing = _find_active_session_buffer(session_id)
+    index = int(turn_index)
+    if index <= 0:
+        # 宿主未提供真实序号 → 解析出追加序号（新建缓冲从 1 起），不拿 0 当同一轮。
+        index = (int(existing[1].get("last_turn_index") or 0) + 1) if existing else 1
     turn_entry = {
-        "turn_index": int(turn_index),
+        "turn_index": index,
         "skeleton_kind": str(buf.get("skeleton_kind") or ""),
         "sections": dict(buf.get("sections") or {}),
         "raw": str(buf.get("raw") or ""),
     }
-    existing = _find_active_session_buffer(session_id)
     if existing is None:
         now = time.time()
         content = f"[会话缓冲] session={session_id}（进行中，session-end 合并为会话胶囊）"
@@ -1678,20 +1689,21 @@ def _append_session_buffer_turn(session_id: str, turn_index: int, buf: dict) -> 
                 "started_at": now,
                 "updated_at": now,  # 与 started_at 同值：新建这一刻即最后一次活动
                 "turns": [turn_entry],
-                "last_turn_index": turn_index,
+                "last_turn_index": index,
             },
             store.embed_text(content),
         )
         return nid
     nid, payload = existing
+    prev_last = int(payload.get("last_turn_index") or 0)
     turns = [t for t in (payload.get("turns") or []) if isinstance(t, dict)]
     for i, turn in enumerate(turns):
-        if turn.get("turn_index") == turn_index:
+        if turn.get("turn_index") == index:
             turns[i] = turn_entry  # 幂等：同轮重复提交覆盖，不追加第二条
             break
     else:
         turns.append(turn_entry)
-    store.update_payload(nid, {"turns": turns, "last_turn_index": turn_index, "updated_at": time.time()})
+    store.update_payload(nid, {"turns": turns, "last_turn_index": max(prev_last, index), "updated_at": time.time()})
     _sync_fts_after_update(nid)
     return nid
 

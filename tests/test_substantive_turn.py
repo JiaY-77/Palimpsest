@@ -170,7 +170,8 @@ def _thought_body(block: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 4. decide_session_buffer：non_substantive + 既有 skip_reason 优先级不变
+# 4. decide_session_buffer：non_substantive + skip_reason（no_sections 收窄到
+#    「无内容可缓冲」，原生思考兜底进 thought 节，issue #216）
 # ---------------------------------------------------------------------------
 
 
@@ -212,8 +213,13 @@ class TestDecideSessionBufferFilter:
         )
         assert r["buffer"] is False and r["reason"] == "no_session_id"
 
-    def test_no_sections_still_takes_priority(self):
-        """既有语义不变：no_sections 优先于实质轮判定（缓冲只存编号思考）。"""
+    def test_free_text_thought_no_longer_dropped(self):
+        """issue #216：原生思考（无编号行）不再整轮丢弃——原文兜底进 thought 节。
+
+        旧语义是「no_sections 优先于实质轮判定」，自由思考轮全被挡在缓冲外；
+        现在 no_sections 收窄到「连 <thought> 原文都没有」或「含编号行但四问
+        全空」（见 test_empty_sections_gives_no_sections 与老宿主用例）。
+        """
         r = decide_session_buffer(
             "<thought>\n自由思考，没有编号。\n</thought>",
             skeleton_kind="code",
@@ -221,7 +227,8 @@ class TestDecideSessionBufferFilter:
             turn_index=1,
             user_message="改一下",
         )
-        assert r["buffer"] is False and r["reason"] == "no_sections"
+        assert r["buffer"] is True and r["reason"] == ""
+        assert r["sections"] == {"thought": "自由思考，没有编号。"}
 
 
 # ---------------------------------------------------------------------------

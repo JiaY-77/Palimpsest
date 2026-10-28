@@ -1062,17 +1062,21 @@ _CAPSULE_NEXT_MARKERS = ("下一步", "待", "需", "再")
 #      ``no_sections`` 挡掉，这条判据根本到不了。字段与代码一起删掉，不留装饰。
 #   2. 填了胶囊格子（``sections`` 任一非空）——统一骨架（issue #188）后四问固定
 #      对应四节，填一格就是一次有效填写。**2026-10-28 放宽**：旧规则是「正文
-#      ≥ ``SESSION_BUFFER_MIN_THOUGHT_CHARS`` 字 **且** 落在结论字段上」，与
-#      「每轮顺手填一次」的设计意图冲突——实测全库缓冲 turns 恒为 1、自动胶囊
-#      只产 3 条，模型顺手填的短轮全被挡在门外；
+#      ≥ ``SESSION_BUFFER_MIN_THOUGHT_CHARS`` 字 且 落在结论字段上」，与
+#      「每轮顺手填一次」的设计意图冲突，这条门槛自身确实挡掉了一批顺手填的
+#      短轮；但「全库缓冲 turns 恒为 1、自动胶囊只产 3 条」的症状不能单归因于
+#      它——那是三个成因叠加（issue #216 同日修全）：宿主恒不传 ``turn_index``
+#      （恒 0 被当同一轮幂等覆盖）、``no_sections`` 整轮丢弃原生思考，再加本
+#      门槛；
 #   3. 用户消息含指令动词（词表见 ``_SUBSTANTIVE_ZH_VERBS`` / 正则）——
 #      「做/改/查/写/跑/验证/修/提/生成/整理/分析/对比」等执行类请求。指令
 #      ≠ 问句：整句是疑问形态（「要怎么改这个配置？」）不影响判定，问句里
 #      带指令动词也算指派了任务。
 #
 # 三条判据的现实分工（2026-10-28 复核）：判据 2 放宽后，「sections 非空」是
-# 缓冲的主要入口；`decide_session_buffer` 对**空 sections 的轮**更早就返回
-# ``no_sections``（缓冲只存结构化思考），所以判据 1/3 在 REST 链路里到不了——
+# 缓冲的主要入口；``decide_session_buffer`` 对「连 ``<thought>`` 原文都没有」
+# 的轮更早返回 ``no_sections``（无可缓冲内容），原生思考轮则兜底进 thought 节
+# （issue #216），所以判据 1/3 在 REST 链路里到不了——
 # 它们只剩直接调用 `is_substantive_turn` 时的意义（测试与外部调用方），以及
 # 将来允许「无结构化思考但有工具调用」的轮进缓冲时的扩展位。
 # ---------------------------------------------------------------------------
@@ -1202,8 +1206,9 @@ def is_substantive_turn(
     """
     # 判据 2：填了胶囊格子就算（「每轮顺手填一次」的设计意图，issue #188）。
     # 统一骨架后四问直接对应四节，任一非空格子都是有效填写。旧的「正文 ≥400 字
-    # 且落在结论字段上」把模型顺手填的短轮全挡在缓冲外——实测全库缓冲 turns
-    # 恒为 1、自动胶囊只产 3 条，正是这条门槛造成的。
+    # 且落在结论字段上」把模型顺手填的短轮挡在缓冲外；「缓冲 turns 恒为 1」的
+    # 实测症状另有两个叠加成因——宿主恒不传 turn_index（恒 0 被当同一轮覆盖）
+    # 与 no_sections 整轮丢弃原生思考（issue #216，同日修复），见上方判据块。
     if any(isinstance(v, str) and v.strip() for v in (sections or {}).values()):
         return True
     # 判据 3：用户消息指派了任务（指令 ≠ 问句：疑问形态不影响判定）
@@ -1229,13 +1234,18 @@ def decide_session_buffer(
 
     - session_id 为空 → ``buffer=False, reason="no_session_id"``（老宿主兼容，
       不落缓冲，行为与改动前一致）；
-    - 解析不出任何字段 → ``buffer=False, reason="no_sections"``（保留原 thought
-      落库路径兜底，本判定只管缓冲）；
+    - 解析不出编号小节时再看 ``<thought>`` 原文：非空且不含编号行（原生思考）
+      → 整轮照收，原文截断进 thought 节（宁粗不空，issue #216：整轮丢弃曾把
+      原生思考 / 骨架没注入的轮全挡在门外，是「缓冲 turns 恒为 1」的成因之一）；
+      原文为空、或含编号行但四问全空（骨架注入了、模型照抄问句没写内容）→
+      ``buffer=False, reason="no_sections"``（真没有可缓冲的内容，保留原
+      thought 落库路径兜底）；
     - 解析出了字段但不是实质轮 → ``buffer=False, reason="non_substantive"``
       （issue #170 实质轮筛选：短轮不进缓冲，但**不静默丢弃**——reason 留痕、
       sections 随诊断返回，与另两种 skip_reason 同一可观测约定）；
     - 否则 ``buffer=True``（reason 为空串）：``sections`` 为解析结果
-      （:func:`parse_thought_sections`），``raw`` 为 ``<thought>`` 段原文截断到
+      （:func:`parse_thought_sections`，无编号小节时为 thought 原文兜底节，见上），
+      ``raw`` 为 ``<thought>`` 段原文截断到
       ``SESSION_BUFFER_RAW_MAX_CHARS`` 字；``skeleton_kind`` 为归一后的骨架类型
       （:func:`normalize_skeleton_kind`）。
 
@@ -1253,9 +1263,18 @@ def decide_session_buffer(
     if not (session_id or "").strip():
         return {"buffer": False, "reason": "no_session_id", "skeleton_kind": kind, "sections": {}, "raw": ""}
     sections = parse_thought_sections(text, kind)
-    if not sections:
-        return {"buffer": False, "reason": "no_sections", "skeleton_kind": kind, "sections": {}, "raw": ""}
     parsed = extract_thought(text or "")
+    if not sections:
+        # 解析不出编号小节 ≠ 没有思考（issue #216：整轮丢弃曾把原生思考 /
+        # 骨架没注入的轮全挡在门外，是「缓冲 turns 恒为 1」的成因之一）。两种
+        # 情形分开：正文含编号行（骨架注入了、模型照抄问句但四问全空）→ 真没
+        # 写出内容，维持 no_sections；正文没有编号行（原生思考）→ 原文截断进
+        # thought 节照收（宁粗不空）。
+        thought_text = parsed["text"].strip() if parsed["found"] else ""
+        has_numbered = any(_THOUGHT_NUMBERED_LINE_RE.match(line) for line in thought_text.splitlines())
+        if not thought_text or has_numbered:
+            return {"buffer": False, "reason": "no_sections", "skeleton_kind": kind, "sections": {}, "raw": ""}
+        sections = {"thought": thought_text[:CAPSULE_THOUGHT_MAX_CHARS]}
     raw = parsed["text"][:SESSION_BUFFER_RAW_MAX_CHARS] if parsed["found"] else ""
     if not is_substantive_turn(
         parsed["text"] if parsed["found"] else "",
