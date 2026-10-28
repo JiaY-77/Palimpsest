@@ -115,28 +115,28 @@ class TestParseThoughtSections:
     def test_code_skeleton_sample(self):
         sections = parse_thought_sections(f"正文前缀\n{_CODE_BLOCK}\n正文后缀", "code")
         assert sections == {
-            "change": "本轮改什么 / 新增什么（一句话）：给骨架加胶囊字段",
-            "failure_path": "失败路径（哪里会坏、坏了什么表现、怎么兜住）：解析抛异常会拖垮落库",
-            "verify": "怎么验（跑什么、看到什么算数）：pytest 全绿",
-            "deliverable": "交付物（PR / 文件路径 / 节点号）：core/strategy.py",
+            "thought": "本轮改什么 / 新增什么（一句话）：给骨架加胶囊字段",
+            "outcome": "失败路径（哪里会坏、坏了什么表现、怎么兜住）：解析抛异常会拖垮落库",
+            "next": "怎么验（跑什么、看到什么算数）：pytest 全绿",
+            "pitfalls": "交付物（PR / 文件路径 / 节点号）：core/strategy.py",
         }
 
     def test_research_skeleton_sample(self):
         sections = parse_thought_sections(_RESEARCH_BLOCK, "research")
         assert sections == {
-            "question": "要查清的问题（一句话）：胶囊四节怎么合成",
-            "evidence": "已有证据 / 还缺什么（标明 实测 / 引用 / 推测）：任务书即规格（引用）",
-            "counterexample": "反例找了吗（相反结论成立会是什么样）：若节空还硬编会编造内容",
-            "conclusion": "结论 / 下一步：空节写（待补）并记 pending",
+            "thought": "要查清的问题（一句话）：胶囊四节怎么合成",
+            "outcome": "已有证据 / 还缺什么（标明 实测 / 引用 / 推测）：任务书即规格（引用）",
+            "next": "反例找了吗（相反结论成立会是什么样）：若节空还硬编会编造内容",
+            "pitfalls": "结论 / 下一步：空节写（待补）并记 pending",
         }
 
     def test_default_skeleton_sample(self):
         sections = parse_thought_sections(_DEFAULT_BLOCK, "default")
         assert sections == {
-            "goal": "要的是什么（一句话）：确认胶囊可被交接通道取回",
-            "known_unknown": "已知 / 未知（还缺什么信息）：还缺端到端证据",
-            "judgement": "值不值得记 / 该不该动手：值得，动手写端到端",
-            "output": "这一轮的产出或下一步：跑 pytest",
+            "thought": "要的是什么（一句话）：确认胶囊可被交接通道取回",
+            "outcome": "已知 / 未知（还缺什么信息）：还缺端到端证据",
+            "next": "值不值得记 / 该不该动手：值得，动手写端到端",
+            "pitfalls": "这一轮的产出或下一步：跑 pytest",
         }
 
     def test_number_separator_variants_and_leading_whitespace(self):
@@ -150,17 +150,17 @@ class TestParseThoughtSections:
             "</thought>"
         )
         sections = parse_thought_sections(text, "default")
-        assert sections["goal"] == "要的是什么（一句话）：一碗白米饭"
-        assert sections["known_unknown"] == "已知 / 未知（还缺什么信息）：还缺米饭的量"
-        assert sections["judgement"] == "值不值得记 / 该不该动手：值得"
-        assert sections["output"] == "这一轮的产出或下一步：开饭"
+        assert sections["thought"] == "要的是什么（一句话）：一碗白米饭"
+        assert sections["outcome"] == "已知 / 未知（还缺什么信息）：还缺米饭的量"
+        assert sections["next"] == "值不值得记 / 该不该动手：值得"
+        assert sections["pitfalls"] == "这一轮的产出或下一步：开饭"
 
     def test_fullwidth_halfwidth_colon_mix(self):
         """全/半角冒号混排：都是「编号行 标签：答案」的合法形态。"""
         text = "<thought>\n1. 要的是什么(一句话): 查空态\n2. 已知 / 未知（还缺什么信息）：缺截图\n</thought>"
         sections = parse_thought_sections(text, "default")
-        assert sections["goal"] == "要的是什么(一句话): 查空态"
-        assert sections["known_unknown"] == "已知 / 未知（还缺什么信息）：缺截图"
+        assert sections["thought"] == "要的是什么(一句话): 查空态"
+        assert sections["outcome"] == "已知 / 未知（还缺什么信息）：缺截图"
 
     def test_multiline_answer_and_missing_number(self):
         """多行答案归入同字段；缺编号（3）→ 对应字段不出现，其余照常。"""
@@ -173,28 +173,28 @@ class TestParseThoughtSections:
             "</thought>"
         )
         sections = parse_thought_sections(text, "research")
-        assert set(sections) == {"question", "evidence", "conclusion"}
-        assert sections["evidence"] == "已有证据 / 还缺什么（标明 实测 / 引用 / 推测）：已有先例\n  还缺实测证据"
+        assert set(sections) == {"thought", "outcome", "pitfalls"}
+        assert sections["outcome"] == "已有证据 / 还缺什么（标明 实测 / 引用 / 推测）：已有先例\n  还缺实测证据"
 
     def test_same_line_answer_is_captured(self):
         """编号之后同行若有内容要取到（任务书样例句式）。"""
         text = "<thought>\n1. 本轮改什么：加了 session_id 落库\n</thought>"
         sections = parse_thought_sections(text, "code")
-        assert sections["change"] == "本轮改什么：加了 session_id 落库"
+        assert sections["thought"] == "本轮改什么：加了 session_id 落库"
 
     def test_template_verbatim_line_then_answer_below(self):
         """模型原样回吐模板行、答案写在下一行：标签回显原样保留（不猜、不改写），
         答案行跟在值里——值的边界仍到下一个编号行为止。"""
         text = "<thought>\n1. 本轮改什么 / 新增什么（一句话）：\n重构了 strategy 模块\n</thought>"
         sections = parse_thought_sections(text, "code")
-        assert sections["change"] == "本轮改什么 / 新增什么（一句话）：\n重构了 strategy 模块"
+        assert sections["thought"] == "本轮改什么 / 新增什么（一句话）：\n重构了 strategy 模块"
 
     def test_empty_numbered_line_field_absent(self):
         """空值不编造：编号行后无内容 → 该字段不出现。"""
         text = "<thought>\n1.\n2. 已知 / 未知（还缺什么信息）：已核实\n</thought>"
         sections = parse_thought_sections(text, "default")
-        assert "goal" not in sections
-        assert sections["known_unknown"] == "已知 / 未知（还缺什么信息）：已核实"
+        assert "thought" not in sections
+        assert sections["outcome"] == "已知 / 未知（还缺什么信息）：已核实"
 
     def test_out_of_range_number_section_dropped(self):
         """编号超出映射范围（5+）：该段不归属任何字段，不污染其他字段。"""
@@ -206,9 +206,9 @@ class TestParseThoughtSections:
             "</thought>"
         )
         sections = parse_thought_sections(text, "default")
-        assert sections["goal"] == "要的是什么（一句话）：查库存"
-        assert sections["known_unknown"] == "已知 / 未知（还缺什么信息）：缺截图"
-        assert "output" not in sections
+        assert sections["thought"] == "要的是什么（一句话）：查库存"
+        assert sections["outcome"] == "已知 / 未知（还缺什么信息）：缺截图"
+        assert "pitfalls" not in sections
 
     def test_free_text_without_numbers_returns_empty(self):
         assert parse_thought_sections("<thought>\n先看堆栈第二帧再改，别急着动手。\n</thought>", "code") == {}
@@ -225,7 +225,7 @@ class TestParseThoughtSections:
     def test_unknown_kind_falls_back_to_default_map(self):
         """skeleton_kind 空 / 未知 → default 映射（不猜成其他骨架的字段）。"""
         sections = parse_thought_sections(_DEFAULT_BLOCK, "bogus")
-        assert set(sections) == {"goal", "known_unknown", "judgement", "output"}
+        assert set(sections) == {"thought", "outcome", "next", "pitfalls"}
         assert set(parse_thought_sections(_DEFAULT_BLOCK, "")) == set(sections)
 
 
@@ -261,14 +261,14 @@ class TestDecideSessionBuffer:
         assert r["buffer"] is True
         assert r["reason"] == ""
         assert r["skeleton_kind"] == "code"
-        assert set(r["sections"]) == {"change", "failure_path", "verify", "deliverable"}
+        assert set(r["sections"]) == {"thought", "outcome", "next", "pitfalls"}
         assert r["raw"].startswith("1. 本轮改什么")
 
     def test_skeleton_kind_normalized(self):
         """白名单外的 kind 归空串 → 按 default 映射解析（与落库事实字段同一套归一）。"""
         r = decide_session_buffer(_DEFAULT_BLOCK, skeleton_kind="bogus", session_id="s1", turn_index=1)
         assert r["skeleton_kind"] == ""
-        assert set(r["sections"]) == {"goal", "known_unknown", "judgement", "output"}
+        assert set(r["sections"]) == {"thought", "outcome", "next", "pitfalls"}
 
     def test_raw_truncated_to_4000(self):
         long_block = "<thought>\n1. 要的是什么（一句话）：" + "长" * 5000 + "\n</thought>"
@@ -307,7 +307,7 @@ class TestComposeSessionCapsule:
         assert "\n【做了什么】" in out["content"]
         assert "\n【下一步】" in out["content"]
         assert "\n【踩的坑】" in out["content"]
-        assert "解析抛异常会拖垮落库" in out["sections"]["pitfalls"]
+        assert "解析抛异常会拖垮落库" in out["sections"]["outcome"]
 
     def test_thought_priority_per_turn(self):
         """每轮取 judgement / conclusion / goal 里第一个非空（优先级按此顺序）。"""
@@ -440,7 +440,7 @@ def test_post_turn_three_turns_accumulate_into_one_buffer(db_path):
     assert payload["last_turn_index"] == 3
     assert [t["turn_index"] for t in payload["turns"]] == [1, 2, 3]
     assert [t["skeleton_kind"] for t in payload["turns"]] == ["code", "research", "default"]
-    assert payload["turns"][0]["sections"]["change"].startswith("本轮改什么")
+    assert payload["turns"][0]["sections"]["thought"].startswith("本轮改什么")
     assert payload["turns"][0]["raw"].startswith("1. 本轮改什么")
     # 缓冲节点是过程簿记：type=session 已登记 TIER_LOGS（不进 facts 默认注入池）
     assert "session" in Config.TIER_LOGS
@@ -469,7 +469,7 @@ def test_post_turn_same_turn_index_is_idempotent(db_path):
     payload = buf[1]
     assert len(payload["turns"]) == 3  # 仍是 3 项，不是 4
     assert [t["turn_index"] for t in payload["turns"]] == [1, 2, 3]
-    assert payload["turns"][1]["sections"]["goal"] == "要的是什么（一句话）：换成新的答案"
+    assert payload["turns"][1]["sections"]["thought"] == "要的是什么（一句话）：换成新的答案"
 
 
 def test_session_end_writes_capsule_closes_buffer_and_links(db_path):

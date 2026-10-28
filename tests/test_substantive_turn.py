@@ -26,7 +26,6 @@ import contextlib
 import pytest
 
 from core.strategy import (
-    SESSION_BUFFER_MIN_THOUGHT_CHARS,
     decide_session_buffer,
     is_substantive_turn,
     parse_thought_sections,
@@ -67,47 +66,23 @@ def _client():
 # 样本
 # ---------------------------------------------------------------------------
 
-# 短轮 <thought>：default 骨架四问都有编号答案（judgement 非空），但正文
-# 远低于 400 字——三条判据全不中（配合无工具 + 无指令动词的 user_message）。
+# 「填了格子」的轮：四问都有编号答案（正文很短）。统一骨架后判据 2 = 任一非空
+# 格子即实质轮，所以这是**正样本**——「每轮顺手填一次」就是这个形态。
 _SHORT_BLOCK = (
     "<thought>\n"
-    "1. 要的是什么（一句话）：确认一下\n"
-    "2. 已知 / 未知：无\n"
-    "3. 值不值得记 / 该不该动手：不值得\n"
-    "4. 这一轮的产出或下一步：无\n"
+    "1. 这一轮的核心判断 / 思路：确认一下\n"
+    "2. 做了什么（改了什么 / 查清了什么）：无\n"
+    "3. 下一步 / 待办：无\n"
+    "4. 踩的坑 / 风险：无\n"
     "</thought>"
 )
 
-
-def _long_block_with_conclusion(body_len: int) -> str:
-    """判据二正样本：thought 正文（strip 后）恰好 body_len 字，judgement 非空。
-
-    前两行用填充字凑长度（构造失败立刻 raise，不静默出偏短样本）。
-    """
-    l1_head = "1. 要的是什么（一句话）："
-    l2_head = "2. 已知 / 未知（还缺什么信息）："
-    l3 = "3. 值不值得记 / 该不该动手：值得，拍板就按方案 A 执行"
-    l4 = "4. 这一轮的产出或下一步：下一步跑回归"
-    pad = body_len - len(l1_head) - len(l2_head) - len("补充材料") - len(l3) - len(l4) - 3  # 3 个换行
-    assert pad > 0, (
-        f"body_len={body_len} 装不下固定标签行（至少需 {len(l1_head) + len(l2_head) + len(l3) + len(l4) + 8}）"
-    )
-    block = f"<thought>\n{l1_head}{'长' * pad}\n{l2_head}补充材料\n{l3}\n{l4}\n</thought>"
-    assert len(_thought_body(block).strip()) == body_len, "样本正文长度漂移（测试构造 bug）"
-    return block
-
-
-def _long_block_without_conclusion(body_len: int) -> str:
-    """判据二反样本：正文（strip 后）恰好 body_len 字，但结论类字段全缺——
-    只写 goal / known_unknown 两个编号行（不写 3/4 问，模型跳问的真实形态），
-    长复述不等于想清楚了。"""
-    l1_head = "1. 要的是什么（一句话）："
-    l2_head = "2. 已知 / 未知（还缺什么信息）："
-    pad = body_len - len(l1_head) - len(l2_head) - len("补充材料") - 1  # 1 个换行
-    assert pad > 0, f"body_len={body_len} 装不下固定标签行"
-    block = f"<thought>\n{l1_head}{'长' * pad}\n{l2_head}补充材料\n</thought>"
-    assert len(_thought_body(block).strip()) == body_len, "样本正文长度漂移（测试构造 bug）"
-    return block
+# 「没填格子」的轮：只有编号行、四问全空 → 解析不出任何字段，缓冲走 no_sections。
+# 闲聊轮不会拿到骨架（decide_thought_skeleton 对 trivial 返回空），模型也就不会
+# 按编号写——所以这个样本同时也是「噪声轮」的真实形态。
+# 注意：编号行后面不能留任何文字——parse_thought_sections 会把同行内容原样
+# 当作答案（标签回显也算），那样就成了「填了格子」。真空格 = 只有编号和分隔符。
+_EMPTY_BLOCK = "<thought>\n1.\n2.\n3.\n4.\n</thought>"
 
 
 def _sections_of(block: str, kind: str = "default") -> dict[str, str]:
@@ -127,48 +102,41 @@ class TestCriterionToolCalls:
         assert is_substantive_turn("短", _sections_of(_SHORT_BLOCK), tool_calls_count=3) is True
 
     def test_zero_tool_calls_does_not_hit_criterion_1(self):
-        assert is_substantive_turn("短", _sections_of(_SHORT_BLOCK), tool_calls_count=0) is False
+        """无工具调用 + 无填充格子 + 无指令动词 → 不是实质轮。"""
+        assert is_substantive_turn("短", {}, tool_calls_count=0) is False
 
     def test_negative_count_treated_as_no_calls(self):
         """异常输入（负数）按「无工具调用」处理，不当成实质轮。"""
-        assert is_substantive_turn("短", _sections_of(_SHORT_BLOCK), tool_calls_count=-1) is False
+        assert is_substantive_turn("短", {}, tool_calls_count=-1) is False
 
 
-class TestCriterionLongThoughtWithConclusion:
-    def test_long_thought_with_conclusion_field(self):
-        block = _long_block_with_conclusion(450)
-        assert is_substantive_turn(_thought_body(block), _sections_of(block)) is True
+class TestCriterionFilledSections:
+    """判据 2（2026-10-28 放宽，issue #188）：**填了胶囊格子就算实质轮**。
 
-    def test_exactly_at_threshold_counts(self):
-        """边界：正文恰好等于门槛（400）→ 算实质（≥ 语义）。"""
-        block = _long_block_with_conclusion(SESSION_BUFFER_MIN_THOUGHT_CHARS)
-        assert is_substantive_turn(_thought_body(block), _sections_of(block)) is True
+    旧规则是「正文 ≥400 字 且 落在结论字段上」，与「每轮顺手填一次」的设计意图
+    冲突：实测全库缓冲 `turns` 恒为 1、自动胶囊只产 3 条，短填全被挡在门外。
+    统一骨架后四问直接对应四节，任一非空格子就是一次有效填写。
+    """
 
-    def test_below_threshold_not_substantive(self):
-        block = _long_block_with_conclusion(SESSION_BUFFER_MIN_THOUGHT_CHARS - 1)
-        assert is_substantive_turn(_thought_body(block), _sections_of(block)) is False
+    def test_short_filled_thought_is_substantive(self):
+        """四问都填、正文很短 → 实质（旧门槛下会被判 False，这是设计变化点）。"""
+        assert is_substantive_turn(_thought_body(_SHORT_BLOCK), _sections_of(_SHORT_BLOCK)) is True
 
-    def test_long_but_no_conclusion_field_not_substantive(self):
-        """长复述：正文超门槛但结论类字段全缺 → 不实质。"""
-        block = _long_block_without_conclusion(450)
-        sections = _sections_of(block)
-        assert "judgement" not in sections
-        assert "conclusion" not in sections and "deliverable" not in sections and "outcome" not in sections
-        assert is_substantive_turn(_thought_body(block), sections) is False
+    def test_single_filled_section_suffices(self):
+        """只填一格也算：顺手填一次不可能每题都写满。"""
+        for field in ("thought", "outcome", "next", "pitfalls"):
+            assert is_substantive_turn("短", {field: "x"}) is True, field
 
-    def test_short_thought_with_conclusion_not_substantive(self):
-        """短轮每问必答（judgement 非空）但正文不足 → 不实质。"""
-        assert is_substantive_turn(_thought_body(_SHORT_BLOCK), _sections_of(_SHORT_BLOCK)) is False
+    def test_all_sections_empty_not_substantive(self):
+        assert is_substantive_turn("短", {}) is False
 
-    def test_threshold_injectable(self):
-        """门槛可调（Config 注入）：调低后同一正文命中判据二，调高后不命中。"""
-        block = _long_block_with_conclusion(100)  # 正文恰 100 字（标签行已自证长度）
-        assert is_substantive_turn(_thought_body(block), _sections_of(block), min_thought_chars=10) is True
-        assert is_substantive_turn(_thought_body(block), _sections_of(block), min_thought_chars=101) is False
+    def test_blank_values_do_not_count(self):
+        """空白字符串不算填写。"""
+        assert is_substantive_turn("短", {"thought": "   ", "outcome": ""}) is False
 
     def test_non_string_section_values_ignored(self):
-        """sections 值非字符串（异常输入）不算结论字段，绝不抛异常。"""
-        bad = {"judgement": 123, "conclusion": None}  # type: ignore[dict-item]
+        """sections 值非字符串（异常输入）不算填写，绝不抛异常。"""
+        bad = {"thought": 123, "outcome": None}  # type: ignore[dict-item]
         assert is_substantive_turn("短", bad) is False  # type: ignore[arg-type]
 
 
@@ -218,10 +186,14 @@ def _thought_body(block: str) -> str:
 
 
 class TestDecideSessionBufferFilter:
-    def test_all_three_missed_gives_non_substantive(self):
-        """三判据全不满足 → 不进缓冲且 reason=non_substantive（不是静默丢）。"""
+    def test_empty_sections_gives_no_sections(self):
+        """四问全空 → 解析不出字段 → no_sections（缓冲只存结构化思考）。
+
+        放宽判据 2 之后「有格子就进缓冲」，所以 `non_substantive` 在当前链路里
+        不再触达——空思考在更早的 no_sections 分支就被挡住了（见下方老宿主用例）。
+        """
         r = decide_session_buffer(
-            _SHORT_BLOCK,
+            _EMPTY_BLOCK,
             skeleton_kind="default",
             session_id="s1",
             turn_index=1,
@@ -229,9 +201,7 @@ class TestDecideSessionBufferFilter:
             user_message="你好呀",
         )
         assert r["buffer"] is False
-        assert r["reason"] == "non_substantive"
-        # 可观测：解析出的 sections 随诊断返回（不静默丢弃）
-        assert r["sections"].get("goal") == "要的是什么（一句话）：确认一下"
+        assert r["reason"] == "no_sections"
 
     def test_criterion_3_buffers_via_user_message(self):
         r = decide_session_buffer(
@@ -275,19 +245,20 @@ class TestDecideSessionBufferFilter:
 
 
 class TestLegacyHostCompat:
-    def test_missing_fields_never_substantive_by_themselves(self):
-        """纯函数缺省全部新参数：短轮不被判成实质（缺信号 ≠ 实质轮）。"""
-        r = decide_session_buffer(_SHORT_BLOCK, skeleton_kind="default", session_id="s1", turn_index=1)
-        assert r["buffer"] is False and r["reason"] == "non_substantive"
+    """老宿主不传新字段：判据 2 只看「填没填格子」，与宿主能力无关，照常生效。"""
 
-    def test_legacy_long_thought_with_conclusion_still_buffered(self):
-        """老宿主唯一可判的实质性证据（判据二）照常生效：长思考 + 结论字段进缓冲。"""
-        block = _long_block_with_conclusion(450)
-        r = decide_session_buffer(block, skeleton_kind="default", session_id="s1", turn_index=1)
+    def test_empty_thought_never_buffered_without_signals(self):
+        """四问全空 + 无工具 + 无指令 → 不进缓冲（缺信号 ≠ 实质轮）。"""
+        r = decide_session_buffer(_EMPTY_BLOCK, skeleton_kind="default", session_id="s1", turn_index=1)
+        assert r["buffer"] is False and r["reason"] == "no_sections"
+
+    def test_short_filled_thought_buffered_without_host_signals(self):
+        """填了格子（正文很短）+ 老宿主不传任何新字段 → 照常进缓冲。"""
+        r = decide_session_buffer(_SHORT_BLOCK, skeleton_kind="default", session_id="s1", turn_index=1)
         assert r["buffer"] is True and r["reason"] == ""
 
-    def test_rest_without_tool_calls_short_turn_skipped(self, db_path):
-        """REST 层老宿主（不传 tool_calls_count）：短轮 + 寒暄 → 不进缓冲。"""
+    def test_rest_without_tool_calls_empty_thought_skipped(self, db_path):
+        """REST 层老宿主（不传 tool_calls_count）：空思考（四问全空）→ 不进缓冲。"""
         body = (
             _client()
             .post(
@@ -296,17 +267,17 @@ class TestLegacyHostCompat:
                     "session_id": "sub-legacy-1",
                     "turn_index": 1,
                     "user_message": "你好呀",
-                    "assistant_message": f"正文\n{_SHORT_BLOCK}\n正文结束",
+                    "assistant_message": f"正文\n{_EMPTY_BLOCK}\n正文结束",
                     "skeleton_kind": "default",
                 },
             )
             .json()
         )
         assert body["session_buffer"]["buffered"] is False
-        assert body["session_buffer"]["reason"] == "non_substantive"
+        assert body["session_buffer"]["reason"] == "no_sections"
 
-    def test_rest_without_tool_calls_long_thought_buffered(self, db_path):
-        """REST 层老宿主：不传 tool_calls_count 但思考够长含结论 → 判据二进缓冲。"""
+    def test_rest_without_tool_calls_filled_thought_buffered(self, db_path):
+        """REST 层老宿主：不传 tool_calls_count 但四问填了格子 → 照常进缓冲。"""
         body = (
             _client()
             .post(
@@ -315,7 +286,7 @@ class TestLegacyHostCompat:
                     "session_id": "sub-legacy-2",
                     "turn_index": 1,
                     "user_message": "你好呀",
-                    "assistant_message": f"正文\n{_long_block_with_conclusion(450)}\n正文结束",
+                    "assistant_message": f"正文\n{_SHORT_BLOCK}\n正文结束",
                     "skeleton_kind": "default",
                 },
             )
@@ -346,8 +317,8 @@ def _buffer_by_session(session_id: str) -> tuple[int, dict] | None:
     return nodes[0] if nodes else None
 
 
-def test_all_short_session_produces_no_capsule(db_path):
-    """全会话都是短轮 → 缓冲从不建立，session-end 不产胶囊（capsule 字段缺席）。"""
+def test_all_empty_session_produces_no_capsule(db_path):
+    """全会话都是空思考（四问全空）→ 缓冲从不建立，session-end 不产胶囊。"""
     client = _client()
     for i in (1, 2):
         r = client.post(
@@ -356,7 +327,7 @@ def test_all_short_session_produces_no_capsule(db_path):
                 "session_id": "sub-e2e-short",
                 "turn_index": i,
                 "user_message": "你好呀",
-                "assistant_message": f"正文\n{_SHORT_BLOCK}\n正文结束",
+                "assistant_message": f"正文\n{_EMPTY_BLOCK}\n正文结束",
                 "skeleton_kind": "default",
             },
         )
@@ -372,15 +343,15 @@ def test_all_short_session_produces_no_capsule(db_path):
     assert _session_nodes() == []
 
 
-def test_mixed_session_capsule_contains_only_substantive_turns(db_path):
-    """混合 session（2 短 + 2 实质）→ 胶囊 turns=2，缓冲里只有那 2 条实质轮。"""
+def test_mixed_session_capsule_contains_only_filled_turns(db_path):
+    """混合 session（2 空思考 + 2 填了格子）→ 胶囊 turns=2，缓冲只收填了格子的轮。"""
     client = _client()
     turns_spec = [
         # (turn_index, user_message, assistant_thought, tool_calls_count)
-        (1, "你好呀", _SHORT_BLOCK, 0),  # 短：寒暄
-        (2, "把缓冲逻辑改一下", _SHORT_BLOCK, 0),  # 实质：判据三（指令动词）
-        (3, "收到啦", _SHORT_BLOCK, 0),  # 短：确认
-        (4, "收到啦", _long_block_with_conclusion(450), 0),  # 实质：判据二（长思考+结论）
+        (1, "你好呀", _EMPTY_BLOCK, 0),  # 空思考：寒暄（无骨架可填）
+        (2, "把缓冲逻辑改一下", _SHORT_BLOCK, 0),  # 填了格子 → 实质
+        (3, "收到啦", _EMPTY_BLOCK, 0),  # 空思考：确认
+        (4, "收到啦", _SHORT_BLOCK, 0),  # 填了格子 → 实质
     ]
     for idx, message, block, calls in turns_spec:
         r = client.post(
@@ -398,7 +369,8 @@ def test_mixed_session_capsule_contains_only_substantive_turns(db_path):
         resp = r.json()["session_buffer"]
         expected = idx in (2, 4)
         assert resp["buffered"] is expected, f"turn {idx}: {resp}"
-        assert resp["reason"] == ("" if expected else "non_substantive")
+        # 空思考轮的 skip 原因是 no_sections（缓冲只存结构化思考），不是 non_substantive
+        assert resp["reason"] == ("" if expected else "no_sections")
 
     buf = _buffer_by_session("sub-e2e-mixed")
     assert buf is not None
@@ -409,13 +381,17 @@ def test_mixed_session_capsule_contains_only_substantive_turns(db_path):
     assert end.status_code == 200, end.text
     body = end.json()
     assert body["capsule"]["turns"] == 2
-    # 胶囊思路节来自实质轮的 judgement（turn 4），不含短轮内容
-    assert "拍板就按方案 A 执行" in body["capsule"]["sections"]["thought"]
-    assert "确认一下" not in body["capsule"]["sections"]["thought"]
+    # 思路节只由填了格子的实质轮贡献（两轮内容相同 → 去重后一条）
+    assert "确认一下" in body["capsule"]["sections"]["thought"]
 
 
-def test_tool_call_signal_buffers_short_thought_end_to_end(db_path):
-    """判据一端到端：宿主上报 tool_calls_count=1，短思考也进缓冲。"""
+def test_tool_call_signal_with_filled_thought_end_to_end(db_path):
+    """宿主上报 tool_calls_count=1 且四问填了格子 → 正常进缓冲。
+
+    注意：判据 1 单独已不可达——`decide_session_buffer` 对空 sections 先返回
+    `no_sections`（缓冲只存结构化思考），所以「有工具调用但没填格子」进不了缓冲。
+    判据 1/3 因此只剩直接调用 `is_substantive_turn` 时的意义（见上方用例）。
+    """
     client = _client()
     r = client.post(
         "/lifecycle/post-turn",

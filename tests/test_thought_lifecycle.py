@@ -65,48 +65,51 @@ def _node_count(client) -> int:
 # ---------------------------------------------------------------------------
 
 
-def test_pre_turn_code_scenario_gets_failure_path_skeleton(db_path):
+def test_pre_turn_code_scenario_classified_as_code(db_path):
+    """统一骨架（2026-10-28，issue #188）：kind 仍分类，骨架正文统一四问。"""
     client = _client()
     r = client.post("/lifecycle/pre-turn", json={"user_message": "帮我修复这个端点的报错"})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["thought_skeleton_kind"] == "code"
     assert body["thought_skeleton"].startswith("<thought>")
-    assert "失败路径" in body["thought_skeleton"]
+    assert "踩的坑" in body["thought_skeleton"]
 
 
-def test_pre_turn_research_scenario_gets_evidence_skeleton(db_path):
+def test_pre_turn_research_scenario_classified_as_research(db_path):
     client = _client()
     r = client.post("/lifecycle/pre-turn", json={"user_message": "调研对比一下这两个方案的可行性"})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["thought_skeleton_kind"] == "research"
-    assert "反例" in body["thought_skeleton"]
+    assert "做了什么" in body["thought_skeleton"]
 
 
-def test_pre_turn_default_scenario_gets_generic_skeleton(db_path):
+def test_pre_turn_default_scenario_classified_as_default(db_path):
     client = _client()
     r = client.post("/lifecycle/pre-turn", json={"user_message": "帮我安排下周的会议纪要和行程"})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["thought_skeleton_kind"] == "default"
-    assert "值不值得记" in body["thought_skeleton"]
+    assert "下一步" in body["thought_skeleton"]
 
 
-def test_pre_turn_skeletons_differ_across_scenarios(db_path):
-    """「动态骨架」的直接证据：三情境三份互不相同的骨架文案。"""
+def test_pre_turn_skeleton_body_unified_across_scenarios(db_path):
+    """统一骨架的直接证据：三情境 kind 不同，骨架正文完全相同（四问固定）。"""
     client = _client()
     scenarios = [
         "帮我修复这个端点的报错",
         "调研对比一下这两个方案的可行性",
         "帮我安排下周的会议纪要和行程",
     ]
-    skeletons = set()
+    kinds, skeletons = set(), set()
     for msg in scenarios:
         body = client.post("/lifecycle/pre-turn", json={"user_message": msg}).json()
         assert body["thought_skeleton"], f"skeleton must not be empty: {msg}"
+        kinds.add(body["thought_skeleton_kind"])
         skeletons.add(body["thought_skeleton"])
-    assert len(skeletons) == 3
+    assert kinds == {"code", "research", "default"}  # 情境分类仍在
+    assert len(skeletons) == 1  # 骨架正文已统一
 
 
 def test_pre_turn_trivial_message_gets_no_skeleton(db_path):

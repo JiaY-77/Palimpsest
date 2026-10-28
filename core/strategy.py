@@ -599,41 +599,44 @@ _THOUGHT_RESEARCH_RE = re.compile(r"(调研|评估|对比|选型|可行性|证�
 # 由 post-turn 的 parse_thought_sections 按编号映射成结构化字段（见
 # _SKELETON_FIELD_MAP），累进会话缓冲，session-end 合并成一条
 # type=task kind=handoff 胶囊。文案同时保持对「决策四问」的可读性。
+# 统一骨架（2026-10-28 设计定案，issue #188）：**四问固定对应胶囊四节**。
+#
+# 历史包袱：原分 code / research / default 三套骨架，字段名各不相同
+# （change/failure_path/verify/deliverable、question/evidence/counterexample/
+# conclusion、goal/known_unknown/judgement/output），而胶囊四节是
+# thought/outcome/next/pitfalls —— 任何单骨架轮都填不满四节（default 没有
+# change/failure_path，code 没有 judgement/goal），实测全库自动胶囊只有
+# 【思路】有正文、另三节恒为「（待补）」。
+#
+# 设计意图（主人原话）：「每轮对话……都是顺手的事情，填一次呗」。填写成本
+# 必须极低、且每轮都该填得满，所以不再按场景换字段名。`kind` 保留为**归因
+# 标记**（thought_origin 仍能区分当时判成哪一类），骨架正文三套共用一份。
+_CAPSULE_QUESTIONS: tuple[tuple[str, str], ...] = (
+    ("thought", "这一轮的核心判断 / 思路（一句话）"),
+    ("outcome", "做了什么（改了什么 / 查清了什么）"),
+    ("next", "下一步 / 待办"),
+    ("pitfalls", "踩的坑 / 风险"),
+)
+
+_SKELETON_BODY: str = (
+    "<thought>\n"
+    + "".join(f"{idx}. {question}：\n" for idx, (_, question) in enumerate(_CAPSULE_QUESTIONS, 1))
+    + "</thought>"
+)
+
 _THOUGHT_SKELETONS: dict[str, str] = {
-    "code": (
-        "<thought>\n"
-        "1. 本轮改什么 / 新增什么（一句话）：\n"
-        "2. 失败路径（哪里会坏、坏了什么表现、怎么兜住）：\n"
-        "3. 怎么验（跑什么、看到什么算数）：\n"
-        "4. 交付物（PR / 文件路径 / 节点号）：\n"
-        "</thought>"
-    ),
-    "research": (
-        "<thought>\n"
-        "1. 要查清的问题（一句话）：\n"
-        "2. 已有证据 / 还缺什么（标明 实测 / 引用 / 推测）：\n"
-        "3. 反例找了吗（相反结论成立会是什么样）：\n"
-        "4. 结论 / 下一步：\n"
-        "</thought>"
-    ),
-    "default": (
-        "<thought>\n"
-        "1. 要的是什么（一句话）：\n"
-        "2. 已知 / 未知（还缺什么信息）：\n"
-        "3. 值不值得记 / 该不该动手：\n"
-        "4. 这一轮的产出或下一步：\n"
-        "</thought>"
-    ),
+    "code": _SKELETON_BODY,
+    "research": _SKELETON_BODY,
+    "default": _SKELETON_BODY,
 }
 
-# 每类骨架的编号问题 → 胶囊字段名。顺序与骨架里 1..4 一一对应；会话结束时
-# parse_thought_sections 按编号把各轮答案落到这些字段，compose_session_capsule
-# 再按字段合成会话胶囊（「骨架即胶囊」）——改模板问题顺序/数量必须连着改映射，
-# 否则字段错位（解析出的答案会挂到错误的问题上）。
+# 每类骨架的编号问题 → 胶囊字段名。统一后三套相同；保留 dict 形状是为了
+# `normalize_skeleton_kind` 的历史 kind 仍能解析（老缓冲节点里存着旧字段名的
+# 轮次，compose_session_capsule 另有兼容取值，见该函数）。
 _SKELETON_FIELD_MAP: dict[str, tuple[str, ...]] = {
-    "code": ("change", "failure_path", "verify", "deliverable"),
-    "research": ("question", "evidence", "counterexample", "conclusion"),
-    "default": ("goal", "known_unknown", "judgement", "output"),
+    "code": tuple(field for field, _ in _CAPSULE_QUESTIONS),
+    "research": tuple(field for field, _ in _CAPSULE_QUESTIONS),
+    "default": tuple(field for field, _ in _CAPSULE_QUESTIONS),
 }
 
 THOUGHT_SKELETON_MIN_LEN = 4  # 与召回门槛一致：过短输入没有思考可引导，不给骨架
@@ -720,6 +723,22 @@ _SKELETON_OPENERS_FOLDED: dict[str, str] = {
     kind: _fold_punctuation(tpl.splitlines()[1].strip()) for kind, tpl in _THOUGHT_SKELETONS.items()
 }
 
+# 统一骨架之前的起手式（三套旧模板的首行），**只用于历史归因**。
+#
+# `detect_thought_origin` 是形态启发式：拿文本开头比对骨架起手式。2026-10-28
+# 统一骨架后，库里既有的 thought 节点（旧模板产物）开头对不上新起手式，会被误
+# 判成 `native`。这里把旧文案并进判据，向后兼容历史节点——新节点用新起手式，
+# 老节点仍能识别成 `skeleton`。旧文案只读不写（不再注入），可随历史节点老化后移除。
+_LEGACY_SKELETON_OPENERS: tuple[str, ...] = (
+    "1. 本轮改什么 / 新增什么（一句话）：",
+    "1. 要查清的问题（一句话）：",
+    "1. 要的是什么（一句话）：",
+)
+
+_LEGACY_SKELETON_OPENERS_FOLDED: tuple[str, ...] = tuple(
+    _fold_punctuation(line.strip()) for line in _LEGACY_SKELETON_OPENERS
+)
+
 
 def normalize_skeleton_kind(value: str) -> str:
     """归一 ``skeleton_kind`` 事实字段：合法 kind 之外（含空白 / 未知值）一律空串。"""
@@ -752,7 +771,8 @@ def detect_thought_origin(text: str) -> str:
     if not stripped:
         return ORIGIN_UNKNOWN
     folded = _fold_punctuation(stripped)
-    for opener in _SKELETON_OPENERS_FOLDED.values():
+    # 新骨架起手式 + 历史旧文案（向后兼容库里 2026-10-28 之前的 thought 节点）
+    for opener in (*_SKELETON_OPENERS_FOLDED.values(), *_LEGACY_SKELETON_OPENERS_FOLDED):
         if folded.startswith(opener):
             return ORIGIN_SKELETON
     return ORIGIN_NATIVE
@@ -1039,35 +1059,33 @@ _CAPSULE_NEXT_MARKERS = ("下一步", "待", "需", "再")
 #
 #   1. 该轮有工具调用（``tool_calls_count > 0``）——宿主在 post-turn 请求里能
 #      给的最硬的「干活了」信号：一条带工具调用的轮几乎总在操作或验证什么；
-#   2. 思考正文够长（strip 后 ≥ ``SESSION_BUFFER_MIN_THOUGHT_CHARS`` 字符）且
-#      解析出的结论类字段（``_SUBSTANTIVE_CONCLUSION_FIELDS`` 任一非空）——
-#      长思考且落在结论上，说明这轮真的想清楚了什么（只看长度会收进长复述，
-#      只看字段会收进「每问必答一两句」的短轮，两个条件合起来才各挡一面）；
+#   2. 填了胶囊格子（``sections`` 任一非空）——统一骨架（issue #188）后四问固定
+#      对应四节，填一格就是一次有效填写。**2026-10-28 放宽**：旧规则是「正文
+#      ≥ ``SESSION_BUFFER_MIN_THOUGHT_CHARS`` 字 **且** 落在结论字段上」，与
+#      「每轮顺手填一次」的设计意图冲突——实测全库缓冲 turns 恒为 1、自动胶囊
+#      只产 3 条，模型顺手填的短轮全被挡在门外；
 #   3. 用户消息含指令动词（词表见 ``_SUBSTANTIVE_ZH_VERBS`` / 正则）——
 #      「做/改/查/写/跑/验证/修/提/生成/整理/分析/对比」等执行类请求。指令
 #      ≠ 问句：整句是疑问形态（「要怎么改这个配置？」）不影响判定，问句里
 #      带指令动词也算指派了任务。
 #
-# 为什么老宿主缺字段要退化到判据 2：老宿主不传 ``tool_calls_count`` → 缺省
-# 0，「缺信号」不能反向推断成「有工具调用」——把缺字段当实质轮等于这刀白
-# 磨（所有老宿主请求全部照单全收）；判据 3 对缺省空串同理永不命中。于是老
-# 请求自动退化为「只看思考正文与结论字段」——这是不接新信号时唯一可判的
-# 实质性证据，行为可预期（不猜、不放宽），宿主升级接上新信号后判据 1/3 自动生效。
+# 三条判据的现实分工（2026-10-28 复核）：判据 2 放宽后，「sections 非空」是
+# 缓冲的主要入口；`decide_session_buffer` 对**空 sections 的轮**更早就返回
+# ``no_sections``（缓冲只存结构化思考），所以判据 1/3 在 REST 链路里到不了——
+# 它们只剩直接调用 `is_substantive_turn` 时的意义（测试与外部调用方），以及
+# 将来允许「无结构化思考但有工具调用」的轮进缓冲时的扩展位。
 # ---------------------------------------------------------------------------
 
-SESSION_BUFFER_MIN_THOUGHT_CHARS = 400  # 判据 2 的思考正文长度门槛（strip 后字符数）
-
-# 判据 2 的「结论类字段」：解析出的 sections 里任一非空即算落在结论上。
-# ``outcome`` 是当前三套骨架映射（_SKELETON_FIELD_MAP）之外的防御位——
-# code 骨架的对应字段叫 change，判据词表按任务书口径保留 outcome，
-# 未来模板扩展出该字段时不用再改判定。
-_SUBSTANTIVE_CONCLUSION_FIELDS: tuple[str, ...] = ("outcome", "conclusion", "judgement", "deliverable")
+# **已废弃**（2026-10-28）：判据 2 不再看正文长度。保留常量只是为了让
+# `is_substantive_turn` / `decide_session_buffer` 的签名与 Config 项继续可用，
+# 下个大版本连同 `Config.SESSION_BUFFER_MIN_THOUGHT_CHARS` 一起删除。
+SESSION_BUFFER_MIN_THOUGHT_CHARS = 400
 
 # 判据 3 的指令动词词表（任务书口径，不做同义词扩表）。中文按子串匹配
 # （单字动词无法用词边界），因此**偏宽松**：「我做了个梦」也会命中「做」。
 # 这是有意的取向——判据 3 的作用是补上宿主没有工具信号时的缺口，宁可多收
-# 一条，也不漏掉真正的任务指派；拦寒暄主要靠判据 2（短轮的思考通常既短、
-# 也没有结论字段）。英文用词边界正则（``\bdo\b`` 不会误伤 docker / doing /
+# 一条，也不漏掉真正的任务指派；拦寒暄实际靠更上游的骨架注入（trivial 轮
+# 拿不到骨架，模型就不会按编号作答 → sections 空 → no_sections）。英文用词边界正则（``\bdo\b`` 不会误伤 docker / doing /
 # dot）。
 _SUBSTANTIVE_ZH_VERBS: tuple[str, ...] = (
     "做",
@@ -1147,22 +1165,23 @@ def is_substantive_turn(
 ) -> bool:
     """判一轮是不是「实质轮」（纯函数，三条判据任一满足即 True，依据见上方判据块）。
 
-    - ``thought_text``：该轮 ``<thought>`` 段正文（判据 2 的长度对象，strip 后量）；
-    - ``sections``：:func:`parse_thought_sections` 的解析结果（判据 2 的结论字段）；
+    - ``thought_text``：该轮 ``<thought>`` 段正文。**判据 2 放宽后不再看长度**
+      （2026-10-28，issue #188），参数保留只为签名兼容；
+    - ``sections``：:func:`parse_thought_sections` 的解析结果（判据 2：**任一
+      非空格子**即算实质轮——四问已固定对应胶囊四节）；
     - ``tool_calls_count``：本轮工具调用次数（判据 1；>0 即实质，0/负数不命中）；
     - ``user_message``：本轮用户消息（判据 3；空串不命中）；
-    - ``min_thought_chars``：判据 2 的长度门槛（调用方从 Config 注入以可调，
-      缺省同 :data:`SESSION_BUFFER_MIN_THOUGHT_CHARS`；负数按 0 处理）。
+    - ``min_thought_chars``：**已废弃**（判据 2 不再使用），保留签名以免破坏调用方，
+      下个大版本连同 ``Config.SESSION_BUFFER_MIN_THOUGHT_CHARS`` 一起删除。
     """
     # 判据 1：有工具调用 = 这轮在干活（最硬的宿主信号）
     if tool_calls_count > 0:
         return True
-    # 判据 2：思考正文够长 + 落在结论上（长度挡短轮，结论字段挡长复述）
-    body = (thought_text or "").strip()
-    has_conclusion = any(
-        isinstance(sections.get(name), str) and sections[name].strip() for name in _SUBSTANTIVE_CONCLUSION_FIELDS
-    )
-    if len(body) >= max(0, min_thought_chars) and has_conclusion:
+    # 判据 2：填了胶囊格子就算（「每轮顺手填一次」的设计意图，issue #188）。
+    # 统一骨架后四问直接对应四节，任一非空格子都是有效填写。旧的「正文 ≥400 字
+    # 且落在结论字段上」把模型顺手填的短轮全挡在缓冲外——实测全库缓冲 turns
+    # 恒为 1、自动胶囊只产 3 条，正是这条门槛造成的。
+    if any(isinstance(v, str) and v.strip() for v in (sections or {}).values()):
         return True
     # 判据 3：用户消息指派了任务（指令 ≠ 问句：疑问形态不影响判定）
     message = (user_message or "").strip()
@@ -1262,15 +1281,22 @@ def compose_session_capsule(turns: list[dict], *, session_id: str, handles: list
         if not isinstance(s, dict):
             continue
         merged += 1
-        for key in ("judgement", "conclusion", "goal"):
+        # 新字段（统一骨架，2026-10-28）优先；旧字段名兜住历史缓冲里的轮次
+        # （老库的 turns 存的是 judgement/change/verify/failure_path 那批名字）。
+        for key in ("thought", "judgement", "conclusion", "goal"):
             v = s.get(key)
             if isinstance(v, str) and v.strip():
                 thought_parts.append(v.strip())
                 break
-        for key in ("change", "deliverable"):
+        for key in ("outcome", "change", "deliverable"):
             v = s.get(key)
             if isinstance(v, str) and v.strip():
                 outcome_parts.append(v.strip())
+        # next 是「下一步 / 待办」专用格子，整段照取；旧字段 verify/output 是
+        # 「怎么验」「产出」，还得靠信号词筛出真正交接要的事。
+        nv = s.get("next")
+        if isinstance(nv, str) and nv.strip():
+            next_parts.append(nv.strip())
         for key in ("verify", "output"):
             v = s.get(key)
             if isinstance(v, str) and v.strip():
@@ -1278,9 +1304,13 @@ def compose_session_capsule(turns: list[dict], *, session_id: str, handles: list
                     line = line.strip()
                     if line and any(mk in line for mk in _CAPSULE_NEXT_MARKERS):
                         next_parts.append(line)
-        v = s.get("failure_path")
+        v = s.get("pitfalls")
         if isinstance(v, str) and v.strip():
             pitfall_parts.append(v.strip())
+        else:
+            v = s.get("failure_path")
+            if isinstance(v, str) and v.strip():
+                pitfall_parts.append(v.strip())
 
     def _dedupe(items: list[str]) -> list[str]:
         seen: set[str] = set()
