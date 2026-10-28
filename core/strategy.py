@@ -1057,8 +1057,9 @@ _CAPSULE_NEXT_MARKERS = ("下一步", "待", "需", "再")
 # 能只丢一句话就指望动手（判据 3 失效）。短轮（打招呼 / 确认 / 一句话回复）
 # 三条全不中，被挡在缓冲外，胶囊不再被噪声塞满：
 #
-#   1. 该轮有工具调用（``tool_calls_count > 0``）——宿主在 post-turn 请求里能
-#      给的最硬的「干活了」信号：一条带工具调用的轮几乎总在操作或验证什么；
+#   1. ~~该轮有工具调用~~——**已删除**（2026-10-28，issue #194）：宿主侧从不填
+#      ``tool_calls_count``（恒 0），而判据 2 放宽后空 ``sections`` 在更上游就被
+#      ``no_sections`` 挡掉，这条判据根本到不了。字段与代码一起删掉，不留装饰。
 #   2. 填了胶囊格子（``sections`` 任一非空）——统一骨架（issue #188）后四问固定
 #      对应四节，填一格就是一次有效填写。**2026-10-28 放宽**：旧规则是「正文
 #      ≥ ``SESSION_BUFFER_MIN_THOUGHT_CHARS`` 字 **且** 落在结论字段上」，与
@@ -1159,24 +1160,23 @@ def is_substantive_turn(
     thought_text: str,
     sections: dict[str, str],
     *,
-    tool_calls_count: int = 0,
     user_message: str = "",
     min_thought_chars: int = SESSION_BUFFER_MIN_THOUGHT_CHARS,
 ) -> bool:
-    """判一轮是不是「实质轮」（纯函数，三条判据任一满足即 True，依据见上方判据块）。
+    """判一轮是不是「实质轮」（纯函数，二条判据任一满足即 True，依据见上方判据块）。
 
-    - ``thought_text``：该轮 ``<thought>`` 段正文。**判据 2 放宽后不再看长度**
-      （2026-10-28，issue #188），参数保留只为签名兼容；
+    - ``thought_text``：该轮 ``<thought>`` 段正文。**不再看长度**（2026-10-28，
+      issue #188），参数保留只为签名兼容；
     - ``sections``：:func:`parse_thought_sections` 的解析结果（判据 2：**任一
       非空格子**即算实质轮——四问已固定对应胶囊四节）；
-    - ``tool_calls_count``：本轮工具调用次数（判据 1；>0 即实质，0/负数不命中）；
     - ``user_message``：本轮用户消息（判据 3；空串不命中）；
     - ``min_thought_chars``：**已废弃**（判据 2 不再使用），保留签名以免破坏调用方，
       下个大版本连同 ``Config.SESSION_BUFFER_MIN_THOUGHT_CHARS`` 一起删除。
+
+    ``tool_calls_count`` 判据已按 issue #194 删除：宿主从不填该字段（恒 0），且
+    空 ``sections`` 在 ``decide_session_buffer`` 更上游就被 ``no_sections`` 挡掉，
+    判据 1 在任何真实链路里都到不了。
     """
-    # 判据 1：有工具调用 = 这轮在干活（最硬的宿主信号）
-    if tool_calls_count > 0:
-        return True
     # 判据 2：填了胶囊格子就算（「每轮顺手填一次」的设计意图，issue #188）。
     # 统一骨架后四问直接对应四节，任一非空格子都是有效填写。旧的「正文 ≥400 字
     # 且落在结论字段上」把模型顺手填的短轮全挡在缓冲外——实测全库缓冲 turns
@@ -1196,7 +1196,6 @@ def decide_session_buffer(
     skeleton_kind: str,
     session_id: str,
     turn_index: int,
-    tool_calls_count: int = 0,
     user_message: str = "",
     min_thought_chars: int = SESSION_BUFFER_MIN_THOUGHT_CHARS,
 ) -> dict[str, Any]:
@@ -1238,7 +1237,6 @@ def decide_session_buffer(
     if not is_substantive_turn(
         parsed["text"] if parsed["found"] else "",
         sections,
-        tool_calls_count=tool_calls_count,
         user_message=user_message,
         min_thought_chars=min_thought_chars,
     ):

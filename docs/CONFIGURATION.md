@@ -63,7 +63,7 @@
 | `TIER_LOGS` | `record,event,git_commit,thought,session` | 归入日志层的记忆 type（逗号分隔），默认不进检索与注入池（`session` = 会话缓冲节点：post-turn 累进各轮编号思考，session-end 合并成 `kind=handoff` 胶囊后标 `closed`，过程簿记语义同 `thought`） | 检索与注入按 tier 过滤时 |
 | `DEFAULT_TIER` | `facts` | 检索与注入的默认分层；`logs` 只回日志层，空串 = 不过滤（全量历史通道） | 未显式指定 `tier` 时 |
 | `SESSION_MEMORY_INGEST` | `1` | lifecycle session-end 旧「会话要点」路径开关（`type=memory` / facts 层）：`1` = 既有行为完全不变（默认）；`0` = 停用要点路径（`skip_reason="session_memory_disabled"`），只走会话胶囊路径（缓冲合并出的 `type=task` + `kind=handoff` 胶囊，不受本开关影响） | `/lifecycle/session-end` |
-| `SESSION_BUFFER_MIN_THOUGHT_CHARS` | `400` | 会话缓冲的实质轮筛选门槛（issue #170）：三条判据任一满足才进缓冲——①本轮有工具调用（`tool_calls_count` > 0）；②思考正文（strip 后）≥ 此字符数且结论类字段（outcome/conclusion/judgement/deliverable 任一）非空；③用户消息含指令动词（指令 ≠ 问句）。全不满足 → 不进缓冲但可观测（`skip_reason="non_substantive"`，不静默丢弃）；全短轮会话 session-end 不产胶囊（`capsule` 字段缺席）。老宿主不传 `tool_calls_count` → 视为 0，退化到判据 ②③ | `/lifecycle/post-turn` |
+| `SESSION_BUFFER_MIN_THOUGHT_CHARS` | `400` | **已废弃**（2026-10-28，#188）：实质轮判据不再看正文长度，改成「胶囊四问任填一格即进缓冲」。常量为签名兼容保留，下个大版本连同 `is_substantive_turn(min_thought_chars=...)` 一起删。当前仍生效的两条判据：①`<thought>` 解析出的 `sections` 任一非空；②用户消息含指令动词（指令 ≠ 问句）。工具调用判据已删（#194，宿主恒不填） | `/lifecycle/post-turn` |
 | `MEM_INGEST_MAX_LENGTH` | `50000` | 单条记忆 content 最大字符数，超长拒绝写入 | `mem_ingest` 写入时 |
 | `MEM_SEARCH_MAX_QUERY_CHARS` | `8000` | 检索 query 最大字符数，超长在检索入口直接拒绝（REST 422 / pre-turn fail-open 并标 `skip_reason="query_too_long"`），不再打到 embedding 模型侧报「exceeds the context length」 | `/mem/search`、`/mem/hybrid-search`、`/lifecycle/pre-turn` |
 | `POLICY_MODE` | `warn` | 写入口护栏模式：`warn` = 只记日志与结果字段，不改写行为（默认）；`enforce` = 策略真正拦截；非法值回退 `warn` | `mem_ingest` 写入时 |

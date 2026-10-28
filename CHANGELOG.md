@@ -20,6 +20,7 @@
 
 ### 修复
 
+- **删除 `tool_calls_count` 判据与请求字段**（#194）：宿主侧从不填这个字段（恒 0），而判据 2 放宽（#188）后空 `sections` 在更上游就被 `no_sections` 挡掉——这条判据在**任何真实链路里都到不了**，留着只会让后人以为它在工作。`PostTurnRequest.tool_calls_count`、`is_substantive_turn(tool_calls_count=...)`、`decide_session_buffer(tool_calls_count=...)` 一并删除；REST 侧老调用方若仍传该字段会被 pydantic 忽略（不报错，向后兼容）。实质轮判据现为两条：①`<thought>` 解析出的 `sections` 任一非空；②用户消息含指令动词。相关测试与 `docs/CONFIGURATION.md` 的判据说明同步更新。
 - **插件写请求超时：硬编码 5 秒 → 可配、默认 30 秒**（#191）：服务端写库要**同步算 embedding**（`core/trivium_store.py:1074`），对 Ollama 的超时是 30 秒——模型冷启动、CPU 推理、并发排队（本地 embedding 串行加锁）都可能几秒到几十秒。插件却只给 5 秒，而它是 fail-open 的，于是超时的写入被**静默丢弃**，第三方部署最常见的症状正是「有时候记忆没进去」。现 `PALIMPSEST_WRITE_TIMEOUT` 可配（默认 30 秒，与服务端预算对齐；思考骨架那条热路径仍显式传 2 秒）。失败与偏慢（≥5 秒）都打 `warning` 并带耗时——原来只有 `debug`，用户侧完全无痕。
 - **实质轮判据 2 放宽为「填了胶囊格子就算」**（#188）：旧规则是「`<thought>` 正文 ≥400 字 **且** 落在结论字段上」，与「每轮顺手填一次」的设计意图（每轮低成本填写、会话结束合并成胶囊）冲突——实测 `type=session` 缓冲节点全库仅 4 条、`turns` 恒为 1、自动胶囊只产 3 条，模型顺手填的短轮全被挡在门外。现四问中任填一格即进缓冲。空思考的轮仍走更早的 `no_sections` 分支；闲聊轮因为拿不到骨架（trivial 不注入骨架）本就不会产生结构化思考，因此放宽不会把噪声收回来。判据 1（`tool_calls_count`）与判据 3（用户指令动词）在 REST 链路里已不可达（空 `sections` 先被 `no_sections` 挡掉），保留其意义在直接调用 `is_substantive_turn` 的场景与未来扩展。
 
