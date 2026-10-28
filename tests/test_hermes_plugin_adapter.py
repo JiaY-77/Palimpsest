@@ -212,6 +212,44 @@ class TestThoughtSkeletonForwarding:
         assert cap._run("thought_skeleton_context", user_message="跑一下每日维护", platform="cron") == ""
         assert cap.sent == []
 
+    # -- 双注入闸门（issue #206） ------------------------------------------
+
+    def test_second_call_in_same_turn_is_suppressed(self):
+        """回归：宿主把插件加载两次 → 同轮两个 ``pre_llm_call`` 回调各被调一次，
+        第二个必须返回空串（否则 user 消息里出现两份一模一样的骨架）。"""
+        skeleton = "- 目标：\n- 步骤："
+        cap = _CapturingProvider(response={"thought_skeleton": skeleton, "thought_skeleton_kind": "default"})
+        PalimpsestMemoryProvider._skeleton_turn_injected.clear()
+        first = cap._run("thought_skeleton_context", user_message="帮我改函数", session_id="s206", turn_id="t1")
+        second = cap._run("thought_skeleton_context", user_message="帮我改函数", session_id="s206", turn_id="t1")
+        assert first.endswith(skeleton)
+        assert second == ""
+        assert len(cap.sent) == 1, "第二次回调连 HTTP 请求都不该再发"
+
+    def test_different_turns_both_inject(self):
+        skeleton = "- 目标："
+        cap = _CapturingProvider(response={"thought_skeleton": skeleton, "thought_skeleton_kind": "default"})
+        PalimpsestMemoryProvider._skeleton_turn_injected.clear()
+        a = cap._run("thought_skeleton_context", user_message="第一轮问题", session_id="s206b", turn_id="t1")
+        b = cap._run("thought_skeleton_context", user_message="第二轮问题", session_id="s206b", turn_id="t2")
+        assert a and b
+        assert len(cap.sent) == 2
+
+    def test_dedup_keeps_kind_for_post_turn(self):
+        """去重不能把第一个实例写好的 kind 清掉——收侧 ``sync_turn`` 还要用它上报。"""
+        cap = _CapturingProvider(response={"thought_skeleton": "- x", "thought_skeleton_kind": "research"})
+        PalimpsestMemoryProvider._skeleton_turn_injected.clear()
+        cap._run("thought_skeleton_context", user_message="帮我调研一下", session_id="s206c", turn_id="t1")
+        cap._run("thought_skeleton_context", user_message="帮我调研一下", session_id="s206c", turn_id="t1")
+        assert PalimpsestMemoryProvider._skeleton_kind_by_session["s206c"] == "research"
+
+    def test_no_turn_id_keeps_legacy_behaviour(self):
+        """宿主不给 turn_id（旧宿主 / 非钩子调用）时不做去重，行为与改动前一致。"""
+        cap = _CapturingProvider(response={"thought_skeleton": "- x", "thought_skeleton_kind": "default"})
+        PalimpsestMemoryProvider._skeleton_turn_injected.clear()
+        assert cap._run("thought_skeleton_context", user_message="帮我改函数") != ""
+        assert cap._run("thought_skeleton_context", user_message="帮我改函数") != ""
+
 
 # ---------------------------------------------------------------------------
 # sync_turn -> /lifecycle/post-turn
