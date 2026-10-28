@@ -14,7 +14,7 @@ from typing import Any
 
 from config import Config
 from core import tdb_text_index as _tdb_text
-from core.bitemporal import is_valid_at, stamp_new_fact, time_fields
+from core.bitemporal import freshness_decay, is_valid_at, stamp_new_fact, time_fields
 from core.capsule_guard import validate_capsule_fields
 from core.conflict import resolve_conflict
 from core.db_health import check_db_health, health_hint
@@ -918,6 +918,9 @@ def _mem_search_impl(
       - domain_boost："" 不额外加分；非空时对 node_domain(payload) == domain_boost 的
         候选在语义分上「加」Config.DOMAIN_BOOST_EPS（加性软加权，不同于 domain 的硬过滤、
         也不同于 domain_bias 的乘性加权）；默认空 = 不改变任何现有行为。
+      - v2.x 新鲜度加权：Config.MEM_SEARCH_FRESHNESS_WEIGHT 非零时对候选加
+        score += WEIGHT × decay(节点年龄)（加性时效信号，见 core/bitemporal.
+        freshness_decay）；默认 0 = 关闭（逐位一致）。as_of 历史视图下不生效。
       - v4.0 outdated 语义：默认过滤 status=="outdated" 的旧版本（只回当前有效节点），
         include_outdated=True 时不过滤，返回全部（显式历史可追溯通道）。
     """
@@ -976,6 +979,21 @@ def _mem_search_impl(
             score *= Config.DOMAIN_BIAS_WEIGHT
         if domain_boost and node_domain(payload) == domain_boost.strip().lower():
             score += Config.DOMAIN_BOOST_EPS
+        # v2.x 新鲜度加权（issue #175，数据优先）：score += WEIGHT × decay(节点年龄)。
+        # as_of 历史视图下不生效——双时间线回看按「当时为真」排序，与今天的
+        # 记忆新鲜度无关（验收红线：as_of 路径不受影响）。默认 WEIGHT=0 时
+        # 完全跳过（零开销，行为与改动前逐位一致，有回归测试保证）。
+        if as_of is None:
+            _fw = Config.MEM_SEARCH_FRESHNESS_WEIGHT
+            if _fw:
+                _decay = freshness_decay(
+                    payload,
+                    time.time(),
+                    Config.MEM_SEARCH_FRESHNESS_SCALE_DAYS,
+                    Config.MEM_SEARCH_FRESHNESS_DECAY,
+                )
+                if _decay is not None:
+                    score += _fw * _decay
         meta = {
             "type": ptype,
             "importance": payload.get("importance", 0.5),

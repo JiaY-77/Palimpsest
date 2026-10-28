@@ -129,6 +129,48 @@ def is_valid_at(payload: dict, as_of: float | None) -> bool:
     return not (invalid_at is not None and invalid_at <= as_of)
 
 
+def freshness_decay(
+    payload: dict,
+    now: float,
+    scale_days: float,
+    decay: str = "exp",
+) -> float | None:
+    """节点的「新鲜度衰减」排序信号：1 = 刚发生，随年龄衰减到 0。
+
+    检索层（``_mem_search_impl``）用它做 ``score += weight × decay`` 的
+    时效性加权；本函数只算信号，不读配置——权重/尺度/形式由调用方传入，
+    保持本模块不依赖 config（与 ``is_valid_at`` 同风格）。
+
+    时间基准：事实类节点优先取世界时间 ``valid_at``（「事实何时开始为真」），
+    缺省退回记录时间 ``created_at``；kb_chunk / record 等非事实类没有世界
+    时间语义，直接用 ``created_at``（kb 切片用「切片写入时间」近似文档年龄，
+    是否参与加权、权重多大由检索层按数据决定）。
+
+    形式（``decay``）：
+    - ``"exp"``（默认）：``0.5 ** (age_days / scale_days)``，``scale_days``
+      为半衰期——age 达到 scale 时信号衰减到 0.5；
+    - ``"linear"``：``max(0, 1 - age_days / scale_days)``，``scale_days``
+      为归零天数——age 达到 scale 时信号归 0。
+
+    返回值：``None`` = 无时间字段或参数非法（``scale_days <= 0``），
+    调用方应跳过加权（不惩罚、不奖励），保持「无信号 = 无影响」。
+    """
+    t0 = payload.get(VALID_AT)
+    if t0 is None:
+        t0 = payload.get(RECORDED_AT)
+    if t0 is None or scale_days <= 0:
+        return None
+    try:
+        # 历史数据里 created_at 可能是 ISO 字符串（bi-temporal 文档警告过的坑），
+        # 解析不了就当无信号，绝不让排序路径崩掉
+        age_days = max(0.0, (now - float(t0)) / 86400.0)
+    except (TypeError, ValueError):
+        return None
+    if decay == "linear":
+        return max(0.0, 1.0 - age_days / scale_days)
+    return 0.5 ** (age_days / scale_days)
+
+
 def windows_overlap(new_payload: dict, old_payload: dict) -> bool:
     """两条事实的世界时间窗是否重叠（时间窗冲突判定，降低误标）。
 
