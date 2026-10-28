@@ -31,6 +31,7 @@ from core.strategy import (
     compose_session_capsule,
     decide_session_buffer,
     detect_thought_origin,
+    extract_handles,
     parse_thought_sections,
 )
 
@@ -727,3 +728,273 @@ def test_parse_keeps_multi_line_answer_after_echo():
     text = "<thought>\n2. 做了什么：\n第一行\n第二行\n</thought>"
     sections = parse_thought_sections(text, "default")
     assert sections["outcome"] == "第一行\n第二行"
+
+
+# ---------------------------------------------------------------------------
+# 6. M1：一 session 一胶囊（issue #187 先查后建 / 全量轮次）+ 单次写（#198）
+# ---------------------------------------------------------------------------
+
+
+def _capsules_by_session(session_id: str) -> list[tuple[int, dict]]:
+    """全库中该 session 的会话胶囊（type=task + kind=handoff + session_id 相等）。"""
+    from mcp_tools import store
+
+    return [
+        (nid, payload)
+        for nid, payload in store.iter_payloads()
+        if isinstance(payload, dict)
+        and payload.get("type") == "task"
+        and payload.get("kind") == "handoff"
+        and payload.get("session_id") == session_id
+    ]
+
+
+def test_capsule_scenario_a_one_session_one_capsule(db_path):
+    """场景 A：post-turn ×2 → session-end → 1 条胶囊、turns==2、四节齐全。"""
+    client = _client()
+    for i, (block, kind) in enumerate([(_CODE_BLOCK, "code"), (_RESEARCH_BLOCK, "research")], start=1):
+        r = client.post(
+            "/lifecycle/post-turn",
+            json={
+                "session_id": "cap-m1-a",
+                "turn_index": i,
+                "user_message": f"第 {i} 轮：改改胶囊",
+                "assistant_message": f"正文\n{block}\n",
+                "skeleton_kind": kind,
+            },
+        )
+        assert r.json()["session_buffer"]["buffered"] is True
+    end = client.post("/lifecycle/session-end", json={"session_id": "cap-m1-a", "messages": []})
+    capsules = _capsules_by_session("cap-m1-a")
+    assert len(capsules) == 1, f"应只 1 条胶囊，实际 {[nid for nid, _ in capsules]}"
+    nid, payload = capsules[0]
+    assert end.json()["capsule"]["node_id"] == nid
+    assert payload["turns"] == 2
+    assert set(payload["sections"]) == {"thought", "outcome", "next", "pitfalls"}
+    assert all(body != "（待补）" for body in payload["sections"].values())
+    assert payload["pending"] == []
+
+
+def test_capsule_scenario_b_mid_session_end_still_one_capsule(db_path):
+    """场景 B（#187 回归）：post-turn → session-end → post-turn → session-end
+    → 仍只 1 条胶囊、turns 累积为 2、node_id 未变。改动前第二次 session-end 会
+    新建第二条胶囊（同一 session_id 两条，生产 3564/3578 实测），本测试在修复
+    前必须红。"""
+    client = _client()
+    r1 = client.post(
+        "/lifecycle/post-turn",
+        json={
+            "session_id": "cap-m1-b",
+            "turn_index": 1,
+            "user_message": "第一段活：改改胶囊",
+            "assistant_message": f"正文\n{_CODE_BLOCK}\n",
+            "skeleton_kind": "code",
+        },
+    )
+    assert r1.json()["session_buffer"]["buffered"] is True
+    end1 = client.post("/lifecycle/session-end", json={"session_id": "cap-m1-b", "messages": []})
+    first_id = end1.json()["capsule"]["node_id"]
+
+    r2 = client.post(
+        "/lifecycle/post-turn",
+        json={
+            "session_id": "cap-m1-b",
+            "turn_index": 2,
+            "user_message": "第二段活：改改胶囊",
+            "assistant_message": f"正文\n{_DEFAULT_BLOCK}\n",
+            "skeleton_kind": "default",
+        },
+    )
+    assert r2.json()["session_buffer"]["buffered"] is True
+    end2 = client.post("/lifecycle/session-end", json={"session_id": "cap-m1-b", "messages": []})
+    capsules = _capsules_by_session("cap-m1-b")
+    assert len(capsules) == 1, f"#187 回归：应仍只 1 条胶囊，实际 {[nid for nid, _ in capsules]}"
+    nid, payload = capsules[0]
+    assert nid == first_id, "node_id 必须不变（原节点更新，不是新建）"
+    assert end2.json()["capsule"]["node_id"] == nid
+    assert payload["turns"] == 2, "轮次要全量累积（中途 session-end 之前的轮不能丢）"
+    # 重复 session-end：幂等空操作——不产第二条、返回体不加 capsule 字段
+    end3 = client.post("/lifecycle/session-end", json={"session_id": "cap-m1-b", "messages": []})
+    assert len(_capsules_by_session("cap-m1-b")) == 1
+    assert "capsule" not in end3.json()
+
+
+def test_capsule_scenario_c_updated_content_reflects_new_turns(db_path):
+    """场景 C：更新路径下胶囊 content 四节反映**合并后**的轮次内容（正文重合成，
+    不是只留最新轮）。"""
+    client = _client()
+    r1 = client.post(
+        "/lifecycle/post-turn",
+        json={
+            "session_id": "cap-m1-c",
+            "turn_index": 1,
+            "user_message": "先查一个问题",
+            "assistant_message": f"正文\n{_RESEARCH_BLOCK}\n",
+            "skeleton_kind": "research",
+        },
+    )
+    assert r1.json()["session_buffer"]["buffered"] is True
+    client.post("/lifecycle/session-end", json={"session_id": "cap-m1-c", "messages": []})
+    r2 = client.post(
+        "/lifecycle/post-turn",
+        json={
+            "session_id": "cap-m1-c",
+            "turn_index": 2,
+            "user_message": "再补一轮收尾",
+            "assistant_message": f"正文\n{_DEFAULT_BLOCK}\n",
+            "skeleton_kind": "default",
+        },
+    )
+    assert r2.json()["session_buffer"]["buffered"] is True
+    end = client.post("/lifecycle/session-end", json={"session_id": "cap-m1-c", "messages": []})
+    capsule = end.json()["capsule"]
+    payload = client.get(f"/memory/{capsule['node_id']}").json()["payload"]
+    # 新轮（default 骨架）与旧轮（research 骨架）的思路 / 坑都在四节里
+    assert "确认胶囊可被交接通道取回" in payload["sections"]["thought"]  # 新轮
+    assert "胶囊四节怎么合成" in payload["sections"]["thought"]  # 旧轮不丢
+    assert "跑 pytest" in payload["sections"]["pitfalls"]  # 新轮
+    assert "空节写（待补）并记 pending" in payload["sections"]["pitfalls"]  # 旧轮
+    assert payload["content"].splitlines()[0] == "接续点 / 会话接续 cap-m1-c"
+
+
+def test_capsule_create_single_write_sections_survive_supplement_failure(db_path, monkeypatch):
+    """#198：sections / pending 由 mem_ingest 单次写落库——建节点之后的簿记补写
+    全部失败时四节仍在（旧两步写会留下无结构化字段的半状态胶囊）。"""
+    from core.trivium_store import TriviumStore
+
+    client = _client()
+    r = client.post(
+        "/lifecycle/post-turn",
+        json={
+            "session_id": "cap-m1-single",
+            "turn_index": 1,
+            "user_message": "单次写验证",
+            "assistant_message": f"正文\n{_CODE_BLOCK}\n",
+            "skeleton_kind": "code",
+        },
+    )
+    assert r.json()["session_buffer"]["buffered"] is True
+
+    original = TriviumStore.update_payload
+    targeted: list[int] = []
+
+    def _flaky(self, node_id, new_payload):
+        # 只打断「胶囊簿记补写」（payload 同时带 session_id + turns 是本链路
+        # 结构化补写的特征）；mem_ingest 内部的 last_touched_at 补写、缓冲关闭
+        # 照常放行——精确模拟「补写失败」而非「全库写坏」。mock 的是协作者
+        # store，不是被测函数本身。
+        if isinstance(new_payload, dict) and "session_id" in new_payload and "turns" in new_payload:
+            targeted.append(node_id)
+            raise RuntimeError("mock: 胶囊簿记补写失败")
+        return original(self, node_id, new_payload)
+
+    monkeypatch.setattr(TriviumStore, "update_payload", _flaky)
+    end = client.post("/lifecycle/session-end", json={"session_id": "cap-m1-single", "messages": []})
+    capsule = end.json()["capsule"]
+    assert targeted, "注入的补写失败必须真的命中（否则测试没咬住单次写契约）"
+    payload = client.get(f"/memory/{capsule['node_id']}").json()["payload"]
+    # 四节结构来自 mem_ingest 单次写：簿记补写失败也不缺
+    assert set(payload["sections"]) == {"thought", "outcome", "next", "pitfalls"}
+    assert isinstance(payload["pending"], list)
+    assert payload["content"].splitlines()[0] == "接续点 / 会话接续 cap-m1-single"
+    # 补写失败的字段如实缺席：turns 不在（宁可缺，不假装写成功）
+    assert "turns" not in payload
+
+
+# ---------------------------------------------------------------------------
+# 7. M2：可核验句柄（extract_handles 纯函数 + 骨架第 2 问改文案 + 胶囊带句柄）
+# ---------------------------------------------------------------------------
+
+
+class TestExtractHandles:
+    def test_pr_and_issue_numbers(self):
+        assert extract_handles(["提了 PR #140，另见 #187"]) == ["#140", "#187"]
+
+    def test_sha_full_and_backticked_short(self):
+        full = "a" * 40
+        assert extract_handles([f"commit {full} 与 `247e876`"]) == [full, "247e876"]
+        # 裸短串（无反引号）不算句柄；反引号里的 40 位走完整 sha 形态，不产短串
+        assert extract_handles(["裸 247e876 无反引号"]) == []
+        assert extract_handles([f"`{full}`"]) == [full]
+
+    def test_windows_and_unix_paths(self):
+        got = extract_handles(["改了 D:/HeJiaQi/x.py，然后跑了 /var/log/palimpsest.log"])
+        assert got == ["D:/HeJiaQi/x.py", "/var/log/palimpsest.log"]
+        # 相对路径不得咬出碎片句柄（/strategy.py 这种路径不存在——宁可没有不产出错的）
+        assert extract_handles(["改了 core/strategy.py 和 tests/x.py"]) == []
+        # 中文目录名是合法路径成分；尾部全角标点是行文的，不进句柄
+        assert extract_handles(["改了 D:/HeJiaQi/Documents/Novel/乾元风云录/角色.md，已归档"]) == [
+            "D:/HeJiaQi/Documents/Novel/乾元风云录/角色.md"
+        ]
+
+    def test_service_addr_pid_and_node(self):
+        got = extract_handles(["服务在 127.0.0.1:8090 与 localhost:8000，PID 12345、pid=99，看节点 3564 与 node 12"])
+        assert got == ["127.0.0.1:8090", "localhost:8000", "PID 12345", "pid=99", "节点 3564", "node 12"]
+
+    def test_dedupe_and_first_occurrence_order(self):
+        got = extract_handles(["#140 先出现，#187 后出现，再来一次 #140 和 `247e876`、#187"])
+        assert got == ["#140", "#187", "247e876"]
+
+    def test_limit_truncates_keeping_first_occurrences(self):
+        blobs = [" ".join(f"#{i}" for i in range(100, 120))]
+        assert len(extract_handles(blobs)) == 12
+        handles = extract_handles(blobs)
+        assert handles[0] == "#100" and handles[-1] == "#111"
+        assert extract_handles(blobs, limit=3) == ["#100", "#101", "#102"]
+
+    def test_no_match_returns_empty_not_noise(self):
+        assert extract_handles(["今天吃了两碗白米饭，什么句柄都没有"]) == []
+        assert extract_handles([]) == []
+        assert extract_handles(["", None]) == []  # type: ignore[list-item]
+
+    def test_overlap_claims_by_priority(self):
+        """URL 里的片段不得重复产出：服务地址整体认领，``p://`` / ``/dashboard``
+        碎片全部让路。"""
+        got = extract_handles(["面板在 http://127.0.0.1:8090/dashboard 可用"])
+        assert got == ["127.0.0.1:8090"]
+
+
+def test_skeleton_outcome_question_asks_for_handles_and_echo_still_stripped():
+    """M2 骨架文案：第 2 问要求带可核验句柄；问句主干不变（做了什么）→ 新旧回显
+    都照剥（_strip_question_echo 按「主干 + 可选括号」匹配，不钉括号原文）。"""
+    from core.strategy import decide_thought_skeleton
+
+    skeleton = decide_thought_skeleton("帮我把这个函数改成幂等的", enabled=True)["skeleton"]
+    assert "带可核验句柄：PR 号 / commit / 路径" in skeleton
+    # 新问句全文回显（模型照抄引导行再写答案）→ 剥到只剩答案
+    new_echo = (
+        "<thought>\n2. 做了什么（改了什么 / 查清了什么，带可核验句柄：PR 号 / commit / 路径）：修好了 #187\n</thought>"
+    )
+    assert parse_thought_sections(new_echo, "default")["outcome"] == "修好了 #187"
+    # 旧文案回显（存量 thought 节点 / 老缓冲轮次）→ 照剥
+    old_echo = "<thought>\n2. 做了什么（改了什么 / 查清了什么）：补 4 条测试\n</thought>"
+    assert parse_thought_sections(old_echo, "default")["outcome"] == "补 4 条测试"
+
+
+def test_capsule_outcome_carries_extracted_handles(db_path):
+    """M2 端到端：缓冲轮里写了 PR 号 / 路径 → 自动胶囊 outcome 节带句柄
+    （此前调用方不传 handles，自动胶囊一条可核验句柄都没有）。"""
+    thought = (
+        "<thought>\n"
+        "1. 这一轮的核心判断 / 思路（一句话）：两步写会留半状态，收敛为单次写。\n"
+        "2. 做了什么（改了什么 / 查清了什么，带可核验句柄：PR 号 / commit / 路径）：改了 D:/repo/main.py，见 PR #187\n"
+        "3. 下一步 / 待办：待主人验收。\n"
+        "4. 踩的坑 / 风险：无。\n"
+        "</thought>"
+    )
+    client = _client()
+    r = client.post(
+        "/lifecycle/post-turn",
+        json={
+            "session_id": "cap-m2-handle",
+            "turn_index": 1,
+            "user_message": "修一下句柄问题",
+            "assistant_message": f"正文\n{thought}\n",
+            "skeleton_kind": "default",
+        },
+    )
+    assert r.json()["session_buffer"]["buffered"] is True
+    end = client.post("/lifecycle/session-end", json={"session_id": "cap-m2-handle", "messages": []})
+    payload = client.get(f"/memory/{end.json()['capsule']['node_id']}").json()["payload"]
+    assert "#187" in payload["sections"]["outcome"]
+    assert "D:/repo/main.py" in payload["sections"]["outcome"]
