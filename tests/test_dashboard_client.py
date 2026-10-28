@@ -166,17 +166,32 @@ def test_mem_search_empty_query_short_circuits(client):
     assert r.json() == {"query": "", "results": [], "total": 0}
 
 
-def test_consolidate_preview_works_apply_is_501(client):
+def test_consolidate_preview_works_apply_is_501(monkeypatch):
     """合并**预览**走 REST 的 dry-run 端点（真实候选）；**写操作**恒 501。
 
     2026-10-28 起：REST 早有 `POST /mem/consolidate`（写死 dry_run=True），原先
     连预览都返回 501 是过时的保守写法；面板定位仍是只读观察窗，所以 apply 保持
     501，需要真实合并请用 CLI（可审计、可先看候选）。
-    """
-    preview = client.get("/api/consolidate/preview")
-    assert preview.status_code == 200, preview.text
 
-    apply_resp = client.post("/api/consolidate/apply")
+    ⚠️ 这里必须 mock `_rest`：不 mock 的话本机恰好起着 8090 就绿、CI 上必然红
+    （`Connection refused` → 502），测试就成了环境的镜子而不是契约。
+    """
+    import scripts.dashboard as dash_mod
+
+    seen: list[tuple[str, str]] = []
+
+    def fake_rest(method: str, path: str, **kwargs):
+        seen.append((method, path))
+        return {"candidates": [], "pairs_considered": 0}
+
+    monkeypatch.setattr(dash_mod, "_rest", fake_rest)
+    c = TestClient(dash_mod.app)
+
+    preview = c.get("/api/consolidate/preview")
+    assert preview.status_code == 200, preview.text
+    assert ("POST", "/mem/consolidate") in seen
+
+    apply_resp = c.post("/api/consolidate/apply")
     assert apply_resp.status_code == 501
     assert "CLI" in apply_resp.json()["detail"]
 
