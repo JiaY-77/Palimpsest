@@ -166,10 +166,19 @@ def test_mem_search_empty_query_short_circuits(client):
     assert r.json() == {"query": "", "results": [], "total": 0}
 
 
-def test_consolidate_returns_501_not_silent_empty(client):
-    """合并接口未接服务端点时应显式 501，不得静默返回空。"""
-    assert client.get("/api/consolidate/preview").status_code == 501
-    assert client.post("/api/consolidate/apply").status_code == 501
+def test_consolidate_preview_works_apply_is_501(client):
+    """合并**预览**走 REST 的 dry-run 端点（真实候选）；**写操作**恒 501。
+
+    2026-10-28 起：REST 早有 `POST /mem/consolidate`（写死 dry_run=True），原先
+    连预览都返回 501 是过时的保守写法；面板定位仍是只读观察窗，所以 apply 保持
+    501，需要真实合并请用 CLI（可审计、可先看候选）。
+    """
+    preview = client.get("/api/consolidate/preview")
+    assert preview.status_code == 200, preview.text
+
+    apply_resp = client.post("/api/consolidate/apply")
+    assert apply_resp.status_code == 501
+    assert "CLI" in apply_resp.json()["detail"]
 
 
 def test_rest_unreachable_returns_502(client, monkeypatch):

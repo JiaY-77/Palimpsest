@@ -20,6 +20,7 @@
 
 ### 修复
 
+- **监控面板融合进 REST：`http://127.0.0.1:8090/dashboard`**（一个进程搞定）：面板原先只以独立进程存在（`scripts/dashboard.py` :8010），只跑 REST 的人根本没有面板。现在九个只读端点统一抽进 `server/dashboard_api.build_router`，REST 与独立进程各自 `include_router`，`dashboard.html` 一行未改。**数据源可注入**是关键：REST 进程内注入直读实现（`iter_payloads` / `compute_stats` / 既有工具函数），**不再 HTTP 调自己**——那会多占一个线程、平白多一跳，线程池紧张时还可能自锁；独立进程注入经 REST 代理的实现（单写者约束下它没有库访问权）。合并治理的**预览**同时恢复可用（REST 早有 `POST /mem/consolidate` 的 dry-run，原先连预览都返回 501 属过时保守写法），**apply 仍恒为 501**——面板是只读观察窗，破坏性操作走可审计的 CLI。
 - **修复 dashboard 在文档给出的启动方式下根本起不来**（`scripts/dashboard.py`）：脚本漏了 `from _common import ...`（仓库统一的「项目根注入 sys.path」约定），于是 `python scripts/dashboard.py` 会把 `scripts/` 而非仓库根放进 `sys.path`，直接崩在 `from config import Config`：`ModuleNotFoundError: No module named 'config'`——面板从来没被真正启动过，而 `docs/INSTALL.md` 看起来一切正常。现按约定补上注入，并新增 `tests/test_scripts_bootstrap.py`：**按脚本模式的 sys.path 形态**（摘掉仓库根、只放 `scripts/`）import 入口脚本，dashboard 与 CLI 各一条——普通 pytest 里 `sys.path` 早被 conftest 处理，怎么 import 都复现不出这个 bug。
 - **「老库被迫落到默认 local」改成真正的 WARNING**（#192 跟进）：原先只把提示追加进自检 detail（等于日志里的脚注）；现在是 `logger.warning` + detail 双写——启动日志里扫得到才算通知，否则用户升级后「后端被默认值换掉」这件事根本不会进入视野。
 - **RemoteStore 透传 `replaces` / `meta` / `sections` / `pending`**（#197）：`client/remote_store.py` 的 `insert_node` 原本是硬编码五项白名单（`content` / `type` / `importance` / `domain` / `source`），经 HTTP 客户端路径写入的调用方**静默丢字段**——`meta` 丢意味着外部宿主绑不上自己的会话实体，`sections` 丢意味着手写胶囊与自动胶囊的形状又分裂回两种。现改为显式可选字段元组 `_OPTIONAL_INGEST_KEYS`（与服务端 `MemIngestRequest` 同步，回归用例钉着），且**只在调用方真的给了值时才带键**：不传时请求体与旧版逐键一致。

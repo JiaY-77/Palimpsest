@@ -124,6 +124,8 @@ from mcp_tools import (
 from mcp_tools import (
     skill_search as _mcp_skill_search,
 )
+from server.dashboard_api import DashboardBackend as _DashboardBackend
+from server.dashboard_api import build_router as _build_dashboard_router
 
 logger = logging.getLogger(__name__)
 
@@ -1176,6 +1178,58 @@ def mem_stats():
     stats = compute_stats(_get_store())
     stats.pop("elapsed_ms", None)
     return stats
+
+
+# ---------------------------------------------------------------------------
+# Dashboard（融合进 REST：一个进程就把面板带上，不用另起 8010）
+#
+# 路由本体在 `server/dashboard_api.py`（一份实现，独立进程也能挂）。这里只注入
+# **直读版**数据源——REST 不能 HTTP 调自己（多占一个线程、平白多一跳，线程池紧张
+# 时还可能自锁），所以四个数据源全部走进程内的 store / 既有工具函数。
+# ---------------------------------------------------------------------------
+
+
+def _dashboard_scan_nodes() -> list[dict]:
+    """全库节点（带 payload）——面板的冲突链 / 遗忘曲线 / 图谱都吃这一份。"""
+    return [{"id": nid, "payload": pl} for nid, pl in _get_store().iter_payloads() if isinstance(pl, dict)]
+
+
+def _dashboard_stats() -> dict:
+    from core.stats import compute_stats
+
+    return compute_stats(_get_store())
+
+
+def _dashboard_search(query: str, limit: int) -> dict:
+    return _as_json(_mcp_mem_search(query, top_k=limit))
+
+
+def _dashboard_fact_history(node_id: int) -> dict:
+    return _as_json(_mcp_mem_fact_history(node_id))
+
+
+def _dashboard_consolidate_preview() -> dict:
+    """合并候选预览（dry-run）——REST 的 ``/mem/consolidate`` 写死 dry_run=True。"""
+    from core.consolidator import consolidate
+
+    return consolidate(_get_store(), dry_run=True)
+
+
+_DASHBOARD_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
+
+app.include_router(
+    _build_dashboard_router(
+        _DashboardBackend(
+            scan_nodes=_dashboard_scan_nodes,
+            stats=_dashboard_stats,
+            search=_dashboard_search,
+            fact_history=_dashboard_fact_history,
+            consolidate_preview=_dashboard_consolidate_preview,
+        ),
+        page_route="/dashboard",
+        page_path=_DASHBOARD_HTML,
+    )
+)
 
 
 @app.post("/mem/consolidate")
