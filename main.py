@@ -1279,11 +1279,6 @@ class PostTurnRequest(BaseModel):
     # 不变，隐式 general）；传了则落进 payload.domain，宿主可按自己的域检索
     # 底片（否则固定 domain=hermes 的宿主永远查不到自己的底片）。
     domain: str = ""
-    # 本轮工具调用次数（issue #170 实质轮筛选，可选）：宿主拿得到就传真实次数；
-    # 拿不到就不传 → 0（老宿主兼容）。缺字段 ≠ 有工具调用——「缺信号」不能
-    # 反向推断成「实质轮」（否则老宿主的每一轮都照单全收，筛选形同虚设），
-    # 此时退化到其余判据（长思考含结论字段 / 用户消息指令动词）。
-    tool_calls_count: int = 0
 
 
 class SessionEndRequest(BaseModel):
@@ -1658,7 +1653,6 @@ def lifecycle_post_turn(req: PostTurnRequest):
             skeleton_kind=req.skeleton_kind,
             session_id=req.session_id,
             turn_index=req.turn_index,
-            tool_calls_count=req.tool_calls_count,
             user_message=req.user_message,
             min_thought_chars=Config.SESSION_BUFFER_MIN_THOUGHT_CHARS,
         )
