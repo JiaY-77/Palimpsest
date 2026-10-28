@@ -96,5 +96,6 @@ python scripts/build_kb_index.py --rules rules.json
 | `POST` | `/memoryhub/import` | 把记忆包里的节点入籍（`select` 为空 = 只预览不写；`include_secrets` 放行强敏感节点） |
 | `POST` | `/graph/neighbors` | 某节点的图谱邻居 |
 | `POST` | `/lifecycle/pre-turn` | **记忆策略 + 思维预设层**：每轮模型调用前决定召回哪些记忆，返回可注入 prompt 的文本 + 按情境动态挑的思考骨架（`thought_skeleton`） |
+| `POST` | `/lifecycle/recover-orphan-capsules` | **断线自愈**：进程被硬砍（关机 / 崩溃）没跑 session-end 时，把悬空的活跃会话缓冲补产成胶囊；`dry_run=true` 只报告不写库 |
 
 > 完整路由清单见 [`docs/API.md`](API.md)。若设置了 `PALIMPSEST_API_KEY`，除 `/` 外所有端点要求 `Authorization: Bearer <key>` 或 `X-API-Key: <key>`。

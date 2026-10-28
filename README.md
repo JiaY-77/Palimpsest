@@ -209,6 +209,9 @@ python scripts/palimpsest_cli.py doctor
 | `REST_PORT` | `8090` | FastAPI REST 服务端口 |
 | `DB_PATH` | `data/mh_memory.db` | 嵌入式 TriviumDB 数据库路径 |
 | `SESSION_BUFFER_MIN_THOUGHT_CHARS` | `400` | 会话缓冲只收实质轮的门槛：本轮有工具调用 / 思考正文 ≥ 此值且含结论字段 / 用户消息含指令动词，任一满足才进（详见 docs/CONFIGURATION.md） |
+| `SESSION_CAPSULE_RECOVER_ENABLED` | `1` | 会话胶囊断线自愈总开关：后台每 `INTERVAL` 秒扫描一次，把静默超过阈值的活跃会话缓冲补产成胶囊（进程被硬砍、session-end 没跑时的兜底）；`0` = 不启后台循环，手动端点仍可用 |
+| `SESSION_CAPSULE_RECOVER_AFTER_SECONDS` | `1800` | 孤儿判定阈值（秒）：缓冲最后活动距今超过它才补产。刻意保守——误判不丢轮次，session-end 会把全部缓冲重合成同一胶囊节点 |
+| `SESSION_CAPSULE_RECOVER_INTERVAL_SECONDS` | `300` | 后台扫描间隔（秒） |
 | `EMBEDDING_PROVIDER` | *（空 = 自动探测）* | 向量后端：留空自动探测（有云端 key → `openai`，否则 → `local`），或显式 `local` / `ollama` / `openai` |
 | `DEEPSEEK_API_KEY` | *（空）* | 生成报告用；不配也能跑 |
 | `KNOWLEDGE_DIR` | *（可选）* | 知识库根目录（待索引的 Obsidian `.md` 文件） |
