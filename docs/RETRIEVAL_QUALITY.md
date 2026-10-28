@@ -165,7 +165,55 @@ venv/Scripts/python.exe -m pytest tests/test_eval_metrics.py -q
 
 ---
 
-## 六、小结
+## 六、显著性与时间切分（held-out）协议
+
+> 动机：点估计没有方差，召回率上「几个点的差异」无法与噪声区分；且调参用的题集若同时是报告用的题集，每个数字都带乐观偏置。本节给两件工具：**时间切分 held-out** 与**配对显著性检验**（脚本与单测均在 `eval/`）。
+
+### 6.1 时间切分：tune 用旧题，报告用新题
+
+题集条目本身没有时间戳，切分以**每题 gold 节点的 `created_at`**（库内节点元数据，epoch 秒）为代理字段：指向较旧节点的查询进调参集（tune），指向较新节点的进报告集（held-out）——这也贴近真实使用（新查询随时间到达）。
+
+```bash
+venv/Scripts/python.exe eval/split_eval_set.py --tune-fraction 0.8
+```
+
+产物（都在 `eval/` 下，`.gitignore` 排除）：
+
+- `eval_set_tune.json` / `eval_set_heldout.json`：两个子题集，`run_eval.py --eval-set` 可直接吃；
+- `split_manifest.json`：**切分点显式记录**——边界 `created_at`（ISO 时间）、两侧 qid 清单、未切分计数。**调参运行不得触碰 held-out 集**。
+
+局限（如实记录）：
+
+1. 代理字段是 gold 节点创建时间，不是真实查询到达时间（题集离线反推，没有后者）；
+2. gold 节点已被删除、或节点无 `created_at` 的题两边都不进，计数记在 manifest 的 `unplaced` 里——用切分结果前先看这个数；
+3. 多 gold 题取最早的 gold 时间（保守：更可能落入 tune 集）；
+4. 题集是单次快照，重建题集后**必须重新切分**。
+
+### 6.2 配对显著性检验（bootstrap）
+
+同一批查询上比较两套配置：逐题配对打分，对「逐题差值的均值」做 **centered bootstrap 双侧检验**（默认 1000 次重采样，add-one 修正保证 p 不为 0），置信区间用 **percentile 法**。纯标准库实现，无新增依赖。
+
+```bash
+# 例：同一份评测结果里比较 vec 与 rrf 两个模式的 recall@5
+venv/Scripts/python.exe eval/significance.py \
+    --results-a eval/results_X.json --mode-a vec \
+    --results-b eval/results_X.json --mode-b rrf \
+    --metric recall@5 --split-manifest eval/split_manifest.json
+```
+
+报告对每个集合（all / tune / held_out）各输出一行：`n`（配对题数）、`mean(A)`、`mean(B)`、`diff = mean(A) − mean(B)`、diff 的置信区间、p 值（H0：均值差为 0；p < 0.05 标 `*`）。
+
+**逐题分数落盘**：`eval/comparison_<时间戳>.json` 保存每题两个配置的分数与所属集合，任何对比都可复现。
+
+### 6.3 报告纪律
+
+- **每个数字必须标明来自哪个集合**（tune / held-out / 全集）：调参时在 tune 集上看数字，**结论只引用 held-out 集**上的 n / mean / CI / p；
+- 子集不足 2 题时检验不定义（脚本输出 n/a，不崩溃）；
+- 统计函数单测在 `tests/test_eval_significance.py`（全等分数 → p=1；系统性赢 → p 极小；单题边界不崩）。
+
+---
+
+## 七、小结
 
 | 设计决策 | 依据 |
 |---|---|
@@ -175,5 +223,6 @@ venv/Scripts/python.exe -m pytest tests/test_eval_metrics.py -q
 | 分层报告 | 不同层数据形态差异大，混算会互相掩盖 |
 | 语义为主、元数据为辅（ε 级加性） | 消融实验：原乘性加权存在尺度失配，修正后记忆层 R@5 0.263 → 0.684 |
 | 评测在库副本上跑 + SHA256 自证 | 评测会触发写入路径，不能碰真实数据 |
+| 显著性检验 + 时间切分 held-out | 点估计无法区分真提升与噪声；在调参集上自评必然乐观 |
 
 *本页只公开方法与汇总结论；原始题集、逐题结果与含个人数据的报告保留在本地。*
