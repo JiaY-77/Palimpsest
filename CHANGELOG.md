@@ -6,6 +6,18 @@
 
 ## [Unreleased]
 
+### 破坏性变更
+
+- **思考骨架统一为「四问 = 胶囊四节」**（#188）：原先 code / research / default 三套骨架各有一套字段名（`change` / `failure_path` / `verify` / `deliverable` 等），而胶囊四节是 `thought` / `outcome` / `next` / `pitfalls` —— 任何单骨架轮都填不满四节。实测全库自动胶囊 3 条**全部**只有【思路】有正文、另三节恒为「（待补）」（`pending` 三项），而同期手写接续点 121 条。现四问固定为「①核心判断 / 思路 ②做了什么 ③下一步 / 待办 ④踩的坑 / 风险」，编号直接对应四节；`skeleton_kind` 仍按消息情境分类（`code` / `research` / `default`），但只作归因标记、不再影响骨架正文。
+  兼容性（三条都已落地并有测试覆盖）：
+  - **历史 `thought` 节点的 `thought_origin` 归因不丢**：`detect_thought_origin` 把三套旧模板的起手式并入判据（`_LEGACY_SKELETON_OPENERS`），老节点仍判为 `skeleton`；
+  - **老缓冲节点仍能合成胶囊**：`compose_session_capsule` 保留旧字段名取值（`judgement` / `conclusion` / `goal`、`change` / `deliverable`、`verify` / `output`、`failure_path`）作为兜底；
+  - `is_substantive_turn(...)` 的 `min_thought_chars` 参数与 `Config.SESSION_BUFFER_MIN_THOUGHT_CHARS` **已废弃**（保留签名与配置项以免破坏调用方，下个大版本删除）。
+
+### 修复
+
+- **实质轮判据 2 放宽为「填了胶囊格子就算」**（#188）：旧规则是「`<thought>` 正文 ≥400 字 **且** 落在结论字段上」，与「每轮顺手填一次」的设计意图（每轮低成本填写、会话结束合并成胶囊）冲突——实测 `type=session` 缓冲节点全库仅 4 条、`turns` 恒为 1、自动胶囊只产 3 条，模型顺手填的短轮全被挡在门外。现四问中任填一格即进缓冲。空思考的轮仍走更早的 `no_sections` 分支；闲聊轮因为拿不到骨架（trivial 不注入骨架）本就不会产生结构化思考，因此放宽不会把噪声收回来。判据 1（`tool_calls_count`）与判据 3（用户指令动词）在 REST 链路里已不可达（空 `sections` 先被 `no_sections` 挡掉），保留其意义在直接调用 `is_substantive_turn` 的场景与未来扩展。
+
 ### 修复
 
 - **插件清单里最后一条误声明的钩子清掉**（#183）：`provides_hooks` 还留着 `on_session_end`——它与 `on_pre_compress` 同类，是 `MemoryProvider` 的**方法**（会话结束时由宿主经 provider 接口调用），不是事件钩子。上一轮 #178 只清掉了 `on_pre_compress`，校验器于是换一条 WARN 继续报（`declares hook 'on_session_end' but registration did not add it`），`plugins doctor` 因此永远到不了全绿，常驻 WARN 又把真正的注册问题盖住。现 `provides_hooks` 只留 `pre_llm_call`（`register()` 唯一真正 `ctx.register_hook()` 的钩子），两个 provider 方法改为在 YAML 注释里说明。功能侧无任何变化（会话沉淀本来就正常生效）。
@@ -18,6 +30,8 @@
 ### 测试
 
 - 新增 `tests/test_plugin_manifest_hooks.py`（4 条）：静态解析 `plugin.yaml` 的 `provides_hooks` 与 `register()` 里的 `ctx.register_hook(<字面量>)`，断言两者**相等**（双向：多声明 → doctor WARN，少声明 → 未声明的注册），并要求 `on_pre_compress` / `on_session_end` 这两个 provider 方法两边都不出现——把 #173 的验收标准（声明 == 注册，由测试钉住）落地。另有一条防空转基线（两边都空时不得静默通过）。`requirements-dev.txt` 加 `PyYAML`（只进开发依赖，运行时完全不碰 YAML）。
+- `tests/test_session_capsule.py` / `tests/test_substantive_turn.py` / `tests/test_strategy_engine.py` / `tests/test_thought_lifecycle.py` 按统一骨架与放宽后的判据重写：解析断言改为「编号 → 四节」映射；判据 2 的正样本从「450 字长思考」换成「四问短填」、反样本换成「四问全空」；新增「三情境骨架正文完全相同、`kind` 仍分类」的断言；判据 1/3 的直接调用用例保留。`tests/test_thought_origin.py` 现有用例原样通过（旧起手式走兼容判据）。
+
 
 ## [2.17.0] - 2026-10-28
 

@@ -382,23 +382,31 @@ class TestClampMaxTopics:
 
 
 class TestDecideThoughtSkeleton:
-    def test_code_scenario_gets_failure_path_skeleton(self):
+    """统一骨架（2026-10-28，issue #188）：三套 kind 共用同一份四问。
+
+    `kind` 仍按消息情境分类（保留 thought_origin 归因能力），但骨架正文不再按
+    场景换字段名——四问固定对应胶囊四节（思路 / 做了什么 / 下一步 / 踩的坑），
+    这样任何一轮的填写都能落进胶囊，而不是像旧版那样单骨架永远缺两节。
+    """
+
+    def test_code_scenario_classified_as_code(self):
         r = decide_thought_skeleton("帮我修复这个报错，用户说模块导入失败")
         assert r["kind"] == "code"
         assert r["skeleton"].startswith("<thought>")
-        assert "失败路径" in r["skeleton"]
+        assert "踩的坑" in r["skeleton"]
 
-    def test_research_scenario_gets_evidence_skeleton(self):
+    def test_research_scenario_classified_as_research(self):
         r = decide_thought_skeleton("调研对比一下这两个方案的可行性")
         assert r["kind"] == "research"
-        assert "反例" in r["skeleton"]
+        assert "做了什么" in r["skeleton"]
 
-    def test_default_scenario_gets_generic_skeleton(self):
+    def test_default_scenario_classified_as_default(self):
         r = decide_thought_skeleton("帮我安排下周的会议纪要和行程")
         assert r["kind"] == "default"
-        assert "值不值得记" in r["skeleton"]
+        assert "下一步" in r["skeleton"]
 
-    def test_skeletons_differ_across_scenarios(self):
+    def test_skeleton_body_is_unified_across_scenarios(self):
+        """统一骨架的直接证据：三情境 kind 不同，骨架正文完全相同。"""
         skeletons = {
             decide_thought_skeleton(msg)["skeleton"]
             for msg in [
@@ -407,7 +415,7 @@ class TestDecideThoughtSkeleton:
                 "帮我安排下周的会议纪要和行程",
             ]
         }
-        assert len(skeletons) == 3  # 动态骨架的直接证据：三情境三份骨架
+        assert len(skeletons) == 1
 
     def test_code_takes_priority_over_research(self):
         # 调试型调研（含报错/代码词）按代码情境给失败路径骨架更贴切
