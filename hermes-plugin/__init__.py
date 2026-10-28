@@ -379,9 +379,11 @@ class PalimpsestMemoryProvider(MemoryProvider):
     # （``turn_id`` 只到得了 ``pre_llm_call`` 钩子）。插件自己维护每会话单调计数
     # 随请求上送，服务端才有幂等去重的键（issue #216：此前缺省恒 0 被当「同一
     # 轮」，会话缓冲每轮覆盖上一轮，turns 恒为 1）。
-    # 诚实边界：计数是进程内存活物——插件重启后同会话从 1 重计，若该会话缓冲
-    # 仍活跃，新一轮会按「同序号覆盖」顶掉第 1 轮（thought 落库同理判重跳过）；
-    # 换来的是正常重试的幂等保护。跨进程重启不保证续接，属已知取舍。
+    # 重载续接（issue #219）：服务端在 post-turn 返回体里回传**解析后的真实序号**
+    # （``turn_index_resolved``，缓冲落库用那个），每个 sync_turn 拿它校正本地
+    # （``max(本地, 服务端值)``）——插件重启后同会话从 1 重计的自我校正：第一轮
+    # post-turn 就对齐到缓冲离点，不再覆盖活跃缓冲的第 1 轮。仍不落持久层——
+    # 跨进程不保证续接的老取舍由服务端返回值兜住。
     _turn_index_by_session: ClassVar[dict[str, int]] = {}
     _TURN_INDEX_BUCKETS_MAX: ClassVar[int] = 256
 
@@ -457,6 +459,19 @@ class PalimpsestMemoryProvider(MemoryProvider):
             "严格按下面的骨架逐项填写（写完整、不要跳过任何一项），然后再给出正式回答：\n" + skeleton
         )
 
+    def _seed_turn_index(self, session_id: str, resolved: int) -> None:
+        """用服务端解析序号校正本地计数（``max(本地, resolved)``，issue #219）。
+
+        插件重载（部署同步 / 网关重启）后本地桶可能为空或落后于缓冲离点：第一轮
+        sync_turn 的返回体带 ``turn_index_resolved``，这里把本地计数顶上去，
+        下一轮自然从离点 +1 续接，不再覆盖活跃缓冲的第 1 轮。单调取向：
+        服务端值只**推不拉**（正常重试的幂等语义不受影响）。
+        """
+        buckets = type(self)._turn_index_by_session
+        if session_id not in buckets and len(buckets) >= type(self)._TURN_INDEX_BUCKETS_MAX:
+            buckets.pop(next(iter(buckets)), None)
+        buckets[session_id] = max(buckets.get(session_id, 0), resolved)
+
     def _next_turn_index(self, session_id: str) -> int:
         """本会话下一个轮次序号（单调 +1，只在真发请求时推进）。
 
@@ -510,7 +525,7 @@ class PalimpsestMemoryProvider(MemoryProvider):
                 assistant_message = f"<thought>{reasoning}</thought>"
             if kind:
                 logger.debug("Palimpsest thought captured (skeleton_kind=%s)", kind)
-        _http_post(
+        resp = _http_post(
             f"{self._base_url}/lifecycle/post-turn",
             {
                 "session_id": session_id or self._session_id,
@@ -525,6 +540,13 @@ class PalimpsestMemoryProvider(MemoryProvider):
                 "turn_index": self._next_turn_index(session_id or self._session_id or ""),
             },
         )
+        # 重载续接（issue #219）：返回体的 ``turn_index_resolved`` 是服务端落库
+        # 用的真实序号——拿它校正本地计数（max，只推不拉），插件重载后第一轮
+        # 就对齐到缓冲离点。可观测优先：校正是进程内簿记，失败不影响本轮沉淀。
+        sid = session_id or self._session_id or ""
+        resolved = resp.get("turn_index_resolved") if isinstance(resp, dict) else None
+        if isinstance(resolved, int) and resolved > 0:
+            self._seed_turn_index(sid, resolved)
 
     def on_session_end(self, messages: list[dict[str, Any]]) -> None:
         """会话结束：转发 ``/lifecycle/session-end``（要点提炼 / 分层 / 去重在本体）。"""

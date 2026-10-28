@@ -110,10 +110,15 @@ def _capsule_ids(session_id: str) -> list[int]:
 
 
 def _make_orphan(client, session_id: str, *, age_seconds: float = 3600.0) -> tuple[int, dict]:
-    """造一条已静默 age_seconds 的活跃缓冲（走真实 post-turn，再把 updated_at 拨旧）。"""
+    """造一条已静默 age_seconds 的活跃缓冲（走真实 post-turn，再把 updated_at 拨旧）。
+
+    造的是**厚**缓冲（2 个实质轮）：issue #219 厚度门槛后，1 轮薄缓冲自愈只
+    会 skip+关闭，走不到补产——补产语义的测试必须用厚缓冲。
+    """
     from mcp_tools import store
 
-    _post_turn(client, session_id)
+    _post_turn(client, session_id, turn_index=1)
+    _post_turn(client, session_id, turn_index=2)
     buf = _buffer(session_id)
     assert buf is not None
     buf_nid, payload = buf
@@ -154,7 +159,7 @@ def test_orphan_buffer_recovered_into_capsule(db_path):
     assert out["dry_run"] is False
     assert [r["session_id"] for r in out["recovered"]] == ["rec-1"]
     rec = out["recovered"][0]
-    assert rec["turns"] == 1
+    assert rec["turns"] == 2  # 厚缓冲（issue #219 后薄缓冲只 skip 不补产）
     assert rec["node_id"] is not None
 
     # 胶囊产出：type=task + kind=handoff + 留痕字段
@@ -220,9 +225,15 @@ def test_legacy_buffer_without_updated_at_uses_started_at(db_path):
                     "skeleton_kind": "default",
                     "sections": {"thought": "老数据的思路"},
                     "raw": "1. 老数据",
-                }
+                },
+                {
+                    "turn_index": 2,
+                    "skeleton_kind": "code",
+                    "sections": {"outcome": "老数据的产出：main.py"},
+                    "raw": "2. 老数据",
+                },
             ],
-            "last_turn_index": 1,
+            "last_turn_index": 2,
         },
         store.embed_text(content),
     )
@@ -230,7 +241,7 @@ def test_legacy_buffer_without_updated_at_uses_started_at(db_path):
     out = _recover_orphan_session_buffers(stale_after=1800.0)
     assert [r["session_id"] for r in out["recovered"]] == ["rec-legacy"]
     rec = out["recovered"][0]
-    assert rec["turns"] == 1
+    assert rec["turns"] == 2  # 厚缓冲（issue #219 后薄缓冲只 skip 不补产）
     cap = store.get_node(rec["node_id"]).get("payload", {})
     assert cap["type"] == "task" and cap["kind"] == "handoff"
     assert "老数据的思路" in cap["content"]
@@ -310,7 +321,7 @@ def test_dry_run_writes_nothing(db_path):
     # 待处理 session 在返回体里可见（node_id=None = 还没写）
     assert [r["session_id"] for r in out["recovered"]] == ["rec-dry"]
     assert out["recovered"][0]["node_id"] is None
-    assert out["recovered"][0]["turns"] == 1
+    assert out["recovered"][0]["turns"] == 2
 
     # 库未动：缓冲仍 active、没有胶囊
     after = store.get_node(buf_nid).get("payload", {})

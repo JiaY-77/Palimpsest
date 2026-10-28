@@ -784,50 +784,65 @@ def test_capsule_scenario_a_one_session_one_capsule(db_path):
 
 
 def test_session_end_with_partial_sections_still_writes_capsule(db_path):
-    """回归（2026-10-28 生产）：只要有一节为空，compose 就会把「（待补）」写进
-    sections 并把该节列进 pending；胶囊护栏的旧判定把它当「非空却列待补」判矛盾，
-    于是**整条胶囊被拒写入**（生产日志：会话胶囊生成失败 … pending 与 sections 矛盾）。
-    自动胶囊天然常有空节（原料是每轮 <thought>，多数轮只填一两问），这条必须绿。
+    """回归（2026-10-28 生产）：compose 把空节写「（待补）」并进 pending，两者
+    必须一致，绝不触发旧护栏的「非空却列待补」矛盾拒写。
+
+    issue #219 厚度门槛后，1 轮薄会话根本不会走到写库；本回归因此升级为厚会话
+    场景（2 个实质轮、每轮只答前两问）——四节合成仍要保留有内容节、空节
+    「（待补）」+ pending 一致，这条必须绿。
     """
     client = _client()
-    partial = "<thought>\n1. 这一轮的核心判断 / 思路（一句话）：只填第一格\n</thought>"
-    r = client.post(
-        "/lifecycle/post-turn",
-        json={
-            "session_id": "cap-partial",
-            "turn_index": 1,
-            "user_message": "改一下胶囊空节处理",
-            "assistant_message": f"正文\n{partial}\n",
-            "skeleton_kind": "default",
-        },
+    partial = (
+        "<thought>\n"
+        "1. 这一轮的核心判断 / 思路（一句话）：只答前两格\n"
+        "2. 做了什么（改了什么 / 查清了什么，带可核验句柄：PR 号 / commit / 路径）：改了 #219 的门槛\n"
+        "</thought>"
     )
-    assert r.json()["session_buffer"]["buffered"] is True
+    for turn_index in (1, 2):
+        r = client.post(
+            "/lifecycle/post-turn",
+            json={
+                "session_id": "cap-partial",
+                "turn_index": turn_index,
+                "user_message": "改一下胶囊空节处理",
+                "assistant_message": f"正文\n{partial}\n",
+                "skeleton_kind": "default",
+            },
+        )
+        assert r.json()["session_buffer"]["buffered"] is True
     end = client.post("/lifecycle/session-end", json={"session_id": "cap-partial", "messages": []})
     body = end.json()
-    assert body.get("capsule"), f"部分节为空的会话必须仍能产出胶囊，实际返回：{body}"
+    assert body.get("capsule"), f"跨度两轮的会话必须仍能产出胶囊，实际返回：{body}"
     cap = body["capsule"]
+    assert cap["turns"] == 2
     assert cap["sections"]["thought"], "有内容的那节要保留"
-    assert cap["sections"]["outcome"] == "（待补）"
-    assert set(cap["pending"]) == {"outcome", "next", "pitfalls"}
+    assert cap["sections"]["outcome"], "有内容的那节要保留"
+    assert cap["sections"]["next"] == "（待补）"
+    assert cap["sections"]["pitfalls"] == "（待补）"
+    assert set(cap["pending"]) == {"next", "pitfalls"}
 
 
 def test_capsule_scenario_b_mid_session_end_still_one_capsule(db_path):
-    """场景 B（#187 回归）：post-turn → session-end → post-turn → session-end
-    → 仍只 1 条胶囊、turns 累积为 2、node_id 未变。改动前第二次 session-end 会
-    新建第二条胶囊（同一 session_id 两条，生产 3564/3578 实测），本测试在修复
-    前必须红。"""
+    """场景 B（#187 回归）：中途 session-end 后继续干活、再 session-end
+    → 仍只 1 条胶囊、node_id 未变（原节点更新）、轮次全量累积。
+
+    issue #219 厚度门槛后，1 轮缓冲的第一次 session-end 不产胶囊（薄会话），
+    本场景因此构造 2 轮 → 第一次 session-end 产出（turns==2），再补 1 轮 →
+    第二次 session-end 走更新路径（turns==3、closed_at 打上）。
+    """
     client = _client()
-    r1 = client.post(
-        "/lifecycle/post-turn",
-        json={
-            "session_id": "cap-m1-b",
-            "turn_index": 1,
-            "user_message": "第一段活：改改胶囊",
-            "assistant_message": f"正文\n{_CODE_BLOCK}\n",
-            "skeleton_kind": "code",
-        },
-    )
-    assert r1.json()["session_buffer"]["buffered"] is True
+    for turn_index, block in ((1, _CODE_BLOCK), (2, _DEFAULT_BLOCK)):
+        r = client.post(
+            "/lifecycle/post-turn",
+            json={
+                "session_id": "cap-m1-b",
+                "turn_index": turn_index,
+                "user_message": f"第 {turn_index} 段活：改改胶囊",
+                "assistant_message": f"正文\n{block}\n",
+                "skeleton_kind": "code",
+            },
+        )
+        assert r.json()["session_buffer"]["buffered"] is True
     end1 = client.post("/lifecycle/session-end", json={"session_id": "cap-m1-b", "messages": []})
     first_id = end1.json()["capsule"]["node_id"]
 
@@ -835,7 +850,7 @@ def test_capsule_scenario_b_mid_session_end_still_one_capsule(db_path):
         "/lifecycle/post-turn",
         json={
             "session_id": "cap-m1-b",
-            "turn_index": 2,
+            "turn_index": 3,
             "user_message": "第二段活：改改胶囊",
             "assistant_message": f"正文\n{_DEFAULT_BLOCK}\n",
             "skeleton_kind": "default",
@@ -848,7 +863,7 @@ def test_capsule_scenario_b_mid_session_end_still_one_capsule(db_path):
     nid, payload = capsules[0]
     assert nid == first_id, "node_id 必须不变（原节点更新，不是新建）"
     assert end2.json()["capsule"]["node_id"] == nid
-    assert payload["turns"] == 2, "轮次要全量累积（中途 session-end 之前的轮不能丢）"
+    assert payload["turns"] == 3, "轮次要全量累积（中途 session-end 之前的轮不能丢）"
     # #208 配套：更新路径要打 closed_at（这场会话的接手到此为止）
     assert payload.get("closed_at"), "更新已有胶囊时必须写 closed_at"
     # 重复 session-end：幂等空操作——不产第二条、返回体不加 capsule 字段
@@ -901,17 +916,18 @@ def test_capsule_create_single_write_sections_survive_supplement_failure(db_path
     from core.trivium_store import TriviumStore
 
     client = _client()
-    r = client.post(
-        "/lifecycle/post-turn",
-        json={
-            "session_id": "cap-m1-single",
-            "turn_index": 1,
-            "user_message": "单次写验证",
-            "assistant_message": f"正文\n{_CODE_BLOCK}\n",
-            "skeleton_kind": "code",
-        },
-    )
-    assert r.json()["session_buffer"]["buffered"] is True
+    for turn_index in (1, 2):  # 厚会话（issue #219 门槛）：第 1 轮就 1 轮 → 薄会话根本不写
+        r = client.post(
+            "/lifecycle/post-turn",
+            json={
+                "session_id": "cap-m1-single",
+                "turn_index": turn_index,
+                "user_message": "单次写验证",
+                "assistant_message": f"正文\n{_CODE_BLOCK}\n",
+                "skeleton_kind": "code",
+            },
+        )
+        assert r.json()["session_buffer"]["buffered"] is True
 
     original = TriviumStore.update_payload
     targeted: list[int] = []
@@ -1021,17 +1037,18 @@ def test_capsule_outcome_carries_extracted_handles(db_path):
         "</thought>"
     )
     client = _client()
-    r = client.post(
-        "/lifecycle/post-turn",
-        json={
-            "session_id": "cap-m2-handle",
-            "turn_index": 1,
-            "user_message": "修一下句柄问题",
-            "assistant_message": f"正文\n{thought}\n",
-            "skeleton_kind": "default",
-        },
-    )
-    assert r.json()["session_buffer"]["buffered"] is True
+    for turn_index in (1, 2):  # 厚会话（issue #219 门槛）
+        r = client.post(
+            "/lifecycle/post-turn",
+            json={
+                "session_id": "cap-m2-handle",
+                "turn_index": turn_index,
+                "user_message": "修一下句柄问题",
+                "assistant_message": f"正文\n{thought}\n",
+                "skeleton_kind": "default",
+            },
+        )
+        assert r.json()["session_buffer"]["buffered"] is True
     end = client.post("/lifecycle/session-end", json={"session_id": "cap-m2-handle", "messages": []})
     payload = client.get(f"/memory/{end.json()['capsule']['node_id']}").json()["payload"]
     assert "#187" in payload["sections"]["outcome"]
@@ -1124,17 +1141,18 @@ def test_session_end_does_not_overwrite_handwritten_content(db_path):
 
     client = _client()
     sid = "cap-e2e-merge"
-    r = client.post(
-        "/lifecycle/post-turn",
-        json={
-            "session_id": sid,
-            "turn_index": 1,
-            "user_message": "第一轮：先看缓冲",
-            "assistant_message": f"正文\n{_DEFAULT_BLOCK}\n",
-            "skeleton_kind": "default",
-        },
-    )
-    assert r.json()["session_buffer"]["buffered"] is True
+    for turn_index in (1, 2):  # 厚会话（issue #219 门槛）：第一次 session-end 要真产出
+        r = client.post(
+            "/lifecycle/post-turn",
+            json={
+                "session_id": sid,
+                "turn_index": turn_index,
+                "user_message": "第一轮：先看缓冲",
+                "assistant_message": f"正文\n{_DEFAULT_BLOCK}\n",
+                "skeleton_kind": "default",
+            },
+        )
+        assert r.json()["session_buffer"]["buffered"] is True
     first = client.post("/lifecycle/session-end", json={"session_id": sid, "messages": [], "auto_ingest": True})
     capsule_id = first.json()["capsule"]["node_id"]
 
@@ -1149,12 +1167,12 @@ def test_session_end_does_not_overwrite_handwritten_content(db_path):
         {"sections": handwritten, "content": f"接续点 / 会话接续 {sid}\n【思路】{handwritten['thought']}"},
     )
 
-    # 第二轮：缓冲在上次 session-end 已 closed，post-turn 另建一条 active 缓冲
+    # 新一轮：缓冲在上次 session-end 已 closed，post-turn 另建一条 active 缓冲
     r = client.post(
         "/lifecycle/post-turn",
         json={
             "session_id": sid,
-            "turn_index": 2,
+            "turn_index": 3,
             "user_message": "第二轮：再补一轮",
             "assistant_message": f"正文\n{_DEFAULT_BLOCK}\n",
             "skeleton_kind": "default",
@@ -1177,21 +1195,26 @@ def test_session_end_does_not_overwrite_handwritten_content(db_path):
 
 
 def test_session_end_new_capsule_still_creates(db_path):
-    """对照：新建路径不受合并影响（无既有胶囊 → 正常产出四节 + pending）。"""
+    """对照：新建路径不受合并影响（无既有胶囊 → 正常产出四节 + pending）。
+
+    issue #219 后必须是厚会话（2 个实质轮）才能走到新建；pending 照常工作。"""
     client = _client()
     sid = "cap-e2e-merge-new"
-    client.post(
-        "/lifecycle/post-turn",
-        json={
-            "session_id": sid,
-            "turn_index": 1,
-            "user_message": "只填一格",
-            "assistant_message": "正文\n<thought>\n1. 本轮改什么：只填了第一格\n</thought>\n",
-            "skeleton_kind": "default",
-        },
-    )
+    partial = "<thought>\n1. 本轮改什么：只填了前两格\n2. 做了什么：改了 main.py\n</thought>"
+    for turn_index in (1, 2):
+        client.post(
+            "/lifecycle/post-turn",
+            json={
+                "session_id": sid,
+                "turn_index": turn_index,
+                "user_message": "只填前两格",
+                "assistant_message": f"正文\n{partial}\n",
+                "skeleton_kind": "default",
+            },
+        )
     r = client.post("/lifecycle/session-end", json={"session_id": sid, "messages": [], "auto_ingest": True})
     capsule = r.json()["capsule"]
-    assert capsule["turns"] == 1
-    assert "只填了第一格" in capsule["sections"]["thought"]
-    assert set(capsule["pending"]) == {"outcome", "next", "pitfalls"}
+    assert capsule["turns"] == 2
+    assert "只填了前两格" in capsule["sections"]["thought"]
+    assert "改了 main.py" in capsule["sections"]["outcome"]
+    assert set(capsule["pending"]) == {"next", "pitfalls"}
