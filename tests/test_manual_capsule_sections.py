@@ -273,6 +273,20 @@ def test_validate_capsule_fields_unit():
     ok, err, _ = validate_capsule_fields({"next": "有值"}, ["next"])
     assert not ok
 
+    # 「（待补）」占位与 pending 相容：2026-10-28 生产回归——自动胶囊只要有一节
+    # 为空，compose 就会把「（待补）」写进 sections 并同时把该节列进 pending，
+    # 旧判定把它当「非空却列待补」整条拒绝，结果胶囊一条都写不进去。
+    ok, err, pending = validate_capsule_fields({"thought": "x", "pitfalls": "（待补）"}, ["pitfalls"])
+    assert ok and err == "" and pending == ["pitfalls"]
+    # 自动算 pending 时，占位节同样要算待补
+    ok, err, pending = validate_capsule_fields({"thought": "x", "pitfalls": "（待补）"}, None)
+    assert ok and pending == ["outcome", "next", "pitfalls"]
+    # 占位常量与 strategy 侧同源（防两处漂移）
+    from core.capsule_guard import CAPSULE_SECTION_TBD as _guard_tbd
+    from core.strategy import CAPSULE_SECTION_TBD as _strategy_tbd
+
+    assert _guard_tbd == _strategy_tbd
+
     # 类型错：sections 不是字典 / pending 不是列表
     ok, err, _ = validate_capsule_fields(["not a dict"], None)  # type: ignore[arg-type]
     assert not ok

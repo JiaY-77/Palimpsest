@@ -18,6 +18,12 @@ sections 固定四节、pending 标注待补节。契约与 meta_guard 同构：
 CAPSULE_SECTION_ORDER = ("thought", "outcome", "next", "pitfalls")
 _CAPSULE_SECTIONS = frozenset(CAPSULE_SECTION_ORDER)
 
+# 空节占位正文（与 ``core.strategy.CAPSULE_SECTION_TBD`` 同源，测试钉住一致性）。
+# 它是「这节没有内容」的机器占位，不是真实正文——校验时必须与 pending 相容，
+# 否则自动胶囊只要有一节为空就会被本文件整条拒绝（2026-10-28 生产实测：
+# `pending 与 sections 矛盾` → `会话胶囊写入失败`，胶囊一条都写不进去）。
+CAPSULE_SECTION_TBD = "（待补）"
+
 
 def validate_capsule_fields(
     sections: dict[str, str] | None,
@@ -48,8 +54,18 @@ def validate_capsule_fields(
         for item in pending:
             if not isinstance(item, str) or item not in _CAPSULE_SECTIONS:
                 return False, f"非法 pending 元素「{item}」：限 thought / outcome / next / pitfalls", None
-            if isinstance(sections, dict) and isinstance(sections.get(item), str) and sections[item].strip():
+            pending_value = sections.get(item) if isinstance(sections, dict) else None
+            # 「（待补）」占位算「这节没有内容」，不能算矛盾（见常量注释）。
+            if (
+                isinstance(pending_value, str)
+                and pending_value.strip()
+                and pending_value.strip() != CAPSULE_SECTION_TBD
+            ):
                 return False, f"pending 与 sections 矛盾：节「{item}」在 sections 中非空却又列为待补", None
     if pending is None and sections:
-        pending = [name for name in CAPSULE_SECTION_ORDER if name not in sections or not sections[name].strip()]
+        pending = [
+            name
+            for name in CAPSULE_SECTION_ORDER
+            if name not in sections or not sections[name].strip() or sections[name].strip() == CAPSULE_SECTION_TBD
+        ]
     return True, "", pending
