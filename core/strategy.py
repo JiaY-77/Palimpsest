@@ -1108,14 +1108,35 @@ _SUBSTANTIVE_EN_VERB_RE = re.compile(
 )
 
 
+def _question_stem(question: str) -> str:
+    """取问句主干：第一个括号之前的部分（``做了什么（改了什么 / 查清了什么）`` → ``做了什么``）。"""
+    return re.split(r"[（(]", question, maxsplit=1)[0].strip().rstrip("：: ")
+
+
+def _strip_question_echo(value: str, question: str) -> str:
+    """剥掉答案开头对问句的**回显**（``做了什么：新增…`` → ``新增…``）。
+
+    骨架问句是固定的四句（``_CAPSULE_QUESTIONS``），所以这是**模板匹配**而非猜测：
+    只有行首命中问句主干 + 分隔冒号才剥，其余一律原样返回。少剥只是难看，多剥会
+    吃内容，因此这里刻意保守——括号里的补充说明不参与匹配（填表人通常只回显主干）。
+    """
+    stem = _question_stem(question)
+    if not stem:
+        return value
+    matched = re.match(rf"^\s*{re.escape(stem)}\s*(?:[（(][^）)\n]*[）)])?\s*[：:]\s*", value)
+    return value[matched.end() :].strip() if matched else value
+
+
 def parse_thought_sections(text: str, skeleton_kind: str) -> dict[str, str]:
     """把 ``<thought>`` 段里的编号答案解析成「胶囊字段 → 文本」（纯解析）。
 
     - 按 ``_SKELETON_FIELD_MAP[skeleton_kind]`` 的字段名顺序映射编号 1..N；
       skeleton_kind 为空或不在映射表 → 用 ``default`` 的映射。
     - 每个字段值 = 「该编号行之后、下一个编号行之前」的文本（strip 后）；编号行
-      形如 ``1. 标签：答案``——编号之后同行若有内容（含标签回显）**原样取到**
-      （不猜、不改写、不截）。编号行本身的分隔符认 ``.`` / ``、`` / ``．``，
+      形如 ``1. 标签：答案``——编号之后同行的内容取到，但**开头的问句回显会被剥掉**
+      （2026-10-28：原先原样保留，导致胶囊每节都是「【做了什么】做了什么：…」的
+      双重前缀；问句固定四句，故按 `_CAPSULE_QUESTIONS` 精确匹配，剥不到就不剥，
+      绝不改写答案正文）。编号行本身的分隔符认 ``.`` / ``、`` / ``．``，
       容忍前导空白；行内冒号全/半角均常见，但不作为编号分隔符。
     - 缺编号 / 空值 → 该字段不出现（不猜、不补默认文案）；同编号重复出现 →
       后见覆盖先见。
@@ -1151,6 +1172,8 @@ def parse_thought_sections(text: str, skeleton_kind: str) -> dict[str, str]:
         num = int(numbered.group(1))
         current = fields[num - 1] if 1 <= num <= len(fields) else None
         same_line = numbered.group(2).strip()
+        if same_line and 1 <= num <= len(_CAPSULE_QUESTIONS):
+            same_line = _strip_question_echo(same_line, _CAPSULE_QUESTIONS[num - 1][1])
         parts = [same_line] if same_line else []
     _flush()
     return sections
