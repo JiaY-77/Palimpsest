@@ -76,15 +76,19 @@ python scripts/palimpsest_cli.py startup-check
 # REST 服务 (:8090) —— 唯一写者，所有接入方式都经它
 python -m uvicorn main:app --host 127.0.0.1 --port 8090
 
-# CLI 示例 / 监控面板 (:8010) / 索引知识库
+# CLI 示例 / 索引知识库
 python scripts/palimpsest_cli.py search "架构最近发生了什么变化？"
-python scripts/dashboard.py
 python scripts/build_kb_index.py
+
+# 监控面板：**已融合进 REST**，只跑上面那条 uvicorn 就够了
+#   http://127.0.0.1:8090/dashboard
+# 想把面板单独暴露在另一个端口（如做反代 / 只给局域网看）时才需要：
+#   python scripts/dashboard.py          # :8010，与 REST 内面板同一份路由
 ```
 
 > **接入方式与单进程约束（重要）**
 >
-> 首选 **REST 的 `/mcp`**：MCP 客户端接入 `http://127.0.0.1:8090/mcp/`，与 REST 共用同一进程；CLI / dashboard / 各脚本同样一律经 REST。stdio `mcp_server.py` 是**逃生梯**（非首选），仅用于**不跑 REST** 的纯 MCP 场景：库文件由 triviumdb 以独占写模式打开，第二个连接会失败并报 `Database locked: ...`，并发写入失败还**会污染文件组**且不自愈。因此 REST 服务禁止多 worker / 多实例，**一个库只应有一个进程访问**；冲突是响亮的——CLI 抛 `DatabaseBusyError`、REST 返回 `503`，不会静默降级。
+> 首选 **REST 的 `/mcp`**：MCP 客户端接入 `http://127.0.0.1:8090/mcp/`，与 REST 共用同一进程；CLI / 各脚本同样一律经 REST。监控面板也已并入 REST（`/dashboard`），**不需要**再单独起一个进程——它只是把同一个只读视图换个端口暴露时才需要 `scripts/dashboard.py`。stdio `mcp_server.py` 是**逃生梯**（非首选），仅用于**不跑 REST** 的纯 MCP 场景：库文件由 triviumdb 以独占写模式打开，第二个连接会失败并报 `Database locked: ...`，并发写入失败还**会污染文件组**且不自愈。因此 REST 服务禁止多 worker / 多实例，**一个库只应有一个进程访问**；冲突是响亮的——CLI 抛 `DatabaseBusyError`、REST 返回 `503`，不会静默降级。
 >
 > Embedding 项失败时：本地 Ollama 请先启动并 `ollama pull qwen3-embedding:0.6b`；云端请确认 `.env` 已配置 `EMBEDDING_API_KEY`。
 
