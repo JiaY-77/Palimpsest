@@ -679,3 +679,51 @@ def test_detect_thought_origin_tolerates_legacy_skeleton_text():
     result = detect_thought_origin(_LEGACY_CODE_TEXT)
     assert result in ("native", "unknown")  # 降级到任一非 skeleton 值均可
     assert detect_thought_origin(f"[思维底片] {_LEGACY_CODE_TEXT}") == result
+
+
+# ---------------------------------------------------------------------------
+# 胶囊每节不得残留「问句回显」（2026-10-28）
+#
+# 实测产出过这样的胶囊：【做了什么】做了什么：新增 dashboard_api.py…
+# ——编号行冒号后的内容原先原样保留（含标签回显），每节都顶着重复的问句。
+# 问句是固定四句，所以按 `_CAPSULE_QUESTIONS` 精确匹配剥掉，剥不到就不动。
+# ---------------------------------------------------------------------------
+
+
+def test_parse_strips_question_echo_including_paren_clause():
+    """回显带括号补充说明（``做了什么（改了什么 / 查清了什么）：``）也要剥干净。"""
+    text = (
+        "<thought>\n"
+        "1. 这一轮的核心判断 / 思路（一句话）：把端点抽成注入式 router。\n"
+        "2. 做了什么（改了什么 / 查清了什么）：补 13 条测试。\n"
+        "3. 下一步 / 待办：确认 8010 下线。\n"
+        "4. 踩的坑 / 风险：本地测试假绿。\n"
+        "</thought>"
+    )
+    sections = parse_thought_sections(text, "code")
+    assert sections["thought"] == "把端点抽成注入式 router。"
+    assert sections["outcome"] == "补 13 条测试。"
+    assert sections["next"] == "确认 8010 下线。"
+    assert sections["pitfalls"] == "本地测试假绿。"
+
+
+def test_parse_strips_plain_echo_without_parens():
+    text = "<thought>\n1. 这一轮的核心判断 / 思路：答案直接写。\n2. 做了什么：两节都正常。\n</thought>"
+    sections = parse_thought_sections(text, "default")
+    assert sections["thought"] == "答案直接写。"
+    assert sections["outcome"] == "两节都正常。"
+
+
+def test_parse_only_strips_leading_echo_never_body():
+    """只剥行首回显一次：答案正文里再出现同样的词不碰（少剥只是难看，多剥会吃内容）。"""
+    # 第 2 问才是「做了什么」（第 1 问是核心判断）；回显只剥行首那一次
+    text = "<thought>\n2. 做了什么：我做了什么：其实只修了两处。\n</thought>"
+    sections = parse_thought_sections(text, "default")
+    assert sections["outcome"] == "我做了什么：其实只修了两处。"
+
+
+def test_parse_keeps_multi_line_answer_after_echo():
+    """回显后换行续写的多行答案，续行逐字保留。"""
+    text = "<thought>\n2. 做了什么：\n第一行\n第二行\n</thought>"
+    sections = parse_thought_sections(text, "default")
+    assert sections["outcome"] == "第一行\n第二行"
