@@ -17,10 +17,12 @@
 
 ### 测试
 
+- **文档门禁新增「私称与个人路径」**（`scripts/readme_check.py`）：对外文档（`docs/*.md` 顶层 + 根 `README`/`CHANGELOG`；不含未入库的 `docs/archive/` 与 gitignore 的 `eval/report_*`）出现 `小七` / `小帕` / `小九` / `主人`，或具体个人绝对路径（`D:\HeJiaQi`、`C:\Users\<真实用户名>`）即报错。`C:\Users\<你的用户名>` 这类占位写法白名单放行——它是合法的文档示例，误报会让门禁失去可信度。两条失败路径测试钉住：真泄漏必报、占位示例必不报。
 - **`pytest` 裸跑不再收集 `data/` 下的备份副本**：CI 跑的是 `pytest tests/`，但本地直接敲 `pytest` 会递归整个仓库——`data/` 被 `.gitignore` 排除，里面若有备份副本（`data/backup_*/test_*.py`）就会被一起收集，触发 `import file mismatch` 让整个会话在 collection 阶段中断（实测踩过一次，白跑一轮）。`pyproject.toml` 增加 `[tool.pytest.ini_options] testpaths = ["tests"]`，让本地裸跑与 CI 同口径，不靠人记着加 `tests/`。
 
 ### 文档
 
+- **对外文档术语与私称清理**：`docs/API.md` / `docs/REFERENCE.md` / `docs/USAGE.md` / `docs/HERMES_INTEGRATION.md` 里的「思维预设层」「思维底片」统一为「思考骨架（`thought_skeleton`）」「思考记录（`thought`）」——这两个词是内部工作语，对外读者无法从字面看出它对应哪个 HTTP 字段；`post-turn` 那条保留一句「落库 content 带 `[思维底片]` 前缀」，因为那是代码里的真实数据前缀（`core/strategy.py::THOUGHT_NOTE_PREFIX`），文档不能与落盘内容打架。`docs/RETRIEVAL_QUALITY.md` 三处「主人批准 / 等主人…… / 待主人」改为「维护者 / 人工 / 待下一轮人工」——内部对话称呼不该出现在对外文档（开源脱敏红线）。
 - 钉住 #232 重嵌后的首份检索基线（`docs/RETRIEVAL_QUALITY.md` §8.8）：148 题 / 判卷 31 的完整指标与配对 bootstrap；并如实记录「31 条题的 gold 与被重嵌的 748 个长节点零交集，故重嵌前后指标逐位相同」，以长节点尾部检索实测（top10 命中 1/8 → 3/8）作为 #232 有效性的直接证据。
 - 修复题集数据与文档的漂移：`eval_set_v2.json` 本地文件此前仍是 138 题 / 判卷 27（Phase-1 判词的 10 条从未写入），已按判词文档补回 4 条 live 正样本（q140–q143）+ 6 条 dropped（q144–q149），恢复为 148 题 / 判卷 31；数据文件不入库，本条记录口径以便复现。
 

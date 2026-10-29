@@ -53,6 +53,12 @@ VERSION_CHECK_DOCS = ("README.md", "README_EN.md", "docs/HERMES_INTEGRATION.md")
 # 与文件引用检查（DOC_FILES）：历史条目会合法引用已删除 / 已重命名的文件
 # 与旧路径，纳入检查只会产生永远修不掉的历史噪音。
 PLACEHOLDER_DOCS = (*DOC_FILES, "CHANGELOG.md")
+
+# 11. 私称与个人路径：对外文档不应出现 agent 昵称、私人称呼、个人绝对路径。
+# 这些词不会让任何功能失效，只能靠门禁挡——历史上 docs/RETRIEVAL_QUALITY.md
+# 混进过 3 处「主人批准」，外部读者看不懂，还暴露私人语境。
+PRIVATE_TERM_RE = re.compile(r"小七|小帕|小九|主人")
+PRIVATE_PATH_RE = re.compile(r"[A-Za-z]:[\\/](?:HeJiaQi|[Uu]sers[\\/](?!<))")
 FENCE = "```"
 
 # 文档里合法出现、但不对应仓库内文件的引用（示例占位 / 运行时产物 / 用户本地文件）
@@ -743,6 +749,39 @@ def check_placeholder_marks(root: Path) -> Report:
     return report
 
 
+def _public_docs(root: Path) -> list[Path]:
+    """入库的对外文档：docs 顶层 *.md + 根 README/CHANGELOG。
+
+    不含 docs/archive（历史任务书，未入库）与 eval/report_*.md（.gitignore）。
+    """
+    docs = sorted((root / "docs").glob("*.md"))
+    for name in ("README.md", "README_EN.md", "CHANGELOG.md"):
+        path = root / name
+        if path.is_file():
+            docs.append(path)
+    return docs
+
+
+def check_private_terms(root: Path) -> Report:
+    """对外文档不应出现 agent 昵称、私人称呼或个人绝对路径（开源脱敏红线）。
+
+    判据只看字符串，不做语义猜测：命中即报错，并把整行截断展示，方便就地改。
+    """
+    report = Report("私称与个人路径")
+    hits = 0
+    for path in _public_docs(root):
+        rel = path.relative_to(root).as_posix()
+        for lineno, line in enumerate(read_text(root, rel).splitlines(), 1):
+            for match in PRIVATE_TERM_RE.finditer(line):
+                hits += 1
+                report.errors.append(f"{rel}:{lineno}: 内部称呼「{match.group(0)}」—— {line.strip()[:70]}")
+            for match in PRIVATE_PATH_RE.finditer(line):
+                hits += 1
+                report.errors.append(f"{rel}:{lineno}: 个人绝对路径「{match.group(0)}」—— {line.strip()[:70]}")
+    report.info = f"命中 {hits} 处"
+    return report
+
+
 # ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
@@ -760,6 +799,7 @@ def run_checks(root: Path) -> list[Report]:
         check_file_references(root),
         check_inline_code(root),
         check_placeholder_marks(root),
+        check_private_terms(root),
     ]
 
 
