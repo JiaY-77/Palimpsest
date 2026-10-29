@@ -512,20 +512,45 @@ class TriviumStore:
         return _acquire_shared(self.db_path, "read_only" if self.read_only else "read_write", self.dim)
 
     def embed_text(self, text: str) -> list[float]:
-        """生成文本向量，按 EMBEDDING_PROVIDER 分发（默认进程内 local，隐私优先）。"""
+        """生成文本向量，按 EMBEDDING_PROVIDER 分发（默认进程内 local，隐私优先）。
+
+        issue #232：local 走分块池化（``_embed_local_chunked``），超长文本的
+        向量覆盖全文而非只有前 n_batch 个 token 的前缀；签名与返回值不变，
+        调用方零改动。短文本（≤ EMBEDDING_LOCAL_CHUNK_TOKENS）走单块路径，
+        与改动前逐位一致。
+        """
         if self.provider == "openai":
             return self._embed_openai(text)
         if self.provider == "local":
-            return self._embed_local(text)
+            return self._embed_local_chunked(text)[0]
         return self._embed_ollama(text)
 
-    def _embed_local(self, text: str) -> list[float]:
-        """用进程内 llama.cpp 生成向量（不依赖 Ollama 服务）。
+    def embed_text_with_audit(self, text: str) -> tuple[list[float], dict]:
+        """生成文本向量 + 嵌入审计（issue #232）。
 
-        pooling 必须 LAST：该模型（Qwen3-Embedding）是 decoder-only 因果 LM，
-        只有末位 token 见过整句（实测 mean→0.755 / cls→0.341，均废）。
-        输出必须 L2 归一化：与 Ollama 的输出尺度对齐（实测模长 1.0），
-        归一化自己算——不依赖 llama.cpp 的 normalize 参数，版本行为不稳。
+        与 ``embed_text`` 的区别：额外返回 audit dict，供写入路径沉淀进
+        ``payload["embedding"]``，把「这段文本的向量到底覆盖了几个 token」
+        从不可观测的静默行为变成可读的审计字段。向量部分与 ``embed_text``
+        同一根实现（local → 分块池化 / ollama、openai → 各自原实现）。
+
+        - local：``{"embedding_mode": "chunked"|"single", "total_tokens": N,
+          "embedded_tokens": N, "embedded_chunks": k, "chunk_tokens": C}``
+        - ollama / openai：本次不改其截断策略，只给
+          ``{"embedding_mode": "single"}``（它们的分段方式由各自服务决定）。
+        """
+        if self.provider == "openai":
+            return self._embed_openai(text), {"embedding_mode": "single"}
+        if self.provider == "local":
+            return self._embed_local_chunked(text)
+        return self._embed_ollama(text), {"embedding_mode": "single"}
+
+    def _ensure_local_llm(self) -> None:
+        """加载进程内 local embedding 模型单例（懒加载 + 双重检查锁）。
+
+        原 ``_embed_local`` 的加载段原样迁出：``TriviumStore()`` 构造时绝不装
+        模型（GGUF 700MB 级内存），第一次真正要向量才加载；加载失败不缓存
+        （下次调用可重试）。单块路径（``_embed_local``）与分块路径
+        （``_embed_local_chunked``）共用这一段。
         """
         global _LOCAL_LLM
         if _LOCAL_LLM is None:
@@ -560,6 +585,21 @@ class TriviumStore:
                             "llama-cpp-python 版本 >= 0.3.36。"
                         ) from exc
 
+    def _embed_local(self, text: str) -> list[float]:
+        """用进程内 llama.cpp 生成向量（单块原语，全文一次 embed）。
+
+        pooling 必须 LAST：该模型（Qwen3-Embedding）是 decoder-only 因果 LM，
+        只有末位 token 见过整句（实测 mean→0.755 / cls→0.341，均废）。
+        输出必须 L2 归一化：与 Ollama 的输出尺度对齐（实测模长 1.0），
+        归一化自己算——不依赖 llama.cpp 的 normalize 参数，版本行为不稳。
+
+        issue #232 起这是**单块原语**：``embed_text``（local）已改走
+        ``_embed_local_chunked``。本方法保留不删的原因：它是 #232 规格里
+        「单块路径与改动前逐位一致」的对照基线，也是直接要一段短文本向量时
+        的最低开销路径（不 tokenize、不切块）。
+        """
+        self._ensure_local_llm()
+
         try:
             # ★ 并发保护：ggml 的计算上下文不是线程安全的。REST 端点是同步 def
             # （FastAPI 丢线程池），因此多请求是真并发；多个线程同时进 embed()
@@ -582,6 +622,146 @@ class TriviumStore:
         if norm == 0.0:
             raise EmbeddingUnavailableError("本地 embedding 模型输出零向量，无法归一化。")
         return [v / norm for v in vec]
+
+    def _embed_local_chunked(self, text: str) -> tuple[list[float], dict]:
+        """分块池化生成 local 向量 + 嵌入审计（issue #232）。
+
+        背景：``embed()`` 内部有 ``tokens = tokens[:n_batch]``，超过
+        ``EMBEDDING_LOCAL_N_BATCH``（默认 512）的输入被**静默截断**，长节点
+        的向量只覆盖内容前缀（生产库 732/2912 节点中招）。分块池化在检索层
+        零改动的约束下消除静默截断：
+
+        1. tokenize 全文；token 数 ≤ ``EMBEDDING_LOCAL_CHUNK_TOKENS`` →
+           **单块路径**：与改动前 ``_embed_local`` 逐位一致（先 embed 全文
+           再 L2 归一，运算顺序不变，不额外 tokenize 副作用）；
+        2. 否则按 ``chunk_tokens`` 在 **token 边界**切块（不按字符切，避免
+           「字符串切块→tokenize」的分词漂移），每块 ``detokenize`` 后单独
+           ``embed()``——块内仍是 LAST pooling（因果 LM 只有末位见过整块）；
+        3. 逐块 L2 归一 → 按块 token 数**加权**求均值 → 再 L2 归一。加权
+           用块内 token 数（不是字符数）：等号是「每个 token 的贡献均等」，
+           最后一步归一吸收掉 Σw 缩放，与原语同尺度（模长 1.0，可直接参与
+           检索余弦与既有向量混排）。
+
+        并发：全程持有 ``_LOCAL_LLM_LOCK``——tokenize / detokenize / embed
+        都是底层原生调用（issue #153：计算上下文非线程安全，并发会 abort
+        进程），一次长文本的 k 个块连续占锁让后来的线程整体排队，比
+        「逐块抢锁」仍严格串行（不会绕开）且少 k−1 次锁往返。
+
+        返回 ``(向量, audit)``；短文本 audit 为
+        ``{"embedding_mode": "single", ..., "embedded_chunks": 1}``，长文本为
+        ``{"embedding_mode": "chunked", ...}``。``embedded_tokens ==
+        total_tokens`` 恒成立（全文覆盖，这正是 #232 要立的审计事实）。
+        """
+        chunk_limit = int(Config.EMBEDDING_LOCAL_CHUNK_TOKENS)
+        if chunk_limit <= 0:
+            raise EmbeddingUnavailableError(
+                f"EMBEDDING_LOCAL_CHUNK_TOKENS 必须 > 0（当前 {chunk_limit}），"
+                "否则无法切出有效块；要关闭分块请保持 512 默认值。"
+            )
+        # 与 startup_check._check_embedding_chunk_config 同一根约束的运行时兜底：
+        # 配置层写错时 embed() 不会悄悄把每个块截断（那比这次审计更隐蔽）。
+        if chunk_limit > int(Config.EMBEDDING_LOCAL_N_BATCH):
+            raise EmbeddingUnavailableError(
+                f"EMBEDDING_LOCAL_CHUNK_TOKENS={chunk_limit} > EMBEDDING_LOCAL_N_BATCH="
+                f"{int(Config.EMBEDDING_LOCAL_N_BATCH)}：chunk 必须 ≤ n_batch，"
+                "块本身也会被 embed() 的 tokens[:n_batch] 截断，分块池化整条机制失效。"
+            )
+        self._ensure_local_llm()
+
+        with _LOCAL_LLM_LOCK:
+            llm = _LOCAL_LLM
+            # 与 embed() 内部同口径（llama-cpp-python 0.3.36：tokenize(text.encode())），
+            # total_tokens 才和「embed() 会截断到多少」的判据对得上。
+            tokens: list[int] = list(llm.tokenize(text.encode("utf-8")))
+            total_tokens = len(tokens)
+
+            if total_tokens <= chunk_limit:
+                # ---- 单块路径：与改动前 _embed_local 逐位一致 ----
+                vec = self._embed_local_normalized_locked(text)
+                return (
+                    vec,
+                    {
+                        "embedding_mode": "single",
+                        "total_tokens": total_tokens,
+                        "embedded_tokens": total_tokens,
+                        "embedded_chunks": 1,
+                        "chunk_tokens": chunk_limit,
+                    },
+                )
+
+            # ---- 分块路径：按 token 边界切块，块内 LAST pooling，块间加权平均 ----
+            n_chunks = (total_tokens + chunk_limit - 1) // chunk_limit
+            return self._embed_chunked_locked(llm, tokens, chunk_limit, n_chunks, total_tokens)
+
+    def _embed_local_normalized_locked(self, text: str) -> list[float]:
+        """单次 embed → 维度校验 → L2 归一（**调用方必须已持 _LOCAL_LLM_LOCK**）。
+
+        与 ``_embed_local`` 收尾段同口径（同样的维度报错、同样的零向量报错、
+        同样的归一算式）——但**不直接调用原方法**：``threading.Lock`` 不可
+        重入，分块路径全程占锁时再进原方法会自我死锁。
+        """
+        try:
+            vec = _LOCAL_LLM.embed(text)
+        except Exception as exc:
+            # issue #153 同款兜底：embed() 原生层异常（OOM/ctx 损坏等）转成
+            # 业务异常向上传播，不裸抛 RuntimeError 让调用方分不清来源。
+            raise EmbeddingUnavailableError(
+                f"本地 embedding 推理出错（模型：{Config.EMBEDDING_MODEL_FILE}）：{exc}"
+            ) from exc
+        if not vec or len(vec) != self.dim:
+            raise EmbeddingUnavailableError(
+                f"本地 embedding 输出维度不符：实际 {len(vec) if vec else 0}，"
+                f"期望 {self.dim}（EMBEDDING_LOCAL_DIM）。请检查模型文件与维度配置。"
+            )
+        norm = sum(v * v for v in vec) ** 0.5
+        if norm == 0.0:
+            raise EmbeddingUnavailableError("本地 embedding 模型输出零向量，无法归一化。")
+        return [v / norm for v in vec]
+
+    def _embed_chunked_locked(
+        self,
+        llm: Any,
+        tokens: list[int],
+        chunk_limit: int,
+        n_chunks: int,
+        total_tokens: int,
+    ) -> tuple[list[float], dict]:
+        """分块 embed + 按块 token 数加权均值 + 再归一（**调用方必须已持锁**）。"""
+        embedded_sum: list[float] | None = None
+        embedded_tokens = 0
+        for c in range(n_chunks):
+            chunk_tokens = tokens[c * chunk_limit : (c + 1) * chunk_limit]
+            # detokenize 回原文再 embed：块作为独立文本送进 embed()（embed()
+            # 内部还会按上限再 tokenize 一次），块内保持与单块路径一致的
+            # 「整块文本 LAST pooling」。errors="replace" 兜 UTF-8 跨块边界的
+            # 半截字节：token 边界很少撞上，撞上时块尾可能出现不完整的多字节
+            # 序列，str 不允许悬空字节，必须给个合法解码后送 embed()。
+            chunk_bytes = llm.detokenize(chunk_tokens)
+            chunk_text = chunk_bytes.decode("utf-8", errors="replace")
+            vec = self._embed_local_normalized_locked(chunk_text)
+            weight = len(chunk_tokens)
+            if embedded_sum is None:
+                embedded_sum = [v * weight for v in vec]
+            else:
+                for i, v in enumerate(vec):
+                    embedded_sum[i] += v * weight
+            embedded_tokens += weight
+        # Σweight == total_tokens（切块不丢 token），数学上再 /Σw 与先加权后
+        # 归一在同一方向上——跳过除法、直接归一（模长 1.0，原语同尺度）。
+        norm = sum(v * v for v in (embedded_sum or [])) ** 0.5
+        if norm == 0.0:
+            raise EmbeddingUnavailableError("分块池化加权求和后为零向量，无法归一化（块向量全零或权重异常）。")
+        result = [v / norm for v in (embedded_sum or [])]
+        return (
+            result,
+            {
+                "embedding_mode": "chunked",
+                "total_tokens": total_tokens,
+                "embedded_tokens": embedded_tokens,
+                "embedded_chunks": n_chunks,
+                "chunk_tokens": chunk_limit,
+            },
+        )
 
     def _embed_ollama(self, text: str) -> list[float]:
         """
@@ -652,8 +832,15 @@ class TriviumStore:
                 f"云端 Embedding 生成失败: {e}。请检查 EMBEDDING_API_KEY / EMBEDDING_BASE_URL / EMBEDDING_MODEL 配置。"
             ) from e
 
-    def insert_node(self, node_data: dict[str, Any], embedding: list[float]) -> int:
-        """插入记忆节点，返回节点 ID"""
+    def insert_node(
+        self, node_data: dict[str, Any], embedding: list[float], embedding_audit: dict | None = None
+    ) -> int:
+        """插入记忆节点，返回节点 ID
+
+        embedding_audit（issue #232）：调用方经 ``embed_text_with_audit`` 生成
+        向量时得到的嵌入审计 dict，原样沉淀进 ``payload["embedding"]`` 子对象
+        （不平铺——防止与业务字段撞名）；None 则不写该键（历史调用方零改动）。
+        """
         with self._acquire() as db:
             # 基础 payload
             payload = {
@@ -683,10 +870,21 @@ class TriviumStore:
             if classified["weak"]:
                 payload["secret_hint"] = classified["weak"]
 
+            # 嵌入审计（issue #232）：见 docstring——子对象，None 不写。
+            if embedding_audit is not None:
+                payload["embedding"] = dict(embedding_audit)  # 拷贝防守改动渗透
+
             node_id = db.insert(embedding, payload)
             return node_id
 
-    def insert_node_tx(self, tx, node_data: dict[str, Any], embedding: list[float], next_id: int | None = None) -> int:
+    def insert_node_tx(
+        self,
+        tx,
+        node_data: dict[str, Any],
+        embedding: list[float],
+        next_id: int | None = None,
+        embedding_audit: dict | None = None,
+    ) -> int:
         """事务内插入节点（供 mem_ingest 事务化链路使用），返回节点 ID。
 
         逻辑与 insert_node 一致（payload 组装、secret_scan 强拒弱标），但写入
@@ -699,6 +897,9 @@ class TriviumStore:
         在事务内立即拿到 node_id 供后续 tx.link / tx.update_payload 使用。
         由调用方按「已提交最大即 id + 1」计算（同 consolidate._apply_merge）；
         next_id 缺省时回退为 1。
+
+        embedding_audit：与 insert_node 同口径（issue #232），审计 dict 沉淀
+        进 payload["embedding"]。
         """
         # 基础 payload（与 insert_node 一致；created_at 由 node_data 透传：
         # 事务模式下新节点不可读回，需在插入时一次性带上，避免再用
@@ -724,6 +925,10 @@ class TriviumStore:
             raise SecretScanError(classified["strong"])
         if classified["weak"]:
             payload["secret_hint"] = classified["weak"]
+
+        # 嵌入审计（issue #232，与 insert_node 同口径）：子对象，None 不写。
+        if embedding_audit is not None:
+            payload["embedding"] = dict(embedding_audit)
 
         nid = next_id if next_id is not None else 1
         tx.insert_with_id(nid, embedding, payload)
@@ -1072,7 +1277,9 @@ class TriviumStore:
         语义检索与冲突检测会继续按旧文本执行，且完全静默。此前唯一的补救是
         调用方自己在外部生成向量再打 PATCH /memory/{id}/vector。
 
-        这里把该流程收进服务端：读当前 content → embed_text → update_vector。
+        这里把该流程收进服务端：读当前 content → embed_text_with_audit →
+        update_vector + 把嵌入审计沉淀进 payload["embedding"]（issue #232：
+        重嵌后库里能读出「这次嵌入覆盖了几个 token」，长节点不再静默截断）。
         返回 False 表示节点不存在；embedding 不可用时由 embed_text 抛
         EmbeddingUnavailableError，由调用方决定如何上报。
         """
@@ -1080,8 +1287,10 @@ class TriviumStore:
         if not node:
             return False
         content = (node.get("payload") or {}).get("content", "")
-        vector = self.embed_text(content)
+        vector, audit = self.embed_text_with_audit(content)
         self.update_vector(node_id, vector)
+        # update_payload 浅合并：只动 embedding 审计子对象，其余字段原样保留
+        self.update_payload(node_id, {"embedding": audit})
         logger.info(f"已重算节点 ID={node_id} 的向量")
         return True
 

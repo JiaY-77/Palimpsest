@@ -11,8 +11,9 @@
   ③ FTS5 全文索引能连接
   ④ 核心依赖可导入（fastapi / triviumdb / dotenv / requests 等）
   ⑤ Embedding 服务可用（HTTP 探测 Ollama + 实际 embed_text 验证向量非全零）
-  ⑥（可选）TDB 文本通道预热（仅 TDB_TEXT_ENABLED=1 时注册）
-  ⑦ 向量空间一致性（指纹守卫，轻量：不一致只 WARN 一行 + 修复命令，不改 ok/退出码）
+  ⑥ Embedding 分块配置自洽（issue #232：chunk ≤ n_batch，仅 provider=local）
+  ⑦（可选）TDB 文本通道预热（仅 TDB_TEXT_ENABLED=1 时注册）
+  ⑧ 向量空间一致性（指纹守卫，轻量：不一致只 WARN 一行 + 修复命令，不改 ok/退出码）
 
 设计原则：任何单项失败只记录，不抛异常，不阻断服务启动（可用性优先）。
 """
@@ -184,6 +185,31 @@ def _check_embedding() -> str:
     return detail
 
 
+def _check_embedding_chunk_config() -> str:
+    """检查⑥（issue #232）：分块池化块长自洽 —— chunk 必须 ≤ n_batch。
+
+    块最终也要过 ``embed()``，而 embed() 内部有 ``tokens = tokens[:n_batch]``
+    静默截断：``EMBEDDING_LOCAL_CHUNK_TOKENS`` 配得比 ``EMBEDDING_LOCAL_N_BATCH``
+    大，块自己就被截断，分块池化整条机制失效（长节点向量仍只覆盖前缀）。
+    报 error（raise RuntimeError，由 _probe 标红），不降级为告警——带病配置
+    必须在启动时挡下来，不能等用户发现召回质量莫名变差才排查。
+    """
+    from config import Config  # 延迟导入，避免重 import 副作用
+
+    provider = getattr(Config, "EMBEDDING_PROVIDER", "local") or "local"
+    if provider != "local":
+        return f"不适用（provider={provider}，分块池化仅 provider=local 生效）"
+    chunk = int(getattr(Config, "EMBEDDING_LOCAL_CHUNK_TOKENS", 512))
+    n_batch = int(getattr(Config, "EMBEDDING_LOCAL_N_BATCH", 512))
+    if chunk > n_batch:
+        raise RuntimeError(
+            f"EMBEDDING_LOCAL_CHUNK_TOKENS={chunk} > EMBEDDING_LOCAL_N_BATCH={n_batch}："
+            "chunk 必须 ≤ n_batch——每个块本身也要过 embed()，而 embed() 超过 n_batch "
+            "的 token 会被静默截断，块自己被截断时分块池化失效（向量仍只覆盖前缀）。"
+        )
+    return f"分块配置自洽 (chunk={chunk} ≤ n_batch={n_batch})"
+
+
 def _has_existing_nodes(store: object) -> bool:
     """库里有没有节点（只看第一条就够）。异常一律当作「没有」，绝不影响自检。"""
     try:
@@ -195,7 +221,7 @@ def _has_existing_nodes(store: object) -> bool:
 
 
 def _check_tdb_text() -> str:
-    """检查⑥（可选，仅 TDB_TEXT_ENABLED=1 时注册）：TDB BM25 文本通道预热。
+    """检查⑦（可选，仅 TDB_TEXT_ENABLED=1 时注册）：TDB BM25 文本通道预热。
 
     预热失败不阻塞启动（_probe 吃掉异常只标红），可之后手动调
     `core.tdb_text_index.warmup()` 补预热——通道降级会被混合检索如实
@@ -215,7 +241,7 @@ def _check_tdb_text() -> str:
 
 
 def _check_embedding_space() -> str:
-    """检查⑦（轻量）：向量空间指纹一致性 —— 只告警，绝不阻断启动。
+    """检查⑧（轻量）：向量空间指纹一致性 —— 只告警，绝不阻断启动。
 
     与 doctor 第 9 项的区别：doctor 里指纹不一致要 FAIL（部署体检拦下来），
     启动自检里恒 ok=True——指纹不一致只说明库里向量是旧空间算的，服务本身
@@ -245,6 +271,7 @@ def run_startup_check() -> dict:
         _probe("FTS5 索引连接", _check_fts),
         _probe("依赖可导入", _check_dependencies),
         _probe("Embedding 服务可用", _check_embedding),
+        _probe("Embedding 分块配置", _check_embedding_chunk_config),
     ]
     from config import Config  # 延迟导入
 

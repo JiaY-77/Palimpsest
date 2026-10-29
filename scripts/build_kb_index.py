@@ -310,7 +310,7 @@ def _rebuild_file(store, fp: str, knowledge_dir: str, existing: dict, rules: Ind
     doc_domain = rules.domain or KB_DOMAIN
 
     for i, chunk in enumerate(chunks):
-        emb = store.embed_text(chunk)
+        emb, embed_audit = store.embed_text_with_audit(chunk)  # issue #232
         payload = {
             "type": CHUNK_TYPE,
             "content": chunk,
@@ -324,9 +324,10 @@ def _rebuild_file(store, fp: str, knowledge_dir: str, existing: dict, rules: Ind
         old_nid = old_index_map.get(i)
         if old_nid is not None:
             store.update_vector(old_nid, emb)
-            store.update_payload(old_nid, payload)
+            # 重嵌后同步刷新嵌入审计（浅合并，其余 payload 字段不受影响）
+            store.update_payload(old_nid, {"embedding": embed_audit, **payload})
         else:
-            store.insert_node(payload, emb)
+            store.insert_node(payload, emb, embedding_audit=embed_audit)
         char_lens.append(len(chunk))
 
     # 删除多余旧块（旧 chunk_index >= 新块数）

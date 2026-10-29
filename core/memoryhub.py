@@ -228,8 +228,8 @@ def apply_import(store, plan: dict) -> dict:
         origin_id = item.get("origin_id")
         payload = item.get("payload") or {}
         try:
-            emb = store.embed_text(payload.get("content", ""))
-            new_id = store.insert_node(payload, emb)
+            emb, embed_audit = store.embed_text_with_audit(payload.get("content", ""))  # issue #232
+            new_id = store.insert_node(payload, emb, embedding_audit=embed_audit)
         except Exception as e:  # noqa: BLE001 —— 单条失败不毁整批，收集后继续
             failed.append({"origin_id": origin_id, "error": str(e)[:200]})
             continue

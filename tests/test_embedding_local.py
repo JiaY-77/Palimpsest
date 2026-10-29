@@ -105,14 +105,21 @@ class FakeRequests:
 
 
 # ---------------------------------------------------------------------------
-# 1. 分发：provider=local → _embed_local，且 Llama 构造参数含 pooling LAST
+# 1. 分发：provider=local → _embed_local_chunked（issue #232 起入口改这里），
+#    且 Llama 构造参数含 pooling LAST
 # ---------------------------------------------------------------------------
 
 
-def test_dispatch_local_goes_to_embed_local(monkeypatch):
+def test_dispatch_local_goes_to_embed_chunked(monkeypatch):
     store = make_store(dim=1024)
     seen = []
-    monkeypatch.setattr(TriviumStore, "_embed_local", lambda self, text: seen.append(text) or [0.0] * 1024)
+
+    def _fake_chunked(self, text):
+        seen.append(text)
+        return [0.0] * 1024, {"embedding_mode": "single"}
+
+    monkeypatch.setattr(TriviumStore, "_embed_local_chunked", _fake_chunked)
+    # embed_text 只取向量位（audit 归写入路径经由 embed_text_with_audit 再取）
     assert store.embed_text("你好") == [0.0] * 1024
     assert seen == ["你好"]
 

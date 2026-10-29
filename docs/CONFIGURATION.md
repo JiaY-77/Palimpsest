@@ -37,6 +37,7 @@
 | `EMBEDDING_LOCAL_DIM` | `1024` | 本地模型的向量维度 | `EMBEDDING_PROVIDER=local` |
 | `EMBEDDING_LOCAL_N_CTX` | `2048` | llama.cpp 上下文长度（调大可处理更长文本，吃内存也更多） | `EMBEDDING_PROVIDER=local` |
 | `EMBEDDING_LOCAL_N_BATCH` | `512` | llama.cpp 批大小，**同时是 embedding 的截断长度**（`embed()` 内部 `tokens[:n_batch]`，超出部分静默丢弃）。调小=用检索质量换内存：512→32 长文本峰值 RSS 可从 1534 MB 降到 962 MB，但会截断 92% 的 kb 切片。默认 512 保持不变 | `EMBEDDING_PROVIDER=local` |
+| `EMBEDDING_LOCAL_CHUNK_TOKENS` | `512` | 分块池化块长（issue #232）：超过该 token 数的 content 按 token 边界切块，逐块嵌入（块内 LAST pooling）后按块内 token 数加权平均再归一——长节点向量覆盖全文而非只有前缀（实测 cos vs 全文 0.92，旧截断仅 0.405）。**必须 ≤ `EMBEDDING_LOCAL_N_BATCH`**，否则块本身又被 `embed()` 的 `tokens[:n_batch]` 静默截断，分块白做（自检会报 error 拦下）。默认 512 = 与 n_batch 相同 | `EMBEDDING_PROVIDER=local` |
 | `EMBEDDING_LOCAL_N_THREADS` | `0` | CPU 线程数；`0` = 交引擎自行决定 | `EMBEDDING_PROVIDER=local` |
 | `MEMORY_DECAY_FACTOR` | `0.95` | 月度记忆衰减（排序用，`score × importance × factor^(天/30)`）；`1.0` 关闭衰减；`kb_chunk` 节点永不衰减 | soft 模式：仅进入 ε 微调项 `recency_norm`（ε 默认 0.02 → 排序影响 ≤0.02，一年内约 0.01 量级，近乎半死参数）；hard 模式：乘性硬加权 |
 | `MEMORY_RERANK_MODE` | `soft` | 重排模式：`soft` = 语义分为主线 + ε 级元数据微调（默认）；`hard` = 旧版乘性硬加权（可回退） | — |

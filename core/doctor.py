@@ -6,10 +6,11 @@
 
 检查项：
   ①~⑤  复用 run_startup_check()（关键文件 / Store 初始化 / FTS5 / 依赖 / Embedding）
-  ⑥     向量维度一致性（实测 embedding 维度 vs 库实际维度，复用 core.dims 逻辑）
-  ⑦     domain 字段迁移状态（无 domain 但有 character_name 的历史兼容镜像存量）
-  ⑧     运行时路径字符集（中文用户名等非 ASCII 路径下的依赖兼容性风险）
-  ⑨     向量空间一致性（指纹守卫：库内记录的 space_id/engine vs 当前配置，core.embedding_fingerprint）
+  ⑥     Embedding 分块配置自洽（run_startup_check 第 ⑥ 项，issue #232：chunk ≤ n_batch）
+  ⑦     向量维度一致性（实测 embedding 维度 vs 库实际维度，复用 core.dims 逻辑）
+  ⑧     domain 字段迁移状态（无 domain 但有 character_name 的历史兼容镜像存量）
+  ⑨     运行时路径字符集（中文用户名等非 ASCII 路径下的依赖兼容性风险）
+  ⑩     向量空间一致性（指纹守卫：库内记录的 space_id/engine vs 当前配置，core.embedding_fingerprint）
 
 设计原则：
   - 单项失败不中断（embedding 不可用时其余检查项仍全部执行并展示）

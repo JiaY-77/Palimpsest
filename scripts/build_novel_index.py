@@ -214,13 +214,14 @@ def _upsert_node(store, payload: dict, content: str, existing: dict) -> str:
     返回 "inserted" | "updated"。向量化失败时抛异常（由调用方计入 failed）。
     """
     rel = payload["source_path"]
-    emb = store.embed_text(content)
+    emb, embed_audit = store.embed_text_with_audit(content)  # issue #232
     entry = existing.get(rel)
     if entry is not None:
-        store.update_payload(entry["node_id"], payload)
+        # 重嵌后同步刷新嵌入审计（浅合并，其余 payload 字段不受影响）
+        store.update_payload(entry["node_id"], {"embedding": embed_audit, **payload})
         store.update_vector(entry["node_id"], emb)
         return "updated"
-    store.insert_node(payload, emb)
+    store.insert_node(payload, emb, embedding_audit=embed_audit)
     return "inserted"
 
 

@@ -432,6 +432,12 @@ class Config:
     # 默认保持 512（历史行为不变）。2C2G 之类装不下 512 的场景可以调小，
     # 但要清楚代价；真正的修法是 issue #232（让长节点的向量不再只覆盖前缀）。
     EMBEDDING_LOCAL_N_BATCH = int(os.getenv("EMBEDDING_LOCAL_N_BATCH", "512"))
+    # 分块池化块长（issue #232）。**必须 ≤ EMBEDDING_LOCAL_N_BATCH**，否则块
+    # 白做：短于块长的切块没问题，但任何要送进 embed() 的块本身也受
+    # `tokens = tokens[:n_batch]` 静默截断约束——块比 n_batch 大，块内又被截，
+    # 长节点的向量照样只覆盖前缀，截断事实还会被 audit 误标成「已覆盖全文」。
+    # 默认 512 = 与 n_batch 相同（切块尺寸即批尺寸，一块一次 embed()）。
+    EMBEDDING_LOCAL_CHUNK_TOKENS = int(os.getenv("EMBEDDING_LOCAL_CHUNK_TOKENS", "512"))
     # CPU 线程数；0 = 交 llama.cpp 自动决定
     EMBEDDING_LOCAL_N_THREADS = int(os.getenv("EMBEDDING_LOCAL_N_THREADS", "0"))
 

@@ -143,7 +143,7 @@ def _find_linked_kb_ids(emb: list[float]) -> list[int]:
 
 
 def _insert_with_conflict(
-    store, node_data: dict, emb: list[float], replaces: list[int] | None = None
+    store, node_data: dict, emb: list[float], replaces: list[int] | None = None, embedding_audit: dict | None = None
 ) -> tuple[int, dict]:
     """事务化写入 + 冲突检测标脏，返回 (node_id, conflict)。
 
@@ -157,6 +157,9 @@ def _insert_with_conflict(
     replaces：显式取代的旧节点 id 列表（透传给 resolve_conflict）——占位符，
     细节见 core.conflict.resolve_conflict。
 
+    embedding_audit（issue #232）：调用方经 ``embed_text_with_audit`` 得到的
+    嵌入审计 dict，透传给 insert_node_tx 沉淀进 payload["embedding"]。
+
     返回前显式关闭连接释放库锁：后续 FTS 同步 / 读回节点都经 store._acquire()
     重开，若不关闭会触发 "Database locked"（同库双连接）。
     """
@@ -169,7 +172,7 @@ def _insert_with_conflict(
             with db.transaction() as tx:
                 # insert_node_tx 已把 created_at 透传进 payload（事务模式下新节点不可
                 # 读回，避免 tx.update_payload 整包覆盖）；此处仅做冲突检测标脏。
-                node_id = store.insert_node_tx(tx, node_data, emb, next_id=next_id)
+                node_id = store.insert_node_tx(tx, node_data, emb, next_id=next_id, embedding_audit=embedding_audit)
                 conflict = resolve_conflict(store, emb, node_id, tx=tx, db=db, new_payload=node_data, replaces=replaces)
         with contextlib.suppress(Exception):
             db.close()
@@ -355,7 +358,9 @@ def mem_ingest(
     if not policy_res["ok"]:
         return _to_json({"stored": False, "node_id": None, "error": policy_res["error"]})
     policy_warnings: list[str] = list(policy_res["warnings"])
-    emb = store.embed_text(content)
+    # issue #232：写入路径的向量同根生成，但要把嵌入审计一起拿到——
+    # 沉淀进 payload["embedding"]，长文本不再静默只嵌前缀而不留痕。
+    emb, embed_audit = store.embed_text_with_audit(content)
 
     # 显式取代声明：解析逗号分隔的 id 串（兼容中文逗号 / 空白），非法片段忽略。
     replace_ids: list[int] = []
@@ -440,7 +445,7 @@ def mem_ingest(
     secret_hint: list = []
     domain_out = ""
     try:
-        node_id, conflict = _insert_with_conflict(store, node_data, emb, replace_ids)
+        node_id, conflict = _insert_with_conflict(store, node_data, emb, replace_ids, embedding_audit=embed_audit)
         # 事务已提交，连接已在 helper 内释放（避免后续重开撞 Database locked）
         secret_hint, domain_out = _post_ingest_side_effects(store, node_id, content, now, linked_kb_ids)
     except SecretScanError as e:
