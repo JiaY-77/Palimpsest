@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [2.19.0] - 2026-10-29
+
 ### 新增
 
 - **长节点分块池化嵌入：彻底消除 `embed()` 的静默前缀截断**（#232）：`llama-cpp-python` 的 `embed()` 内部有 `tokens = tokens[:n_batch]`，超过 `EMBEDDING_LOCAL_N_BATCH`（512）的输入被**静默截断**，只嵌内容前缀——生产库 732/2912 个节点（25%，`novel_chunk` 119/124、`task` 148/192、`record` 212/748）的向量只覆盖前缀。现在 local 路径改走**分块池化**：按 token 边界切块（`EMBEDDING_LOCAL_CHUNK_TOKENS`，默认 512，**必须 ≤ n_batch**——块本身也要过 `embed()`，自检新增 error 级检查拦错误配置），逐块嵌入（块内保持 LAST pooling：Qwen3-Embedding 是 decoder-only 因果 LM）后按块内 token 数加权平均再 L2 归一。检索层零改动（仍是单向量契约，`embed_text` 签名与返回值不变）；短文本（≤ chunk）走单块路径，与改动前逐位一致（有测试钉住）。实测 cos vs 全文一次嵌入：旧截断 0.405 → 分块池化 0.92，峰值内存不变（1.5 GB vs 直接提 n_batch=4096 的 3.5 GB）。
@@ -690,7 +692,8 @@
 
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
-[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.17.0...HEAD
+[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.19.0...HEAD
+[2.19.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.19.0
 [2.18.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.18.0
 [2.17.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.17.0
 [2.16.2]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.16.2
