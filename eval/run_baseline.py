@@ -4,8 +4,11 @@
 
     python eval/run_baseline.py
 
-它串行三步（都沿用既有脚本，不另开实现）：
+它串行四步（都沿用既有脚本，不另开实现）：
 
+  0. check_eval_set.py —— 题集自洽校验（issue #240）：items 数 / status_counts
+     / 判卷数 / qid 唯一性等不变量先核对，漂移就 loud fail，不产出貌似合理
+     的基线（题集是 git-ignored 本地数据，CI 看不到，只能本地自查）；
   1. run_eval.py —— 库副本上跑全 4 模式，SHA256 跑前跑后自证，
      报告里每个数字标注子集与条数（#221 §2.5）；
   2. split_eval_set.py --pin-manifest —— 按 qid 钉住重切 split：
@@ -47,7 +50,7 @@ def build_cmds(
     metric: str,
     skip_eval: bool,
 ) -> tuple[list[list[str]], list[str]]:
-    """Compose the three step command lists + human-readable step labels (pure)."""
+    """Compose the four step command lists + human-readable step labels (pure)."""
     scripts = [Path(__file__).parent / "run_eval.py", Path(__file__).parent / "split_eval_set.py"]
 
     # 第 0 步合法性检查：--skip-eval 时必须已有 results_*.json 可复用
@@ -56,11 +59,15 @@ def build_cmds(
 
     cmds: list[list[str]] = []
     labels: list[str] = []
+    # 第 0 步：题集自洽校验（issue #240）——--skip-eval 时也跑，check 永远是第一步，
+    # 题集漂移在这里 loud fail，不产出貌似合理的基线
+    cmds.append([sys.executable, str(Path(__file__).parent / "check_eval_set.py"), "--eval-set", eval_set])
+    labels.append("0/4 eval-set check")
     if not skip_eval:
         cmds.append([sys.executable, str(scripts[0]), "--modes", ",".join(modes), "--eval-set", eval_set])
-        labels.append("1/3 run_eval")
+        labels.append("1/4 run_eval")
     cmds.append([sys.executable, str(scripts[1]), "--eval-set", eval_set, "--pin-manifest", manifest])
-    labels.append("2/3 split (pinned by qid)")
+    labels.append("2/4 split (pinned by qid)")
 
     for mode_a, mode_b in COMPARISONS:
         if mode_a not in modes or mode_b not in modes:
@@ -80,7 +87,7 @@ def build_cmds(
             manifest,
         ]
         cmds.append([sys.executable, str(Path(__file__).parent / "significance.py"), *args])
-        labels.append(f"3/3 significance {mode_a} vs {mode_b}")
+        labels.append(f"3/4 significance {mode_a} vs {mode_b}")
     return cmds, labels
 
 

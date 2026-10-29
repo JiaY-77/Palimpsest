@@ -190,7 +190,7 @@ class TestBaselineCmdComposition:
             "es.json", "mf.json", ["fts", "vec", "rrf", "cascade"], "recall@5", skip_eval=False
         )
         assert [len(c) for c in cmds1] == [len(c) for c in cmds2] and labels1 == labels2
-        # 三步：run_eval → split(pinned) → 3 组 significance（模式全集两两配）
+        # 四步：check → run_eval → split(pinned) → 3 组 significance（模式全集两两配）
         assert any("run_eval" in label for label in labels1)
         assert any("split" in label for label in labels1)
         assert sum(1 for label in labels1 if "significance" in label) == 3
