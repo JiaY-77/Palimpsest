@@ -1279,7 +1279,9 @@ class TriviumStore:
 
         这里把该流程收进服务端：读当前 content → embed_text_with_audit →
         update_vector + 把嵌入审计沉淀进 payload["embedding"]（issue #232：
-        重嵌后库里能读出「这次嵌入覆盖了几个 token」，长节点不再静默截断）。
+        重嵌后库里能读出「这次嵌入覆盖了几个 token」，长节点不再静默截断）
+        + **清掉 ``vector_stale``**（issue #245：重嵌完向量就不再过期，标记
+        留着会让 payload 自相矛盾）。
         返回 False 表示节点不存在；embedding 不可用时由 embed_text 抛
         EmbeddingUnavailableError，由调用方决定如何上报。
         """
@@ -1289,8 +1291,12 @@ class TriviumStore:
         content = (node.get("payload") or {}).get("content", "")
         vector, audit = self.embed_text_with_audit(content)
         self.update_vector(node_id, vector)
-        # update_payload 浅合并：只动 embedding 审计子对象，其余字段原样保留
-        self.update_payload(node_id, {"embedding": audit})
+        # update_payload 浅合并：只动 embedding 审计子对象与 vector_stale，
+        # 其余字段原样保留。**必须清 vector_stale**（issue #245）：那标记是
+        # update_content 为「向量待重算」打的，而这里刚按当前 content 重算完
+        # ——不清就留下「向量是新的、标记说它是旧的」这种自相矛盾的记录；
+        # 将来任何「扫 stale 批量重嵌」的维护通道都会把它当脏数据反复重做。
+        self.update_payload(node_id, {"embedding": audit, "vector_stale": False})
         logger.info(f"已重算节点 ID={node_id} 的向量")
         return True
 

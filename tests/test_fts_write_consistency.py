@@ -166,3 +166,46 @@ class TestUpdateContentSyncsFts:
             store.update_content(nid, "自动化测试向量过期标记验证新内容")
             node = store.get_node(nid)
             assert node["payload"].get("vector_stale") is True
+
+
+class TestReembedClearsVectorStale:
+    """重嵌后必须清 ``vector_stale``（issue #245）。
+
+    ``update_content`` 只为「向量待重算」打这个标记，``reembed_node`` 已经按
+    当前 content 重算完向量——不清就留下「向量是新的、标记说它是旧的」的
+    自相矛盾记录。唯一的生产调用方是胶囊更新路径（``main.py`` 的
+    ``_finalize_session_capsule``），它 ``update_content`` 后紧接着 reembed，
+    所以每个被更新过的胶囊都会带着这个假标记。
+    """
+
+    def test_reembed_clears_vector_stale(self):
+        with _isolated_store() as store:
+            old = "自动化测试重嵌清标记原始内容"
+            nid = store.insert_node({"type": "memory", "content": old}, _fake_embed(old))
+            store.update_content(nid, "自动化测试重嵌清标记新内容")
+            node = store.get_node(nid)
+            assert node is not None
+            assert node["payload"].get("vector_stale") is True
+
+            assert store.reembed_node(nid) is True
+
+            updated = store.get_node(nid)
+            assert updated is not None
+            payload = updated["payload"]
+            assert not payload.get("vector_stale"), "reembed_node 必须清掉 vector_stale"
+            assert payload.get("embedding"), "重嵌审计仍要落库（issue #232 的字段不能丢）"
+
+    def test_reembed_clears_stale_even_when_flag_absent(self):
+        """没打过标记的节点重嵌不能凭空造出 vector_stale=True。"""
+        with _isolated_store() as store:
+            text = "自动化测试无标记节点重嵌"
+            nid = store.insert_node({"type": "memory", "content": text}, _fake_embed(text))
+            node = store.get_node(nid)
+            assert node is not None
+            assert node["payload"].get("vector_stale") is None
+
+            assert store.reembed_node(nid) is True
+
+            updated = store.get_node(nid)
+            assert updated is not None
+            assert not updated["payload"].get("vector_stale")
