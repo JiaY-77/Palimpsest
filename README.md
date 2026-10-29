@@ -6,7 +6,7 @@
 
 **Local-first · 向量 / 全文 / 图谱 / 时间，四种索引一个内核 · MCP + REST + CLI 共用同一套工具**
 
-[![Version](https://img.shields.io/badge/Version-v2.18.0-4c6ef5.svg)](/)
+[![Version](https://img.shields.io/badge/Version-v2.19.0-4c6ef5.svg)](/)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Backends](https://img.shields.io/badge/Backends-DeepSeek%E2%80%A2Ollama%E2%80%A2Built--in-6f42c1.svg)](/)
