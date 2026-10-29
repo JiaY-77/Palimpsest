@@ -21,19 +21,37 @@ from core.startup_check import _check_key_files
 from mcp_tools import store
 
 # doctor 检查项数量：
-#   ①~⑤ run_startup_check（关键文件 / Store 初始化 / FTS5 / 依赖 / Embedding）
-#   ⑥ Embedding 分块配置自洽（run_startup_check 第 ⑥ 项，issue #232，2026-10-29）
-#   ⑦ 向量维度一致性   ⑧ domain 字段迁移状态   ⑨ 运行时路径字符集
-#   ⑩ 向量空间一致性（指纹守卫；startup_check 里同名那项是轻量 WARN 版，doctor 会跳过它）
+#   ①~⑦ run_startup_check（关键文件 / Store 初始化 / FTS5 / FTS 索引完整性 / 依赖 / Embedding / 分块配置）
+#   ⑧ 向量维度一致性   ⑨ domain 字段迁移状态   ⑩ 运行时路径字符集
+#   ⑪ 向量空间一致性（指纹守卫；startup_check 里同名那项是轻量 WARN 版，doctor 会跳过它）
 # 新增检查项时只改这一处（原先三处硬编码 6，加第 ⑦ 项时三处齐红）。
-_EXPECTED_CHECK_COUNT = 10
+_EXPECTED_CHECK_COUNT = 11
 
 
 @pytest.fixture
 def iso_db(tmp_path, monkeypatch):
-    """隔离库夹具：把 store.db_path 指向本次测试专用临时库。"""
+    """隔离库夹具：主库与 FTS 索引都落在本次测试专用临时目录，并预置成「健康库」。
+
+    两处都必须重定向：`TriviumStore()` 构造时读 `Config.DB_PATH`，而
+    `core/fts_index._db_path()` 从同一个 Config 派生——只改 `store.db_path`
+    两者都不会生效，测试会去读写 conftest 的 session 级共享临时库（顺序依赖）。
+
+    「健康库」= 已写入当前向量空间指纹（否则指纹守卫按设计判 FAIL）+ 主库
+    内容已同步进 fts 索引（否则「FTS 索引完整性」按设计判 FAIL）。这两项都是
+    issue #241 引入/依赖的检查，测试库不预置就会凭空报红。
+    """
+    from config import Config
+    from core import embedding_fingerprint as ef
+    from core.fts_index import rebuild
+    from core.trivium_store import TriviumStore
+
     db = tmp_path / "mh_test.db"
     monkeypatch.setattr(store, "db_path", str(db))
+    monkeypatch.setattr(Config, "DB_PATH", str(db))
+
+    healthy = TriviumStore()
+    ef.write_fingerprint(healthy, ef.current_fingerprint(healthy))
+    rebuild(healthy)
     return store, db
 
 
@@ -311,3 +329,115 @@ def test_legacy_domain_mirror_ignores_official_domain_node():
         assert ok is True, detail
     finally:
         store.delete_node(nid)
+
+
+# ================================================================
+# FTS 索引完整性（issue #241）
+# 恢复后 fts.db 丢失 → _ensure_schema 会静默建空表 → 混合检索恒降级纯语义。
+# 这组测试钉住：主库有节点而索引缺失/滞后时，必须有响亮的非 PASS 信号。
+# ================================================================
+
+
+@pytest.fixture
+def cfg_iso_db(tmp_path, monkeypatch):
+    """把 Config.DB_PATH 指向本次测试专用目录（TriviumStore 与 fts._db_path 都读它）。"""
+    from config import Config
+
+    db = str(tmp_path / "mh_fts.db")
+    monkeypatch.setattr(Config, "DB_PATH", db)
+    return db
+
+
+def _insert_raw_nodes(db_path: str, count: int) -> None:
+    """绕过 store 直插节点（模拟既有库/恢复库的初始状态）。"""
+    import triviumdb
+
+    dim = 16
+    db = triviumdb.TriviumDB(db_path, dim=dim)
+    db.batch_insert_with_ids(
+        list(range(1, count + 1)),
+        [[0.1] * dim] * count,
+        [{"content": f"node {i} payload", "type": "memory"} for i in range(1, count + 1)],
+    )
+    db.flush()
+    db.close()
+
+
+def _startup_fts_item():
+    from core.startup_check import run_startup_check
+
+    result = run_startup_check()
+    return next(c for c in result["checks"] if c["name"] == "FTS 索引完整性")
+
+
+def test_startup_flags_missing_fts_db(cfg_iso_db):
+    """主库有节点 + fts.db 缺失 → ok=False，detail 非空，fix 指向 rebuild 脚本。"""
+    _insert_raw_nodes(cfg_iso_db, 2)
+    item = _startup_fts_item()
+    assert item["ok"] is False, item
+    assert item["detail"], "缺失时必须给出可读原因，不能静默"
+    assert item["fix"], "缺失时必须给出修复命令"
+    assert "--repair" in item["fix"]
+
+
+def test_startup_flags_empty_fts_table(cfg_iso_db):
+    """主库有节点 + fts.db 存在但 mem_fts 0 行（静默空表的现场）→ 同样必须标红。"""
+    import sqlite3
+
+    _insert_raw_nodes(cfg_iso_db, 2)
+    path = os.path.join(os.path.dirname(cfg_iso_db), "fts.db")
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS mem_fts USING fts5("
+            "content, node_id UNINDEXED, source_path UNINDEXED, tokenize='trigram')"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    item = _startup_fts_item()
+    assert item["ok"] is False, item
+    assert item["detail"]
+    assert item["fix"]
+
+
+def test_startup_flags_lagging_fts_index(cfg_iso_db):
+    """索引行数 < 节点数一半 → 「明显滞后」也要标红并给修复命令。"""
+    from core.fts_index import index_node
+
+    _insert_raw_nodes(cfg_iso_db, 4)
+    index_node(1, "only one node got indexed")
+    item = _startup_fts_item()
+    assert item["ok"] is False, item
+    assert "滞后" in item["detail"]
+    assert "--repair" in item["fix"]
+
+
+def test_startup_fts_ok_when_populated(cfg_iso_db):
+    """索引行数正常 → ok=True，detail 带计数。"""
+    from core.fts_index import index_node
+
+    _insert_raw_nodes(cfg_iso_db, 2)
+    index_node(1, "alpha content payload")
+    index_node(2, "beta content payload")
+    item = _startup_fts_item()
+    assert item["ok"] is True, item
+    assert "主库 2 / 索引 2" in item["detail"]
+
+
+def test_startup_fts_ok_on_empty_store(cfg_iso_db):
+    """库为空 → ok=True 且不要求索引存在（全新部署不是故障）。"""
+    item = _startup_fts_item()
+    assert item["ok"] is True, item
+
+
+def test_doctor_reports_fts_fix_command(cfg_iso_db):
+    """doctor 复用 startup 检查并显示修复命令（_suggest_fix 侧的显式分支）。"""
+    _insert_raw_nodes(cfg_iso_db, 2)
+    result = run_doctor()
+    check = next(c for c in result["checks"] if c["name"] == "FTS 索引完整性")
+    assert not check["ok"]
+    assert "--repair" in check["fix"]
+    text = render_text(result)
+    assert "FTS 索引完整性" in text
+    assert "--repair" in text

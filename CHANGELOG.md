@@ -24,6 +24,10 @@
 - 钉住 #232 重嵌后的首份检索基线（`docs/RETRIEVAL_QUALITY.md` §8.8）：148 题 / 判卷 31 的完整指标与配对 bootstrap；并如实记录「31 条题的 gold 与被重嵌的 748 个长节点零交集，故重嵌前后指标逐位相同」，以长节点尾部检索实测（top10 命中 1/8 → 3/8）作为 #232 有效性的直接证据。
 - 修复题集数据与文档的漂移：`eval_set_v2.json` 本地文件此前仍是 138 题 / 判卷 27（Phase-1 判词的 10 条从未写入），已按判词文档补回 4 条 live 正样本（q140–q143）+ 6 条 dropped（q144–q149），恢复为 148 题 / 判卷 31；数据文件不入库，本条记录口径以便复现。
 
+### 修复
+
+- **备份补上 `fts.db` + doctor 新增「FTS 索引完整性」检查**（#241）：`scripts/backup_db.py` 此前只备份 TriviumDB 整文件组、从不备份 `data/fts.db`，从备份恢复后 FTS5 索引不存在，`_ensure_schema` 的 `CREATE VIRTUAL TABLE IF NOT EXISTS` 会静默建出空表——混合检索（RRF / 级联）随之一路降级为纯语义检索，仅在日志里刷「降级」，服务看起来完全健康。现在备份附带 `fts.db`（含 `-wal` / `-shm` 侧车，存在才拷），主库组校验通过后还比对副本 `mem_fts` 行数与备份开始前的源库快照（源库没有索引则跳过说明，不算失败）；`doctor` / 启动自检新增「FTS 索引完整性」（主库节点数 vs 索引行数，经 `store._acquire()` 取 `node_count()`，不做全量遍历）：索引缺失或行数不足一半时标红并给出重建命令 `python scripts/check_fts_consistency.py --repair`。
+
 ## [2.18.0] - 2026-10-29
 
 ### 新增
