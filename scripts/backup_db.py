@@ -15,6 +15,12 @@ sidecar（按 generation 命名）、以及 generation 凭据（.flush_ok）。�
     python scripts/backup_db.py --target D:/palimpsest_backups
     python scripts/backup_db.py --no-verify     # 跳过回读校验（不推荐）
 
+除 TriviumDB 主库组之外，本脚本还备份同一目录的 fts.db（FTS5 全文索引，
+core/fts_index.py）及其 -wal / -shm 侧车（存在才拷），拷入备份目录根、文件名
+不变。回读校验通过后还会比对 fts.db 行数与备份开始前的源库行数（issue #241：
+fts.db 不进备份，恢复后 FTS 静默变空、混合检索悄悄降级为纯语义）。源库没有
+fts.db（全新部署、索引从未建立）时跳过并说明，不算失败。
+
 退出码：0 成功；1 备份或校验失败。
 """
 
@@ -23,6 +29,7 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import sqlite3
 import sys
 import time
 
@@ -36,6 +43,8 @@ from config import Config  # noqa: E402
 _SIDE_SUFFIXES = (".vec", ".gidx", ".pidx", ".flush_ok", ".wal")
 # 干扰文件：历史备份、旧格式、中断残留 —— 一律不进备份。
 _SKIP_MARKERS = (".bak", ".pre-", ".prev_attempt", ".tmp")
+# FTS 索引侧车（SQLite WAL 模式伴随文件）。
+_FTS_SIDE_SUFFIXES = ("-wal", "-shm")
 
 
 def collect_group(db_path: str) -> list[str]:
@@ -71,6 +80,33 @@ def verify_group(db_path: str) -> int:
         db.close()
 
 
+def collect_fts_files(fts_path: str) -> list[str]:
+    """收集 FTS 索引组：fts.db 本体 + -wal / -shm 侧车（存在才进）。"""
+    files = []
+    if os.path.isfile(fts_path):
+        files.append(fts_path)
+    for suffix in _FTS_SIDE_SUFFIXES:
+        side = fts_path + suffix
+        if os.path.isfile(side):
+            files.append(side)
+    return files
+
+
+def fts_row_count(path: str) -> int:
+    """只读统计 fts.db 的 mem_fts 行数（文件/表异常向上抛，由调用方定夺）。
+
+    用 mode=ro 打开：校验绝不顺手建文件，也不阻塞正在写索引的进程。
+    """
+    import pathlib
+
+    uri = pathlib.Path(os.path.abspath(path)).as_uri() + "?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    try:
+        return int(conn.execute("SELECT count(*) FROM mem_fts").fetchone()[0])
+    finally:
+        conn.close()
+
+
 def prune_backups(target_dir: str, keep: int) -> list[str]:
     """滚动清理：按名称排序（时间戳前缀）保留最近 keep 份。"""
     entries = sorted(
@@ -100,6 +136,22 @@ def main() -> int:
         print(f"[backup] 未匹配到任何文件组成员：{db_path}", file=sys.stderr)
         return 1
 
+    # FTS 索引组（issue #241）：备份开始前先对源库取一次行数快照，避免备份
+    # 期间的写入让「副本 vs 源」比较误判。源库没有 fts.db（全新部署、索引
+    # 从未建立）→ 跳过并说明，不算失败，退出码仍按主库组结果。
+    from core.fts_index import _db_path as _fts_db_path
+
+    fts_path = _fts_db_path()
+    fts_files = collect_fts_files(fts_path)
+    source_fts_rows: int | None = None
+    if not fts_files:
+        print("[backup] 源库无 fts.db（FTS 索引尚未建立）——跳过 FTS 索引备份")
+    else:
+        try:
+            source_fts_rows = fts_row_count(fts_path)
+        except Exception as exc:  # noqa: BLE001 —— 行数读不出只跳过 FTS 校验，不阻断主库备份
+            print(f"[backup] 读取源 fts.db 行数失败（{exc}），本次不比对 FTS 行数", file=sys.stderr)
+
     target_dir = args.target or os.path.join(os.path.dirname(db_path), "backups")
     stamp = time.strftime("%Y%m%d_%H%M%S")
     dest = os.path.join(target_dir, f"backup_{stamp}")
@@ -111,6 +163,13 @@ def main() -> int:
         copied.append(os.path.basename(src))
     print(f"[backup] 已备份 {len(copied)} 个文件 -> {dest}")
 
+    if fts_files:
+        for src in fts_files:
+            shutil.copy2(src, os.path.join(dest, os.path.basename(src)))
+        print(
+            f"[backup] 已附带 FTS 索引组 ({len(fts_files)} 个文件: {', '.join(os.path.basename(p) for p in fts_files)})"
+        )
+
     if not args.no_verify:
         try:
             count = verify_group(os.path.join(dest, os.path.basename(db_path)))
@@ -119,6 +178,25 @@ def main() -> int:
             print(f"[backup] 回读校验失败：{exc}", file=sys.stderr)
             print("[backup] 快照可能不是同一 generation —— 请检查备份期间是否有写入", file=sys.stderr)
             return 1
+
+        # 主库组校验通过后再校验 FTS 副本（issue #241）
+        if source_fts_rows is not None:
+            dest_fts = os.path.join(dest, os.path.basename(fts_path))
+            try:
+                if not os.path.isfile(dest_fts):
+                    raise FileNotFoundError("FTS 索引副本缺失（fts.db 未拷入备份目录）")
+                fts_rows = fts_row_count(dest_fts)
+                if fts_rows != source_fts_rows:
+                    print(
+                        f"[backup] FTS 索引校验不一致：源 {source_fts_rows} 行 vs 副本 {fts_rows} 行"
+                        "（备份期间有写入？可用 python scripts/check_fts_consistency.py --repair 重建）",
+                        file=sys.stderr,
+                    )
+                    return 1
+                print(f"[backup] FTS 索引校验通过：{fts_rows} 行")
+            except Exception as exc:  # noqa: BLE001 —— FTS 校验失败同样不可交付
+                print(f"[backup] FTS 索引校验失败：{exc}", file=sys.stderr)
+                return 1
 
     for name in prune_backups(target_dir, args.keep):
         print(f"[backup] 清理旧备份：{name}")

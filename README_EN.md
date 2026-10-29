@@ -30,7 +30,7 @@ A **local memory store**: what an AI session learns becomes nodes in one databas
 - **Runs without an API key.** Storage, retrieval, the graph and version chains happen entirely locally; an LLM is only used when generating reports and can be left unconfigured.
 - **Zero external dependencies.** A built-in vector engine (`llama-cpp-python` + a bundled GGUF model) runs fully offline once installed; Ollama is an optional speed-up path, not a requirement.
 - **One process is the single writer.** REST on `:8090` is the only entry point — MCP / CLI / scripts all go through it, so no second writer can corrupt the store.
-- **The data is one directory.** `.db` + `.vec` / `.gidx` / `.pidx` sidecars plus `fts.db` under `data/`: back all of it up and you can move the store.
+- **The data is one directory.** `.db` + `.vec` / `.gidx` / `.pidx` sidecars plus `fts.db` under `data/`: back all of it up and you can move the store. After a restore, run doctor (`python scripts/palimpsest_cli.py doctor`) to confirm the FTS index is complete.
 
 ---
 

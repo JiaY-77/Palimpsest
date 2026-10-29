@@ -88,3 +88,71 @@ def test_prune_backups_keeps_newest(tmp_path):
     assert removed == ["backup_20260101_000000"]
     remaining = sorted(os.listdir(target))
     assert remaining == ["backup_20260102_000000", "backup_20260103_000000"]
+
+
+# ================================================================
+# issue #241：备份必须带上 fts.db
+# 丢 fts 备份的后果：恢复后 fts.db 不存在 → _ensure_schema 静默建空表 →
+# 混合检索恒降级纯语义，服务看起来健康。备份脚本必须拷走 fts 组。
+# ================================================================
+
+
+def _build_fts(db_directory: str, rows: list[tuple[int, str]]) -> None:
+    """在主库同目录造一个有内容的 fts.db（schema 与 core.fts_index 一致）。"""
+    import sqlite3
+
+    path = os.path.join(db_directory, "fts.db")
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS mem_fts USING fts5("
+            "content, node_id UNINDEXED, source_path UNINDEXED, tokenize='trigram')"
+        )
+        for node_id, content in rows:
+            conn.execute(
+                "INSERT INTO mem_fts(content, node_id, source_path) VALUES(?, ?, ?)",
+                (content, int(node_id), ""),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _run_backup(db_path: str, tmp_path, monkeypatch, capsys):
+    """把 Config.DB_PATH 指到指定库后跑一次完整备份，返回 (退出码, 备份目录, 输出)。"""
+    from config import Config
+    from scripts import backup_db
+
+    monkeypatch.setattr(Config, "DB_PATH", db_path)
+    target = str(tmp_path / "backups")
+    monkeypatch.setattr(sys, "argv", ["backup_db.py", "--target", target])
+    code = backup_db.main()
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    dest = os.path.join(target, max(os.listdir(target)))
+    return code, dest, output
+
+
+def test_backup_includes_fts_db(tiny_db, tmp_path, monkeypatch, capsys):
+    """主库同目录有 fts.db → 备份带走得，行数与源库一致。"""
+    import sqlite3
+
+    _build_fts(os.path.dirname(tiny_db), [(1, "first node content"), (2, "second node content")])
+    code, dest, _ = _run_backup(tiny_db, tmp_path, monkeypatch, capsys)
+    assert code == 0
+    fts_copy = os.path.join(dest, "fts.db")
+    assert os.path.isfile(fts_copy)
+    conn = sqlite3.connect(fts_copy)
+    try:
+        rows = conn.execute("SELECT count(*) FROM mem_fts").fetchone()[0]
+    finally:
+        conn.close()
+    assert rows == 2, "备份出的 fts.db 行数必须与源库一致"
+
+
+def test_backup_skips_missing_fts_db(tiny_db, tmp_path, monkeypatch, capsys):
+    """源库没有 fts.db（索引从未建立）→ 跳过并说明，不算失败，退出码仍按主库组。"""
+    code, dest, output = _run_backup(tiny_db, tmp_path, monkeypatch, capsys)
+    assert code == 0
+    assert not os.path.exists(os.path.join(dest, "fts.db"))
+    assert "fts.db" in output and "跳过" in output, f"应对缺席给出说明行: {output}"

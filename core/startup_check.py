@@ -14,6 +14,9 @@
   ⑥ Embedding 分块配置自洽（issue #232：chunk ≤ n_batch，仅 provider=local）
   ⑦（可选）TDB 文本通道预热（仅 TDB_TEXT_ENABLED=1 时注册）
   ⑧ 向量空间一致性（指纹守卫，轻量：不一致只 WARN 一行 + 修复命令，不改 ok/退出码）
+  ⑨ FTS 索引完整性（issue #241：主库节点数 vs mem_fts 行数；注册在 ③ 之后，
+     恢复备份后能直接暴露「fts.db 没恢复 → 混合检索悄悄降级纯语义」，失败时
+     附带 fix=重建命令，doctor 侧经 _suggest_fix 复用）
 
 设计原则：任何单项失败只记录，不抛异常，不阻断服务启动（可用性优先）。
 """
@@ -95,6 +98,61 @@ def _check_fts() -> str:
         conn.close()
     search_fts("护栏")  # 容错空查询，抛异常即判定失败
     return f"FTS5 索引可用 (fts.db={path})"
+
+
+def _mem_fts_count(path: str) -> int:
+    """只读统计 mem_fts 行数；文件不存在 / 表缺失 / 查询失败一律返回 0（不抛异常）。"""
+    if not os.path.isfile(path):
+        return 0
+    conn = None
+    try:
+        import pathlib
+
+        uri = pathlib.Path(os.path.abspath(path)).as_uri() + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+        return int(conn.execute("SELECT count(*) FROM mem_fts").fetchone()[0])
+    except sqlite3.Error:
+        return 0
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _check_fts_integrity() -> str:
+    """检查⑨（issue #241）：FTS 索引完整性 —— 主库节点数 vs mem_fts 行数。
+
+    fts.db 丢了会被 `_ensure_schema` 的 `CREATE ... IF NOT EXISTS` 静默建出
+    空表，混合检索（rrf/cascade）随之悄悄退化为纯语义——检查③「能连接」
+    看不出来，本项专门量「索引覆盖了多少」：
+
+    - 主库节点数走 store 的连接（`store._acquire()` 拿 db 再 `node_count()`，
+      与 scripts/backup_db.py::verify_group 同款用法），不做全量 iter_payloads
+      —— doctor 已有两项全量遍历，能靠 node_count 的就别再加一项；
+    - 三档判定：空库(节点 0) → ok；索引 0 行/缺失而节点 >0 → FAIL（缺失）；
+      行数不足节点数一半 → FAIL（明显滞后）；其余 → ok 带计数。
+    """
+    from core.fts_index import _db_path  # 延迟导入
+    from core.trivium_store import TriviumStore
+
+    store = TriviumStore()
+    db = store._acquire()
+    try:
+        node_count = int(db.node_count())
+    finally:
+        db.close()
+
+    if node_count == 0:
+        return "库为空，无需索引"
+
+    fts_rows = _mem_fts_count(_db_path())
+    if fts_rows == 0:
+        raise RuntimeError(f"FTS 索引缺失：主库 {node_count} 个节点，索引 0 行；混合检索将退化为纯语义")
+    if fts_rows < node_count * 0.5:
+        raise RuntimeError(
+            f"FTS 索引明显滞后：主库 {node_count} 个节点，索引仅 {fts_rows} 行（不足一半）；"
+            "长文本的 FTS 通道覆盖不全，建议重建"
+        )
+    return f"FTS 索引完整 (主库 {node_count} / 索引 {fts_rows})"
 
 
 def _check_dependencies() -> str:
@@ -273,6 +331,14 @@ def run_startup_check() -> dict:
         _probe("Embedding 服务可用", _check_embedding),
         _probe("Embedding 分块配置", _check_embedding_chunk_config),
     ]
+    # FTS 索引完整性（issue #241）：注册在「FTS5 索引连接」之后。失败时附带
+    # 可执行修复命令（startup_check 其他项不含 fix 字段；doctor 复用时会经
+    # _suggest_fix 生成同样的命令，保持两处口径一致）。
+    fts_integrity = _probe("FTS 索引完整性", _check_fts_integrity)
+    fts_integrity.setdefault("fix", "")
+    if not fts_integrity["ok"]:
+        fts_integrity["fix"] = "python scripts/check_fts_consistency.py --repair"
+    checks.insert(3, fts_integrity)
     from config import Config  # 延迟导入
 
     # 可选通道自检：仅启用 TDB 文本通道时注册，默认关闭时输出与改动前一致

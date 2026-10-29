@@ -5,12 +5,11 @@
 而非只说「失败」。
 
 检查项：
-  ①~⑤  复用 run_startup_check()（关键文件 / Store 初始化 / FTS5 / 依赖 / Embedding）
-  ⑥     Embedding 分块配置自洽（run_startup_check 第 ⑥ 项，issue #232：chunk ≤ n_batch）
-  ⑦     向量维度一致性（实测 embedding 维度 vs 库实际维度，复用 core.dims 逻辑）
-  ⑧     domain 字段迁移状态（无 domain 但有 character_name 的历史兼容镜像存量）
-  ⑨     运行时路径字符集（中文用户名等非 ASCII 路径下的依赖兼容性风险）
-  ⑩     向量空间一致性（指纹守卫：库内记录的 space_id/engine vs 当前配置，core.embedding_fingerprint）
+  ①~⑦  复用 run_startup_check()（关键文件 / Store 初始化 / FTS5 / FTS 索引完整性 / 依赖 / Embedding / 分块配置）
+  ⑧     向量维度一致性（实测 embedding 维度 vs 库实际维度，复用 core.dims 逻辑）
+  ⑨     domain 字段迁移状态（无 domain 但有 character_name 的历史兼容镜像存量）
+  ⑩     运行时路径字符集（中文用户名等非 ASCII 路径下的依赖兼容性风险）
+  ⑪     向量空间一致性（指纹守卫：库内记录的 space_id/engine vs 当前配置，core.embedding_fingerprint）
 
 设计原则：
   - 单项失败不中断（embedding 不可用时其余检查项仍全部执行并展示）
@@ -315,6 +314,9 @@ def _suggest_fix(check: dict) -> str:
     name = check["name"]
     if name == "依赖可导入":
         return "运行: pip install -r requirements.txt"
+    if name == "FTS 索引完整性":
+        # issue #241：恢复后 FTS 索引缺失/滞后，用现成的全量重建脚本修复
+        return "运行: python scripts/check_fts_consistency.py --repair"
     if name == "Embedding 服务可用":
         ollama_model = getattr(Config, "OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:0.6b")
         return (

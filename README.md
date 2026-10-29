@@ -27,7 +27,7 @@
 - **不需要 API key 就能跑。** 存储、检索、图谱、版本链全部本地完成；LLM 只在生成报告时用到，可以完全不配。
 - **零外部依赖。** 内置向量引擎（`llama-cpp-python` + 自带 GGUF 模型），装完即可离线运行；Ollama 只是可选的加速路径，不是必需。
 - **一个进程是唯一写者。** REST `:8090` 是唯一入口，MCP / CLI / 各脚本都经它，所以不存在多进程写坏库。
-- **数据就是一个目录。** `data/` 下的 `.db` + `.vec` / `.gidx` / `.pidx` 侧车 + `fts.db`，整组备份即可搬家。
+- **数据就是一个目录。** `data/` 下的 `.db` + `.vec` / `.gidx` / `.pidx` 侧车 + `fts.db`，整组备份即可搬家。恢复后跑 doctor（`python scripts/palimpsest_cli.py doctor`）确认 FTS 索引完整。
 
 ## Docker（最快）
 

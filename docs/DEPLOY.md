@@ -125,19 +125,31 @@ docker compose exec palimpsest python scripts/backup_db.py --keep 7
 # 产出在卷内：./data/backups/backup_<时间戳>/（宿主机可直接看到）
 ```
 
-脚本会拷**整文件组**（同 generation 的 `.db` / `.vec` / `.gidx` / `.pidx` / `.flush_ok` / `.pld.*` / `.wal`）并回读校验，校验不过报错退出。拿不准就多留几份。
+脚本会拷**整文件组**（同 generation 的 `.db` / `.vec` / `.gidx` / `.pidx` / `.flush_ok` / `.pld.*` / `.wal`，并附带同目录的 `fts.db` 全文索引及其 `-wal` / `-shm` 侧车）并回读校验（含 FTS 行数比对：源 `fts.db` 与副本必须行数一致；源库没有 `fts.db` 则跳过说明，不算失败），校验不过报错退出。拿不准就多留几份。
 
 **恢复：**
 
 ```bash
 docker compose down                    # 停掉写者
 rm -rf ./data.broken && mv ./data ./data.broken   # 保留坏现场，别直接删
-mv ./data/backups/backup_<时间戳> ./data          # 整组放回：目录里就是 .db + 全部侧车文件
+mv ./data/backups/backup_<时间戳> ./data          # 整组放回：目录里就是 .db + 全部侧车文件 + fts.db
 docker compose up -d
 ```
 
 > 只换 `.db` 不还侧车 → 报「拒绝不完整的 .tdb/.vec generation」。报这个错就说明你不是恢复了整组。
 > 想搬家：把整个卷目录（含 `backups/`）拷到新机器同路径即可，数据就是一个目录。
+
+**恢复后校验：**
+
+```bash
+docker compose exec palimpsest python scripts/palimpsest_cli.py doctor
+```
+
+若 doctor 报「FTS 索引缺失 / 明显滞后」，重建索引（不是数据丢失，主库完好）：
+
+```bash
+docker compose exec palimpsest python scripts/check_fts_consistency.py --repair
+```
 
 ---
 
