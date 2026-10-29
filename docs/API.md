@@ -14,6 +14,7 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8090
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `GET` | `/` | 服务信息 + 版本 + 端点索引 |
+| `GET` | `/health` | 存活 / 就绪探针：恒 200，`{"status", "version", "db", "db_initialized"}`；`db` 为 `"ok"` / `"degraded"`（带 2s 超时的数据目录可写探测），`db_initialized` 说明库是否已落盘（全新实例与「尚未 flush、写只在 WAL 里」都算 `db: ok`，**未初始化不是故障**）。免鉴权（与 `/` 同白名单），容器编排 / 反代健康检查用 |
 | `GET` | `/export` | 导出记忆为分页 JSON 快照（默认每页 100 条，上限 500） |
 | `GET` | `/summary` | 人类可读的记忆摘要（事件 / 角色状态 / 计划） |
 | `GET` | `/memory/{id}` | 读取单节点完整 payload |

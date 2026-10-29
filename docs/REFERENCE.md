@@ -89,6 +89,7 @@ python scripts/build_kb_index.py --rules rules.json
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `GET` | `/` | 服务信息 + 版本 + 端点索引 |
+| `GET` | `/health` | 存活 / 就绪探针（恒 200 + `db: ok/degraded` + `db_initialized`；免鉴权， Docker / 反代健康检查用，详见 docs/DEPLOY.md） |
 | `POST` | `/mem/search` | 统一检索 |
 | `POST` | `/mem/ingest` | 写入新记忆（含冲突检测 + 敏感扫描；`replaces` 字段显式声明取代；可选 `meta` 元数据字典见 docs/API.md） |
 | `POST` | `/mem/purge-by-meta` | 按「域名 + 自定义元数据」批量删除（`domain` 必填非空；`dry_run` 默认 true；超出 `max_delete` 409 拒绝） |

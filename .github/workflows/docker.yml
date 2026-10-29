@@ -1,0 +1,94 @@
+# Docker 自托管验证（独立工作流：不进 ci.yml 门禁阻塞路径，不拖慢既有 job）。
+# 这是 Dockerfile / compose / /health 的「真跑」证据：本仓库本机没有 Docker，
+# 只有这里的 job 输出能证明镜像可构建、可起、可写、可优雅关闭。
+name: Docker
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# 同一分支新的 push 取消旧的（构建含 610MB 模型预置，重跑前先压掉旧任务）。
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docker-build-run:
+    name: build + run + smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 用预置路径（=1）而不是快速路径：PRELOAD=0 时容器里没有 GGUF，
+      # POST /mem/ingest 会因 embedding 不可用返 503，冒烟只能拿到假绿
+      # （写不进记忆还不知道）——宁可这里多下一次 610MB 换真链路验证。
+      - name: Build image (PRELOAD_EMBEDDING_MODEL=1)
+        run: docker build --build-arg PRELOAD_EMBEDDING_MODEL=1 -t palimpsest:ci .
+
+      - name: Run container (fresh bind-mount data volume)
+        run: |
+          mkdir -p "$PWD/ci-data"
+          # 非镜像进程以 UID 10001（palimpsest）运行，宿主目录须归它
+          sudo chown -R 10001:10001 "$PWD/ci-data"
+          docker run -d --name palimpsest-ci \
+            -p 8090:8090 \
+            -v "$PWD/ci-data:/app/data" \
+            palimpsest:ci
+
+      - name: Wait for /health until ok (max 120s)
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8090/health > "$RUNNER_TEMP/health.json" 2>/dev/null; then
+              echo "--- /health ---"
+              cat "$RUNNER_TEMP/health.json"; echo
+              jq -e '.status == "ok" and (.db == "ok" or .db == "degraded")' "$RUNNER_TEMP/health.json" > /dev/null
+              echo "healthy after attempt $i"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::/health 未在 120s 内就绪——容器日志如下"
+          docker logs palimpsest-ci
+          exit 1
+
+      # 冒烟断言的是实际返回的 JSON 字段（不是只看 HTTP 200）：
+      # ingest → stored=true + node_id；search → 能按语义召回刚写的那条；export → total_nodes>=1。
+      # （HTTP 侧 4xx/5xx 会让 curl -fsS 直接失败，两侧都锁住。）
+      - name: Smoke — ingest
+        id: ingest
+        run: |
+          RESP=$(curl -fsS -X POST http://127.0.0.1:8090/mem/ingest \
+            -H 'Content-Type: application/json' \
+            -d '{"content":"docker self-host smoke test: ocean whale remembers rice", "type":"memory", "importance":0.5}')
+          echo "ingest: $RESP"
+          echo "$RESP" | jq -e '.stored == true and (.node_id | type == "number")'
+          NID=$(echo "$RESP" | jq '.node_id')
+          echo "node_id=$NID" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke — semantic search hits the node
+        run: |
+          RESP=$(curl -fsS -X POST http://127.0.0.1:8090/mem/search \
+            -H 'Content-Type: application/json' \
+            -d '{"query":"鲸鱼记得米饭", "top_k":5}')
+          echo "search: $RESP"
+          echo "$RESP" | jq -e --argjson id '${{ steps.ingest.outputs.node_id }}' \
+            '(.results | map(.id)) | index($id) != null'
+
+      - name: Smoke — export total >= 1
+        run: |
+          RESP=$(curl -fsS "http://127.0.0.1:8090/export?page_size=500")
+          echo "$RESP" | jq -e '.status == "ok" and .total_nodes >= 1'
+
+      # 退出码断言 = 优雅关闭的真证据：SIGTERM 下 uvicorn 正常退出 0；强杀会是 137/非 0
+      - name: Stop and assert graceful exit
+        run: |
+          docker stop palimpsest-ci
+          CODE=$(docker inspect -f '{{.State.ExitCode}}' palimpsest-ci)
+          echo "exit code after docker stop: $CODE"
+          test "$CODE" = "0"
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker logs palimpsest-ci || true

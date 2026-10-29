@@ -34,6 +34,20 @@ A **local memory store**: what an AI session learns becomes nodes in one databas
 
 ---
 
+## Docker (fastest)
+
+```bash
+git clone https://github.com/JiaY-77/Palimpsest.git
+cd Palimpsest
+cp .env.example .env          # public deploys: set PALIMPSEST_API_KEY (generate: openssl rand -hex 32)
+docker compose up -d --build  # first build pre-loads the ~610 MB embedding model and verifies it
+curl -s http://127.0.0.1:8090/health
+```
+
+Single-instance self-hosting (one process per store); memory sizing, public exposure, backups and upgrades: **[docs/DEPLOY.md](docs/DEPLOY.md)**.
+
+---
+
 ## Install
 
 **5–10 minutes end to end, no API key needed.** The embedding model is ~610 MB and downloads on first run only.
@@ -237,7 +251,7 @@ The README only covers what you need to get running. Everything else lives in `d
 | What you want | Where |
 |---|---|
 | Install (three embedding backends, hardware, swapping models) | [docs/INSTALL.md](docs/INSTALL.md) |
-| Command reference (21 MCP tools / 25 CLI subcommands / 31 REST routes / blocks / index rules) | [docs/REFERENCE.md](docs/REFERENCE.md) |
+| Command reference (21 MCP tools / 25 CLI subcommands / 32 REST routes / blocks / index rules) | [docs/REFERENCE.md](docs/REFERENCE.md) |
 | Which tool to use when | [docs/USAGE.md](docs/USAGE.md) |
 | Environment variables (full 62-key table) | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) |
 | Design (mechanism inventory, comparison, Markdown positioning, use cases) | [docs/DESIGN.md](docs/DESIGN.md) |

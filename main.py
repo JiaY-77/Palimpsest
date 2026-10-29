@@ -284,15 +284,17 @@ async def _api_key_middleware(request: Request, call_next):
     """可选 API Key 鉴权中间件。
 
     未配置 PALIMPSEST_API_KEY 时放行所有请求（不启用鉴权）。
-    已配置时，除 / 健康检查外的所有请求必须带
-    Authorization: Bearer <key> 或 X-API-Key: <key>，否则 401。
+    已配置时，除免鉴权白名单外所有请求必须带
+    Authorization: Bearer *** 或 X-API-Key: *** 401。
+    白名单含 / 与 /health：存活探针不应要求带 key，否则容器编排 /
+    反向代理的健康检查物理上探不了。
     /docs 等调试路径同样受保护（与业务端点一致的安全边界）。
     """
     if not API_KEY:
         return await call_next(request)
 
     path = request.url.path
-    if path == "/":
+    if path in ("/", "/health"):
         return await call_next(request)
 
     auth = request.headers.get("authorization", "")
@@ -349,6 +351,7 @@ def root():
         "version": get_version(),
         "endpoints": [
             "/",
+            "/health",
             "/export",
             "/summary",
             "/report",
@@ -390,6 +393,49 @@ def root():
             "/lifecycle/recover-orphan-capsules",
         ],
     }
+
+
+@app.get("/health")
+async def health():
+    """存活 / 就绪探针（容器编排、反向代理、监控用）。
+
+    规则：
+    - 永远返回 HTTP 200，且足够轻：存活探针不能因为库忙 / /doctor 慢就判死，
+      因此不跑全量体检，与业务读操作也不抢 triviumdb 的独占写锁。
+    - 「存储可用」最多探一次：在 2 秒超时的后台线程里做一次文件层探测
+      （数据目录可写即可）。这是非阻塞系统调用，常态纳秒级；超时 / 异常只把
+      db 降级为 ``degraded``，不改状态码。
+    - **未初始化 ≠ 异常**：全新实例（数据目录空）与「TriviumDB 尚未 flush、
+      写只在 WAL 里」这两种情形都返回 ``db: "ok"``，并用 ``db_initialized``
+      说明库是否已落盘。早先的实现把「主库文件不存在」一律报 degraded，导致
+      ``docker compose up`` 之后健康检查长期显示 degraded（数据其实在 WAL 里、
+      读写完全正常），把人引向不存在的故障。
+    - ``degraded`` 只留给真的异常：数据目录不可写、探测自身出错、超时。
+    - PALIMPSEST_API_KEY 启用后本端点与 / 同一免鉴权白名单（见中间件）。
+    """
+    version = get_version()
+
+    def _db_probe() -> tuple[str, bool]:
+        try:
+            path = Config.DB_PATH
+            # TriviumDB 在 flush 前把写落在 WAL 里，主库文件可能尚不存在。
+            initialized = (os.path.isfile(path) and os.path.getsize(path) > 0) or os.path.isfile(path + ".wal")
+            directory = os.path.dirname(path) or "."
+            if not os.path.isdir(directory) or not os.access(directory, os.R_OK | os.W_OK):
+                return "degraded", initialized
+            return "ok", initialized
+        except OSError:
+            return "degraded", False
+
+    try:
+        db_state, db_initialized = await asyncio.wait_for(asyncio.to_thread(_db_probe), timeout=2.0)
+    except asyncio.TimeoutError:
+        logger.warning("health:存储可写探测超时（2s），报告 degraded（进程仍存活）")
+        db_state, db_initialized = "degraded", False
+    except Exception:  # 探针自身出错不能把存活判死，降级上报即可（该分支已记日志，BLE001 不触发）
+        logger.exception("health:存储可写探测异常，报告 degraded")
+        db_state, db_initialized = "degraded", False
+    return {"status": "ok", "version": version, "db": db_state, "db_initialized": db_initialized}
 
 
 @app.get("/export")
