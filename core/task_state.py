@@ -559,12 +559,18 @@ def _order_handoff_first(items: list[dict], include_handoff: bool) -> list[dict]
     「先读这条」读到过期上下文）——取回接续点的目的就是「先读**最新**这条」，
     故时间为主、importance 只作同刻次序。普通任务保持原排序（状态优先级 →
     ``last_touched_at`` 倒序 → ``importance`` 倒序）。
+
+    补产胶囊不进置顶组（issue #227）：``payload.recovered == true`` 的接续点是
+    孤儿缓冲补产时机器抓的半成品——它的 ``created_at`` 天然比同 session 里已写
+    的手写接续点**新**，照旧排序会压到「新会话先读这条」的第一位，打断跨会话
+    续接。它留在普通任务组里照常排序与可见（turns 不丢、不隐藏），手写接续点
+    永远排在它前面——同 session 已有手写接续点的重复压制由本条天然覆盖。
     """
     if not include_handoff:
         items.sort(key=_sort_key)
         return items
-    handoffs = [it for it in items if it.get("kind") == HANDOFF_KIND]
-    others = [it for it in items if it.get("kind") != HANDOFF_KIND]
+    handoffs = [it for it in items if it.get("kind") == HANDOFF_KIND and not it.get("recovered")]
+    others = [it for it in items if it.get("kind") != HANDOFF_KIND or it.get("recovered")]
     handoffs.sort(
         key=lambda it: (
             -_handoff_time_key(it),
@@ -683,6 +689,12 @@ def _brief(nid: int, payload: dict, state: str | None) -> dict:
         "importance": payload.get("importance", 0.5),
         "kind": payload.get("kind") or "",
     }
+    # 补产胶囊留痕（issue #227）：``recovered=True`` 是孤儿缓冲补产时打的机器
+    # 标记（``_recover_orphan_session_buffers`` 写入），有则带、没有就不带键——
+    # 消费者靠键缺席区分「正常 session-end 胶囊」与「补产胶囊」，排序层也用它
+    # 把补产胶囊排除出 handoff 置顶组（见 ``_order_handoff_first``）。
+    if payload.get("recovered"):
+        item["recovered"] = payload["recovered"]
     # 胶囊接手留痕（issue #208）：有则带、没有就不带这些键——绝大多数任务
     # 节点从未被接手过，塞 None / 0 会把「从未接手」伪装成「接过手」；
     # 消费者靠键缺席区分两种状态。
@@ -699,6 +711,12 @@ def _brief(nid: int, payload: dict, state: str | None) -> dict:
 # ``[...]`` 状态块（如 ``[完成] `` / ``[待办] ``），其后必须紧跟「接续点」
 # 标题词（允许 ``【`` / ``★`` 前缀装饰）。「接续点」只出现在**句中**的不命中。
 _HANDOFF_FIRST_LINE_RE = re.compile(r"^\s*(?:\[[^\[\]\n]*\]\s*)*【?★?接续点")
+
+# 前导 ``[...]`` 状态块（与上面判据同一个装饰口径，供 title 判据复用）：
+# 「什么算首行装饰」只能有一处定义，否则排序判据认它是接续点、title 判据
+# 把状态词当信息段，同一节点两套结论（issue #227 验收实测：3752
+# ``[完成] 接续点 / 会话接续 local-<64hex>`` 漏降级）。
+_HANDOFF_STATUS_BLOCK_RE = re.compile(r"^\s*(?:\[[^\[\]\n]*\]\s*)*")
 
 
 def _is_handoff(payload: dict) -> bool:
@@ -741,6 +759,23 @@ _TITLE_ANCHOR_STUBS = ("★接续点", "接续点", "会话接续", "新聊天�
 # title 摘要的截断上限。
 _TITLE_MAX_LEN = 120
 
+# 锚词删除（按长度降序的交替模式）：判断「首行除锚词 + hash 外是否还有信息」
+# 时把锚词整词剥掉（``★接续点`` 必须早于 ``接续点`` 抢匹配，长词优先）。
+_TITLE_ANCHOR_WORDS_RE = re.compile(
+    "|".join(re.escape(stub) for stub in sorted(_TITLE_ANCHOR_STUBS, key=len, reverse=True))
+)
+
+# hash token（session id 形态）：``local-<hex>`` 前缀形态或 ≥16 位纯 hex 长串。
+# 阈值取 16：日期串（``2026-10-13``）被连字符打断后最长 hex 段不过 4~6 位，
+# 正常手写首行永远够不到 16 连 hex，不会误触发降级。
+_TITLE_HASH_RUN_RE = re.compile(r"(?:local[-_]?)?[0-9a-f]{16,}")
+
+# session id 提取：真实语料 ``接续点 / 会话接续 local-<64hex>`` 的 ``local-`` 前缀
+# 形态优先；纯长 hex 兜底。
+_TITLE_SESSION_HASH_RE = re.compile(r"local[-_ ]?([0-9a-f]{8,})", re.IGNORECASE)
+# 兜底用的纯 hex 长串（前后不得再邻接 hex，避免从长串中间截走半截）。
+_TITLE_BARE_HASH_RE = re.compile(r"(?<![0-9a-f])([0-9a-f]{16,})(?![0-9a-f])")
+
 
 def _iter_title_fragments(first_line: str):
     """按出现顺序交错产出首行的文本片段：括号块内容 + 块外正文。
@@ -757,6 +792,58 @@ def _iter_title_fragments(first_line: str):
         pos = match.end()
     if pos < len(first_line):
         yield first_line[pos:]
+
+
+def _first_line_hashes_only(first_line: str) -> bool:
+    """首行剥掉锚词与分隔符后**只剩 hash token** → True（3778 生产形态判据）。
+
+    真实语料 ``接续点 / 会话接续 local-<64hex>``：锚词全剥后残留只有 session
+    hash——最长信息段就是裸 hash，title 零信息量（issue #227）。正常手写接续点
+    的首行总有锚词之外的信息段（日期 / 主题），剥完必有残留 → ``False`` 不触发降级。
+
+    前导 ``[...]`` 状态块必须先剥：``_is_handoff`` 的判据
+    （``_HANDOFF_FIRST_LINE_RE``）明确允许首行带若干状态块（生产实测
+    ``[完成] 接续点 / 会话接续 local-<64hex>`` 这类），状态块本身不是信息段；
+    不剥就会让「状态块 + 锚词 + hash」形态漏判、继续留下 hash-only title。
+    两处判据对「什么算首行装饰」必须同口径，否则同一节点一边认作接续点、
+    一边认作有信息量。
+    """
+    text = _HANDOFF_STATUS_BLOCK_RE.sub("", first_line)
+    text = _TITLE_ANCHOR_WORDS_RE.sub("", text)
+    text = _TITLE_ANCHOR_STRIP_RE.sub("", text).lower()
+    if not text:
+        return False
+    return not _TITLE_HASH_RUN_RE.sub("", text).strip()
+
+
+def _session_hash_prefix(first_line: str) -> str:
+    """从首行提取 session id 的前 8 位（``local-<hex>`` / 长 hex 兜底）；提取不出返回空串。"""
+    match = _TITLE_SESSION_HASH_RE.search(first_line)
+    if not match:
+        match = _TITLE_BARE_HASH_RE.search(first_line)
+    return match.group(1)[:8] if match else ""
+
+
+def _recovered_capsule_title(payload: dict, first_line: str) -> str:
+    """hash-only 首行的可读 stub：``补产胶囊 <日期> <session 前 8 位>``（缺省段省略）。
+
+    日期取 ``payload.created_at``（数值 epoch 或 ISO 字符串都认，与
+    ``_freshness_epoch`` 同口径）；缺失 / 解析不出就省略日期段。session 前 8 位
+    从首行 hash 提取；同样提取不出时省略。
+    """
+    created = payload.get("created_at")
+    epoch = None
+    if isinstance(created, (int, float)) and created > 0:
+        epoch = float(created)
+    elif isinstance(created, str) and created.strip():
+        epoch = _iso_to_epoch(created)
+    parts = ["补产胶囊"]
+    if epoch is not None:
+        parts.append(datetime.fromtimestamp(epoch, tz=timezone.utc).astimezone().strftime("%Y-%m-%d"))
+    session = _session_hash_prefix(first_line)
+    if session:
+        parts.append(session)
+    return " ".join(parts)
 
 
 def _handoff_title(payload: dict) -> str:
@@ -783,6 +870,13 @@ def _handoff_title(payload: dict) -> str:
 
     回填对 ``title`` 为空的 task 节点**统一**用它补摘要（不限于接续点）：非接续
     点没有锚词段，同一套规则自然退化成「首行原文 / 最长段」。
+
+    **hash-only 降级（issue #227）**：首行只有锚词 + session hash 的形态（补产
+    胶囊生产的 ``接续点 / 会话接续 local-<64hex>``，3778 实证）——最长段就是裸
+    hash，产出 ``会话接续 local-3b593a05…`` 这类零信息 title。此形态不再产
+    hash-only title，退化为 ``补产胶囊 <日期> <session 前 8 位>`` 可读 stub
+    （``_recovered_capsule_title``）；日期取 ``created_at``，缺则省略。手写
+    接续点（锚词之外总有日期 / 主题段）不经此分支，提取结果不变。
     """
     first_line = (payload.get("content") or "").split("\n", 1)[0]
     segments: list[str] = []
@@ -798,6 +892,8 @@ def _handoff_title(payload: dict) -> str:
     best = max(segments, key=len) if segments else ""
     if len(best) > _TITLE_MAX_LEN:
         best = best[:_TITLE_MAX_LEN]
+    if _is_handoff(payload) and _first_line_hashes_only(first_line):
+        return _recovered_capsule_title(payload, first_line)
     return best or (payload.get("task_key") or _HANDOFF_HINT)
 
 

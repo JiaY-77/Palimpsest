@@ -162,7 +162,9 @@ mem_ingest(
 ```
 
 - `type=task` 且首行以「接续点」开头 → 自动打 `kind=handoff`
-- 新会话用 `tasks_active(include_handoff=true)` 取回，不会污染活跃任务列表
+  - 首行只有锚词 + session hash 的形态（补产胶囊产物）自动补可读 title：`补产胶囊 <日期> <session 前 8 位>`
+- 新会话用 `tasks_active(include_handoff=true)` 取回，不会污染活跃任务列表；
+  补产胶囊（孤儿缓冲自愈产物，`payload.recovered=true`）不进接续点置顶组——排在普通任务组里照常可见，手写接续点永远排在它前面
 
 ### E. 任务追踪
 
