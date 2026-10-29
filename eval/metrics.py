@@ -6,6 +6,39 @@ import math
 from collections.abc import Sequence
 
 
+def normalize_gold_ids(value: object) -> list[int]:
+    """Normalize a gold_ids field into a list of node ids (multi-gold, #174/#221).
+
+    gold_ids used to be written as a single scalar id; it is now a list
+    (one query may legitimately have several gold nodes for the same answer
+    set).  Downstream metric code always consumes ``set(normalize_gold_ids(...))``
+    so "hit any member of the set == hit" is the single judgement rule.
+
+    Accepted inputs: int, str of digits, or a list/tuple of those (None ->
+    []).  Anything else raises ValueError — a malformed gold must fail loudly,
+    otherwise evaluation would silently run on an empty gold set.
+    """
+    if value is None:
+        return []
+    if isinstance(value, int):
+        return [value]
+    if isinstance(value, str):
+        return [int(value)] if value.strip() else []
+    if isinstance(value, (list, tuple)):
+        out: list[int] = []
+        for v in value:
+            if isinstance(v, bool):
+                raise ValueError(f"gold_ids entries must be ints, got bool: {v!r}")
+            if isinstance(v, int):
+                out.append(v)
+            elif isinstance(v, str) and v.strip() and (v.strip().lstrip("-")).isdigit():
+                out.append(int(v.strip()))
+            else:
+                raise ValueError(f"gold_ids entries must be ints, got {type(v).__name__}: {v!r}")
+        return list(dict.fromkeys(out))  # 去重保序：list/set 语义一致，展示时也不重复
+    raise ValueError(f"gold_ids must be an int or a list of ints, got {type(value).__name__}: {value!r}")
+
+
 def recall_at_k(ranked_ids: list[int], gold: set[int], k: int) -> float:
     if not gold or k <= 0:
         return 0.0

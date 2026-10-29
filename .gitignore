@@ -76,6 +76,10 @@ scripts/tdb_stress/_*.py
 # 本地临时探针/工作区（含个人数据的定位工具、一次性验证脚本，不入库）
 tmp/
 
+# 评测候选清单：由真实检索历史生成，含私有对话原文片段，只作本地人工判词用，不入库
+eval/candidates_*.md
+eval/candidate_questions_*.json
+
 # 压测工作区的临时产物
 scripts/tdb_stress/results/
 scripts/tdb_stress/patches/

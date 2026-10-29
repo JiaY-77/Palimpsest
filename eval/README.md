@@ -25,6 +25,13 @@ venv/Scripts/python.exe eval/run_eval.py --limit 20
 
 # 6. 用自定义题集评测
 venv/Scripts/python.exe eval/run_eval.py --eval-set eval/.tmp/mini_set.json --limit 3
+
+# 7. 一条命令跑完整基线（评测 + pinned 切分 + 显著性；#232 重嵌完成后用）
+venv/Scripts/python.exe eval/run_baseline.py
+
+# 8. 持续扩量：从真实检索行为挖候选题（只出清单，人工确认前绝不入集）
+venv/Scripts/python.exe eval/gen_candidates_from_usage.py --top-n 25
+# 输出 eval/candidate_questions_<ts>.json + eval/candidates_<日期>.md
 ```
 
 ## 环境变量
@@ -38,17 +45,20 @@ venv/Scripts/python.exe eval/run_eval.py --eval-set eval/.tmp/mini_set.json --li
 
 ## 题集版本
 
-- **当前基准**：`fusion_set_v1.json`，由 `gen_fusion_set.py` 产出，供 `fusion_ab.py` 使用。gold 口径 = FTS 字面枚举 ∩ 当前可见（`status != outdated`）。
-- **`eval_set.json`（138 题，已失效）**：由 `gen_eval_set.py` 生成的历史题集。⚠️ **2026-10-22 实测其 gold 已整体不可信**——抽查 5 条，1 条的 gold 节点已不存在，存活的也语义错配（问「知识库版本号」，gold 是「压测方法学复证」片段；问「RAG 是什么」，gold 是「各阶段详细说明」）。推测是库重建后 id 漂移。**不要再用它作评测基准**，用它跑出的历史数字都应视为不可信。
-- **历史题集**：`eval_set_v1_149.json`（149 题版本）与 `manual_set.json`（手工题）保存在本地评测数据目录，同样不入库；前者是历史版本、后者是手工补充集。
-- 新增评测一律以 `fusion_set_v1.json` 这套生成流程为准。
+- **当前判卷依据**：`eval_set_v2.json`（v2，148 题）——由 `reresolve_gold.py` 对旧 138 题做内容级 gold 重解析产出（2026-10-28），2026-10-29 落地 Phase-1 判词候选（4 条人工确认入集 / 6 条剔除）。每题带显式 `status`（live / reresolved / quarantined / dropped）+ `reasons` + `original_gold_ids`，无静默失效；分层、确定性、参考点见 `docs/RETRIEVAL_QUALITY.md` §8。
+- **旧 138 题（`eval_set.json`，已作废）**：gold 存裸节点 id，2026-09-10 库 rebuild 后 id 重排；内容级验证下 118 条正样本无一存活（2026-10-22 抽查 + #225 全量复证）。历史数字一律不可信，保留仅作对照。
+- **历史题集**：`eval_set_v1_149.json`（149 题版本）与 `manual_set.json`（手工题）保存在本地评测数据目录，同样不入库。
+- **调参/报告切分**：`split_eval_set.py --pin-manifest` 按 qid 冻结 tune / held-out（详见 §split 与 docs §8.5）。
+- **fusion_set_v1.json（融合权重 A/B 用）**：由 `gen_fusion_set.py` 产出、供 `fusion_ab.py` 使用，gold 口径 = FTS 字面枚举 ∩ 当前可见（`status != outdated`）——与判卷题集是两条线，互不干扰。
 
-## 题集 Schema (`eval/eval_set.json`)
+## 题集 Schema (`eval/eval_set_v2.json`)
 
 ```json
 {
-  "version": 1,
-  "created_at": "2026-09-10T12:00:00+00:00",
+  "version": 2,
+  "rebuilt_from": "eval_set.json",
+  "rebuilt_at": "2026-10-29T01:00:00+00:00",
+  "status_counts": {"live": 24, "reresolved": 27, "quarantined": 40, "dropped": 57},
   "seed": 20260910,
   "items": [
     {
@@ -56,9 +66,12 @@ venv/Scripts/python.exe eval/run_eval.py --eval-set eval/.tmp/mini_set.json --li
       "query": "关于某个话题的查询",
       "kind": "semantic|entity|negative",
       "gold_ids": [123],
-      "gold_type": "memory",
+      "gold_type": "record",
       "gold_domain": "hermes",
-      "layer": "hermes|kb|novel|other"
+      "layer": "hermes|kb|novel|other",
+      "status": "live|reresolved|quarantined|dropped",
+      "reasons": ["一句话状态原因"],
+      "original_gold_ids": [118]
     }
   ]
 }
@@ -66,10 +79,12 @@ venv/Scripts/python.exe eval/run_eval.py --eval-set eval/.tmp/mini_set.json --li
 
 **字段说明：**
 - `kind`：`semantic`（口语化改写）/ `entity`（含术语）/ `negative`（不存在的主题）
-- `gold_ids`：该查询对应的正确节点 ID 列表
-- `gold_type`：节点类型（memory / kb_chunk / novel_chunk 等）
+- `gold_ids`：正确节点 ID 列表。**多 gold 合法**（#174：同一答案集的多个节点，`run_eval`/`significance` 按「命中集合中任意一个即算命中」判卷；recall 仍按 |gold| 归一）。读取端 `normalize_gold_ids`（eval/metrics.py）向后兼容旧的单值写法（标量 id 自动升列表，非法输入直接报错不静默）
+- `gold_type`：节点类型（memory / record / kb_chunk 等）
 - `gold_domain`：节点域（hermes / kb / novel 等）
 - `layer`：分层标签（`hermes` / `kb` / `novel` / `other`），用于分层报告分组
+- `status`：条目状态判卷资格——`reresolved`/`live 正样本` 有 gold 判卷；`quarantined`/`dropped` 的 `gold_ids` 已置空，天然不判卷但保留在题集中可追溯；`original_gold_ids` 保留改判前旧 id
+- `reasons`：状态原因（逐条一句话，审计用）
 
 ## 结果 Schema (`eval/results_*.json`)
 
@@ -160,9 +175,14 @@ venv/Scripts/python.exe eval/probe_exact_misjudge.py
 
 ```
 eval/
-├── metrics.py           # 纯函数指标（recall, MRR, nDCG），不联网不连库
+├── metrics.py           # 纯函数指标（recall, MRR, nDCG）+ normalize_gold_ids 多 gold 兼容
 ├── gen_eval_set.py      # 生成评测题集（抽样 + DeepSeek API）
-├── run_eval.py          # 运行评测，输出结果 JSON + 报告 Markdown
+├── run_eval.py          # 运行评测，输出结果 JSON + 报告 Markdown（数字逐个标注子集与条数）
+├── split_eval_set.py    # 时间切分 tune/held-out：--pin-manifest 按 qid 冻结复跑
+├── significance.py      # 配对显著性检验（paired bootstrap），逐集标注 all/tune/held_out
+├── reresolve_gold.py    # gold 内容级重解析（live/reresolved/quarantined/dropped）
+├── gen_candidates_from_usage.py  # 从 hit_count 挖候选题（只出清单绝不入集）
+├── run_baseline.py      # 一条命令基线：评测 → pinned 切分 → 显著性
 ├── fusion_ab.py         # 融合权重 A/B：一次采集、多方案内存重排
 ├── gen_fusion_set.py    # 生成融合评测题集（gold = FTS 字面枚举 ∩ 可见）
 ├── probe_exact_misjudge.py  # 精确标识符判定的误判探针
