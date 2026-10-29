@@ -24,6 +24,7 @@
 
 ### 文档
 
+- **`docker-compose.yml` 内存上限按实测由 2GB 调整为 4GB**（#228，发布后补记）：实测生产进程 Private 承诺内存常态约 **1.9GB**、WorkingSet 峰值 1.6GB——2GB 硬上限会把健康进程 OOM kill，即便峰值驻留从未越过 2GB。上限改成 4GB 后语义是「防失控」而非「选型目标」（低配机器上它只是不生效，不报错）；`docs/DEPLOY.md` 同步写入分阶段实测（空载 WorkingSet 581MB → 首次检索触发模型懒加载后 904MB → 常驻 1.3GB → 峰值 1.6GB）与两条 2GB 主机的真实选项（调小 `EMBEDDING_LOCAL_N_BATCH`，或换进程外 embedding——后者数字尚未采集，文档明确禁止外推）。本条为发布后补记：2.19.0 的 Docker 条目写的是新增时的 2GB，与本条描述的是同一次改动的两端。
 - **对外文档术语与私称清理**：`docs/API.md` / `docs/REFERENCE.md` / `docs/USAGE.md` / `docs/HERMES_INTEGRATION.md` 里的「思维预设层」「思维底片」统一为「思考骨架（`thought_skeleton`）」「思考记录（`thought`）」——这两个词是内部工作语，对外读者无法从字面看出它对应哪个 HTTP 字段；`post-turn` 那条保留一句「落库 content 带 `[思维底片]` 前缀」，因为那是代码里的真实数据前缀（`core/strategy.py::THOUGHT_NOTE_PREFIX`），文档不能与落盘内容打架。`docs/RETRIEVAL_QUALITY.md` 三处以私人称呼作主语的表述改为「维护者 / 人工 / 待下一轮人工」——内部对话称呼不该出现在对外文档（开源脱敏红线）。
 - 钉住 #232 重嵌后的首份检索基线（`docs/RETRIEVAL_QUALITY.md` §8.8）：148 题 / 判卷 31 的完整指标与配对 bootstrap；并如实记录「31 条题的 gold 与被重嵌的 748 个长节点零交集，故重嵌前后指标逐位相同」，以长节点尾部检索实测（top10 命中 1/8 → 3/8）作为 #232 有效性的直接证据。
 - 修复题集数据与文档的漂移：`eval_set_v2.json` 本地文件此前仍是 138 题 / 判卷 27（Phase-1 判词的 10 条从未写入），已按判词文档补回 4 条 live 正样本（q140–q143）+ 6 条 dropped（q144–q149），恢复为 148 题 / 判卷 31；数据文件不入库，本条记录口径以便复现。
