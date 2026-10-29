@@ -4,10 +4,13 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
-## [Unreleased]
+## [2.18.0] - 2026-10-29
 
 ### 新增
 
+- **胶囊接手留痕**（#208）：新增 `POST /memory/{node_id}/open`——胶囊首次被接手时写 `opened_at`，每次不同会话接手累加 `open_count` 并保留 `opened_by`（去重、先到先序、上限 10 个）。直接走 `update_payload` 写，content / `last_touched_at` / FTS 索引都不动——「被接手」是交接事件，不是「任务被碰过」。`tasks_active` 在有值时回报 `opened_at` / `open_count`（无值则键缺席，老胶囊形态不变）。
+- **孤儿会话缓冲补产**（#215）：胶囊只在 `POST /lifecycle/session-end` 落地，进程被硬砍（计划内关机 / 崩溃）就永远产不出来。新增扫描器把静默超过阈值的活跃缓冲补产成胶囊：后台循环（启动 5 秒后首轮，此后每 `SESSION_CAPSULE_RECOVER_INTERVAL_SECONDS`）加手动端点 `POST /lifecycle/recover-orphan-capsules`（带 `dry_run` 只报告不写库）。单 session 失败只记日志计入 failed、绝不中断整批；循环自身出错不退出。缓冲新增 `updated_at`（每次追加轮次刷新），静默时长才有据可依。
+- **胶囊创建按内容厚度设门槛**（#219）：实质轮 ≥ 2 且填满 ≥ 2 节才产胶囊；不过门槛时**既不改也不建**胶囊节点，但返回可观测的 `{skipped: too_thin, substantive_turns, filled_sections}` 而不是静默丢弃，同时仍然关闭缓冲（否则断线自愈扫描器会每 5 分钟重试一个永远长不厚的会话）。`POST /lifecycle/post-turn` 额外回显 `turn_index_resolved`（缓冲实际使用的轮次号）+ 请求的 `turn_index`，插件重载后能接着缓冲的最后一轮续，不再覆盖。
 - **新增 `EMBEDDING_LOCAL_N_BATCH`，并明确它同时是 embedding 的截断长度**（#228）：`llama-cpp-python` 的 `embed()` 内部执行 `tokens = tokens[:n_batch]`，**超出 n_batch 的 token 被静默丢弃**——所以这个参数不是纯内存旋钮，调小它就是用检索质量换内存（`n_batch=32` 时长文本峰值 RSS 从 1534 MB 降到 962 MB，但会截断 92% 的 kb 切片）。默认值保持 `512`（历史行为不变），配置项只在需要极限压内存时下调。顺带记录一个由此暴露的既有缺陷：默认 512 下，生产库 633/2407 个节点（26%，`novel_chunk` 119/124）的向量本来就只覆盖各自内容的前 512 token，已单独立 issue #232 跟踪。`n_ctx=2048` 不动（降会截断长切片）。
 
 - **常驻域（pin domain）：每轮无条件注入的规则块**（#176）：`PIN_DOMAIN` 指定的 domain 里 `status=active` 的节点会**无条件**拼进 `/lifecycle/pre-turn` 注入文本的**最前面**，不参与语义相似度竞争——解决「常驻规则与当前消息零关键词重叠就永远检索不到」这个硬缺口（`MEMORY.md` 每轮全量注入，但有 2200 字硬顶且已用满）。成本用**节点边界的字符预算**（`PIN_BUDGET_CHARS`，默认 3000）兜住：节点按 `importance` 倒序装入，超预算时**整条不放、绝不切半个节点**，并在响应的 `pin.truncated` / `pin.dropped` 里如实报告，不静默少注入。与语义召回去重（常驻节点同时被召回命中时只保留常驻那份）。`PIN_DOMAIN` 为空 = 完全关闭，行为与改动前逐位一致；常驻域查询异常 fail-open（跳过常驻块，召回照常）。
@@ -42,6 +45,9 @@
 
 ### 变更
 
+- **九条管理/批处理 CLI 命令改走 REST**（#223）：`tasks-backfill` / `review` / `consolidate` / `promote` / `ingest-git` / `fts-rebuild` / `fts-search` / `reindex` / `task-archive` 原先在 CLI 进程里自建 `TriviumStore()`，与常驻 REST 抢库的独占锁。现在改为服务端业务级端点（一次请求一个操作、不暴露逐节点写），`root()` 端点索引同步补齐，`RemoteStore` 实现对应方法；dry-run 走只读请求（不开本地只读库、不推进 generation）。`ingest-git` 的 commit 解析逻辑迁进 `core/git_ingest.py`。
+- **评测增加配对显著性检验与时间切分**（#217）：`eval/significance.py` 在同一批查询上配对比较两套配置——逐查询分数取自 `run_eval.py` 结果文件，均值差用双侧中心化 bootstrap（add-one 校正）检验，并按子集（all / tune / held_out）报告百分位 CI；逐查询分数落盘保证比较可复现。`eval/split_eval_set.py` 按 gold 节点 `created_at` 做时间切分，避免「在报告用的同一批查询上调参」。纯 stdlib，无新依赖。
+- **重建检索评测题集**（#221）：旧题集把裸节点 id 当 gold，2026-09-10 库重建后 id 全部错位——内容级验证显示 118 条正样本里**0 条**仍指向正确节点（此前报的「54 条存活」只查了 id 存在 + 有无时间戳，没查内容）。新增 `eval/reresolve_gold.py`（在库副本上用生产 embedding 按余弦重定位，只接受无歧义命中：top1 ≥ 0.60 且 margin ≥ 0.06，阈值取自实测分布），结果 27 条改判 / 40 条隔离 / 51 条丢弃 / 20 条负样本；`split_eval_set.py --pin-manifest` 改为**按 qid 冻结**切分，新增题目不会静默打乱既有分配。
 - **`reindex` 的修复命令补齐 `--yes` 与前置条件**（#185）：`--force` 只跳「指纹不一致」那一层确认，最后那次「即将重嵌 N 个节点，确认？[y/N]」由独立的 `--yes/-y` 控制——无 TTY 的脚本 / CI / agent 里会直接 `EOF when reading a line`。指纹守卫的 `FIX_CMD` 与 `doctor` 的修复提示、`README` / `README_EN` / `docs/CONFIGURATION` / `docs/INSTALL` / `docs/USAGE` 全部改为 `reindex --force --yes`；同时补上「reindex 直连库（不走 REST，本库单写者），须先停 REST、跑完再启动」这个前置条件——原先的提示让用户在服务运行时执行，只会撞 `Database locked`。bug 报告的模板也改为：服务在跑时默认贴 `curl http://127.0.0.1:8090/doctor`，需要 CLI 时先说明要停 REST。
 
 ### 测试
@@ -656,6 +662,7 @@
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
 [Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.17.0...HEAD
+[2.18.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.18.0
 [2.17.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.17.0
 [2.16.2]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.16.2
 [2.16.1]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.16.1
