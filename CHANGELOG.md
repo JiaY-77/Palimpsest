@@ -27,6 +27,7 @@
 ### 修复
 
 - **备份补上 `fts.db` + doctor 新增「FTS 索引完整性」检查**（#241）：`scripts/backup_db.py` 此前只备份 TriviumDB 整文件组、从不备份 `data/fts.db`，从备份恢复后 FTS5 索引不存在，`_ensure_schema` 的 `CREATE VIRTUAL TABLE IF NOT EXISTS` 会静默建出空表——混合检索（RRF / 级联）随之一路降级为纯语义检索，仅在日志里刷「降级」，服务看起来完全健康。现在备份附带 `fts.db`（含 `-wal` / `-shm` 侧车，存在才拷），主库组校验通过后还比对副本 `mem_fts` 行数与备份开始前的源库快照（源库没有索引则跳过说明，不算失败）；`doctor` / 启动自检新增「FTS 索引完整性」（主库节点数 vs 索引行数，经 `store._acquire()` 取 `node_count()`，不做全量遍历）：索引缺失或行数不足一半时标红并给出重建命令 `python scripts/check_fts_consistency.py --repair`。
+- **会话胶囊四节补齐长度上限**（#244）：四节里此前只有 thought 有上限（`CAPSULE_THOUGHT_MAX_CHARS = 300`，纯截断），outcome / next / pitfalls 完全没有总量闸，更新路径 `merge_capsule_with_existing` 向既有胶囊按行追加去重也没有总量闸——胶囊正文随会话轮数**线性膨胀**（真正的膨胀机制在合并路径：单轮合成不大，是「既有胶囊 + 新合成」一轮轮并集撑大的）。生产库最近 600 条检索出的 17 个接续点胶囊逐条实测：正文长度 p90 = 3689 字符、**p95 = 28540 字符**（节点 3785：28 轮缓冲，仅 next 一节就 20026 字）。现在新增 `CAPSULE_SECTION_MAX_CHARS`（outcome 1800 / next 1200 / pitfalls 1200，取各节生产分布 p90 之上留余量，正常胶囊不触发）与纯函数 `_cap_capsule_section`：超限按行保留 + 末尾截断标记 `…（本节已截断：省略 N 行）`（标记自身占预算、N 为真实省略行数，最终长度必须 ≤ 上限；未超限原样返回、不追加标记，幂等），compose 与 merge 两条路径统一过闸；thought 在 merge 路径也受 300 限制（生产有 493 字的节点就是从这里绕过 compose 上限的）。最坏情况四节总长从 28540 字符收敛到 ≤ 4800 字符。
 
 ## [2.18.0] - 2026-10-29
 

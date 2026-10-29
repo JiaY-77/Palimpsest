@@ -1042,6 +1042,18 @@ SESSION_BUFFER_RAW_MAX_CHARS = 4000  # 缓冲里每轮 thought 原文的截断�
 CAPSULE_THOUGHT_MAX_CHARS = 300  # 胶囊「思路」节总长上限（纯截断，超出部分丢弃）
 CAPSULE_SECTION_TBD = "（待补）"  # 空节占位正文（不猜、不编，如实标待补）
 
+# 胶囊其余三节的总长上限（issue #244）：此前只有 thought 有上限，outcome / next /
+# pitfalls 完全没有，合并路径按行追加更没有总量闸，胶囊正文随会话轮数线性膨胀
+# （生产库最近 600 条实测：正文长度 p95 = 28540 字符）。取值 = 各节生产分布
+# p90 之上留余量（正常胶囊不触发）；最坏情况总长从 28540 收敛到
+# 300 + 1800 + 1200 + 1200 = 4800 字符。
+CAPSULE_SECTION_MAX_CHARS = {
+    "outcome": 1800,
+    "next": 1200,
+    "pitfalls": 1200,
+}
+CAPSULE_TRUNCATE_MARK = "…（本节已截断：省略 {n} 行）"
+
 # 胶囊四节固定顺序（content 节序与 pending 列表都按它）。
 _CAPSULE_SECTION_ORDER = ("thought", "outcome", "next", "pitfalls")
 
@@ -1471,14 +1483,74 @@ def compose_session_capsule(turns: list[dict], *, session_id: str, handles: list
         thought_body = thought_body[:CAPSULE_THOUGHT_MAX_CHARS]
     raw = {
         "thought": thought_body,
-        "outcome": "\n".join(_dedupe(outcome_parts)),
-        "next": "\n".join(_dedupe(next_parts)),
-        "pitfalls": "\n".join(_dedupe(pitfall_parts)),
+        # 其余三节过上限闸（issue #244）：thought 沿用上方既有截断（合同不变）。
+        "outcome": _cap_capsule_section("outcome", "\n".join(_dedupe(outcome_parts))),
+        "next": _cap_capsule_section("next", "\n".join(_dedupe(next_parts))),
+        "pitfalls": _cap_capsule_section("pitfalls", "\n".join(_dedupe(pitfall_parts))),
     }
     sections = {name: raw[name] or CAPSULE_SECTION_TBD for name in _CAPSULE_SECTION_ORDER}
     pending = [name for name in _CAPSULE_SECTION_ORDER if not raw[name]]
     content = format_capsule_content(session_id, sections)
     return {"content": content, "sections": sections, "pending": pending, "turns": merged}
+
+
+def _format_capsule_truncate_mark(n: int) -> str:
+    """截断标记展开成正式文本（n = 省略行数）。单独拎出来是给 cap 主逻辑复算预算用。"""
+    return CAPSULE_TRUNCATE_MARK.format(n=n)
+
+
+def _cap_capsule_section(name: str, body: str) -> str:
+    """把单节正文压到该节上限内（issue #244；纯函数，幂等）。
+
+    契约：
+
+    - 空串 / ``CAPSULE_SECTION_TBD`` → 原样返回；
+    - ``thought`` → 超过 ``CAPSULE_THOUGHT_MAX_CHARS`` 纯字符截断、**不加标记**
+      （保持既有合同，既有测试钉死 ``len == 300``）；
+    - 其他节 → 超过 ``CAPSULE_SECTION_MAX_CHARS[name]``（取不到上限的 name
+      原样返回）按**行**截断：留得下的行按原序拼回，末尾接
+      ``CAPSULE_TRUNCATE_MARK``，``n`` = 真实省略的行数，且**最终长度 ≤ 上限**
+      （标记自身占预算：先按行装满，用最终 ``n`` 回填后复算一次长度，
+      仍超就再少留一行，循环到守住为止）；
+    - 未超限 → 原样返回，绝不追加标记；已带标记且未超限的正文进来也是
+      原样返回（连续调用两次结果一致）。
+
+    第一行就放不下（一行超上限）→ 退化为字符级保底 ``body[:limit]``，
+    不加标记（至少保证不是空、不是乱码）。
+    """
+    if not body or body == CAPSULE_SECTION_TBD:
+        return body
+    if name == "thought":
+        return body[:CAPSULE_THOUGHT_MAX_CHARS] if len(body) > CAPSULE_THOUGHT_MAX_CHARS else body
+    limit = CAPSULE_SECTION_MAX_CHARS.get(name)
+    if limit is None or len(body) <= limit:
+        return body
+    lines = body.splitlines()
+    kept: list[str] = []  # 留得下的行的前缀（某行放不下即断行，其后全部省略）
+    used = 0  # 替代式记录已用字符（行内容 + 行间换行符 1 字符/行）
+    for line in lines:
+        add = len(line) + (1 if kept else 0)
+        if used + add > limit:
+            break
+        kept.append(line)
+        used += add
+
+    def _build(count: int) -> str:
+        seg = kept[:count]
+        dropped = len(lines) - count
+        return "\n".join(seg) + "\n" + _format_capsule_truncate_mark(dropped)
+
+    if not kept:
+        return body[:limit]
+    count = len(kept)
+    result = _build(count)
+    # 标记里 n 的位数跟着 count 变，预算要按**最终 n** 复算；不满足就再少留一行。
+    while len(result) > limit:
+        count -= 1
+        if count == 0:
+            return body[:limit]
+        result = _build(count)
+    return result
 
 
 def _merge_capsule_section_lines(old: str, new: str) -> str:
@@ -1519,6 +1591,11 @@ def merge_capsule_with_existing(composed: dict, existing_sections: dict | None, 
     - 两者都有 → 按行追加去重（旧在前，保序）；
     - 合并结果为空 → 该节落 ``（待补）`` 并进 ``pending``。
 
+    合并结果统一过 ``_cap_capsule_section``（issue #244）：「不改丢内容」的取向
+    只在**单次合成**算数——追加去重没有总量闸，节会随会话轮数不讲道理地变长，
+    超上限的部分按行留 + 截断标记收口；thought 在这条路径也因此受 300 限制
+    （生产有 493 字的节点就是从这里绕过 compose 上限的）。
+
     ``turns`` 沿用新合成的值（它是「缓冲里的轮数」这一事实，不是内容并集）。
     """
     incoming = composed.get("sections") if isinstance(composed, dict) else None
@@ -1528,7 +1605,7 @@ def merge_capsule_with_existing(composed: dict, existing_sections: dict | None, 
     merged: dict[str, str] = {}
     for name in _CAPSULE_SECTION_ORDER:
         body = _merge_capsule_section_lines(str(previous.get(name) or ""), str(incoming.get(name) or ""))
-        merged[name] = body or CAPSULE_SECTION_TBD
+        merged[name] = _cap_capsule_section(name, body) or CAPSULE_SECTION_TBD
     return {
         "content": format_capsule_content(session_id, merged),
         "sections": merged,
