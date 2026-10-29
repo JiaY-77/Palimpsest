@@ -423,6 +423,15 @@ class Config:
     EMBEDDING_LOCAL_DIM = int(os.getenv("EMBEDDING_LOCAL_DIM", "1024"))
     # llama.cpp 上下文长度：实测基准值 2048，勿擅自放大（放大直接吃内存/速度）
     EMBEDDING_LOCAL_N_CTX = int(os.getenv("EMBEDDING_LOCAL_N_CTX", "2048"))
+    # llama.cpp 批大小。**注意：它同时是 embedding 的截断长度**——
+    # llama-cpp-python 的 embed() 里有 `if truncate: tokens = tokens[:n_batch]`，
+    # 超过 n_batch 个 token 的输入会被**静默丢弃**，只嵌前 n_batch 个 token。
+    # 所以调小它 = 用检索质量换内存，不是免费的：
+    #   n_batch=512 → 生产库 633/2407 节点（26%）已被截断（novel_chunk 119/124）
+    #   n_batch=32  → 92% 的 kb 切片、几乎所有 novel 切片会被截断
+    # 默认保持 512（历史行为不变）。2C2G 之类装不下 512 的场景可以调小，
+    # 但要清楚代价；真正的修法是 issue #232（让长节点的向量不再只覆盖前缀）。
+    EMBEDDING_LOCAL_N_BATCH = int(os.getenv("EMBEDDING_LOCAL_N_BATCH", "512"))
     # CPU 线程数；0 = 交 llama.cpp 自动决定
     EMBEDDING_LOCAL_N_THREADS = int(os.getenv("EMBEDDING_LOCAL_N_THREADS", "0"))
 
