@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **长节点分块池化嵌入：彻底消除 `embed()` 的静默前缀截断**（#232）：`llama-cpp-python` 的 `embed()` 内部有 `tokens = tokens[:n_batch]`，超过 `EMBEDDING_LOCAL_N_BATCH`（512）的输入被**静默截断**，只嵌内容前缀——生产库 732/2912 个节点（25%，`novel_chunk` 119/124、`task` 148/192、`record` 212/748）的向量只覆盖前缀。现在 local 路径改走**分块池化**：按 token 边界切块（`EMBEDDING_LOCAL_CHUNK_TOKENS`，默认 512，**必须 ≤ n_batch**——块本身也要过 `embed()`，自检新增 error 级检查拦错误配置），逐块嵌入（块内保持 LAST pooling：Qwen3-Embedding 是 decoder-only 因果 LM）后按块内 token 数加权平均再 L2 归一。检索层零改动（仍是单向量契约，`embed_text` 签名与返回值不变）；短文本（≤ chunk）走单块路径，与改动前逐位一致（有测试钉住）。实测 cos vs 全文一次嵌入：旧截断 0.405 → 分块池化 0.92，峰值内存不变（1.5 GB vs 直接提 n_batch=4096 的 3.5 GB）。
+  - **截断事实变成可读的审计字段**：新增 `TriviumStore.embed_text_with_audit()`，全部写入路径（`mem_ingest` / `insert_node` / `insert_node_tx` / `reembed_node` / git_ingest / memoryhub 导入 / 会话缓冲 / kb / novel / skill 索引重建）把审计沉淀进 `payload["embedding"]` 子对象——`{"embedding_mode": "chunked"|"single", "total_tokens", "embedded_tokens", "embedded_chunks", "chunk_tokens"}`，`embedded_tokens == total_tokens` 恒成立。ollama / openai provider 本次不改截断策略，只落 `{"embedding_mode": "single"}`；`rebuild_db` 路径不落 `payload.embedding` 审计字段（保持 payload 原样契约），向量本身已全文覆盖。
+  - **存量修复脚本 `scripts/reembed_long_nodes.py`**：默认 dry-run（只读，打印将重嵌的节点 id / type / tokens），`--apply` 才写；按 content 现算 token 数挑选（不信旧字段），已带 chunked 审计的节点跳过（幂等，重跑 0 变更）；不自动备份，`--apply` 前先 `python scripts/backup_db.py`，生产库须停服务窗口执行（连接级排他）。生产重嵌由维护者按窗口执行。
+
 ### 测试
 
 - **`pytest` 裸跑不再收集 `data/` 下的备份副本**：CI 跑的是 `pytest tests/`，但本地直接敲 `pytest` 会递归整个仓库——`data/` 被 `.gitignore` 排除，里面若有备份副本（`data/backup_*/test_*.py`）就会被一起收集，触发 `import file mismatch` 让整个会话在 collection 阶段中断（实测踩过一次，白跑一轮）。`pyproject.toml` 增加 `[tool.pytest.ini_options] testpaths = ["tests"]`，让本地裸跑与 CI 同口径，不靠人记着加 `tests/`。

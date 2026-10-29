@@ -78,15 +78,30 @@ def fake_embedder():
     from core.trivium_store import TriviumStore
 
     original_embed_text = TriviumStore.embed_text
+    original_embed_text_with_audit = TriviumStore.embed_text_with_audit
 
     # staticmethod：class 属性赋值会触发描述符绑定（实例调用自动传 self），
     # 直接赋模块函数会让 _fake_embed 收到 (self, text) 两个参数而 TypeError
     TriviumStore.embed_text = staticmethod(_fake_embed)
     store.embed_text = _fake_embed
+
+    def _fake_embed_with_audit(text: str) -> tuple[list[float], dict]:
+        """与 _fake_embed 同一根实现 + minimal audit（issue #232）。
+
+        mem_ingest / reembed_node 等写入路径调用 embed_text_with_audit 拿向量
+        与审计 dict——patch 停留在 embed_text 就会让写入路径真加载 llama
+        （CI 无 local-embed 直接炸）。审计只给 minimal single（fake 语境下
+        无真实 token 计数，别编造数字）。
+        """
+        return _fake_embed(text), {"embedding_mode": "single"}
+
+    TriviumStore.embed_text_with_audit = staticmethod(_fake_embed_with_audit)
+    store.embed_text_with_audit = _fake_embed_with_audit
     try:
         yield
     finally:
         TriviumStore.embed_text = original_embed_text
+        TriviumStore.embed_text_with_audit = original_embed_text_with_audit
 
 
 @pytest.fixture(scope="session", autouse=True)

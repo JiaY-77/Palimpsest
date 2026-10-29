@@ -22,10 +22,11 @@ from mcp_tools import store
 
 # doctor 检查项数量：
 #   ①~⑤ run_startup_check（关键文件 / Store 初始化 / FTS5 / 依赖 / Embedding）
-#   ⑥ 向量维度一致性   ⑦ domain 字段迁移状态   ⑧ 运行时路径字符集
-#   ⑨ 向量空间一致性（指纹守卫；startup_check 里同名那项是轻量 WARN 版，doctor 会跳过它）
+#   ⑥ Embedding 分块配置自洽（run_startup_check 第 ⑥ 项，issue #232，2026-10-29）
+#   ⑦ 向量维度一致性   ⑧ domain 字段迁移状态   ⑨ 运行时路径字符集
+#   ⑩ 向量空间一致性（指纹守卫；startup_check 里同名那项是轻量 WARN 版，doctor 会跳过它）
 # 新增检查项时只改这一处（原先三处硬编码 6，加第 ⑦ 项时三处齐红）。
-_EXPECTED_CHECK_COUNT = 9
+_EXPECTED_CHECK_COUNT = 10
 
 
 @pytest.fixture

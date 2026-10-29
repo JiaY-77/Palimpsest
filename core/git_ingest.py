@@ -81,8 +81,8 @@ def ingest_git_commits(store: TriviumStore, repo: str, since: int) -> dict:
             "repo": repo,
             "source": "git_memory",
         }
-        emb = store.embed_text(c["subject"])
-        store.insert_node(node_data, emb)
+        emb, embed_audit = store.embed_text_with_audit(c["subject"])  # issue #232
+        store.insert_node(node_data, emb, embedding_audit=embed_audit)
         added += 1
 
     return {"added": added, "skipped": skipped, "total": len(commits)}

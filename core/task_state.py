@@ -400,7 +400,8 @@ def _write_state_log(store, node_id: int, payload: dict, previous_state, new_sta
         "task_state": new_state,
         "previous_state": previous_state,
     }
-    log_id = store.insert_node(log_payload, store.embed_text(content))
+    log_vector, embed_audit = store.embed_text_with_audit(content)  # issue #232
+    log_id = store.insert_node(log_payload, log_vector, embedding_audit=embed_audit)
     # insert_node 吞掉 created_at（基础 payload 占位 None）→ 读回补写真实时间戳
     node = store.get_node(log_id) or {}
     log_stored = dict(node.get("payload") or {})

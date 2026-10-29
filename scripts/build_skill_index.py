@@ -347,13 +347,14 @@ def _upsert_skill(store, payload: dict[str, Any], existing: dict) -> str:
     """写入单个技能；已存在时更新 payload 和向量并保持 node_id 不变。"""
     source_path = payload["source_path"]
     entry = existing.get(source_path)
-    embedding = store.embed_text(payload["content"])
+    embedding, embed_audit = store.embed_text_with_audit(payload["content"])  # issue #232
     if entry is not None:
         _mtime, nid = entry
-        store.update_payload(nid, payload)
+        # 重嵌后同步刷新嵌入审计（浅合并，其余 payload 字段不受影响）
+        store.update_payload(nid, {"embedding": embed_audit, **payload})
         store.update_vector(nid, embedding)
         return "updated"
-    store.insert_node(payload, embedding)
+    store.insert_node(payload, embedding, embedding_audit=embed_audit)
     return "inserted"
 
 

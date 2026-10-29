@@ -1866,6 +1866,7 @@ def _append_session_buffer_turn(session_id: str, turn_index: int, buf: dict) -> 
     if existing is None:
         now = time.time()
         content = f"[会话缓冲] session={session_id}（进行中，session-end 合并为会话胶囊）"
+        vector, embed_audit = store.embed_text_with_audit(content)  # issue #232
         nid = store.insert_node(
             {
                 "type": SESSION_BUFFER_TYPE,
@@ -1878,7 +1879,8 @@ def _append_session_buffer_turn(session_id: str, turn_index: int, buf: dict) -> 
                 "turns": [turn_entry],
                 "last_turn_index": index,
             },
-            store.embed_text(content),
+            vector,
+            embedding_audit=embed_audit,
         )
         return nid, index
     nid, payload = existing
