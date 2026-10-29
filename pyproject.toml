@@ -30,6 +30,13 @@ local-embed = ["llama-cpp-python>=0.3.36,<0.4"]
 [project.scripts]
 palimpsest-cli = "scripts.palimpsest_cli:main"
 
+# pytest 只收集 tests/：CI 跑的是 `pytest tests/`，但本地裸跑 `pytest` 会递归收集整个仓库——
+# `data/` 是被 .gitignore 排除的本地目录，里面任何备份副本（如 data/backup_*/test_*.py）
+# 都会被一起收集，触发 `import file mismatch` 让整个会话在 collection 阶段中断。
+# 声明 testpaths 让本地裸跑与 CI 同口径，不靠人记着加 tests/。
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.setuptools]
 packages = ["core", "mcp_tools", "scripts"]
 

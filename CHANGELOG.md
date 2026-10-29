@@ -4,6 +4,12 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
+## [Unreleased]
+
+### 测试
+
+- **`pytest` 裸跑不再收集 `data/` 下的备份副本**：CI 跑的是 `pytest tests/`，但本地直接敲 `pytest` 会递归整个仓库——`data/` 被 `.gitignore` 排除，里面若有备份副本（`data/backup_*/test_*.py`）就会被一起收集，触发 `import file mismatch` 让整个会话在 collection 阶段中断（实测踩过一次，白跑一轮）。`pyproject.toml` 增加 `[tool.pytest.ini_options] testpaths = ["tests"]`，让本地裸跑与 CI 同口径，不靠人记着加 `tests/`。
+
 ## [2.18.0] - 2026-10-29
 
 ### 新增
