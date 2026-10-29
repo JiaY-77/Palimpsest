@@ -661,7 +661,12 @@ class TriviumStore:
                 "content": node_data.get("content", ""),
                 "importance": node_data.get("importance", 0.5),
                 "status": "active",
-                "created_at": None,
+                # created_at（issue #226）：调用方**没给这个键**时落当前时刻
+                # （epoch 秒数值——ISO 字符串会让 /mem/recent 排序在 float/str
+                # 间抛 TypeError）；**显式传 None 视为「刻意无时间戳」并保留**，
+                # 否则「已知未知」语义被消灭——导入演练、时间切分负样本、
+                # 存量行模拟都要能构造无时间戳节点。
+                "created_at": node_data.get("created_at") if "created_at" in node_data else time.time(),
             }
             # 合并额外字段（如 character_name, user_name）
             extra_fields = {k: v for k, v in node_data.items() if k not in payload and k not in ("label", "content")}
@@ -706,7 +711,10 @@ class TriviumStore:
         }
         extra_fields = {k: v for k, v in node_data.items() if k not in payload and k not in ("label", "content")}
         payload.update(extra_fields)
-        payload.setdefault("created_at", None)
+        # created_at（issue #226，与 insert_node 同口径）：键缺失才落当前时刻；
+        # 显式 None 保留（「刻意无时间戳」的语义不能被消灭）。
+        if "created_at" not in payload:
+            payload["created_at"] = time.time()
 
         # 敏感信息强/弱分级扫描（与 insert_node 一致）：强拒入、弱打标
         scan_text = " ".join(str(v) for v in payload.values() if isinstance(v, str))

@@ -26,6 +26,7 @@ MATCH 可全量返回）。本文件在【简化前】锁定现行为，作为�
 
 import contextlib
 import json
+import time
 import uuid
 
 
@@ -36,9 +37,9 @@ def _ns():
 def _ingest(store, content, ts=None, domain=None):
     """经事务路径插入记忆；返回 (node_id, domain)。ts=None → 无 created_at。"""
     domain = domain or _ns()
-    pl = {"type": "memory", "content": content, "importance": 0.5, "domain": domain}
-    if ts is not None:
-        pl["created_at"] = ts
+    # created_at 显式传（含 None）：issue #226 起 insert 对**键缺失**才兜底打时间戳，
+    # 显式 None 表示「刻意无时间戳」——本文件多个用例靠这个语义构造旧行。
+    pl = {"type": "memory", "content": content, "importance": 0.5, "domain": domain, "created_at": ts}
     emb = store.embed_text(content)
 
     db = store._acquire()
@@ -144,8 +145,12 @@ def test_mem_recent_limit_truncates():
         "灯塔光",
         "麦田浪",
     ]
+    # 时间戳用「相对现在」的递增序列：issue #226 起 insert 会保留 caller 的
+    # created_at（此前被静默丢弃），写 epoch 1000 这类古董时间会让这 15 条被
+    # 库里其他节点的真实时间挤出「最新 5 条」，测试前提就不成立了。
+    base = time.time()
     for i, w in enumerate(words):
-        _ingest(store, f"{w}旁的木屋在黄昏亮起暖灯", ts=1000 + i, domain=d)
+        _ingest(store, f"{w}旁的木屋在黄昏亮起暖灯", ts=base + i, domain=d)
 
     data = _recent("", limit=5)
     mine = _filter_by_domain(data, ns)

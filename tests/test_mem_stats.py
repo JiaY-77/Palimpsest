@@ -62,14 +62,15 @@ def test_stats_sections(iso_store):
     # ② memory/general 0.3，2026-07
     id2 = _mk(s, "记忆乙盘点", "memory", "general", 0.3)
     s.update_payload(id2, {"created_at": _ts(2026, 7, 10)})
-    # ③ character/novel 0.9，标 outdated
-    id3 = _mk(s, "角色丙盘点", "character", "novel", 0.9)
+    # ③ character/novel 0.9，标 outdated（显式无时间戳，同上）
+    id3 = _mk(s, "角色丙盘点", "character", "novel", 0.9, created_at=None)
     s.update_payload(id3, {"status": "outdated"})
-    # ④⑤ novel_chunk + kind
-    _mk(s, "设定丁盘点", "novel_chunk", "novel", 0.5, kind="character")
-    id5 = _mk(s, "设定戊盘点", "novel_chunk", "novel", 0.6, kind="setting", hit_count=3)
+    # ④⑤ novel_chunk + kind（显式 created_at=None：issue #226 起 insert 对键缺失才兜底
+    # 打戳，本用例要的是「无时间戳」这个形态，必须显式声明）
+    _mk(s, "设定丁盘点", "novel_chunk", "novel", 0.5, kind="character", created_at=None)
+    id5 = _mk(s, "设定戊盘点", "novel_chunk", "novel", 0.6, kind="setting", hit_count=3, created_at=None)
     # ⑥ todo/task 0.2，无 created_at（time 分节应跳过）
-    _mk(s, "任务己盘点", "todo", "task", 0.2)
+    _mk(s, "任务己盘点", "todo", "task", 0.2, created_at=None)  # 显式无时间戳（issue #226：键缺失会被兜底打戳）
 
     # 建一条边（id1 → id2），供 graph 分节
     s.create_edge(id1, id2, "RELATED_TO", weight=0.9)

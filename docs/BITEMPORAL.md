@@ -41,6 +41,38 @@ Palimpsest 原本只记一个时间：`created_at`——这条记录**何时被�
 
 时间戳一律用数值（`time.time()`），与 `created_at` 一致——写 ISO 字符串会让 `/mem/recent` 的排序在 float/str 之间抛错。
 
+## `created_at` 的写入与存量回填（issue #226）
+
+`created_at` 是系统时间（这条记录何时写入），对 `kb_chunk` / `novel_chunk` / `git_commit` 三类同样有意义——`freshness_decay` 对非事实类直接退回 `created_at`，`eval/split_eval_set.py` 的时间切分也用它定位题目。
+
+写入路径（`core/trivium_store.py`）：
+
+- `insert_node` / `insert_node_tx` 在调用方**未提供** `created_at` 时自动落当前时刻（epoch 秒数值）；显式传入的值透传，不被覆盖。
+- 三类节点此前入库即 `None`（2026-10-28 实测：kb_chunk 938 / novel_chunk 124 / git_commit 23 全缺），导致上述两个机制对它们静默失效。
+
+存量回填（`scripts/backfill_created_at.py`，接受近似回填但每个值必须标明来源，不伪装精确）：默认 dry-run 按类型统计可回填数与来源分布；`--apply` 写库（生产库须停服务窗口执行，服务运行期间连接级排他）。每个被回填节点追加审计标记：
+
+```json
+{
+  "created_at": 1791954556.0,
+  "created_at_backfill": {
+    "source": "source_mtime",
+    "value": 1791954556,
+    "backfilled_at": "2026-10-29T14:00:00"
+  }
+}
+```
+
+| type | 证据字段 | 精度 |
+|---|---|---|
+| `kb_chunk` | `payload.source_mtime` | epoch 秒（源文档 mtime） |
+| `novel_chunk` | `payload.source_mtime` | epoch 秒（源文档 mtime） |
+| `git_commit` | `payload.commit_time` | **仅日期粒度**（`git log --date=short` 只给到日），回填值为该日本地零点，审计标记另带 `"precision": "date-only"` |
+
+证据字段不可恢复的节点不回填、不编造，只在报告里计入 `unrecoverable`。
+
+这仍是**系统时间**的近似——与 `valid_at`（世界时间）的立场一致：「自动从文本抽时间不可靠」的顾虑不适用于 `created_at`（它有外部证据：文档 mtime / 提交日期），故世界时间照旧不追溯回填，`created_at` 走本节的证据回填。
+
 ## 读取时的行为
 
 - **检索结果**：`mem_search` 等结果条目的 `meta.times` 携带该记忆的时间字段（存在才带，保持 meta 精简）。
@@ -106,6 +138,8 @@ new_valid_at < old_invalid_at  AND  old_valid_at < new_invalid_at
 | 关注点 | 位置 |
 |---|---|
 | 时间字段定义与打标函数 | `core/bitemporal.py` |
+| `created_at` 写入兜底（#226） | `core/trivium_store.py`（`insert_node` / `insert_node_tx`） |
+| 存量 `created_at` 回填 | `scripts/backfill_created_at.py` |
 | 新写入打 `valid_at` | `mcp_tools/memory.py`（`mem_ingest`） |
 | 被取代补 `invalid_at` / `expired_at` | `core/conflict.py`（`resolve_conflict`） |
 | 反向边查询 | `core/trivium_store.py`（`get_incoming_edges`） |

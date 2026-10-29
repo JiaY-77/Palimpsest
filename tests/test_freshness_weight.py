@@ -135,12 +135,25 @@ class TestSearchRanking:
         out = _mem_search_impl(query, scope="all", top_k=10, **kw)
         return {r["id"]: r["score"] for r in out["results"]}
 
-    def test_default_weight_zero_keeps_identical_scores(self, cleanup_nodes) -> None:
-        """默认 WEIGHT=0：同语义分两节点分数完全相等（行为与改动前逐位一致）。"""
-        new_id, old_id = self._mk_pair(cleanup_nodes)
+    def test_default_weight_zero_keeps_identical_scores(self, cleanup_nodes, monkeypatch) -> None:
+        """默认 WEIGHT=0：新鲜度分支整支跳过——连 ``freshness_decay`` 都不被调用。
+
+        为什么不再比「两节点同分」：issue #226 起 ``insert_node`` 会保留 caller 的
+        ``created_at``（此前被静默丢弃），两节点年龄差异因此真实生效，soft 重排
+        的时间衰减本就该让它们不同分。那不是新鲜度加权的作用，用同分当判据会把
+        两件事混在一起。这里直接把「权重为 0 时该函数一次都不该被调」钉死。
+        """
+        from mcp_tools import memory as memory_mod
+
         assert Config.MEM_SEARCH_FRESHNESS_WEIGHT == 0, "全局默认权重不该被本改动改成非零"
+
+        def _must_not_be_called(*a, **kw):
+            raise AssertionError("WEIGHT=0 时 freshness_decay 不该被调用（分支必须整支跳过）")
+
+        monkeypatch.setattr(memory_mod, "freshness_decay", _must_not_be_called)
+        new_id, old_id = self._mk_pair(cleanup_nodes)
         scores = self._scores(_CONTENT)
-        assert scores[new_id] == pytest.approx(scores[old_id]), scores
+        assert new_id in scores and old_id in scores, scores
 
     def test_positive_weight_promotes_fresh_node(self, cleanup_nodes, monkeypatch) -> None:
         """WEIGHT>0：同语义分下新节点分数更高、排在旧节点之前。"""
@@ -158,11 +171,16 @@ class TestSearchRanking:
         """as_of 历史视图：权重不生效（双时间线回看与今天的记忆新鲜度无关）。"""
         monkeypatch.setattr(Config, "MEM_SEARCH_FRESHNESS_WEIGHT", 0.1)
         monkeypatch.setattr(Config, "MEM_SEARCH_FRESHNESS_SCALE_DAYS", 30.0)
+        from mcp_tools import memory as memory_mod
+
+        def _must_not_be_called(*a, **kw):
+            raise AssertionError("as_of 历史视图下 freshness_decay 不该被调用")
+
+        monkeypatch.setattr(memory_mod, "freshness_decay", _must_not_be_called)
         new_id, old_id = self._mk_pair(cleanup_nodes)
         scores = self._scores(_CONTENT, as_of=NOW)
-        # 两个节点在 as_of=NOW 时都「当时为真」，均应返回；freshness 不加成 → 同分
+        # 两个节点在 as_of=NOW 时都「当时为真」，均应返回；新鲜度信号一次都不参与
         assert new_id in scores and old_id in scores, scores
-        assert scores[new_id] == pytest.approx(scores[old_id]), scores
 
     def test_nodes_without_time_fields_unaffected(self, cleanup_nodes, monkeypatch) -> None:
         """无时间字段的节点不加成（freshness_decay → None → 不惩罚不奖励）。"""
