@@ -31,7 +31,7 @@ _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from eval.metrics import mrr_at_k, ndcg_at_k, recall_at_k  # noqa: E402
+from eval.metrics import mrr_at_k, ndcg_at_k, normalize_gold_ids, recall_at_k  # noqa: E402
 
 
 def metric_fn(name: str) -> Callable[[list[int], set[int]], float]:
@@ -66,7 +66,7 @@ def per_query_scores(
         item = items_by_qid.get(qid)
         if item is None or item.get("kind") == "negative":
             continue
-        gold = set(item.get("gold_ids", []))
+        gold = set(normalize_gold_ids(item.get("gold_ids")))
         if not gold:
             continue
         ranked = (mode_results.get(mode) or {}).get("ids", [])

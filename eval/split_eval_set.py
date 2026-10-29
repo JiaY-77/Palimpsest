@@ -34,6 +34,9 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 
+from eval.metrics import normalize_gold_ids  # noqa: E402
+
+
 def temporal_split(
     items: list[dict],
     created_by_gold: dict[int, float],
@@ -48,15 +51,17 @@ def temporal_split(
     timestamp-less) are excluded from both sides and counted in the manifest.
     For multi-gold items the earliest gold timestamp is used (conservative:
     the item is more likely to end up in the tuning set).
+    ``gold_ids`` is accepted as a scalar legacy id or a list (#174 multi-gold).
     """
     placed: list[tuple[float, str, dict]] = []
     n_negative_or_no_gold = 0
     n_missing_timestamp = 0
     for it in items:
-        if it.get("kind") == "negative" or not it.get("gold_ids"):
+        gold_ids = normalize_gold_ids(it.get("gold_ids"))
+        if it.get("kind") == "negative" or not gold_ids:
             n_negative_or_no_gold += 1
             continue
-        ts_known = [created_by_gold[g] for g in it["gold_ids"] if g in created_by_gold]
+        ts_known = [created_by_gold[g] for g in gold_ids if g in created_by_gold]
         if not ts_known:
             n_missing_timestamp += 1
             continue
@@ -70,13 +75,11 @@ def temporal_split(
 
     # unplaced 也要钉 qid：pin 复跑时区分「本来就不在两侧」和「真正的新增」
     neg_qids = [str(it.get("qid", "")) for it in items if it.get("kind") == "negative" or not it.get("gold_ids")]
-    no_ts_qids = [
-        str(it.get("qid", ""))
-        for it in items
-        if it.get("kind") != "negative"
-        and it.get("gold_ids")
-        and not [g for g in it["gold_ids"] if g in created_by_gold]
-    ]
+    no_ts_qids = []
+    for it in items:
+        gold_ids2 = normalize_gold_ids(it.get("gold_ids"))
+        if it.get("kind") != "negative" and gold_ids2 and not [g for g in gold_ids2 if g in created_by_gold]:
+            no_ts_qids.append(str(it.get("qid", "")))
 
     manifest: dict = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -164,6 +167,98 @@ def load_gold_timestamps(db_path: Path) -> dict[int, float]:
     return out
 
 
+def pinned_resplit(items: list[dict], old_manifest: dict) -> tuple[list[dict], list[dict], dict]:
+    """Re-split BY QID frozen by ``old_manifest``. Pure (no DB, no file IO).
+
+    为什么钉 qid：按 (created_at, qid) 排序切分时，任何新增题目都可能改变
+    已有题目相对位置 -> 已有 qid 在 tune/held-out 之间悄悄搬家，held-out
+    不再「未被调参触碰」。钉住 qid 后新增题只进 unplaced，等待显式重切。
+
+    写出的 manifest 带 ``unplaced_qids`` 逐条名单（negative_or_no_gold /
+    missing_timestamp / new_qids_not_in_manifest），此名单随 qid 一起被下一轮
+    pin 读取，所以连续 pin 不会把旧 unplaced 反复当成「新增」；读侧兼容旧
+    格式 manifest（只有 unplaced 计数、无名单）——该情况下未列入名单的未放置
+    正样本会被报为新增一轮，第二轮起自然收敛。
+    """
+    pinned_tune = {str(q) for q in old_manifest.get("tune_qids", [])}
+    pinned_held = {str(q) for q in old_manifest.get("held_out_qids", [])}
+    overlap = pinned_tune & pinned_held
+    if overlap:
+        raise ValueError(f"manifest has qids in both sides: {sorted(overlap)}")
+    tune = [it for it in items if str(it.get("qid")) in pinned_tune]
+    held_out = [it for it in items if str(it.get("qid")) in pinned_held]
+    placed_qids = pinned_tune | pinned_held
+
+    old_unplaced_qids = old_manifest.get("unplaced_qids", {})
+    old_unplaced = {str(q) for q in old_unplaced_qids.get("missing_timestamp", [])}
+    old_unplaced |= {str(q) for q in old_unplaced_qids.get("negative_or_no_gold", [])}
+    old_unplaced |= {str(q) for q in old_unplaced_qids.get("new_qids_not_in_manifest", [])}
+
+    set_qids = {str(it.get("qid", "")) for it in items}
+    # negative / no-gold 分类不需要 DB，可直接在当前题集上重算
+    current_neg_or_no_gold = [
+        str(it.get("qid", ""))
+        for it in items
+        if it.get("kind") == "negative" or not normalize_gold_ids(it.get("gold_ids"))
+    ]
+    # 真正的新增 = 带 gold 的正样本 qid 不在两侧、也不在旧 unplaced 名单里
+    # （gold 已置空的 quarantine/dropped 归 negative_or_no_gold 名单，不算新增）
+    fresh_new = [
+        str(it.get("qid"))
+        for it in items
+        if it.get("kind") != "negative"
+        and normalize_gold_ids(it.get("gold_ids"))
+        and str(it.get("qid")) not in placed_qids
+        and str(it.get("qid")) not in old_unplaced
+    ]
+    # 旧名单的 new_qids 原样携带：「未放置池」只增不减，等主人显式重切决定，
+    # 不允许在连续 pin 时悄悄缩水或复活
+    carried_new = sorted(
+        str(q)
+        for q in old_unplaced_qids.get("new_qids_not_in_manifest", [])
+        if str(q) in set_qids and str(q) not in placed_qids
+    )
+    current_new = sorted(set(carried_new) | set(fresh_new))
+    # 旧名单里的 missing_timestamp 原样携带（判「无时间戳」需要 DB，不在纯函数里做）
+    carried_missing_ts = sorted(
+        str(q)
+        for q in old_unplaced_qids.get("missing_timestamp", [])
+        if str(q) in set_qids and str(q) not in placed_qids
+    )
+
+    manifest: dict = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source_eval_set": "",
+        "pinned": True,
+        "split_field": old_manifest.get("split_field", ""),
+        "tune_fraction": old_manifest.get("tune_fraction"),
+        "n_placed": len(tune) + len(held_out),
+        "n_tune": len(tune),
+        "n_held_out": len(held_out),
+        "unplaced": {
+            "negative_or_no_gold": len(current_neg_or_no_gold),
+            "missing_timestamp": len(carried_missing_ts),
+            "new_qids_not_in_manifest": current_new,
+        },
+        "unplaced_qids": {
+            "negative_or_no_gold": current_neg_or_no_gold,
+            "missing_timestamp": carried_missing_ts,
+            "new_qids_not_in_manifest": current_new,
+        },
+        "boundary_created_at": old_manifest.get("boundary_created_at"),
+        "boundary_created_at_iso": old_manifest.get("boundary_created_at_iso"),
+        "tune_qids": [str(it.get("qid", "")) for it in tune],
+        "held_out_qids": [str(it.get("qid", "")) for it in held_out],
+        "notes": [
+            "Pinned re-split: qid assignments are frozen from the pinned manifest; new qids are NOT",
+            "auto-assigned (unplaced.new_qids_not_in_manifest) so existing splits never move silently.",
+            "unplaced_qids carries the per-qid unplaced lists so repeated pinning converges.",
+            *(old_manifest.get("notes", []) or []),
+        ],
+    }
+    return tune, held_out, manifest
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Temporal held-out split of the eval query set")
     parser.add_argument("--eval-set", default=None, help="eval set JSON (default: eval/eval_set.json)")
@@ -202,54 +297,16 @@ def main() -> int:
 
     if args.pin_manifest:
         # ── Pinned re-split: qid assignment is frozen by the old manifest ──
-        # 为什么钉 qid：按 (created_at, qid) 排序切分时，任何新增题目都可能改变
-        # 已有题目相对位置 -> 已有 qid 在 tune/held-out 之间悄悄搬家，held-out
-        # 不再「未被调参触碰」。钉住 qid 后新增题只进 unplaced_new，等待显式重切。
         with open(args.pin_manifest, encoding="utf-8") as f:
             old_manifest = json.load(f)
-        pinned_tune = {str(q) for q in old_manifest.get("tune_qids", [])}
-        pinned_held = {str(q) for q in old_manifest.get("held_out_qids", [])}
-        overlap = pinned_tune & pinned_held
-        if overlap:
-            print(f"[split] ERROR: manifest has qids in both sides: {sorted(overlap)}")
+        try:
+            tune, held_out, manifest = pinned_resplit(eval_set["items"], old_manifest)
+        except ValueError as e:
+            print(f"[split] ERROR: {e}")
             return 1
-        tune = [it for it in eval_set["items"] if str(it.get("qid")) in pinned_tune]
-        held_out = [it for it in eval_set["items"] if str(it.get("qid")) in pinned_held]
-        placed_qids = pinned_tune | pinned_held
-        old_unplaced = {str(q) for q in old_manifest.get("unplaced_qids", {}).get("missing_timestamp", [])}
-        old_unplaced |= {str(q) for q in old_manifest.get("unplaced_qids", {}).get("negative_or_no_gold", [])}
-        # 真正的新增 = 正样本 qid 不在两侧、也不在旧 unplaced 名单里
-        new_qids = [
-            str(it.get("qid"))
-            for it in eval_set["items"]
-            if it.get("kind") != "negative"
-            and str(it.get("qid")) not in placed_qids
-            and str(it.get("qid")) not in old_unplaced
-        ]
-        manifest: dict = {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "source_eval_set": str(eval_set_path),
-            "pinned_from": str(args.pin_manifest),
-            "pinned": True,
-            "split_field": old_manifest.get("split_field", ""),
-            "tune_fraction": old_manifest.get("tune_fraction"),
-            "n_placed": len(tune) + len(held_out),
-            "n_tune": len(tune),
-            "n_held_out": len(held_out),
-            "unplaced": {
-                **old_manifest.get("unplaced", {}),
-                "new_qids_not_in_manifest": new_qids,
-            },
-            "boundary_created_at": old_manifest.get("boundary_created_at"),
-            "boundary_created_at_iso": old_manifest.get("boundary_created_at_iso"),
-            "tune_qids": [str(it.get("qid", "")) for it in tune],
-            "held_out_qids": [str(it.get("qid", "")) for it in held_out],
-            "notes": [
-                "Pinned re-split: qid assignments are frozen from the pinned manifest; new qids are NOT",
-                "auto-assigned (unplaced.new_qids_not_in_manifest) so existing splits never move silently.",
-                *(old_manifest.get("notes", []) or []),
-            ],
-        }
+        manifest["source_eval_set"] = str(eval_set_path)
+        manifest["pinned_from"] = str(args.pin_manifest)
+        new_qids = manifest["unplaced"]["new_qids_not_in_manifest"]
         print(
             f"[split] pinned from {args.pin_manifest}: tune={len(tune)}, "
             f"held-out={len(held_out)}, new unassigned qids={len(new_qids)}"

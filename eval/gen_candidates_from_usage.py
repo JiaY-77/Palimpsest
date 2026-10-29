@@ -34,7 +34,12 @@ def main() -> int:
     args = parser.parse_args()
 
     # ── 拷库隔离（照 run_eval.py 模式：先拷，再指 DB_PATH，再 import） ──
-    db = Path(_PROJECT_ROOT) / "data" / "mh_memory.db"
+    # DB 来源认 DB_PATH 环境变量（worktree 没有 data/，评测一律指向真实库）
+    db_path_env = os.getenv("DB_PATH", "")
+    if db_path_env:
+        db = Path(db_path_env) if Path(db_path_env).is_absolute() else Path(_PROJECT_ROOT) / db_path_env
+    else:
+        db = Path(_PROJECT_ROOT) / "data" / "mh_memory.db"
     fts = db.parent / "fts.db"
     tmp = (_EVAL_DIR / ".tmp").resolve()
     tmp.mkdir(parents=True, exist_ok=True)
@@ -105,6 +110,31 @@ def main() -> int:
     print(f"[candidates] wrote top {len(candidates)} -> {out_path}")
     for c in candidates[:3]:
         print(f"  e.g. gold={c['suggested_gold_id']} hits={c['hit_count']} draft={c['query_draft'][:40]!r}")
+
+    # ── 人类可读清单（candidates_<日期>.md，同样只出候选，不入集） ──
+    if candidates:
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        md_path = _EVAL_DIR / f"candidates_{day}.md"
+        lines: list[str] = []
+        lines.append(f"# 候选评测题清单（{day}，{len(candidates)} 条待主人确认）")
+        lines.append("")
+        lines.append("> 来源：真实检索行为（hit_count，mem_search 每次命中自动 +1）。")
+        lines.append("> **只出清单，绝不自动入集**（issue #221 红线）：每条都要人工确认、")
+        lines.append("> 润色（query 草稿是 gold 首行原文，须重写）并过「禁抄原文 ≥6 字」校验。")
+        lines.append("")
+        lines.append("| # | 候选 query（首个草稿，须润色） | 建议 gold | hit 次数 | 类型/域 | 来源证据 |")
+        lines.append("|---|---|---|---|---|---|")
+        for i, c in enumerate(candidates, start=1):
+            sf = c.get("source_fields", {})
+            draft = str(c["query_draft"]).replace("|", "\\|").replace("\n", " ")
+            evidence = str(c["why_real"]).replace("|", "\\|")
+            lines.append(
+                f"| {i} | {draft} | {c['suggested_gold_id']} | {c['hit_count']} "
+                f"| {sf.get('type')}/{sf.get('domain')} | {evidence} |"
+            )
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        print(f"[candidates] wrote readable list -> {md_path}")
     return 0
 
 

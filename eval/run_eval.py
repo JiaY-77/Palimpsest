@@ -103,7 +103,7 @@ from mcp_tools.memory import (  # noqa: E402
 
 # Metrics (from eval/ directory)
 sys.path.insert(0, str(_EVAL_DIR))
-from metrics import auc_separability, mrr_at_k, ndcg_at_k, recall_at_k  # noqa: E402
+from metrics import auc_separability, mrr_at_k, ndcg_at_k, normalize_gold_ids, recall_at_k  # noqa: E402
 
 ALL_MODES = ("fts", "vec", "rrf", "cascade")
 
@@ -239,6 +239,31 @@ def _generate_report(
     lines.append(f"题目数: {len(eval_set['items'])}")
     lines.append(f"评测模式: {', '.join(modes)}")
     lines.append("")
+    lines.append("## 题集构成（每个数字标注其子集与条数，#221 §2.5）")
+    lines.append("")
+    status_name = {
+        "live": "live（负样本/人工确认）",
+        "reresolved": "reresolved（重解析成功）",
+        "quarantined": "quarantined（隔离待查）",
+        "dropped": "dropped（无 gold 可判）",
+    }
+    set_status_counts: dict[str, int] = {}
+    for it in eval_set["items"]:
+        key = str(it.get("status", "unlabeled"))
+        set_status_counts[key] = set_status_counts.get(key, 0) + 1
+    parts = []
+    for key in ["live", "reresolved", "quarantined", "dropped", "unlabeled"]:
+        if key in set_status_counts:
+            parts.append(f"{status_name.get(key, key)} {set_status_counts[key]}")
+    lines.append("- 题集状态: " + " / ".join(parts) if parts else "- 题集状态: （无 status 字段，旧题集）")
+    n_gold_items = sum(1 for it in eval_set["items"] if normalize_gold_ids(it.get("gold_ids")))
+    n_single = sum(1 for it in eval_set["items"] if len(normalize_gold_ids(it.get("gold_ids"))) == 1)
+    lines.append(
+        f"- 判卷子集: 正样本带 gold {n_gold_items} 条（单 gold {n_single} / 多 gold {n_gold_items - n_single}）；"
+        "多 gold 语义=命中任一 gold 即算命中（#174）"
+    )
+    lines.append("- quarantined / dropped 条目的 gold 已置空，天然不判卷；negative 属状态 live 但只进负样本/AUC 分析")
+    lines.append("")
 
     # SHA256 check
     sha_ok = sha256_before == sha256_after
@@ -270,21 +295,33 @@ def _generate_report(
 
     items_by_qid = {it["qid"]: it for it in eval_set["items"]}
 
-    for qid, mode_results in results_data.items():
+    def _append_agg(
+        target: dict[str, dict[str, list[float]]],
+        results_for_qid: dict[str, dict],
+        gold_ids: set[int],
+    ) -> None:
+        for mode in modes:
+            ranked = results_for_qid.get(mode, {}).get("ids", [])
+            target[mode]["recall@1"].append(recall_at_k(ranked, gold_ids, 1))
+            target[mode]["recall@3"].append(recall_at_k(ranked, gold_ids, 3))
+            target[mode]["recall@5"].append(recall_at_k(ranked, gold_ids, 5))
+            target[mode]["recall@10"].append(recall_at_k(ranked, gold_ids, 10))
+            target[mode]["mrr@10"].append(mrr_at_k(ranked, gold_ids, 10))
+            target[mode]["ndcg@5"].append(ndcg_at_k(ranked, gold_ids, 5))
+
+    # 判卷集合：正样本且 gold 非空（quarantined / dropped 的 gold 已置空，天然排除）
+    judged: dict[str, tuple[dict, set[int]]] = {}
+    for qid in results_data:
         item = items_by_qid.get(qid)
         if not item or item.get("kind") == "negative":
             continue
-        gold_ids = set(item.get("gold_ids", []))
+        gold_ids = set(normalize_gold_ids(item.get("gold_ids")))
         if not gold_ids:
             continue
-        for mode in modes:
-            ranked = mode_results.get(mode, {}).get("ids", [])
-            agg[mode]["recall@1"].append(recall_at_k(ranked, gold_ids, 1))
-            agg[mode]["recall@3"].append(recall_at_k(ranked, gold_ids, 3))
-            agg[mode]["recall@5"].append(recall_at_k(ranked, gold_ids, 5))
-            agg[mode]["recall@10"].append(recall_at_k(ranked, gold_ids, 10))
-            agg[mode]["mrr@10"].append(mrr_at_k(ranked, gold_ids, 10))
-            agg[mode]["ndcg@5"].append(ndcg_at_k(ranked, gold_ids, 5))
+        judged[qid] = (item, gold_ids)
+
+    for qid, (_item, gold_ids) in judged.items():
+        _append_agg(agg, results_data[qid], gold_ids)
 
     def _avg(vals: list[float]) -> float:
         return sum(vals) / len(vals) if vals else 0.0
@@ -303,6 +340,64 @@ def _generate_report(
         lines.append(row)
     lines.append("")
 
+    # ── Per-status & per-gold-size breakdown (每个数字只由该子集的题目算出) ─
+    # 题集 v2 带显式 status；旧题集没有 status 时本节整段跳过（title 一行说明）。
+    status_modes: dict[str, dict[str, dict[str, list[float]]]] = {}
+    size_modes: dict[str, dict[str, dict[str, list[float]]]] = {}
+    status_size: dict[tuple[str, str], int] = {}
+    for qid, (item, gold_ids) in judged.items():
+        status = str(item.get("status", "unlabeled"))
+        size = "single_gold" if len(gold_ids) == 1 else "multi_gold"
+        status_modes.setdefault(status, {m: defaultdict(list) for m in modes})
+        size_modes.setdefault(size, {m: defaultdict(list) for m in modes})
+        _append_agg(status_modes[status], results_data[qid], gold_ids)
+        _append_agg(size_modes[size], results_data[qid], gold_ids)
+        status_size[(status, size)] = status_size.get((status, size), 0) + 1
+
+    def _subset_block(label: str, sub_agg: dict[str, dict[str, list[float]]], n: int) -> list[str]:
+        out = [f"### {label} (n={n})", ""]
+        header = "| 指标 | " + " | ".join(modes) + " |"
+        sep = "|---|" + "|".join(["---"] * len(modes)) + "|"
+        out.extend([header, sep])
+        for metric in ["recall@1", "recall@3", "recall@5", "recall@10", "mrr@10", "ndcg@5"]:
+            row = f"| {metric} | "
+            row += " | ".join(f"{_avg(sub_agg[m][metric]):.4f}" for m in modes)
+            row += " |"
+            out.append(row)
+        out.append("")
+        return out
+
+    has_status_field = any("status" in it for it in eval_set["items"])
+    if has_status_field and status_modes:
+        lines.append("## 按条目状态分列（每个数字只算该子集内的题目）")
+        lines.append("")
+        n_by_status: dict[str, int] = {}
+        for (status, _size), cnt in status_size.items():
+            n_by_status[status] = n_by_status.get(status, 0) + cnt
+        for status in ["live", "reresolved", "quarantined", "dropped"]:
+            if status in status_modes:
+                lines.extend(_subset_block(status_name.get(status, status), status_modes[status], n_by_status[status]))
+        excluded = [
+            f"{status_name.get(s, s)} {set_status_counts.get(s, 0)}"
+            for s in ["quarantined", "dropped"]
+            if s not in status_modes
+        ]
+        if excluded:
+            lines.append("*不判卷子集（gold 已置空）: " + " / ".join(excluded) + "*")
+            lines.append("")
+    elif not has_status_field:
+        lines.append("*题集无 status 字段（旧题集），按状态分列不适用*")
+        lines.append("")
+
+    if size_modes:
+        lines.append("## gold 规模分组（单 gold vs 多 gold；多 gold = 命中任一即命中，#174）")
+        lines.append("")
+        size_label = {"single_gold": "单 gold", "multi_gold": "多 gold"}
+        for size in ["single_gold", "multi_gold"]:
+            if size in size_modes:
+                n = sum(cnt for (_s, sz), cnt in status_size.items() if sz == size)
+                lines.extend(_subset_block(size_label[size], size_modes[size], n))
+
     # ── Per-layer breakdown (Problem 3: use 'layer' field) ──────────────
     layer_agg: dict[str, dict[str, dict[str, list[float]]]] = {}
     for layer_name in ["hermes", "kb", "novel", "other"]:
@@ -312,7 +407,7 @@ def _generate_report(
         item = items_by_qid.get(qid)
         if not item or item.get("kind") == "negative":
             continue
-        gold_ids = set(item.get("gold_ids", []))
+        gold_ids = set(normalize_gold_ids(item.get("gold_ids")))
         if not gold_ids:
             continue
         layer = _get_layer(item)
@@ -353,7 +448,7 @@ def _generate_report(
             continue
         if item.get("gold_type") != "kb_chunk":
             continue
-        gold_ids = set(item.get("gold_ids", []))
+        gold_ids = set(normalize_gold_ids(item.get("gold_ids")))
         if not gold_ids:
             continue
         gold_id = next(iter(gold_ids))
@@ -473,7 +568,7 @@ def _generate_report(
         item = items_by_qid.get(qid)
         if not item or item.get("kind") == "negative":
             continue
-        gold_ids = set(item.get("gold_ids", []))
+        gold_ids = set(normalize_gold_ids(item.get("gold_ids")))
         if not gold_ids:
             continue
         ranks = {}
@@ -490,7 +585,8 @@ def _generate_report(
             {
                 "qid": qid,
                 "query": item["query"],
-                "gold_ids": item["gold_ids"],
+                "gold_ids": sorted(gold_ids),
+                "status": item.get("status", "unlabeled"),
                 "ranks": ranks,
                 "worst_avg": worst_avg,
             }

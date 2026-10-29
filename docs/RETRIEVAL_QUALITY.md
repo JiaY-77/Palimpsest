@@ -288,14 +288,14 @@ DB_PATH=<生产库路径> venv/Scripts/python.exe eval/freshness_sweep.py \
 - 三分类：reresolved（改判成功）/ quarantined（有歧义，隔离不硬指）/ dropped
   （救不回）。每条记状态 + 原因 + 原 gold，无静默消失。
 
-### 8.3 现题集构成（138 题，每条显式状态）
+### 8.3 现题集构成（148 题，每条显式状态；2026-10-29 Phase-1 判词落地后）
 
 | 状态 | 条数 | 说明 |
 |---|---|---|
+| live | 24 | 20 条负样本（negative 不依赖 gold id）+ 4 条 Phase-1 人工确认入集 |
 | reresolved | 27 | gold 无歧义改判成功（原 gold 记录在 `original_gold_ids`） |
 | quarantined | 40 | top1 达阈值但 margin 不足或人工否决，隔离待查，不判卷 |
 | dropped | 51 | 库中无明确目标（阈值下）或候选池为空 |
-| live | 20 | 全部为负样本（negative 不依赖 gold id） |
 
 人工抽查（验收人，2026-10-29）：抽 reresolved 4 条目视比对 query 与库内 actual content——
 q005（→316「先做1，2，优先考虑开源的大众使用情况」）、q011（→414 路由/图 B5 送审
@@ -304,33 +304,49 @@ q005（→316「先做1，2，优先考虑开源的大众使用情况」）、q0
 不是同一件事，已按裁决改为 quarantined（`gold_ids` 置空、`reasons` 留复核说明）。
 校准后判卷集从 28 条降到 27 条，本页数字按 27 条重跑（`results_20261028T170114Z.json`）。
 
+**Phase-1 判词落地（主人批准，2026-10-29）**：候选批次
+`candidate_questions_20261028T164314Z.json`（10 条）逐条判词（判词文档见知识库
+「Phase-1候选题判词（2026-10-29）.md」）——4 条保留入集为 live（qid q140–q143，
+gold=391/424/423/1283，query 亲手润色并于落地时复验「禁抄 ≥6 字」校验，实测最长
+重合 2/4/4/3 字）、6 条 gold 无实质内容/纯寒暄，剔除（`status=dropped`，剔除理由
+逐条写在 `reasons`）。落地后判卷集 27 → 31 条。
+
 ### 8.4 新参考点（vec 模式；每个数字标注子集与规模）
 
-跑法：`run_eval.py --eval-set eval/eval_set_v2.json --modes vec`（库副本，
-SHA256 跑前跑后一致）。判卷集合 = **27 条 reresolved**（hermes 13 / kb 4 /
-novel 1 / other 9）+ 20 条负样本；quarantined / dropped 的 `gold_ids` 已置空，
-不判卷。
+**2026-10-29 更新（148 题版；重嵌 #232 前重跑，数字标注「重嵌前，仅供对照」，**
+**#232 落地后以 `eval/run_baseline.py` 重跑为准）**
+跑法：`run_eval.py --eval-set eval/eval_set_v2.json --modes vec`（结果
+`results_20261029T082108Z.json`，库副本 SHA256 跑前跑后一致）。
+判卷集合 = **27 条 reresolved + 4 条 Phase-1 live 正样本（n=31）** + 20 条负样本。
 
-| 指标 | 全部正样本 (n=27) | hermes (n=13) | kb (n=4) | novel (n=1) | other (n=9) |
-|---|---|---|---|---|---|
-| recall@1 | 0.5556 | – | – | – | – |
-| recall@3 | 0.6667 | – | – | – | – |
-| recall@5 | 0.6667 | 0.9231 | 1.0000 | 1.0000 | 0.1111 |
-| mrr@10 | 0.6049 | 0.8846 | 0.8750 | 1.0000 | 0.0370 |
-| ndcg@5 | 0.6208 | – | – | – | – |
-| doc_recall@5（仅 kb 题 n=4） | 1.0000 | | | | |
-| 正/负可分离度 AUC (n_pos=27 / n_neg=20) | 0.9759 | | | | |
+| 指标 | 全部正样本 (n=31) | live 正样本 (n=4) | reresolved (n=27) |
+|---|---|---|---|
+| recall@1 | 0.5484 | 0.5000 | 0.5556 |
+| recall@5 | 0.6452 | 0.5000 | 0.6667 |
+| mrr@10 | 0.5968 | 0.5417 | 0.6049 |
+| ndcg@5 | 0.6052 | 0.5000 | 0.6208 |
+| 正/负可分离度 AUC (n_pos=31 / n_neg=20) | 0.9782 | | |
+| doc_recall@5（仅 kb 题 n=4） | 1.0000 | | |
+
+分层（新跑，recall@5 / mrr@10）：hermes 0.8235 / 0.8039、kb 1.0000 / 0.8750、
+novel 1.0000 / 1.0000、other 0.1111 / 0.0370。
+
+旧参考点（27 题版，2026-10-28）作对照：R@1 0.5556 / R@5 0.6667 / MRR@10 0.6049 /
+nDCG@5 0.6208——与本次 reresolved(27) 子列完全一致，连续性自证通过。
 
 **解释纪律（防自欺，读数前必看）**：
 
-1. 这 27 条的 gold 由与 vec 模式**同款 embedding** 无歧义选出，vec 在其上的
-   分数天然乐观——vec 数字**不能**与旧题集横向比较；模式间对照（fts / rrf /
-   cascade 共用同一 gold）仍然公平；跨时间重跑同一题集也公平；
-2. 负样本 AUC 同样受「正样本已过无歧义阈值」影响，读数时注意。
+1. 判卷 gold 系由与 vec 模式**同款 embedding** 无歧义选出（reresolved 27 条）或
+   人工确认（Phase-1 4 条），vec 在其上的分数天然乐观——vec 数字**不能**与旧
+   题集横向比较；模式间对照（fts / rrf / cascade 共用同一 gold）仍然公平；
+   跨时间重跑同一题集也公平；
+2. 负样本 AUC 同样受「正样本已过无歧义阈值 / 人工确认」影响，读数时注意。
 
-**确定性**：同库同配置连跑两次，`results_20261028T164216Z.json` 与
-`results_20261028T164232Z.json` **逐字节一致**（diff 为空）；复核重跑
-（`results_20261028T170114Z.json`）的库 SHA256 跑前跑后同为 `8c80e5fc…aa27d`。
+**确定性**：2026-10-29 同库同配置连跑 3 次，三份报告的数字（排查生成时间与
+SHA 行后）**逐位一致**。`results_*.json` 字节级比对：其中 2 份完全一致，第 3 份
+有 1 处 1e-4 级分数抖动（q036 vec 第 2 名 0.6166 vs 0.6165，**排名不变**，指标只
+依赖排名，故报告数字不受影响）——上游重排分数存在最后一位的舍入抖动，读数
+以下列规则为准：比较时看排名派生的指标，`results.json` 字节级一致性只作参考。
 
 ### 8.5 时间切分现状（tune 14 / held-out 4；目标未达成，原因如实说）
 
@@ -342,16 +358,46 @@ novel 1 / other 9）+ 20 条负样本；quarantined / dropped 的 `gold_ids` 已
 - 治本要在 `core/` 的写入路径补 `created_at`（本任务禁改 core/，另行开 issue）；
   在那之前切分子集只够做方向性参考，不足以做显著性检验。
 - 切分可复现且防搬动：manifest 钉 **qid**（含 unplaced 名单）；
-  `split_eval_set.py --pin-manifest <旧manifest>` 重跑时按 qid 冻结分配，
-  新增题只进 `unplaced.new_qids_not_in_manifest`，已有切分不会被新增题悄悄
-  搬动（首轮实测：pin 复跑 tune/held-out 与首切完全一致，new_qids 为空）。
+  `split_eval_set.py --pin-manifest <旧manifest>` 重跑时按 qid 冻结分配，新增
+  带判卷 gold 的题只进 `unplaced.new_qids_not_in_manifest`，已有切分不会被新增
+  题悄悄搬动（2026-10-29 Phase-1 落地实测：pin 复跑 tune 14 / held-out 4 与
+  boundary 与首切完全一致；新增只进未放置池）。
+- **未放置池只增不减（2026-10-29 修复）**：pinned manifest 现携带
+  `unplaced_qids` 逐条名单（negative_or_no_gold / missing_timestamp /
+  new_qids_not_in_manifest）。此前 pin 链不回传未放置名单，会把旧的未放置
+  批次反复当成「新增」上报（实测：连续 pin 第二轮把 110 条旧 qid 重报了一遍）；
+ 名单持久携带后复跑无变化即无新增。当前未放置池 13 条 = 9 条老题（改判落点在
+  kb_chunk/novel_chunk/git_commit——created_at 缺失的三类节点）+ 4 条 Phase-1
+  live（q140–q143，时间戳齐全，等主人显式重切决定归属）。旧格式 manifest 无名单
+  时首轮会把未放置项报成新增一次，第二轮起名单固化。
+- `pinned_resplit` 已抽成纯函数并有单元测试（tests/test_eval_report_determinism.py
+  的 TestPinnedResplit：冻结归属 / 名单携带 / 旧格式兼容 / 两侧重叠报错）。
 
-### 8.6 候选题池（只出清单，未入集）
+### 8.6 候选题池（只出清单，未人工确认前不入集）
 
-`eval/candidate_questions_<ts>.json`：从 `hit_count`（`mem_search` 每次真实
-命中自动 +1，见 `core/trivium_store.py::_bump_hit_counts`）挖出的候选题，
-每条带 `"pending_human_confirm": true`，且 query 仅为首行草稿（未过「禁抄
+`eval/candidate_questions_<ts>.json` + 2026-10-29 起附带人类可读清单
+`eval/candidates_<日期>.md`：从 `hit_count`（`mem_search` 每次真实命中自动
++1，见 `core/trivium_store.py::_bump_hit_counts`）挖出的候选题，每条带
+`"pending_human_confirm": true`，且 query 仅为首行草稿（未过「禁抄
 原文 ≥6 字」校验）——**人工确认并润色前不许并入题集**。
+
+2026-10-29 批次（20261029T081941Z，25 条）：其中 hit 排名前 10 条即 Phase-1
+判词批次（4 条已入集、6 条已剔除），其余 15 条待主人下一轮判词。
+
+### 8.7 基线一条命令（#221 §2.8；#232 重嵌完成后跑）
+
+    python eval/run_baseline.py                    # 全 4 模式 + pinned 重切 + 相邻模式显著性
+    python eval/run_baseline.py --modes vec        # 只跑 vec
+    python eval/run_baseline.py --skip-eval        # 复用最新 results_*.json，只补 split + 显著性
+
+串行三步（全部沿用既有脚本）：`run_eval.py`（库副本 + SHA 自证 + 子集标注
+报告）→ `split_eval_set.py --pin-manifest`（按 qid 冻结切分）→
+`significance.py`（vec vs rrf / vec vs cascade / fts vs vec，逐集
+all / tune / held_out 配对 bootstrap）。任何一步失败即停。
+
+基线数字的前提是**库状态冻结**：#232（分块池化重嵌）完成前的跑数只作
+「重嵌前对照」（如 8.4 的 2026-10-29 参考点），重嵌完成后的第一次
+`run_baseline.py` 输出才钉为新基准。
 
 ---
 
