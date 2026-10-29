@@ -1673,3 +1673,18 @@ def test_mem_ingest_hash_only_capsule_title_stub(iso_store):
     title = payload["title"]
     assert title.startswith("补产胶囊 "), title
     assert session_hex[:8] in title and session_hex not in title, title
+
+
+def test_hash_only_degrade_after_leading_status_block(iso_store):
+    """回归：首行前导 ``[...]`` 状态块后仍是 hash-only → 必须降级。
+
+    ``_is_handoff`` 的判据明确允许首行带若干状态块（生产实测 3752：
+    ``[完成] 接续点 / 会话接续 local-<64hex>``）。title 判据若不同口径，
+    这类补产胶囊会漏降级、继续留 hash-only title——两处判据必须同口径。
+    """
+    session_hex = "6b7a6ced" + "f" * 56
+    for prefix in ("[完成] ", "[待办] ", "[完成] [待办] "):
+        payload = {"content": prefix + _capsule_content(session_hex), "created_at": time.time()}
+        title = _handoff_title(payload)
+        assert title.startswith("补产胶囊 "), f"{prefix!r} 形态应降级为 stub：{title}"
+        assert session_hex[:8] in title and session_hex not in title, title

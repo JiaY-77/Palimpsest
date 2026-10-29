@@ -712,6 +712,12 @@ def _brief(nid: int, payload: dict, state: str | None) -> dict:
 # 标题词（允许 ``【`` / ``★`` 前缀装饰）。「接续点」只出现在**句中**的不命中。
 _HANDOFF_FIRST_LINE_RE = re.compile(r"^\s*(?:\[[^\[\]\n]*\]\s*)*【?★?接续点")
 
+# 前导 ``[...]`` 状态块（与上面判据同一个装饰口径，供 title 判据复用）：
+# 「什么算首行装饰」只能有一处定义，否则排序判据认它是接续点、title 判据
+# 把状态词当信息段，同一节点两套结论（issue #227 验收实测：3752
+# ``[完成] 接续点 / 会话接续 local-<64hex>`` 漏降级）。
+_HANDOFF_STATUS_BLOCK_RE = re.compile(r"^\s*(?:\[[^\[\]\n]*\]\s*)*")
+
 
 def _is_handoff(payload: dict) -> bool:
     """task 节点是否为会话接续点：content **首行以「接续点」作为标题词开头**。
@@ -794,8 +800,16 @@ def _first_line_hashes_only(first_line: str) -> bool:
     真实语料 ``接续点 / 会话接续 local-<64hex>``：锚词全剥后残留只有 session
     hash——最长信息段就是裸 hash，title 零信息量（issue #227）。正常手写接续点
     的首行总有锚词之外的信息段（日期 / 主题），剥完必有残留 → ``False`` 不触发降级。
+
+    前导 ``[...]`` 状态块必须先剥：``_is_handoff`` 的判据
+    （``_HANDOFF_FIRST_LINE_RE``）明确允许首行带若干状态块（生产实测
+    ``[完成] 接续点 / 会话接续 local-<64hex>`` 这类），状态块本身不是信息段；
+    不剥就会让「状态块 + 锚词 + hash」形态漏判、继续留下 hash-only title。
+    两处判据对「什么算首行装饰」必须同口径，否则同一节点一边认作接续点、
+    一边认作有信息量。
     """
-    text = _TITLE_ANCHOR_WORDS_RE.sub("", first_line)
+    text = _HANDOFF_STATUS_BLOCK_RE.sub("", first_line)
+    text = _TITLE_ANCHOR_WORDS_RE.sub("", text)
     text = _TITLE_ANCHOR_STRIP_RE.sub("", text).lower()
     if not text:
         return False
