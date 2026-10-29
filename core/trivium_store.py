@@ -546,6 +546,7 @@ class TriviumStore:
                             model_path=model_path,
                             embedding=True,
                             n_ctx=Config.EMBEDDING_LOCAL_N_CTX,
+                            n_batch=Config.EMBEDDING_LOCAL_N_BATCH,
                             n_threads=Config.EMBEDDING_LOCAL_N_THREADS or None,
                             pooling_type=LLAMA_POOLING_TYPE_LAST,
                             verbose=False,

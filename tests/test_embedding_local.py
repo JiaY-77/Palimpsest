@@ -122,6 +122,7 @@ def test_llama_construction_params(monkeypatch, reset_local_llm, tmp_path):
     sentinel = install_fake_llama_cpp(monkeypatch, embed_result=[0.2] * 1024, ctor_calls=ctor_calls)
     monkeypatch.setattr(mf, "resolve_model_path", lambda: str(tmp_path / "m.gguf"))
     monkeypatch.setattr(Config, "EMBEDDING_LOCAL_N_CTX", 2048)
+    monkeypatch.setattr(Config, "EMBEDDING_LOCAL_N_BATCH", 64)
     monkeypatch.setattr(Config, "EMBEDDING_LOCAL_N_THREADS", 7)
     store = make_store(dim=1024)
     store._embed_local("hi")
@@ -129,6 +130,7 @@ def test_llama_construction_params(monkeypatch, reset_local_llm, tmp_path):
     assert kw["pooling_type"] is sentinel
     assert kw["embedding"] is True
     assert kw["n_ctx"] == 2048
+    assert kw["n_batch"] == 64
     assert kw["n_threads"] == 7
 
 
