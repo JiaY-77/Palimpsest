@@ -157,3 +157,45 @@ def test_record_event_appends_jsonl(guard):
     events = Path(guard.EVENTS)
     assert events.exists()
     assert "test_marker" in events.read_text(encoding="utf-8")
+
+
+def test_clean_interpreter_env_drops_overrides(guard, monkeypatch):
+    """拉起子进程前必须剔除会改写子解释器导入路径的变量。
+
+    实测（2026-10-29）：调度器用自己那份 Python（Hermes 3.14）跑本守护，
+    环境里的 ``PYTHONPATH`` 指向 Hermes venv；而服务 venv 是 3.12，子进程
+    会优先导入 cp314 的 ``pydantic_core``，报
+    ``No module named 'pydantic_core._pydantic_core'`` 后秒退——同一条命令
+    人手动跑却能成功，差别只在父进程环境。
+    """
+    for key in guard._LEAKY_INTERPRETER_VARS:
+        monkeypatch.setenv(key, "C:/some/other/venv")
+    monkeypatch.setenv("PALIMPSEST_HOME", "C:/repo")
+
+    env = guard._clean_interpreter_env()
+
+    for key in guard._LEAKY_INTERPRETER_VARS:
+        assert key not in env
+    assert env["PALIMPSEST_HOME"] == "C:/repo"
+
+
+def test_start_rest_passes_scrubbed_env(guard, monkeypatch, tmp_path):
+    """净化后的 env 必须真的交给 Popen，否则修复等于没生效。"""
+    captured: dict[str, object] = {}
+
+    def _fake_popen(args, **kwargs):
+        captured["args"] = args
+        captured["env"] = kwargs.get("env")
+        return object()
+
+    monkeypatch.setattr(guard.subprocess, "Popen", _fake_popen)
+    monkeypatch.setenv("PYTHONPATH", "C:/hermes/venv/Lib/site-packages")
+
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    (repo / "scripts" / "start_rest.vbs").write_text("' fake", encoding="utf-8")
+
+    assert guard._start_rest(str(repo)) is True
+    child_env = captured["env"]
+    assert isinstance(child_env, dict)
+    assert "PYTHONPATH" not in child_env

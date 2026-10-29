@@ -85,6 +85,28 @@ _STATE_DIR = os.path.join(HERMES_HOME, "logs", "guard_state")
 
 _CREATE_NO_WINDOW = 0x08000000
 
+# Interpreter variables that make a *child* interpreter resolve packages from a
+# different installation than the venv it was launched from. This guard is often
+# run by a scheduler under its own Python (Hermes cron here: 3.14) while the
+# service venv is 3.12 — inheriting ``PYTHONPATH`` makes the child import the
+# wrong ``pydantic_core``, whose native extension is cp314, and the 3.12
+# interpreter dies with
+# ``ModuleNotFoundError: No module named 'pydantic_core._pydantic_core'``
+# (observed 2026-10-29 in a sibling watchdog; the same command run by hand works).
+_LEAKY_INTERPRETER_VARS = (
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "PYTHONSTARTUP",
+    "PYTHONEXECUTABLE",
+    "VIRTUAL_ENV",
+    "PYTHONUSERBASE",
+)
+
+
+def _clean_interpreter_env() -> dict[str, str]:
+    """``os.environ`` minus the variables that would redirect the child's imports."""
+    return {key: value for key, value in os.environ.items() if key not in _LEAKY_INTERPRETER_VARS}
+
 
 # ---------------------------------------------------------------------------
 # Liveness
@@ -219,6 +241,9 @@ def _start_rest(ps_home: str) -> bool:
     """
     if not ps_home or not os.path.isdir(ps_home):
         return False
+    # Launch with a scrubbed environment: cscript (and the python it starts) would
+    # otherwise inherit a scheduler's PYTHONPATH and import the wrong site-packages.
+    child_env = _clean_interpreter_env()
     try:
         if os.name == "nt":
             vbs = _windows_start_script(ps_home)
@@ -229,6 +254,7 @@ def _start_rest(ps_home: str) -> bool:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 creationflags=_CREATE_NO_WINDOW,
+                env=child_env,
             )
         else:
             python = os.path.join(ps_home, "venv", "bin", "python")
@@ -250,6 +276,7 @@ def _start_rest(ps_home: str) -> bool:
                 cwd=ps_home,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=child_env,
             )
         return True
     except Exception:  # noqa: BLE001 —— 拉起失败返回 False，由调用方记录事件
