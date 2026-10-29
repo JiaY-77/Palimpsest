@@ -412,7 +412,10 @@ def mem_ingest(
     if type == "task" and _is_handoff({"content": content}):
         node_data["kind"] = HANDOFF_KIND
         if not (node_data.get("title") or "").strip():
-            node_data["title"] = _handoff_title({"content": content})
+            # created_at 一并带入（issue #227）：hash-only 首行（补产胶囊形态）
+            # 退化出的可读 stub 需要日期段；其余 title 提取路径不读 created_at，
+            # 对正常手写接续点 / session-end 胶囊的既有 title 零行为变化。
+            node_data["title"] = _handoff_title({"content": content, "created_at": now})
     # 思维底片来源标记（type=thought 专属，见 mem_ingest docstring）：skeleton_kind
     # 是给侧上报的事实字段（白名单外归空串，脏值不进库）；thought_origin 是按
     # content 形态判定的启发式字段——落库路径统一打标，任何通道写 thought 节点

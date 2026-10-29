@@ -1543,3 +1543,133 @@ def test_list_active_fresh_uses_earlier_of_touched_and_created():
 
     expanded = list_active_tasks(store, project=project, fresh_days=0)
     assert [r["id"] for r in expanded["results"]] == [nid]
+
+
+# ---------------------------------------------------------------------------
+# 14. 补产胶囊不得压过手写接续点（issue #227；判据用例直接取生产节点 3778 形态）
+# ---------------------------------------------------------------------------
+
+
+def _capsule_content(session_hex: str) -> str:
+    """补产 / session-end 胶囊的 content 形态：首行锚词 + session hash。"""
+    return f"接续点 / 会话接续 local-{session_hex}\n【思路】机器从 18 轮对话抓的片段。"
+
+
+def _iso_set_fields(s, nid: int, **fields) -> None:
+    """insert_node 吞掉 created_at 等基础字段 → 读回后 update_payload 补写（生产同款）。"""
+    payload = dict((s.get_node(nid) or {}).get("payload") or {})
+    payload.update(fields)
+    s.update_payload(nid, payload)
+
+
+def _curated_handoff(s, project: str, created_days_ago: float) -> int:
+    """手写接续点：标题可读、无 recovered 标。"""
+    nid = _iso_insert_task(
+        s,
+        "【★接续点·2026-10-29 手写的跨会话接续 · 新会话先读这条】\n【下一步】先修湿度门禁。",
+        project,
+        kind=HANDOFF_KIND,
+        title="2026-10-29 手写的跨会话接续",
+    )
+    _iso_set_fields(s, nid, created_at=time.time() - created_days_ago * 86400)
+    return nid
+
+
+def _recovered_capsule(s, project: str, session_hex: str, created_days_ago: float) -> int:
+    """补产胶囊：3778 形态——机器打 kind=handoff + recovered=True + 更新的 created_at。"""
+    nid = _iso_insert_task(s, _capsule_content(session_hex), project, kind=HANDOFF_KIND)
+    _iso_set_fields(
+        s,
+        nid,
+        recovered=True,
+        recovered_at=_iso_days_ago(0),
+        created_at=time.time() - created_days_ago * 86400,
+    )
+    return nid
+
+
+def test_recovered_capsule_never_outranks_curated_handoff(iso_store):
+    """issue #227 验收①：recovered=true 的胶囊不得压过手写接续点（3778 真实形态）。
+
+    生产事故原样：3748 手写接续点（老）在场，3778 补产胶囊（新）凭 created_at
+    抢走 ``tasks_active(include_handoff=true)`` 首位。修后补产胶囊必须让位——
+    但仍留在 results 里（turns 不丢、不隐藏）。
+    """
+    s = iso_store
+    project = _ns()
+    curated = _curated_handoff(s, project, created_days_ago=1)
+    recovered = _recovered_capsule(s, project, session_hex="8" * 20 + uuid.uuid4().hex, created_days_ago=0)
+
+    data = list_active_tasks(s, include_handoff=True)
+
+    ids = [it["id"] for it in data["results"]]
+    assert ids.index(curated) < ids.index(recovered), f"手写接续点必须排在补产胶囊前：{ids}"
+    assert ids[0] == curated, "手写接续点占首位（新会话先读这条就读到它）"
+    assert recovered in ids, "补产胶囊留在列表里照常可见"
+    item = next(it for it in data["results"] if it["id"] == recovered)
+    assert item["recovered"] is True, "recovered 标须带到列表条目上（消费方可识别补产胶囊）"
+
+
+def test_unrecovered_capsule_ranking_regression(iso_store):
+    """回归（issue #227 约束）：未打 recovered 标的正常胶囊排序**零行为变化**。
+
+    正常 session-end 胶囊（无 recovered 标、created_at 最新）照旧置顶——只有
+    补产胶囊被排除出置顶组。
+    """
+    s = iso_store
+    project = _ns()
+    curated = _curated_handoff(s, project, created_days_ago=2)
+    capsule = _iso_insert_task(s, _capsule_content(uuid.uuid4().hex * 2), project, kind=HANDOFF_KIND)
+    _iso_set_fields(s, capsule, created_at=time.time())
+
+    data = list_active_tasks(s, include_handoff=True)
+
+    ids = [it["id"] for it in data["results"]]
+    assert ids[:2] == [capsule, curated], f"正常胶囊仍按 created_at 置顶：{ids}"
+
+
+def test_hash_only_first_line_title_degrades_to_stub(iso_store):
+    """issue #227 验收②：hash-only 首行不再产出裸 hash title → ``补产胶囊 <日期> <前8位>``。"""
+    ts = time.mktime((2026, 10, 29, 10, 0, 0, 0, 0, -1))  # 本地时区
+    session_hex = "b7f9c2d1e08a36f5"  # 前 8 位 = b7f9c2d1
+    payload = {
+        "content": _capsule_content(session_hex.ljust(64, "0")),
+        "created_at": ts,
+    }
+
+    title = _handoff_title(payload)
+
+    expected_date = datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+    assert title == f"补产胶囊 {expected_date} {session_hex[:8]}", title
+    assert session_hex not in title, "完整 hash 不得进 title"
+
+
+def test_hash_only_title_omits_date_when_created_at_missing(iso_store):
+    """created_at 缺失 → stub 省略日期段，仍可读、可区分。"""
+    title = _handoff_title({"content": _capsule_content("3b593a05" + "c" * 56)})
+    assert title == "补产胶囊 3b593a05", title
+
+
+def test_hash_only_degrade_spares_real_curated_shapes(iso_store):
+    """回归：正常手写接续点的 title 提取不受降级影响。
+
+    「接续点 / 会话接续 / 新聊天先读 —— 2026-10-13~14 大修」这类锚词 + 日期 /
+    主题的真实形态：剥完锚词剩下的是信息段，不是 16 连 hex，不触发降级。
+    """
+    payload = {
+        "content": "接续点 / 会话接续 / 新聊天先读 —— 2026-10-13~14 大修（本地检索主序解耦）",
+        "created_at": time.time(),
+    }
+    assert _handoff_title(payload) == "2026-10-13~14 大修（本地检索主序解耦）"
+
+
+def test_mem_ingest_hash_only_capsule_title_stub(iso_store):
+    """写入层（``mem_ingest`` 三通道公共实现）自动补 title 也走 stub（带 created_at 日期）。"""
+    session_hex = "ab12cd34" + "e" * 56
+    nid = _ingest_task(_capsule_content(session_hex))
+
+    payload = _iso_payload(iso_store, nid)
+    assert payload["kind"] == HANDOFF_KIND
+    title = payload["title"]
+    assert title.startswith("补产胶囊 "), title
+    assert session_hex[:8] in title and session_hex not in title, title
