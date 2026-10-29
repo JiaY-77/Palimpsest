@@ -1,0 +1,52 @@
+# Palimpsest 单实例自托管。运行参数与运维边界见 docs/DEPLOY.md。
+# 需要 Docker 24+ 与 docker compose v2（deploy.resources.limits 才生效）。
+
+services:
+  palimpsest:
+    build:
+      context: .
+      args:
+        # 1 = 构建时预置 610MB 向量模型（默认，起容器即有模型）；
+        # 0 = 镜像最小，取消下方 models 卷挂载后由运行时下载
+        PRELOAD_EMBEDDING_MODEL: "1"
+    ports:
+      - "8090:8090"
+    volumes:
+      # 必须持久化：库是文件组（.db + .vec/.gidx/.pidx/.pld.*/.wal/.flush_ok），
+      # 丢卷 = 丢记忆；换主机时整个目录备份搬家（含 backups/ 子目录）
+      - ./data:/app/data
+      # 可选：PRELOAD_EMBEDDING_MODEL=0 时取消注释，可把现成 GGUF 放进 ./models 复用
+      # （并设 EMBEDDING_MODEL_PATH=/app/models/Qwen3-Embedding-0.6B-Q8_0.gguf，见 docs/DEPLOY.md）
+      # - ./models:/app/models
+    # .env 缺失不阻塞启动（required: false）：clone 完直接 up 也能起，用默认值跑；
+    # 公网部署必须建 .env 并填 PALIMPSEST_API_KEY（复制 .env.example 即可）。
+    # 需要 Docker Compose v2.24+（支持 env_file 的 required 语法）。
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # 空 = 不启用鉴权（仅限本机试跑）；公网必须设置，生成：openssl rand -hex 32
+      PALIMPSEST_API_KEY: ${PALIMPSEST_API_KEY:-}
+      # 容器内跑进程内 llama.cpp，不依赖宿主机 Ollama（换 provider 见 docs/CONFIGURATION.md）
+      EMBEDDING_PROVIDER: local
+    deploy:
+      resources:
+        limits:
+          # 实测：内置 embedding n_batch=512 峰值约 1.5GB（2048 约 2.5GB）；2GB 是安全下限。
+          # 硬性限死 2GB 不足时宁可调小 EMBEDDING_LOCAL_N_BATCH（后果见 docs/DEPLOY.md 边界），
+          # 不要靠 OOM 重启续命。
+          memory: 2g
+    restart: unless-stopped
+    healthcheck:
+      # start_period 给足：首启要下载 / 加载 610MB 模型，冷启动可到分钟级
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import json,urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=4); assert json.load(r)['status']=='ok'",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 180s

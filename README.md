@@ -29,6 +29,18 @@
 - **一个进程是唯一写者。** REST `:8090` 是唯一入口，MCP / CLI / 各脚本都经它，所以不存在多进程写坏库。
 - **数据就是一个目录。** `data/` 下的 `.db` + `.vec` / `.gidx` / `.pidx` 侧车 + `fts.db`，整组备份即可搬家。
 
+## Docker（最快）
+
+```bash
+git clone https://github.com/JiaY-77/Palimpsest.git
+cd Palimpsest
+cp .env.example .env          # 公网部署：填入 PALIMPSEST_API_KEY（生成：openssl rand -hex 32）
+docker compose up -d --build  # 首次构建会预置 610MB 向量模型并自动校验
+curl -s http://127.0.0.1:8090/health
+```
+
+单实例自托管（一个库只允许一个进程写入）；内存规格、公网安全、备份与升级见 **[docs/DEPLOY.md](docs/DEPLOY.md)**。
+
 ---
 
 ## Install
@@ -235,7 +247,7 @@ README 只放「上手要用的」。其余按职责分在 `docs/`——**加东
 | 你想做什么 | 看这篇 |
 |---|---|
 | 装（三条向量引擎路径、硬件要求、换模型） | [docs/INSTALL.md](docs/INSTALL.md) |
-| 查命令（21 个 MCP 工具 / 25 个 CLI 子命令 / 31 条 REST 路由 / 区块语义 / 索引规则） | [docs/REFERENCE.md](docs/REFERENCE.md) |
+| 查命令（21 个 MCP 工具 / 25 个 CLI 子命令 / 32 条 REST 路由 / 区块语义 / 索引规则） | [docs/REFERENCE.md](docs/REFERENCE.md) |
 | 知道什么时候用哪个工具 | [docs/USAGE.md](docs/USAGE.md) |
 | 配环境变量（62 项全表） | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) |
 | 懂设计（机制清单、与其它方案对比、Markdown 定位、适用场景） | [docs/DESIGN.md](docs/DESIGN.md) |
