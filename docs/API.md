@@ -41,8 +41,8 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8090
 | `POST` | `/mem/stats` | 库级盘点统计 |
 | `POST` | `/graph/neighbors` | 某节点的图谱邻居 |
 | `POST` | `/graph/communities` | Leiden 社区发现 |
-| `POST` | `/lifecycle/pre-turn` | **记忆策略 + 思维预设层**：每轮模型调用前决定召回哪些记忆，返回可注入 prompt 的文本（trivial/过短自动跳过）+ 按情境动态挑的思考骨架（`thought_skeleton`；闲聊/过短不给，宿主可关） |
-| `POST` | `/lifecycle/post-turn` | **记忆策略 + 思维底片**：每轮回复后决定是否沉淀、写什么内容、写哪一层（logs/facts）；并从 `assistant_message` 抽取 `<thought>...</thought>` 段写 `type="thought"`（tier=logs，不命中不落库但响应可观测） |
+| `POST` | `/lifecycle/pre-turn` | **记忆策略 + 思考骨架**：每轮模型调用前决定召回哪些记忆，返回可注入 prompt 的文本（trivial/过短自动跳过）+ 按情境动态挑的思考骨架（`thought_skeleton`；闲聊/过短不给，宿主可关） |
+| `POST` | `/lifecycle/post-turn` | **记忆策略 + 思考记录**：每轮回复后决定是否沉淀、写什么内容、写哪一层（logs/facts）；并从 `assistant_message` 抽取 `<thought>...</thought>` 段写 `type="thought"`（tier=logs，不命中不落库但响应可观测；落库 content 带 `[思维底片]` 前缀，与前缀约定一致） |
 | `POST` | `/lifecycle/session-end` | **记忆策略**：会话结束提炼要点、去重、写入 facts 层 |
 | `POST` | `/lifecycle/pre-compress` | **记忆策略**：压缩前抽取要点（只回文本，不写库） |
 | `POST` | `/lifecycle/recover-orphan-capsules` | **断线自愈**：扫描静默超过 `SESSION_CAPSULE_RECOVER_AFTER_SECONDS` 的活跃会话缓冲（`type=session` / `status=active`），按 session 补产成 `type=task` + `kind=handoff` 胶囊（进程被硬砍、session-end 没跑时的兜底）；`dry_run=true` 只报告不写库。单 session 失败只记 warning 并计入 `failed`，不中断整批 |

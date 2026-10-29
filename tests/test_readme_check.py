@@ -227,3 +227,30 @@ def test_cli_commands_missing_section_warns(checker: ModuleType, tmp_path: Path)
     root = _build_repo(tmp_path)
     warnings = checker.check_cli_commands(root).warnings
     assert any("未找到区块" in w and "### CLI 命令" in w for w in warnings), warnings
+
+
+def test_private_terms_flags_nickname_and_personal_path(checker, tmp_path):
+    """对外文档出现内部称呼 / 个人绝对路径必须报错（开源脱敏红线）。
+
+    这类词不会让功能失效，所以只能靠门禁挡——历史上确有一篇 docs 混进 3 处。
+    """
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "X.md").write_text("主人说这条笔记要备份到 D:\\HeJiaQi\\Documents\\", encoding="utf-8")
+
+    report = checker.check_private_terms(tmp_path)
+
+    assert report.errors
+    assert any("主人" in err for err in report.errors)
+    assert any("D:\\HeJiaQi" in err for err in report.errors)
+
+
+def test_private_terms_ignores_documented_placeholder_path(checker, tmp_path):
+    """`C:\\Users\\<你的用户名>` 这类占位示例是合法文档写法，不能误报。"""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "Y.md").write_text(
+        "> Windows 示例：`C:\\Users\\<你的用户名>\\AppData\\Local\\hermes`", encoding="utf-8"
+    )
+
+    report = checker.check_private_terms(tmp_path)
+
+    assert report.errors == []

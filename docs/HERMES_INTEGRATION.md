@@ -178,7 +178,7 @@ EMBEDDING_DIM=1024
 | `PALIMPSEST_PREFETCH_TIER` | `facts` | 注入只取事实层（`facts` / `logs` / 空串=不过滤） |
 | `PALIMPSEST_PREFETCH_SCOPE` | `memory` | 注入召回范围：`memory`（默认，只召回记忆）/ `all`（含知识库切片）/ `kb` |
 | `PALIMPSEST_AUTO_INGEST` | `true` | 自动沉淀开关；`false` 时只保留手动工具 |
-| `PALIMPSEST_THOUGHT_SKELETON` | `true` | 每轮 LLM 调用前注入思考骨架（思维预设层给侧）；闲聊 / 过短轮本体自动不给 |
+| `PALIMPSEST_THOUGHT_SKELETON` | `true` | 每轮 LLM 调用前注入思考骨架（由给侧生成）；闲聊 / 过短轮本体自动不给 |
 | `PALIMPSEST_THOUGHT_TIMEOUT` | `2.0` | 取骨架的热路径超时（秒）；超时 / 不可达时本轮不给骨架，绝不打断回复 |
 | `PALIMPSEST_WRITE_TIMEOUT` | `30` | 写请求超时（秒）。服务端写库要**同步算 embedding**，冷启动 / CPU 推理 / 并发排队都可能超过旧版硬编码的 5 秒，而插件是 fail-open（超时的写入会静默丢弃）。默认对齐服务端的 30 秒；慢请求（≥5s）与失败都打 warning 并带耗时 |
 | `PALIMPSEST_GRAPH_TOPICS` | `3` | 压缩前图谱提炼的主题数（1–5） |
