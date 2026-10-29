@@ -11,7 +11,7 @@
 | 项 | 要求 | 说明 |
 |---|---|---|
 | Docker / Compose | Docker 24+，**docker compose v2**（`docker compose version` 能跑） | compose 文件用了 `deploy.resources.limits`，老版 docker-compose（v1，2023 年已停维护）会静默忽略内存限制 |
-| 内存 | ≥ 2GB 可用 | 实测内置 embedding（n_batch=512）峰值约 **1.5GB**；把 `EMBEDDING_LOCAL_N_BATCH` 调到 2048 峰值约 **2.5GB**（不要调大，它是截断长度，见 `config.py` 注释与下方边界） |
+| 内存 | **推荐 ≥ 4GB**；2GB 无余量 | 实测（内置 embedding，`n_batch=512`，v2.18.0 生产进程）：空载 WorkingSet 581MB / Private 1.9GB；首次 `mem_search` 触发模型懒加载后 WorkingSet 904MB；常驻 1.3GB；峰值 WorkingSet **1.6GB**。Private（进程承诺内存）常态约 **1.9GB**——2GB 机器即使不 OOM 也没有余量，紧盯的是提交量不是驻留量。把 `EMBEDDING_LOCAL_N_BATCH` 调到 2048 峰值约 2.5GB（不要调大，它是截断长度，见 `config.py` 注释与下方边界） |
 | 磁盘 | ≥ 10GB | 镜像 ~1.5GB + GGUF 610MB + 首次建库的索引文件余量 |
 | 端口 | 8090 空闲 | 被占用改 compose 里的 `ports` 映射（如 `"18090:8090"`） |
 
@@ -111,7 +111,7 @@ server {
 
 1. **单实例。** 库文件由 triviumdb 以独占写模式打开：同一份数据目录挂两个容器（或容器内多 worker）会直接报 `Database locked`、REST 返 503——不会静默写坏，但也**不支持水平扩展**。要「多机」就各机各库，不要共享一个卷。
 2. **必须持久卷。** `./data:/app/data` 映射了库文件组：`.db` + `.vec` / `.gidx` / `.pidx` / `.pld.<generation>` / `.wal` / `.flush_ok`（可能还有 `.lock`）。**删卷 = 删记忆**；备份必须整组拷（见下节），只拷 `.db` 会得到「读得动、写不动」的残废快照。
-3. **内存不是可选项。** 2GB 是安全下限不是推荐值；真不够先调小 `EMBEDDING_LOCAL_N_BATCH`（512→256 内存减半，代价是长节点 embedding 被截断、检索质量下降——这是个明确的权衡，`config.py` 注释里有量化数据）。
+3. **内存不是可选项，2GB 装不下（2026-10-29 实测）。** 进程内 embedding 是**懒加载**的：空载 WorkingSet 581MB，第一次检索才把 639MB 的 Q8 模型读进来，之后常驻约 1.3GB、峰值 1.6GB，且空闲不回落（实测空闲 45 秒无释放）。而真正卡机器的是 **Private（进程承诺内存）常态约 1.9GB**——2GB 机器连提交量都占满，OS 一紧就换页或 OOM，所以安全线是 4GB。真要在 2GB 上跑，两条路：调小 `EMBEDDING_LOCAL_N_BATCH`（512→256 内存减半，代价是长节点 embedding 被截断、检索质量下降——`config.py` 注释里有量化数据），或把 embedding 换成进程外后端（宿主机 Ollama / 云端 key；换代必须重嵌全库，且该配置下的实测数字尚未采集，不要按本地数值推算）。
 4. **容器内嵌 embedding 走本地 CPU**。没有 GPU 加速路径；要快走 `EMBEDDING_PROVIDER=ollama`（宿主机 Ollama）或云端 key，但换向量空间必须重嵌全库（见下「升级」）。
 
 ---

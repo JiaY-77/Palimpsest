@@ -32,10 +32,11 @@ services:
     deploy:
       resources:
         limits:
-          # 实测：内置 embedding n_batch=512 峰值约 1.5GB（2048 约 2.5GB）；2GB 是安全下限。
-          # 硬性限死 2GB 不足时宁可调小 EMBEDDING_LOCAL_N_BATCH（后果见 docs/DEPLOY.md 边界），
-          # 不要靠 OOM 重启续命。
-          memory: 2g
+          # 实测（v2.18.0，2026-10-29 生产进程）：Private 承诺内存常态约 1.9GB、WorkingSet 峰值 1.6GB。
+          # 2g 上限会把正常运行的进程 OOM kill，所以这里给 4g 当「防失控」上限（低配机器上它只是不生效，
+          # 不会报错）。真要在 2GB 机器上跑：先调小 EMBEDDING_LOCAL_N_BATCH 或换进程外 embedding
+          # （后果见 docs/DEPLOY.md 边界 3），不要靠 OOM 重启续命。
+          memory: 4g
     restart: unless-stopped
     healthcheck:
       # start_period 给足：首启要下载 / 加载 610MB 模型，冷启动可到分钟级
