@@ -9,13 +9,16 @@
 | | |
 |---|---|
 | Version | v2.20.0 |
+| **LTS** | **Yes — first LTS, supported until 2027-10-30** ([contract](docs/LTS.md)) |
 | Python | 3.10+ |
 | License | MIT |
-| Storage | TriviumDB 0.8.10 (vector + graph + document, embedded) |
+| Storage | TriviumDB 0.9.0b2 (vector + graph + document, embedded) |
 | Backends | DeepSeek / Ollama (LLM), built-in local / Ollama / OpenAI-compatible (embeddings) |
 | CI | [![CI](https://github.com/JiaY-77/Palimpsest/actions/workflows/ci.yml/badge.svg)](https://github.com/JiaY-77/Palimpsest/actions/workflows/ci.yml) |
 
 [中文](./README.md) | **English**
+
+> **v2.20.0 is the first LTS release**: interfaces frozen, default behaviour and storage format unchanged, supported until **2027-10-30**. See [docs/LTS.md](docs/LTS.md).
 
 </div>
 
@@ -234,7 +237,7 @@ All configuration is read from environment variables (a `.env` file is loaded au
 | `DEEPSEEK_API_KEY` | *(empty)* | Used for report generation; optional |
 | `KNOWLEDGE_DIR` | *(optional)* | Root of the knowledge base (Obsidian `.md` files) to index |
 
-The full 62-key table (defaults and activation conditions) is in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) (Chinese).
+The full 77-key table (defaults and activation conditions) is in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) (Chinese).
 
 ---
 
@@ -251,9 +254,9 @@ The README only covers what you need to get running. Everything else lives in `d
 | What you want | Where |
 |---|---|
 | Install (three embedding backends, hardware, swapping models) | [docs/INSTALL.md](docs/INSTALL.md) |
-| Command reference (21 MCP tools / 25 CLI subcommands / 32 REST routes / blocks / index rules) | [docs/REFERENCE.md](docs/REFERENCE.md) |
+| Command reference (21 MCP tools / 25 CLI subcommands / 44 REST routes / blocks / index rules) | [docs/REFERENCE.md](docs/REFERENCE.md) |
 | Which tool to use when | [docs/USAGE.md](docs/USAGE.md) |
-| Environment variables (full 62-key table) | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) |
+| Environment variables (full 77-key table) | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) |
 | Design (mechanism inventory, comparison, Markdown positioning, use cases) | [docs/DESIGN.md](docs/DESIGN.md) |
 | Tests / evaluation / repo layout / dev conventions | [docs/TESTING.md](docs/TESTING.md) |
 | Changing code (layering, adding tools, gates) | [CONTRIBUTING.md](CONTRIBUTING.md) |
@@ -261,6 +264,7 @@ The README only covers what you need to get running. Everything else lives in `d
 | Obsidian vault integration | [docs/OBSIDIAN.md](docs/OBSIDIAN.md) |
 | Bi-temporal / security / memory packs / full API | [BITEMPORAL](docs/BITEMPORAL.md) · [SECURITY](SECURITY.md) · [MEMORYHUB](docs/MEMORYHUB.md) · [API](docs/API.md) |
 | Retrieval quality and measurements | [RETRIEVAL_QUALITY](docs/RETRIEVAL_QUALITY.md) · [CONFIDENCE](docs/CONFIDENCE.md) |
+| Long-term support contract / versioning rules / stability tiers | [LTS](docs/LTS.md) |
 | Release process / history / deprecations | [RELEASING](docs/RELEASING.md) · [CHANGELOG](CHANGELOG.md) · [DEPRECATIONS](docs/DEPRECATIONS.md) |
 
 ---
