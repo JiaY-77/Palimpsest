@@ -423,14 +423,13 @@ class Config:
     EMBEDDING_LOCAL_DIM = int(os.getenv("EMBEDDING_LOCAL_DIM", "1024"))
     # llama.cpp 上下文长度：实测基准值 2048，勿擅自放大（放大直接吃内存/速度）
     EMBEDDING_LOCAL_N_CTX = int(os.getenv("EMBEDDING_LOCAL_N_CTX", "2048"))
-    # llama.cpp 批大小。**注意：它同时是 embedding 的截断长度**——
-    # llama-cpp-python 的 embed() 里有 `if truncate: tokens = tokens[:n_batch]`，
-    # 超过 n_batch 个 token 的输入会被**静默丢弃**，只嵌前 n_batch 个 token。
-    # 所以调小它 = 用检索质量换内存，不是免费的：
-    #   n_batch=512 → 生产库 633/2407 节点（26%）已被截断（novel_chunk 119/124）
-    #   n_batch=32  → 92% 的 kb 切片、几乎所有 novel 切片会被截断
-    # 默认保持 512（历史行为不变）。2C2G 之类装不下 512 的场景可以调小，
-    # 但要清楚代价；真正的修法是 issue #232（让长节点的向量不再只覆盖前缀）。
+    # llama.cpp 批大小。**它同时是分块池化的块长上限**（EMBEDDING_LOCAL_CHUNK_TOKENS
+    # 必须 ≤ 它），所以调小它不是「只省内存」的旋钮：
+    #   1) 块长跟着变小 → 长节点被切得更碎，已有向量全部失效，必须整库重嵌
+    #      （2026-10-30 实测：2900 节点按 128 token 重切，一小时仍未跑完）；
+    #   2) 639MB 的模型本身是硬地板，省下的只是计算批缓冲那一段。
+    # 默认 512 保持不变。**不建议调小**：2GB 机器请改用进程外 embedding
+    # （llama-server / Ollama / 云端 key），不要靠这个参数硬挤。
     EMBEDDING_LOCAL_N_BATCH = int(os.getenv("EMBEDDING_LOCAL_N_BATCH", "512"))
     # 分块池化块长（issue #232）。**必须 ≤ EMBEDDING_LOCAL_N_BATCH**，否则块
     # 白做：短于块长的切块没问题，但任何要送进 embed() 的块本身也受
