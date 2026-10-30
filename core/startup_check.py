@@ -268,6 +268,45 @@ def _check_embedding_chunk_config() -> str:
     return f"分块配置自洽 (chunk={chunk} ≤ n_batch={n_batch})"
 
 
+def _check_embedding_gpu_layers() -> str:
+    """Embedding GPU 卸载配置自洽：`n_gpu_layers > 0` 但 wheel 是 CPU-only → 报 error。
+
+    与 `core.trivium_store._ensure_local_llm` 的运行时校验是同一根约束的启动
+    侧兜底：用户设了 ``EMBEDDING_LOCAL_N_GPU_LAYERS > 0``，当前 llama-cpp-python
+    却是 CPU-only wheel（``llama_supports_gpu_offload() == False``），配置了 GPU
+    却只能拿到 CPU 性能——他以为在用显卡，实际没有。报 error（raise
+    RuntimeError，由 _probe 标红）而不是降级为告警：错误配置必须在启动时挡下，
+    不能等用户看到速度没变才排查。文案与运行时错误一致：指明 CPU-only 事实、
+    两条出路（装 GPU wheel / 设回 0）和涉及的模型文件。
+
+    llama_cpp 在函数体内延迟导入（模块 import 期不拉起依赖），缺依赖时显式
+    报方向明确的错误，不裸抛 ImportError。
+    """
+    from config import Config  # 延迟导入，避免重 import 副作用
+
+    provider = getattr(Config, "EMBEDDING_PROVIDER", "local") or "local"
+    if provider != "local":
+        return f"不适用（provider={provider}，GPU 卸载仅 provider=local 生效）"
+    n_gpu_layers = int(getattr(Config, "EMBEDDING_LOCAL_N_GPU_LAYERS", 0))
+    if n_gpu_layers <= 0:
+        return "GPU 卸载未启用 (EMBEDDING_LOCAL_N_GPU_LAYERS=0 → 内嵌 embedding 常驻 CPU)"
+    try:
+        import llama_cpp
+
+        supports = bool(llama_cpp.llama_supports_gpu_offload())
+    except ImportError as e:
+        raise RuntimeError('本地 embedding 依赖 llama-cpp-python 未安装：pip install "palimpsest[local-embed]"') from e
+    if not supports:
+        raise RuntimeError(
+            f"EMBEDDING_LOCAL_N_GPU_LAYERS={n_gpu_layers}，但当前 llama-cpp-python 是 "
+            "CPU-only 版本（llama_supports_gpu_offload() == False），无法 GPU 卸载。"
+            "二选一：换装支持 GPU 的 llama-cpp-python wheel（如 CUDA 构建版），或把 "
+            f"EMBEDDING_LOCAL_N_GPU_LAYERS 设回 0（保持纯 CPU，默认行为）。"
+            f"（模型文件：{Config.EMBEDDING_MODEL_FILE}）"
+        )
+    return f"GPU 卸载配置自洽 (layers={n_gpu_layers}，wheel 支持 GPU offload)"
+
+
 def _has_existing_nodes(store: object) -> bool:
     """库里有没有节点（只看第一条就够）。异常一律当作「没有」，绝不影响自检。"""
     try:
@@ -330,6 +369,7 @@ def run_startup_check() -> dict:
         _probe("依赖可导入", _check_dependencies),
         _probe("Embedding 服务可用", _check_embedding),
         _probe("Embedding 分块配置", _check_embedding_chunk_config),
+        _probe("Embedding GPU 卸载配置", _check_embedding_gpu_layers),
     ]
     # FTS 索引完整性（issue #241）：注册在「FTS5 索引连接」之后。失败时附带
     # 可执行修复命令（startup_check 其他项不含 fix 字段；doctor 复用时会经

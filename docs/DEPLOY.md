@@ -112,7 +112,7 @@ server {
 1. **单实例。** 库文件由 triviumdb 以独占写模式打开：同一份数据目录挂两个容器（或容器内多 worker）会直接报 `Database locked`、REST 返 503——不会静默写坏，但也**不支持水平扩展**。要「多机」就各机各库，不要共享一个卷。
 2. **必须持久卷。** `./data:/app/data` 映射了库文件组：`.db` + `.vec` / `.gidx` / `.pidx` / `.pld.<generation>` / `.wal` / `.flush_ok`（可能还有 `.lock`）。**删卷 = 删记忆**；备份必须整组拷（见下节），只拷 `.db` 会得到「读得动、写不动」的残废快照。
 3. **内存不是可选项，2GB 装不下（2026-10-29 实测）。** 进程内 embedding 是**懒加载**的：空载 WorkingSet 581MB，第一次检索才把 639MB 的 Q8 模型读进来，之后常驻约 1.3GB、峰值 1.6GB，且空闲不回落（实测空闲 45 秒无释放）。而真正卡机器的是 **Private（进程承诺内存）常态约 1.9GB**——2GB 机器连提交量都占满，OS 一紧就换页或 OOM，所以安全线是 4GB。真要在 2GB 上跑，**唯一推荐的路是把 embedding 换成进程外后端**（宿主机 llama-server / Ollama / 云端 key；换代要重嵌全库，且该配置下的实测数字尚未采集，不要按本地数值推算）。**不建议靠调小 `EMBEDDING_LOCAL_N_BATCH` 硬挤**：它同时是分块池化的块长上限，调小意味着块长跟着变小、已有向量全部失效、必须整库重嵌（2026-10-30 实测：2900 节点按 128 token 重切，一小时仍未跑完），而 639MB 的模型本身是硬地板，省下来的只是计算批缓冲那一段——代价和收益不成比例。
-4. **容器内嵌 embedding 走本地 CPU**。没有 GPU 加速路径；要快走 `EMBEDDING_PROVIDER=ollama`（宿主机 Ollama）或云端 key，但换向量空间必须重嵌全库（见下「升级」）。
+4. **容器内嵌 embedding 默认走本地 CPU，GPU 加速需显式开启。** 容器内默认（`EMBEDDING_LOCAL_N_GPU_LAYERS=0`，镜像随附的 llama-cpp-python 是 CPU wheel）仍是纯 CPU。想要 GPU：宿主机装支持 GPU 的 llama-cpp-python wheel 并设 `EMBEDDING_LOCAL_N_GPU_LAYERS` > 0（此时 `llama_supports_gpu_offload()` 必须为 True，wheel 仍是 CPU-only 版本时会直接报错、启动自检也可能拦下，不会静默降级成纯 CPU 跑）。要快也可以走 `EMBEDDING_PROVIDER=ollama`（宿主机 Ollama）或云端 key，但换向量空间必须重嵌全库（见下「升级」）。
 
 ---
 
