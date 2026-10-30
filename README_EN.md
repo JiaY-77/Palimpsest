@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| Version | v2.19.0 |
+| Version | v2.20.0 |
 | Python | 3.10+ |
 | License | MIT |
 | Storage | TriviumDB 0.8.10 (vector + graph + document, embedded) |

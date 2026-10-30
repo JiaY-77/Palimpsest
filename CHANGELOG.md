@@ -6,6 +6,17 @@
 
 ## [Unreleased]
 
+## [2.20.0] - 2026-10-30 · LTS
+
+**首个长期支持（LTS）版本。** 从本版起承诺：`2.20.x ~ 2.30.x` 区间接口冻结、默认行为不变、数据格式不变，支持 12 个月。完整规则见 [docs/LTS.md](docs/LTS.md)，接口稳定性分级见 [docs/API.md](docs/API.md)。
+
+### 新增
+
+- **LTS 版本策略与接口稳定性分级**：定义三档版本规则（`2.20.x~2.30.x` 只加不删 / `2.31` 起允许小破坏性 / 主版本留给大破坏性），并把 44 个 REST 接口按「稳定契约 / 向后兼容 / 实验性」三级分级——`/report` 与 `/summary` 标注为实验性，其余默认稳定。目的：把「这个版本能放心用多久」从口头承诺变成可核验的条款。
+- **内嵌 embedding 支持 GPU offload**（`EMBEDDING_LOCAL_N_GPU_LAYERS`，默认 `0` = 行为不变）：装了支持 GPU 的 `llama-cpp-python` wheel 时可把模型卸载到显卡。`0` 时不传该参数，调用与改动前逐位一致；设了值但 wheel 是 CPU-only 版本时**明确报错而非静默降级**（配置了 GPU 却拿到 CPU 性能会让人误判）；能力检查放在模型解析之前，配置错误立刻失败，不会先白下 610MB 模型。启动自检同步报 error。新增 4 条测试（注入假 `llama_cpp`，CI 不装可选依赖也能跑）。
+
+### 变更
+
 - **判卷集扩容 30 → 62（quarantined 人工判词）**：quarantined 40 条全部是同一类失败
 （`top1 cos >= 0.60` 但 `margin < 0.06`）。逐条取真实 top-3 后发现**这类题的老 gold 全部失效或标错**
 （40 条中 old gold 命中 top-3 的为 0），因此不是放宽阈值而是重新指认答案：32 条判为 `reresolved`
@@ -16,6 +27,9 @@
 在更灵敏的尺子上依然成立。
 
 ### 文档
+
+- **部署文档不再建议调小 `EMBEDDING_LOCAL_N_BATCH`**：该参数同时是分块池化的块长上限，调小会让已有向量全部失效、必须整库重嵌（实测：2900 节点按 128 token 重切，一小时仍未跑完），而 639MB 模型本身是硬地板，省下的只是计算批缓冲。2GB 机器唯一推荐的路是改用进程外 embedding。同时修正了旧文案里仍描述 `#232` 之前「静默截断」行为的过时表述。
+- **文档门禁补失败路径测试**：`docs/API.md` 的路由表形状此前没有失败路径测试——将来若解析逻辑失效，检查会在空集上静默通过（假绿）。新增 3 条测试（缺路由 → error、多路由 → error、`{id}` ↔ `{node_id}` 占位符归一不误报），并在 `CONTRIBUTING.md` 增加「哪个文件拥有哪个事实」一节。
 
 - **检索质量文档新增 8.9 节：小说/RP 域退役后的新基线 + 实体锚定（M1a）结论**：库删除 `domain=novel`（128）
 与 `domain=由佳`（4）共 132 个节点（3020 → 2888，整组备份 + 回读校验，删除失败 0，`doctor` 11 项全 OK）。
@@ -667,7 +681,7 @@ M1a 按 kill criteria 停：`reach@2` 20%（越过 15% 门槛，但上升全部�
 
 ## [1.0.0] - 2026-08-29
 
-第一个正式开源版本。此前内部迭代版本（v0.x / v1.x / v2.x）不对外发布，1.0 起为对外稳定基线。
+第一个正式开源版本。此前为内部迭代期（早期内部编号与现在对外的版本号不是同一套，勿混淆），1.0 起为对外稳定基线；**v2.20.0 起进入长期支持（LTS）**，承诺见 [docs/LTS.md](docs/LTS.md)。
 
 ### 核心能力
 
@@ -712,7 +726,8 @@ M1a 按 kill criteria 停：`reach@2` 20%（越过 15% 门槛，但上升全部�
 
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
-[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.19.0...HEAD
+[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.20.0...HEAD
+[2.20.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.20.0
 [2.19.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.19.0
 [2.18.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.18.0
 [2.17.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.17.0
