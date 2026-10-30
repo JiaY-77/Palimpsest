@@ -21,11 +21,12 @@ from core.startup_check import _check_key_files
 from mcp_tools import store
 
 # doctor 检查项数量：
-#   ①~⑦ run_startup_check（关键文件 / Store 初始化 / FTS5 / FTS 索引完整性 / 依赖 / Embedding / 分块配置）
-#   ⑧ 向量维度一致性   ⑨ domain 字段迁移状态   ⑩ 运行时路径字符集
-#   ⑪ 向量空间一致性（指纹守卫；startup_check 里同名那项是轻量 WARN 版，doctor 会跳过它）
+#   ①~⑧ run_startup_check（关键文件 / Store 初始化 / FTS5 / FTS 索引完整性 / 依赖 / Embedding /
+#      分块配置 / GPU 卸载配置）
+#   ⑨ 向量维度一致性   ⑩ domain 字段迁移状态   ⑪ 运行时路径字符集
+#   ⑫ 向量空间一致性（指纹守卫；startup_check 里同名那项是轻量 WARN 版，doctor 会跳过它）
 # 新增检查项时只改这一处（原先三处硬编码 6，加第 ⑦ 项时三处齐红）。
-_EXPECTED_CHECK_COUNT = 11
+_EXPECTED_CHECK_COUNT = 12
 
 
 @pytest.fixture
