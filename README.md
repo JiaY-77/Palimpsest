@@ -11,8 +11,11 @@
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Backends](https://img.shields.io/badge/Backends-DeepSeek%E2%80%A2Ollama%E2%80%A2Built--in-6f42c1.svg)](/)
 [![CI](https://github.com/JiaY-77/Palimpsest/actions/workflows/ci.yml/badge.svg)](https://github.com/JiaY-77/Palimpsest/actions/workflows/ci.yml)
+[![LTS](https://img.shields.io/badge/LTS-v2.20-2ea44f.svg)](docs/LTS.md)
 
 **中文** | [English](./README_EN.md)
+
+> **v2.20.0 是首个 LTS 版本**：接口冻结、默认行为与数据格式不变，支持至 **2027-10-30**。承诺细则见 [docs/LTS.md](docs/LTS.md)。
 
 </div>
 
@@ -230,7 +233,7 @@ python scripts/palimpsest_cli.py doctor
 | `PIN_DOMAIN` | *（空 = 关闭）* | 常驻域：该 domain 的 `active` 节点每轮**无条件**注入（不参与语义相似度竞争），用于「必须每轮生效」的规则 |
 | `PIN_BUDGET_CHARS` | `3000` | 常驻块字符预算，按节点边界截断；超预算在 `pin.truncated` / `pin.dropped` 报告 |
 
-完整配置表（62 项，含默认值与生效条件）见 [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)。
+完整配置表（77 项，含默认值与生效条件）见 [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)。
 
 ---
 
@@ -247,9 +250,9 @@ README 只放「上手要用的」。其余按职责分在 `docs/`——**加东
 | 你想做什么 | 看这篇 |
 |---|---|
 | 装（三条向量引擎路径、硬件要求、换模型） | [docs/INSTALL.md](docs/INSTALL.md) |
-| 查命令（21 个 MCP 工具 / 25 个 CLI 子命令 / 32 条 REST 路由 / 区块语义 / 索引规则） | [docs/REFERENCE.md](docs/REFERENCE.md) |
+| 查命令（21 个 MCP 工具 / 25 个 CLI 子命令 / 44 条 REST 路由 / 区块语义 / 索引规则） | [docs/REFERENCE.md](docs/REFERENCE.md) |
 | 知道什么时候用哪个工具 | [docs/USAGE.md](docs/USAGE.md) |
-| 配环境变量（62 项全表） | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) |
+| 配环境变量（77 项全表） | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) |
 | 懂设计（机制清单、与其它方案对比、Markdown 定位、适用场景） | [docs/DESIGN.md](docs/DESIGN.md) |
 | 跑测试 / 读评测 / 看仓库结构 / 开发约定 | [docs/TESTING.md](docs/TESTING.md) |
 | 改代码（分层约定、加工具、门禁） | [CONTRIBUTING.md](CONTRIBUTING.md) |
@@ -257,6 +260,7 @@ README 只放「上手要用的」。其余按职责分在 `docs/`——**加东
 | 接 Obsidian 知识库 | [docs/OBSIDIAN.md](docs/OBSIDIAN.md) |
 | 双时态 / 安全 / 记忆包 / 完整 API | [BITEMPORAL](docs/BITEMPORAL.md) · [SECURITY](SECURITY.md) · [MEMORYHUB](docs/MEMORYHUB.md) · [API](docs/API.md) |
 | 检索质量与实测数据 | [RETRIEVAL_QUALITY](docs/RETRIEVAL_QUALITY.md) · [CONFIDENCE](docs/CONFIDENCE.md) |
+| 长期支持承诺 / 版本规则 / 接口稳定性分级 | [LTS](docs/LTS.md) |
 | 发版流程 / 变更历史 / 弃用计划 | [RELEASING](docs/RELEASING.md) · [CHANGELOG](CHANGELOG.md) · [DEPRECATIONS](docs/DEPRECATIONS.md) |
 
 ---

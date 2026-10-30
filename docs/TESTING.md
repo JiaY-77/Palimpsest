@@ -21,7 +21,7 @@ venv/Scripts/python.exe eval/run_eval.py
 
 ## 项目结构
 
-`main.py`（REST 唯一写者）/ `mcp_server.py`（stdio 逃生梯）/ `config.py` → `core/`（共享引擎，无框架依赖）→ `mcp_tools/`（19 个工具，MCP/REST/CLI 共用）；另有 `scripts/` 运维脚本、`eval/` 离线评测、`hermes-plugin/` 双插件、`tests/`、`docs/`、`data/`。分层约定与完整树见 [CONTRIBUTING.md](../CONTRIBUTING.md)。
+`main.py`（REST 唯一写者）/ `mcp_server.py`（stdio 逃生梯）/ `config.py` → `core/`（共享引擎，无框架依赖）→ `mcp_tools/`（21 个工具，MCP/REST/CLI 共用）；另有 `scripts/` 运维脚本、`eval/` 离线评测、`hermes-plugin/` 双插件、`tests/`、`docs/`、`data/`。分层约定与完整树见 [CONTRIBUTING.md](../CONTRIBUTING.md)。
 
 **图谱建边：** `scripts/build_structural_edges.py` 从七个来源为图谱补边（同源分组 `PART_OF` / 切片顺序 `NEXT` / 技能相关 `SKILL_RELATED_TO` / 小说关系 `RELATED_TO` / Markdown 双链 `WIKI_LINK` / 会话时序链 `FOLLOWS` 与名称提及 `MENTIONS` / **知识关联 `REFERENCES`**——把记忆的 `linked_from` 落成「记忆 → 知识切片」的边）。**默认只读 dry-run** 并打印影响面预测，确认后加 `--apply` 落库（批次清单可 `--rollback` 精确回滚）。`build_kb_index.py` / `build_skill_index.py` 重建索引后会自动补边，可用 `PALIMPSEST_BUILD_EDGES=0` 关闭。
 
