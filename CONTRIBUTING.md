@@ -11,6 +11,7 @@ Thanks for taking the time to contribute. Whether you are fixing a bug, adding a
 - [Adding a New Tool](#adding-a-new-tool)
 - [Testing](#testing)
 - [Code Quality](#code-quality)
+- [Document Ownership](#document-ownership)
 - [Commit Conventions](#commit-conventions)
 - [Pull Requests](#pull-requests)
 - [Releases](#releases)
@@ -141,6 +142,29 @@ python -m pytest --cov=core --cov=mcp_tools -q     # coverage baseline (reported
 Install the dev toolchain with `pip install -r requirements-dev.txt`. The `ruff` version is pinned there and in CI so the gate cannot drift between environments; when ruff reports a false positive, prefer a targeted `# noqa: <rule>` with a short reason over weakening the rule set.
 
 If your change touches user-facing behavior (CLI / REST / tools / config keys), update `README.md` **and** `README_EN.md`, plus `.env.example` when you add a configuration key. `python scripts/readme_check.py` verifies the docs against the code — MCP tool list, CLI subcommands, REST routes, config keys **and their default values**, file references, and inline-code pairing — and is enforced by the CI `docs` job (`--strict`: warnings fail too), so a mismatch cannot be merged unnoticed.
+
+---
+## Document Ownership
+
+Every user-facing fact must live in exactly one **authoritative** file. When the same fact shows up in several documents (README keeps a summary, `docs/` carries the full reference), the authoritative file below is where the change is made — other mentions exist only as pointers or curated subsets, and the checker verifies they do not drift.
+
+| Fact                          | Authoritative source                                                              |
+| ----------------------------- | ---------------------------------------------------------------------------------- |
+| REST routes (`main.py`)       | `docs/API.md`                                                                       |
+| Configuration keys & defaults | `docs/CONFIGURATION.md`                                                             |
+| Deployment boundary & memory requirements | `docs/DEPLOY.md`                                                        |
+| Retrieval eval method & judging standard  | `docs/RETRIEVAL_QUALITY.md`                                             |
+| Version & change history      | `CHANGELOG.md`                                                                      |
+
+If a fact that belongs there has leaked into another document, move it back instead of maintaining two copies by hand.
+
+`scripts/readme_check.py` is the gate for this table: run
+
+```bash
+python scripts/readme_check.py
+```
+
+after every docs edit. It compares what the documents claim with what the code actually registers (MCP tools, CLI subcommands, REST routes, config keys and defaults, version numbers) and fails loudly on any mismatch. It validates **consistency, not prose** — a stylistically poor but accurate document passes, a well-written one that fails to match the code does not. The CI `docs` job runs it with `--strict`, so even warnings block a merge.
 
 ---
 

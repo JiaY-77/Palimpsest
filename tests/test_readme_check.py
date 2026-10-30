@@ -229,6 +229,62 @@ def test_cli_commands_missing_section_warns(checker: ModuleType, tmp_path: Path)
     assert any("未找到区块" in w and "### CLI 命令" in w for w in warnings), warnings
 
 
+# ---- 1d：docs/API.md 的路由表（反引号方法 / 路径形状）↔ main.py 双向一致 ----
+#
+# docs/API.md 是全表（44 条），README 系只留常用子集；它的形状独立于其余文档，
+# 这里证明「文档少一条 / 多一条」都会变成 error 而非静默放行。
+
+
+def _api_doc(rows: list[tuple[str, str]]) -> str:
+    """拼一张 docs/API.md 形状的表：方法与路径都带反引号，第三列任意。"""
+    body = "\n".join(f"| `{m}` | `{p}` | 说明 |" for m, p in rows)
+    return f"## REST API — `main.py`\n\n| 方法 | 路径 | 说明 |\n|---|---|---|\n{body}\n"
+
+
+def test_api_doc_missing_route_is_error(checker: ModuleType, tmp_path: Path) -> None:
+    """docs/API.md 少一条路由 → 必须报 error（代码有、文档未列），不能降级成 warning。"""
+    routes = '@app.get("/health")\nasync def health():\n    pass\n@app.get("/doctor")\nasync def doctor():\n    pass\n'
+    root = _build_repo(tmp_path, main_py=routes)
+    api = root / "docs" / "API.md"
+    # 只写 /health，故意漏掉 /doctor
+    api.write_text(_api_doc([("GET", "/"), ("GET", "/health")]), encoding="utf-8")
+
+    report = checker.check_rest_routes(root)
+
+    assert any("均未列" in e and "/doctor" in e for e in report.errors), (report.errors, report.warnings)
+    assert not any("/doctor" in w for w in report.warnings), report.warnings
+
+
+def test_api_doc_phantom_route_is_error(checker: ModuleType, tmp_path: Path) -> None:
+    """docs/API.md 多写一条代码没注册的路由 → 必须报 error（文档有、代码没有）。"""
+    routes = '@app.get("/health")\nasync def health():\n    pass\n'
+    root = _build_repo(tmp_path, main_py=routes)
+    api = root / "docs" / "API.md"
+    api.write_text(_api_doc([("GET", "/"), ("GET", "/health"), ("GET", "/ghost")]), encoding="utf-8")
+
+    report = checker.check_rest_routes(root)
+
+    assert any("API.md: 文档有、代码没有" in e and "/ghost" in e for e in report.errors), (
+        report.errors,
+        report.warnings,
+    )
+
+
+def test_api_doc_placeholder_routes_are_normalized(checker: ModuleType, tmp_path: Path) -> None:
+    """路径占位符经归一化可比：文档 {id} ↔ 代码 {node_id} 不得误报。"""
+    routes = (
+        '@app.get("/memory/{node_id}")\nasync def get_memory(node_id: int):\n    pass\n'
+        '@app.delete("/memory/{node_id}")\nasync def del_memory(node_id: int):\n    pass\n'
+    )
+    root = _build_repo(tmp_path, main_py=routes)
+    api = root / "docs" / "API.md"
+    api.write_text(_api_doc([("GET", "/memory/{id}"), ("DELETE", "/memory/{id}")]), encoding="utf-8")
+
+    report = checker.check_rest_routes(root)
+
+    assert report.errors == [], (report.errors, report.warnings)
+
+
 def test_private_terms_flags_nickname_and_personal_path(checker, tmp_path):
     """对外文档出现内部称呼 / 个人绝对路径必须报错（开源脱敏红线）。
 
