@@ -439,6 +439,10 @@ class Config:
     EMBEDDING_LOCAL_CHUNK_TOKENS = int(os.getenv("EMBEDDING_LOCAL_CHUNK_TOKENS", "512"))
     # CPU 线程数；0 = 交 llama.cpp 自动决定
     EMBEDDING_LOCAL_N_THREADS = int(os.getenv("EMBEDDING_LOCAL_N_THREADS", "0"))
+    # 卸载多少层到 GPU（0 = 全部留在 CPU，默认行为不变；99 通常表示全卸载）。
+    # 只有装了支持 GPU 的 llama-cpp-python wheel 才生效：CPU-only wheel 会
+    # 拒绝（llama_supports_gpu_offload() == False），此时设 >0 会报错而不是静默降级。
+    EMBEDDING_LOCAL_N_GPU_LAYERS = int(os.getenv("EMBEDDING_LOCAL_N_GPU_LAYERS", "0"))
 
     # ---- 根据后端动态取得当前使用的配置 ----
     @classmethod

@@ -566,6 +566,30 @@ class TriviumStore:
 
                     model_path = ""
                     try:
+                        # GPU offload 校验放在 resolve_model_path() 之前：配置与
+                        # wheel 能力冲突时立刻报错，不先走模型定位（那可能触发
+                        # 610MB 自动下载，白等白费流量）。
+                        # == 0 → llama_kwargs 保持空 dict，Llama(...) 调用与
+                        #   改动前逐位一致（绝不注入 n_gpu_layers 默认值）。
+                        # > 0 且 wheel 支持 → 传 n_gpu_layers 开 offload；
+                        # > 0 且 wheel 是 CPU-only（llama_supports_gpu_offload()
+                        #   == False）→ 报 EmbeddingUnavailableError，绝不静默
+                        #   降级成纯 CPU 跑（配置了 GPU 却拿到 CPU 性能是静默失败）。
+                        n_gpu_layers = int(Config.EMBEDDING_LOCAL_N_GPU_LAYERS)
+                        llama_kwargs: dict[str, Any] = {}
+                        if n_gpu_layers > 0:
+                            import llama_cpp
+
+                            if not llama_cpp.llama_supports_gpu_offload():
+                                raise EmbeddingUnavailableError(
+                                    f"EMBEDDING_LOCAL_N_GPU_LAYERS={n_gpu_layers}，但当前 llama-cpp-python "
+                                    "是 CPU-only 版本（llama_supports_gpu_offload() == False），"
+                                    "无法 GPU offload。二选一：换装支持 GPU 的 llama-cpp-python wheel"
+                                    "（如 CUDA 构建版），或把 EMBEDDING_LOCAL_N_GPU_LAYERS 设回 0"
+                                    f"（保持纯 CPU，默认行为）。（模型文件：{Config.EMBEDDING_MODEL_FILE}）"
+                                )
+                            llama_kwargs["n_gpu_layers"] = n_gpu_layers
+
                         model_path = resolve_model_path()
                         _LOCAL_LLM = Llama(
                             model_path=model_path,
@@ -575,6 +599,7 @@ class TriviumStore:
                             n_threads=Config.EMBEDDING_LOCAL_N_THREADS or None,
                             pooling_type=LLAMA_POOLING_TYPE_LAST,
                             verbose=False,
+                            **llama_kwargs,
                         )
                     except EmbeddingUnavailableError:
                         raise

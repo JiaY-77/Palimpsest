@@ -39,6 +39,7 @@
 | `EMBEDDING_LOCAL_N_BATCH` | `512` | llama.cpp 批大小，**同时是分块池化的块长上限**（`EMBEDDING_LOCAL_CHUNK_TOKENS` 必须 ≤ 它）。**不建议调小**：调小会让块长跟着变小、已有向量全部失效，必须整库重嵌（2026-10-30 实测：2900 节点按 128 token 重切，一小时仍未跑完），而 639MB 模型是硬地板、省下的只是计算批缓冲；2GB 机器请改用进程外 embedding（llama-server / Ollama / 云端 key） | `EMBEDDING_PROVIDER=local` |
 | `EMBEDDING_LOCAL_CHUNK_TOKENS` | `512` | 分块池化块长（issue #232）：超过该 token 数的 content 按 token 边界切块，逐块嵌入（块内 LAST pooling）后按块内 token 数加权平均再归一——长节点向量覆盖全文而非只有前缀（实测 cos vs 全文 0.92，旧截断仅 0.405）。**必须 ≤ `EMBEDDING_LOCAL_N_BATCH`**，否则块本身又被 `embed()` 的 `tokens[:n_batch]` 静默截断，分块白做（自检会报 error 拦下）。默认 512 = 与 n_batch 相同 | `EMBEDDING_PROVIDER=local` |
 | `EMBEDDING_LOCAL_N_THREADS` | `0` | CPU 线程数；`0` = 交引擎自行决定 | `EMBEDDING_PROVIDER=local` |
+| `EMBEDDING_LOCAL_N_GPU_LAYERS` | `0` | 卸载多少层到 GPU（`0` = 全部留在 CPU；`99` 通常表示全卸载）。只有装了支持 GPU 的 llama-cpp-python wheel 才生效——CPU-only wheel（`llama_supports_gpu_offload() == False`）下设 `>0` 会报错，不静默降级为纯 CPU。启动自检同样校验（error 级） | `EMBEDDING_PROVIDER=local` |
 | `MEMORY_DECAY_FACTOR` | `0.95` | 月度记忆衰减（排序用，`score × importance × factor^(天/30)`）；`1.0` 关闭衰减；`kb_chunk` 节点永不衰减 | soft 模式：仅进入 ε 微调项 `recency_norm`（ε 默认 0.02 → 排序影响 ≤0.02，一年内约 0.01 量级，近乎半死参数）；hard 模式：乘性硬加权 |
 | `MEMORY_RERANK_MODE` | `soft` | 重排模式：`soft` = 语义分为主线 + ε 级元数据微调（默认）；`hard` = 旧版乘性硬加权（可回退） | — |
 | `SOFT_RERANK_EPS` | `0.02` | `soft` 模式的 ε：落在余弦分差区间的 15%–40%，只做 tie-break | `MEMORY_RERANK_MODE=soft` |
