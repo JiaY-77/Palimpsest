@@ -74,17 +74,30 @@ def test_pipeline_page_rank_one_row_per_node(tdb):
 # ---------------------------------------------------------------------------
 # 集合代数
 # ---------------------------------------------------------------------------
+# TriviumDB 0.9.0 起不再支持 TQL 的集合代数：UNION / INTERSECT / EXCEPT 会被
+# 解析器当作「语句尾部多余输入」拒绝（0.9.0-beta.2 尚可）。本仓库核心代码
+# （core/ main.py mcp_tools/）零使用，故不构成功能回退；保留用例作为能力探针，
+# 上游恢复该语法后 xpass 会立刻报出来，届时删掉标记即可。
+_XFAIL_SET_ALGEBRA = pytest.mark.xfail(
+    strict=True,
+    reason="TriviumDB 0.9.0 移除了 TQL 集合代数（UNION/INTERSECT/EXCEPT）",
+)
+
+
+@_XFAIL_SET_ALGEBRA
 def test_union(tdb):
     rows = tdb.tql("MATCH (a)-[:REL]->(b) RETURN b UNION MATCH (a)-[:CAUSES]->(b) RETURN b")
     # REL 命中 4 个目标，CAUSES 命中 2 个目标，UNION 去重后也是这 4 个
     assert len(_rel_ids(rows, "b")) >= 4
 
 
+@_XFAIL_SET_ALGEBRA
 def test_intersect(tdb):
     rows = tdb.tql("MATCH (a)-[:REL]->(b) RETURN b INTERSECT MATCH (a)-[:REL]->(b) RETURN b")
     assert len(_rel_ids(rows, "b")) == 4
 
 
+@_XFAIL_SET_ALGEBRA
 def test_except(tdb):
     rows = tdb.tql("MATCH (a)-[:REL]->(b) RETURN b EXCEPT MATCH (a)-[:CAUSES]->(b) RETURN b")
     # 在 REL 目标中剔除也是 CAUSES 目标的节点

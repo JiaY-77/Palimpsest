@@ -8,11 +8,11 @@
 
 | | |
 |---|---|
-| Version | v2.20.0 |
+| Version | v2.20.1 |
 | **LTS** | **Yes — first LTS, supported until 2027-10-30** ([contract](docs/LTS.md)) |
 | Python | 3.10+ |
 | License | MIT |
-| Storage | TriviumDB 0.9.0b2 (vector + graph + document, embedded) |
+| Storage | TriviumDB 0.9.0 (vector + graph + document, embedded) |
 | Backends | DeepSeek / Ollama (LLM), built-in local / Ollama / OpenAI-compatible (embeddings) |
 | CI | [![CI](https://github.com/JiaY-77/Palimpsest/actions/workflows/ci.yml/badge.svg)](https://github.com/JiaY-77/Palimpsest/actions/workflows/ci.yml) |
 

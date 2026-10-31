@@ -80,7 +80,9 @@ def test_storage_info_metadata(tdb):
     # 与安装版本动态比对：钉死字面量会让每次依赖升级都假红，
     # 而这条断言的真实意图是「storage_info 报的是真装的那版」，不是「装的必须是某版」。
     assert _ver_key(info["package_version"]) == _ver_key(pkg_version("triviumdb"))
-    assert info["database_format_current"] == 9
+    # 格式号不钉死字面量：0.9.0 起主文件为 v10，钉死会让每次依赖升级假红；
+    # 这条断言的真实意图是「格式号存在且不低于本仓库依赖的基线（v9）」。
+    assert info["database_format_current"] >= 9
     assert info["database_format_minimum"] <= info["database_format_current"]
     assert info["access_mode"] in ("read_write", "read_only", "immutable")
     assert "sidecars" in info and isinstance(info["sidecars"], dict)

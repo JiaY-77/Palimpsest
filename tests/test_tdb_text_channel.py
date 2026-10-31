@@ -57,7 +57,9 @@ def _mk_bare_db(tmp_path, monkeypatch, nodes: dict[int, str]):
     monkeypatch.setattr(Config, "DB_PATH", str(tmp_path / "mh.db"))
     import triviumdb
 
-    dim = 8
+    # 维度对齐生产配置（默认 1024）：0.9.0 起构造时严格校验维度，
+    # 小维度夹具库会与进程级共享连接的单例维度冲突。
+    dim = 1024
 
     def _vec(nid: int) -> list[float]:
         return [1.0 if i == nid % dim else 0.0 for i in range(dim)]

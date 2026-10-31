@@ -84,17 +84,12 @@ def test_wrong_param_name_fails(tdb):
 
 
 def test_non_finite_value(tdb):
-    """非有限数值：当前 build 未 fail-closed（不抛错，仅返回行）。
+    """非有限数值必须 fail-closed（0.9.0 起在 JSON 编码阶段即拒）。
 
     依据 API 参考「Prepared 参数只接受 null/bool/string/number；缺参、额外参数、
-    数组/对象和非有限数值明确失败」，此处应失败。但实测 inf 未触发报错，属
-    0.8.3 与文档不一致 —— 先记录为可观察行为，不判定失败（避免误报）。"""
+    数组/对象和非有限数值明确失败」。0.8.3 实测宽松（inf 不报错），0.9.0 起
+    改为抛 ValueError「JSON 浮点数必须有限」——断言「必须失败」而非绑定异常类型。
+    """
     prepared = tdb.prepare_tql('FIND {type: "note"} RETURN $bonus AS score')
-    try:
-        rows = tdb.execute_prepared_tql(prepared, {"bonus": float("inf")})
-    except RuntimeError:
-        # 未来版本若收紧，则按文档断言语义通过
-        assert True
-        return
-    # 当前宽松行为：能返回行（记录观察）
-    assert isinstance(rows, list)
+    with pytest.raises((RuntimeError, ValueError)):
+        tdb.execute_prepared_tql(prepared, {"bonus": float("inf")})

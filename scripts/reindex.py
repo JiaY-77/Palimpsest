@@ -225,7 +225,11 @@ def cmd_reindex(store, *, only=None, skip=None, batch=64, restart=False, dry_run
                 file=sys.stderr,
             )
             return 3
-        raise
+        # TriviumDB 0.9.0 起构造期严格校验维度：库维度与 store.dim 不符时，
+        # 占用预检本身就会抛「向量维度不匹配」。这不是「库不可用」，
+        # 交给下面的维度红线给出退出码 2 与可读说明（且一字节不写）。
+        if not ("维度" in str(e) or "dimension" in emsg):
+            raise
 
     # 2) 维度红线（4 = embedding 服务不可用；2 = 维度不匹配）
     ok, actual, msg = _check_dims(store)
