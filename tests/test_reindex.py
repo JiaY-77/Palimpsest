@@ -19,7 +19,6 @@ import re
 
 import pytest
 
-from core import trivium_store as ts_mod
 from mcp_tools import store
 
 
@@ -219,25 +218,31 @@ def test_reindex_db_real_dim_2560_probe_1024(iso_db, monkeypatch, tmp_path):
     assert actual == 1024
     assert "2560" in msg and "库实际" in msg
 
+    # 一字节不写：库文件组字节哈希在 cmd_reindex 前后完全一致。
+    # 直接比字节而不经引擎——0.9.0 起 TriviumDB 构造期严格校验维度，
+    # store 单例的 dim(1024) 与该库(2560) 不符，走 store 读回会自己抛错，
+    # 反而掩盖了本条要验的「没写」。
+    import hashlib
+
+    def _group_digest(path) -> str:
+        h = hashlib.sha256()
+        for f in sorted(path.parent.glob(path.name + "*")):
+            h.update(f.name.encode())
+            h.update(f.read_bytes())
+        return h.hexdigest()
+
+    before = _group_digest(dim2560_db)
     code = cmd_reindex(s, yes=True, batch=100)
     assert code == 2
-
-    # 一字节不写：库中所有节点向量仍为 2560 维原值
-    # （issue #167 单例：共享连接常开，_all_ids 的裸连接必须先 reset 释放库
-    # 文件才能打开；store 读回时会按需重建共享连接。）
-    ts_mod.reset_connections_for_test()
-    old_vectors = {nid: _read_vectors(s, [nid])[nid] for nid in _all_ids(dim2560_db)}
-    ts_mod.reset_connections_for_test()
-    new_vectors = {nid: _read_vectors(s, [nid])[nid] for nid in _all_ids(dim2560_db)}
-    assert new_vectors == old_vectors
-    for vec in new_vectors.values():
-        assert len(vec) == 2560
+    assert _group_digest(dim2560_db) == before, "维度红线拦截后必须一字节不写"
 
 
-def _all_ids(db_path):
+def _all_ids(db_path, dim=1024):
     import triviumdb
 
-    d = triviumdb.TriviumDB(str(db_path))
+    # 0.9.0 起 TriviumDB 构造期严格校验维度：裸开探测也要传对维度，
+    # 否则默认 1536 会与库实际维度冲突直接抛错。
+    d = triviumdb.TriviumDB(str(db_path), dim=dim)
     try:
         return d.all_node_ids()
     finally:

@@ -6,6 +6,24 @@
 
 ## [Unreleased]
 
+## [2.20.1] - 2026-10-31
+
+### 依赖
+
+- **TriviumDB 0.9.0（正式版）**：从 `0.9.0b2` 升到 `0.9.0`。存储格式随之进入 `.tdb` v10 / `.pidx` v8 / `.quiver.meta` v2 / `.flush_ok` v3，打开旧库由内核按几何校验迁移——生产升级前做整组冷备份（`scripts/backup_db.py`，回读校验 2997 节点 / FTS 2993 行通过）。**降级需使用升级前的整组备份。**
+
+### 修复
+
+- **维度探测改为两段式**（`core/dims.py`）：0.9.0 起 `TriviumDB` 构造期严格校验 `dim` 与库内实际维度（旧版忽略入参），原「随便传 `store.dim` 打开再读 `storage_info`」的姿势会在维度不符的库上直接抛错。改为「先按 `store.dim` 试开 → 从异常信息取期望值重试 → 兜底遍历常见维度」。
+- **`reindex` 占用预检放行维度错误**（`scripts/reindex.py`）：维度不符时占用预检本身会抛「向量维度不匹配」，原逻辑当成「库被占用」抛出去；现在落到维度红线，返回退出码 2 且一字节不写。
+
+### 测试
+
+- 夹具维度对齐生产配置（`test_doctor` / `test_tdb_text_channel` / `test_db_health_and_backup`）：0.9.0 严格维度校验下，小维度夹具库会与进程级共享连接单例的维度冲突，改为与 `Config.EMBEDDING_DIM` 一致。
+- `test_reindex` 的「一字节不写」改用库文件组字节哈希对比（不经引擎，避开维度校验，语义更强）。
+- `test_non_finite_value` 改为断言「必须失败」（0.9.0 起在 JSON 编码阶段即拒，抛 `ValueError`）。
+- TQL 集合代数（`UNION` / `INTERSECT` / `EXCEPT`）在 0.9.0 被移除，三个用例标 `xfail(strict=True)` 作为能力探针（核心代码零使用，不构成功能回退）。
+- `test_storage.py` 的格式号断言改为「不低于基线 v9」，避免每次依赖升级假红。
 ## [2.20.0] - 2026-10-30 · LTS
 
 **首个长期支持（LTS）版本。** 从本版起承诺：`2.20.x ~ 2.30.x` 区间接口冻结、默认行为不变、数据格式不变，支持 12 个月。完整规则见 [docs/LTS.md](docs/LTS.md)，接口稳定性分级见 [docs/API.md](docs/API.md)。
@@ -726,11 +744,13 @@ M1a 按 kill criteria 停：`reach@2` 20%（越过 15% 门槛，但上升全部�
 
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
-[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.20.0...HEAD
+[Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.20.1...HEAD
+[2.20.1]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.20.1
 [2.20.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.20.0
 [2.19.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.19.0
 [2.18.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.18.0
 [2.17.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.17.0
+
 [2.16.2]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.16.2
 [2.16.1]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.16.1
 [2.16.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.16.0

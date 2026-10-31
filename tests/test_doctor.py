@@ -353,7 +353,9 @@ def _insert_raw_nodes(db_path: str, count: int) -> None:
     """绕过 store 直插节点（模拟既有库/恢复库的初始状态）。"""
     import triviumdb
 
-    dim = 16
+    # 维度对齐生产配置（Config.EMBEDDING_DIM 默认 1024）：0.9.0 起 TriviumDB 构造时
+    # 严格校验维度，小维度夹具库会与进程级共享连接的单例维度冲突。
+    dim = 1024
     db = triviumdb.TriviumDB(db_path, dim=dim)
     db.batch_insert_with_ids(
         list(range(1, count + 1)),

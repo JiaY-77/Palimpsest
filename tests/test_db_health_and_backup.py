@@ -124,6 +124,9 @@ def _run_backup(db_path: str, tmp_path, monkeypatch, capsys):
     from scripts import backup_db
 
     monkeypatch.setattr(Config, "DB_PATH", db_path)
+    # 0.9.0 起 TriviumDB 构造时严格校验维度：副本校验用 Config 的维度打开，
+    # 夹具库是 dim=DIM 的小库，必须让配置与夹具一致，否则报「维度不匹配」。
+    monkeypatch.setattr(Config, "OLLAMA_EMBEDDING_DIM", DIM, raising=False)
     target = str(tmp_path / "backups")
     monkeypatch.setattr(sys, "argv", ["backup_db.py", "--target", target])
     code = backup_db.main()

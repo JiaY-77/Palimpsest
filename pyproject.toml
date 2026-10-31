@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "palimpsest"
-version = "2.20.0"
+version = "2.20.1"
 description = "A local-first long-term memory system: TriviumDB vector storage + Ollama/OpenAI embeddings, providing memory write/retrieve, knowledge graph, and knowledge-base tools via MCP/REST/CLI."
 requires-python = ">=3.10"
 dependencies = [
@@ -16,10 +16,11 @@ dependencies = [
     "python-dotenv==1.2.2",
     "python-multipart==0.0.27",
     "requests==2.33.1",
-    # 锁 0.9.0b2：#72（0.8.11 文本索引校验与「flush() 保留已有 .text」语义冲突，
-    # 会导致含 .text 的整库写失败）已由上游修复，修复随 0.9.0-beta.2 落地；
-    # 勿回 0.8.11（问题版本）。0.9.0 正式版发布后再评估升正式版。
-    "triviumdb==0.9.0b2",
+    # 锁 0.9.0（正式版）：#72（0.8.11 文本索引校验与「flush() 保留已有 .text」语义冲突，
+    # 会导致含 .text 的整库写失败）已在 0.9.0-beta.2 修复，正式版沿用该修复；
+    # 勿回 0.8.11（问题版本）。0.9.0 起存储格式为 .tdb v10 / .pidx v8，
+    # 打开旧库由内核按几何校验迁移（升级前须整组冷备份）。
+    "triviumdb==0.9.0",
     "uvicorn==0.46.0",
 ]
 
