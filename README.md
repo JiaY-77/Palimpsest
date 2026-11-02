@@ -232,8 +232,13 @@ python scripts/palimpsest_cli.py doctor
 | `KNOWLEDGE_DIR` | *（可选）* | 知识库根目录（待索引的 Obsidian `.md` 文件） |
 | `PIN_DOMAIN` | *（空 = 关闭）* | 常驻域：该 domain 的 `active` 节点每轮**无条件**注入（不参与语义相似度竞争），用于「必须每轮生效」的规则 |
 | `PIN_BUDGET_CHARS` | `3000` | 常驻块字符预算，按节点边界截断；超预算在 `pin.truncated` / `pin.dropped` 报告 |
+| `RERANK_ENABLED` | `0` | 语义重排（opt-in）：`1` 时把 `mem_hybrid_search` 的融合候选按 `RERANK_BACKEND` 重排。默认后端 `local_ce` 走本地模型零 API 额度；任何异常 fail-open 回原顺序 |
+| `RERANK_BACKEND` | `local_ce` | 重排后端：`local_ce`（本地 cross-encoder）/ `llm`（远端 listwise，需 `DEEPSEEK_API_KEY`）；非法值视同 `local_ce` |
+| `RERANK_LOCAL_MODEL_PATH` | `models/bge-reranker-v2-m3-Q8_0.gguf` | 本地 cross-encoder 模型路径（相对项目根或绝对路径）；模型下载与依赖安装见 docs/CONFIGURATION.md |
+| `RERANK_LOCAL_N_THREADS` | `0` | 本地重排推理线程数；`0` = 交 llama.cpp 自动 |
+| `RERANK_POOL` | `20` | 参与重排的候选深度；回退旧深度 `RERANK_POOL=40` |
 
-完整配置表（77 项，含默认值与生效条件）见 [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)。
+完整配置表见 [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)（全部配置项的默认值与生效条件，以检查器逐项比对为准）。
 
 ---
 
@@ -252,7 +257,7 @@ README 只放「上手要用的」。其余按职责分在 `docs/`——**加东
 | 装（三条向量引擎路径、硬件要求、换模型） | [docs/INSTALL.md](docs/INSTALL.md) |
 | 查命令（21 个 MCP 工具 / 25 个 CLI 子命令 / 44 条 REST 路由 / 区块语义 / 索引规则） | [docs/REFERENCE.md](docs/REFERENCE.md) |
 | 知道什么时候用哪个工具 | [docs/USAGE.md](docs/USAGE.md) |
-| 配环境变量（77 项全表） | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) |
+| 配环境变量（配置全表） | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) |
 | 懂设计（机制清单、与其它方案对比、Markdown 定位、适用场景） | [docs/DESIGN.md](docs/DESIGN.md) |
 | 跑测试 / 读评测 / 看仓库结构 / 开发约定 | [docs/TESTING.md](docs/TESTING.md) |
 | 改代码（分层约定、加工具、门禁） | [CONTRIBUTING.md](CONTRIBUTING.md) |

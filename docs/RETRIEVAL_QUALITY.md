@@ -621,8 +621,9 @@ RAGAS 的 testset generation、LoCoMo 的基准构建同一思路——先由多
 ## 十、语义重排（rerank，opt-in）
 
 `RERANK_ENABLED=1` 时，混合检索（`mem_hybrid_search` 的 `rrf` / `cascade` 两条路径）把融合候选
-（深度 `RERANK_POOL`，默认 40）交给 LLM 按「对回答这个问题的帮助程度」listwise 重排，
-输出前 `top_k` 个再截回。prompt 与实现见 `core/reranker.py`；配置项见 [CONFIGURATION.md](CONFIGURATION.md)。
+（深度 `RERANK_POOL`）交给后端 `RERANK_BACKEND`（见第十一章）按「对回答这个问题的帮助程度」重排。
+本章描述的是 `llm` 后端（远端 listwise，#272 原路径）；prompt 与实现见 `core/reranker.py`；
+配置项见 [CONFIGURATION.md](CONFIGURATION.md)。
 
 **为什么 opt-in**：单次重排要调一次 LLM，实测 7~15 秒，不适合 pre-turn 自动注入这类延迟敏感
 路径；默认关闭时检索路径连 `core.reranker` 模块都不导入，行为与未引入前逐位一致（回归测试
@@ -651,5 +652,48 @@ RAGAS 的 testset generation、LoCoMo 的基准构建同一思路——先由多
 **读数边界**：oracle 池条件下的 1.000 只说明「gold 已在候选池里、却在 top-5 之外」的题被重排
 救回来了，**不代表线上任意查询**——线上没有 oracle 保证 gold 在池内；52 条已命中题零回退，是
 把「排序」当增益接口最起码的验收要求（排序不许丢已命中的东西）。
+
+## 十一、本地 rerank 后端（`RERANK_BACKEND=local_ce`，#274）
+
+#272 的远端 listwise 重排能用但三处难用：单次 7~15 秒、耗 API 额度、且依赖 provider 特有 header
+（不带 `x-opencode-session` 的端点直接拒绝）。本章给出替代方案的本地实测与选型结论，
+`RERANK_BACKEND=local_ce`（默认）由此而来。
+
+**实验口径与第十章同一套**：同一冻结候选池（rrf 融合后取池深条）、同一 60 题 v3 判卷题集
+（判定与噪声地板见 8.11）、同一 shuffle 种子、同一 snippet 截断（240 字）、同一两侧记账
+（「救回」= 基线未中、加 rerank 后命中；「弄坏」= 基线命中、加 rerank 后丢失；hit@5 分母 = 题，
+命中任一 gold 即算）。
+
+| 打分器 | hit@5 | 救回 / 弄坏 | 单题耗时 | 成本 |
+|---|---|---|---|---|
+| 无 rerank（基线 rrf） | 52/60 = 0.867 | — | — | — |
+| LLM listwise（远端，#272） | 60/60 = 1.000 | 8 / 0 | 7~15 秒 | API 额度 |
+| 本地 cross-encoder（bge-reranker-v2-m3，池 40） | 59/60 = 0.983 | 7 / 0 | 10.3 秒 | 0 |
+| 本地 cross-encoder（**池 20，默认**） | 58/60 = 0.967 | 6 / 0 | 4.8 秒 | 0 |
+
+**选型结论：bge-reranker-v2-m3（Q8_0 GGUF，llama-cpp-python 进程内推理）**：
+
+- 同一候选模型对照：`Qwen3-Reranker-0.6B` 达到同一上限（那 1 题排第 9，仍出不了 top-5），
+  但单题 37 秒、是 bge 的 ~3.6 倍——本地场景选 bge。
+- 差额刚好 1 题，且落在题集判官噪声地板（判官间不一致约 5%）以内；所有配置对
+  **52 条已命中题全部零弄坏**——「排序不许丢已命中」这条接口底线两条后端都守住。
+- 唯一救不回的那 1 题需要多跳推理（问题问「为什么用户怀疑某人摸鱼」，gold 是「用户要求
+  其必须给出**自己的**判断」——零词面重叠），这是 0.6B 打分器共同的能力边界，不是调参问题。
+
+**延迟调参**：`RERANK_POOL` 默认从 40 调到 20（4.8 秒/查询 vs 10.3 秒，差额 1 题在噪声内）；
+`RERANK_SNIPPET_CHARS` 保持 240——降到 160 再丢一条救回，且相对池 20 的提速可以忽略。
+回退方式：`RERANK_POOL=40`；整段回到纯远端行为：`RERANK_BACKEND=llm`（需 `DEEPSEEK_API_KEY`）。
+
+**实现要点**（每条都来自实测故障，见 `core/reranker.py` 与 `tests/test_reranker.py` §10）：
+
+1. 用 `Llama(embedding=True, pooling_type=LLAMA_POOLING_TYPE_RANK)` 加载，输入
+   `"{query}</s>{doc}"`，`create_embedding` 返回的 1024 维向量**只有第 0 维是分数**，
+   其余是 llama.cpp 填充位（NaN/0）——对整向量做聚合都是垃圾。
+2. **必须逐条调用**：encoder 路径要求单条 token 数不超过 ubatch，批量送候选会在 C 层
+   GGML_ASSERT 直接 abort（Python 捕不到，进程死）；实测批量也更慢（395 ms/对 vs 263 ms/对）。
+   该契约由单测钉死。
+3. 三条红线（#272）原样保留：只排序不筛选（`local_ce` 返回池全长：前 `top_k` 按分排，
+   其余按原顺序补后）；任何异常 / 模型缺失 fail-open 回原顺序 + `degraded`（缺模型只探一次
+   磁盘，不逐查询重试）；关闭时零成本（模块连导入都不发生）。
 
 *本页只公开方法与汇总结论；原始题集、逐题结果与含个人数据的报告保留在本地。*

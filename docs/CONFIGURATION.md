@@ -64,13 +64,16 @@
 | `TDB_TEXT_WEIGHT` | `1.0` | TDB 文本通道在 RRF 融合中的权重（同为 `mode=rrf`） | `TDB_TEXT_ENABLED=1` 时 |
 | `TDB_TEXT_LIMIT` | `0` | TDB 文本通道候选量；`0` = 沿用 FTS 的 `fts_limit`，不另配 | `TDB_TEXT_ENABLED=1` 时 |
 | `TDB_TEXT_FTS_FLOOR` | `3` | 条件触发门槛：本次 FTS 命中数 **≥** 此值时**跳过** TDB 路（FTS 已够好，省掉整路的开库 + 载侧车开销）；**<** 此值才走 TDB，只在中文短词/长短语这类 FTS 弱场景付费。`0` = 永不跳过（等价于改动前「永远走 TDB」）。跳过时 `channels["tdb_text"]` 为 `skipped`（与 `degraded` 区分） | `TDB_TEXT_ENABLED=1` 时 |
-| `RERANK_ENABLED` | `0` | **语义重排（opt-in，默认关闭；#272）**：设 `1` 后把混合检索（`mem_hybrid_search` 两条 mode）的融合候选（深度 `RERANK_POOL`）交给 LLM 按「对回答问题的帮助程度」listwise 重排，再截回 `top_k`。离线实测（60 题判卷集、oracle 池条件）hit@5 **0.867 → 1.000**，52 条已命中零丢失。三条红线：只排序不筛选；任何异常 fail-open 回原顺序（`channels.rerank = "degraded"`）；关闭时检索路径连 `core.reranker` 模块都不导入（行为与引入前逐位一致）；详细数字见 [RETRIEVAL_QUALITY.md](RETRIEVAL_QUALITY.md)。单次重排 7~15 秒，不适用于 pre-turn 自动注入 | `RERANK_ENABLED=1`（另需 `DEEPSEEK_API_KEY`） |
-| `RERANK_POOL` | `40` | 参与重排的候选深度：从融合候选里取这么多条再重排，最后截回 `top_k` | `RERANK_ENABLED=1` 时 |
-| `RERANK_SNIPPET_CHARS` | `240` | 每条候选喂给模型的正文长度（字符） | `RERANK_ENABLED=1` 时 |
-| `RERANK_TIMEOUT` | `20` | 单次重排超时（秒；连接/读取同一值） | `RERANK_ENABLED=1` 时 |
-| `RERANK_MAX_TOKENS` | `8000` | 输出 token 上限：默认模型是 reasoning 模型，给小值（如 4000）会被截断成空 `content`，对外表现为「模型返回空排序」→ fail-open 回原顺序 | `RERANK_ENABLED=1` 时 |
-| `RERANK_REASONING_EFFORT` | `low` | 推理强度：`low` 可显著缩短 reasoning（实测 13447 字符 → 约 1000）；空 = 请求体不传该字段 | `RERANK_ENABLED=1` 时 |
-| `RERANK_MODEL` | *（空 = 用 `DEEPSEEK_MODEL`）* | 重排用的模型标识；空则复用对话模型 | `RERANK_ENABLED=1` 时 |
+| `RERANK_ENABLED` | `0` | **语义重排（opt-in，默认关闭；#272 / #274）**：设 `1` 后把混合检索（`mem_hybrid_search` 两条 mode）的融合候选（深度 `RERANK_POOL`）交给后端（`RERANK_BACKEND`）按「对回答问题的帮助程度」重排。离线实测（60 题判卷集、oracle 池条件）：`llm` 后端 hit@5 **0.867 → 1.000**（7~15 秒/查询，需 `DEEPSEEK_API_KEY`）；`local_ce` 后端 hit@5 **0.867 → 0.967**（约 4.8 秒/查询，零额度零出网）。两者 52 条已命中全零回退。三条红线（两后端一致）：只排序不筛选（返回列表长度与传入一致，不截短不置空）；任何异常 fail-open 回原顺序（`channels.rerank = "degraded"`）；关闭时检索路径连 `core.reranker` 模块都不导入（行为与引入前逐位一致）；详细数字见 [RETRIEVAL_QUALITY.md](RETRIEVAL_QUALITY.md)。不适用于 pre-turn 自动注入这类延迟敏感路径 | `RERANK_ENABLED=1` |
+| `RERANK_BACKEND` | `local_ce` | 重排后端：`local_ce` = 本地 cross-encoder（llama-cpp-python 加载 `RERANK_LOCAL_MODEL_PATH` 指向的 GGUF，逐条打 query-doc 对、零 API 额度；#274）；`llm` = 远端 chat-completions listwise（#272 原路径，行为不变）。非法值（含空串）视同 `local_ce`，只 warn 一次，不抛异常 | `RERANK_ENABLED=1` |
+| `RERANK_LOCAL_MODEL_PATH` | `models/bge-reranker-v2-m3-Q8_0.gguf` | `local_ce` 后端的模型文件：绝对路径，或相对**项目根**解析（模型文件不进仓库，指向用户本地放置的 GGUF — 同向量模型的 `models/` 约定）。文件缺失 / 依赖缺失 / 加载失败 → `channels.rerank = "degraded"` 回原顺序，且日志给出下载指引；加载失败原因会被记住，不每条查询重复试。下载与安装见下文「本地重排模型」 | `RERANK_BACKEND=local_ce` 时 |
+| `RERANK_LOCAL_N_THREADS` | `0` | `local_ce` 推理线程数；`0` = 交 llama.cpp 自动决定 | `RERANK_BACKEND=local_ce` 时 |
+| `RERANK_POOL` | `20` | 参与重排的候选深度：融合候选取前这么多条交给重排后端（启用时语义候选同步拉深到这里，见 [RETRIEVAL_QUALITY.md](RETRIEVAL_QUALITY.md)）。默认 20 是 `local_ce` 实测调优（#274：约 4.8 秒/查询 vs 池 40 的 10.3 秒，hit@5 差 1 题、在判官噪声地板内）；**回退旧深度：`RERANK_POOL=40`** | `RERANK_ENABLED=1` 时 |
+| `RERANK_SNIPPET_CHARS` | `240` | 每条候选喂给模型的正文长度（字符）。实测（#274）：`local_ce` 降到 160 会再丢一条救回且提速有限，保持 240 | `RERANK_ENABLED=1` 时 |
+| `RERANK_TIMEOUT` | `20` | 单次重排超时（秒；连接/读取同一值）。`llm` 后端专用，`local_ce` 本地推理不走网络、不受它约束 | `RERANK_ENABLED=1` 时 |
+| `RERANK_MAX_TOKENS` | `8000` | 输出 token 上限（`llm` 后端专用）：默认模型是 reasoning 模型，给小值（如 4000）会被截断成空 `content`，对外表现为「模型返回空排序」→ fail-open 回原顺序 | `RERANK_ENABLED=1` 时 |
+| `RERANK_REASONING_EFFORT` | `low` | 推理强度（`llm` 后端专用）：`low` 可显著缩短 reasoning（实测 13447 字符 → 约 1000）；空 = 请求体不传该字段 | `RERANK_ENABLED=1` 时 |
+| `RERANK_MODEL` | *（空 = 用 `DEEPSEEK_MODEL`）* | 重排用的模型标识（`llm` 后端专用）；空则复用对话模型 | `RERANK_ENABLED=1` 时 |
 | `RETRIEVAL_EXPAND_DEPTH` | `0` | 语义主序的图扩散深度：`0` = 纯语义排序（默认）；`1` = 图邻居参与语义主序（可一键回退） | 检索启用图扩散时 |
 | `TIER_FACTS` | `memory,correction,decision,plan,task,review,solution,inspiration,user_intent,character_state` | 归入事实层的记忆 type（逗号分隔）；未登记的 type 一律归事实层 | 检索与注入按 tier 过滤时 |
 | `TIER_LOGS` | `record,event,git_commit,thought,session` | 归入日志层的记忆 type（逗号分隔），默认不进检索与注入池（`session` = 会话缓冲节点：post-turn 累进各轮编号思考，session-end 合并成 `kind=handoff` 胶囊后标 `closed`，过程簿记语义同 `thought`） | 检索与注入按 tier 过滤时 |
@@ -93,6 +96,23 @@
 | `RP_MODE` | *（空）* | **RP 专用实例开关**（`1`/`true`/`yes`/`on` 开；默认关 = 行为完全不变）。开启后两条变化：① 所有带 `domain`（或不带）的入口域锁死为 `RP_DOMAIN`——不传自动补，传别的 domain → 400 拒绝；② ingest 不再挂 `kb_chunk` 知识关联（`linked_from` 保持空、不建 REFERENCES 边） | 酒馆记忆桥独立部署（RP 域隔离） |
 | `RP_DOMAIN` | `rp` | `RP_MODE` 开启时的锁死域名；空值回退 `rp` | `RP_MODE` |
 | `KNOWLEDGE_DIR` | *（可选）* | 知识库根目录（待索引的 Obsidian `.md` 文件） | 使用 `kb_index` / `build_kb_index.py` 时 |
+
+## 本地重排模型（`RERANK_BACKEND=local_ce`）
+
+`local_ce` 后端在进程内跑一个 cross-encoder 给候选打相关分，全程不出网、不耗任何 API 额度。
+上手机会成本只有两样：
+
+1. **Python 依赖**：`llama-cpp-python` 在 PyPI 没有预编译 wheel，直接 `pip install` 会走源码编译（多数机器没有 MSVC 工具链）。从官方 CPU wheel 索引装：
+
+   ```bash
+   pip install "llama-cpp-python>=0.3.36,<0.4" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+   ```
+
+   需要支持 rank 池化的版本（≥ 0.3.36，`llama_cpp.LLAMA_POOLING_TYPE_RANK` 可用）。
+
+2. **模型文件**：下载 `bge-reranker-v2-m3`（BAAI，官方权重约 0.6B 参数）的 **Q8_0 GGUF**（约 635 MB），放到 `models/`（已在 `.gitignore`，不进仓库），保持默认的 `RERANK_LOCAL_MODEL_PATH=models/bge-reranker-v2-m3-Q8_0.gguf` 指向即可。GGUF 量化版可在 HuggingFace 搜 `bge-reranker-v2-m3 GGUF` 找社区转换（如 gpustack 组织）。
+
+两样都缺/缺一样时**检索不会坏**：后端检测到不可用会把 `channels.rerank` 标成 `degraded`、按原顺序返回候选，日志给出上述指引，且不会每条查询重复探测。
 
 ## 更换向量模型 / 重嵌全库
 

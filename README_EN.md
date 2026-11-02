@@ -236,8 +236,13 @@ All configuration is read from environment variables (a `.env` file is loaded au
 | `EMBEDDING_PROVIDER` | *(empty = auto-detect)* | Embedding backend: empty auto-detects (cloud key → `openai`, otherwise `local`), or explicitly `local` / `ollama` / `openai` |
 | `DEEPSEEK_API_KEY` | *(empty)* | Used for report generation; optional |
 | `KNOWLEDGE_DIR` | *(optional)* | Root of the knowledge base (Obsidian `.md` files) to index |
+| `RERANK_ENABLED` | `0` | Semantic rerank (opt-in): `1` reorders the fused `mem_hybrid_search` candidates via `RERANK_BACKEND`. The default backend `local_ce` runs a local model at zero API quota; any error fail-opens to the original order |
+| `RERANK_BACKEND` | `local_ce` | Rerank backend: `local_ce` (local cross-encoder) / `llm` (remote listwise, needs `DEEPSEEK_API_KEY`); unrecognized values fall back to `local_ce` |
+| `RERANK_LOCAL_MODEL_PATH` | `models/bge-reranker-v2-m3-Q8_0.gguf` | Local cross-encoder model path (absolute, or relative to the project root); download + install steps in docs/CONFIGURATION.md |
+| `RERANK_LOCAL_N_THREADS` | `0` | Local rerank inference threads; `0` = let llama.cpp decide |
+| `RERANK_POOL` | `20` | Candidate depth fed to rerank; revert to the old depth with `RERANK_POOL=40` |
 
-The full 77-key table (defaults and activation conditions) is in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) (Chinese).
+The full table (all configuration keys with defaults and activation conditions, kept consistent with the code by the doc checker) is in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) (Chinese).
 
 ---
 
@@ -256,7 +261,7 @@ The README only covers what you need to get running. Everything else lives in `d
 | Install (three embedding backends, hardware, swapping models) | [docs/INSTALL.md](docs/INSTALL.md) |
 | Command reference (21 MCP tools / 25 CLI subcommands / 44 REST routes / blocks / index rules) | [docs/REFERENCE.md](docs/REFERENCE.md) |
 | Which tool to use when | [docs/USAGE.md](docs/USAGE.md) |
-| Environment variables (full 77-key table) | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) |
+| Environment variables (full configuration table) | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) |
 | Design (mechanism inventory, comparison, Markdown positioning, use cases) | [docs/DESIGN.md](docs/DESIGN.md) |
 | Tests / evaluation / repo layout / dev conventions | [docs/TESTING.md](docs/TESTING.md) |
 | Changing code (layering, adding tools, gates) | [CONTRIBUTING.md](CONTRIBUTING.md) |
