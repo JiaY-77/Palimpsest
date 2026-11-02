@@ -1,7 +1,7 @@
 # 配置参考
 
 所有配置均从环境变量读取（`.env` 文件由 `python-dotenv` 自动加载），完整带注释模板见
-[`.env.example`](../.env.example)。README 只列用户必配的最小集，本页是完整配置表（43 项，含
+[`.env.example`](../.env.example)。README 只列用户必配的最小集，本页是完整配置表（85 项，含
 `config.py` 之外的 `KNOWLEDGE_DIR`）与「更换向量模型 / 重嵌全库」的操作流程。
 
 ## 配置
@@ -64,6 +64,13 @@
 | `TDB_TEXT_WEIGHT` | `1.0` | TDB 文本通道在 RRF 融合中的权重（同为 `mode=rrf`） | `TDB_TEXT_ENABLED=1` 时 |
 | `TDB_TEXT_LIMIT` | `0` | TDB 文本通道候选量；`0` = 沿用 FTS 的 `fts_limit`，不另配 | `TDB_TEXT_ENABLED=1` 时 |
 | `TDB_TEXT_FTS_FLOOR` | `3` | 条件触发门槛：本次 FTS 命中数 **≥** 此值时**跳过** TDB 路（FTS 已够好，省掉整路的开库 + 载侧车开销）；**<** 此值才走 TDB，只在中文短词/长短语这类 FTS 弱场景付费。`0` = 永不跳过（等价于改动前「永远走 TDB」）。跳过时 `channels["tdb_text"]` 为 `skipped`（与 `degraded` 区分） | `TDB_TEXT_ENABLED=1` 时 |
+| `RERANK_ENABLED` | `0` | **语义重排（opt-in，默认关闭；#272）**：设 `1` 后把混合检索（`mem_hybrid_search` 两条 mode）的融合候选（深度 `RERANK_POOL`）交给 LLM 按「对回答问题的帮助程度」listwise 重排，再截回 `top_k`。离线实测（60 题判卷集、oracle 池条件）hit@5 **0.867 → 1.000**，52 条已命中零丢失。三条红线：只排序不筛选；任何异常 fail-open 回原顺序（`channels.rerank = "degraded"`）；关闭时检索路径连 `core.reranker` 模块都不导入（行为与引入前逐位一致）；详细数字见 [RETRIEVAL_QUALITY.md](RETRIEVAL_QUALITY.md)。单次重排 7~15 秒，不适用于 pre-turn 自动注入 | `RERANK_ENABLED=1`（另需 `DEEPSEEK_API_KEY`） |
+| `RERANK_POOL` | `40` | 参与重排的候选深度：从融合候选里取这么多条再重排，最后截回 `top_k` | `RERANK_ENABLED=1` 时 |
+| `RERANK_SNIPPET_CHARS` | `240` | 每条候选喂给模型的正文长度（字符） | `RERANK_ENABLED=1` 时 |
+| `RERANK_TIMEOUT` | `20` | 单次重排超时（秒；连接/读取同一值） | `RERANK_ENABLED=1` 时 |
+| `RERANK_MAX_TOKENS` | `8000` | 输出 token 上限：默认模型是 reasoning 模型，给小值（如 4000）会被截断成空 `content`，对外表现为「模型返回空排序」→ fail-open 回原顺序 | `RERANK_ENABLED=1` 时 |
+| `RERANK_REASONING_EFFORT` | `low` | 推理强度：`low` 可显著缩短 reasoning（实测 13447 字符 → 约 1000）；空 = 请求体不传该字段 | `RERANK_ENABLED=1` 时 |
+| `RERANK_MODEL` | *（空 = 用 `DEEPSEEK_MODEL`）* | 重排用的模型标识；空则复用对话模型 | `RERANK_ENABLED=1` 时 |
 | `RETRIEVAL_EXPAND_DEPTH` | `0` | 语义主序的图扩散深度：`0` = 纯语义排序（默认）；`1` = 图邻居参与语义主序（可一键回退） | 检索启用图扩散时 |
 | `TIER_FACTS` | `memory,correction,decision,plan,task,review,solution,inspiration,user_intent,character_state` | 归入事实层的记忆 type（逗号分隔）；未登记的 type 一律归事实层 | 检索与注入按 tier 过滤时 |
 | `TIER_LOGS` | `record,event,git_commit,thought,session` | 归入日志层的记忆 type（逗号分隔），默认不进检索与注入池（`session` = 会话缓冲节点：post-turn 累进各轮编号思考，session-end 合并成 `kind=handoff` 胶囊后标 `closed`，过程簿记语义同 `thought`） | 检索与注入按 tier 过滤时 |

@@ -90,6 +90,25 @@ class Config:
     MEMORY_DECAY_FACTOR = float(os.getenv("MEMORY_DECAY_FACTOR", "0.95"))
     # 重排模式：soft = 语义分为主线 + ε 级元数据微调（默认）；hard = 旧版乘性硬加权（可回退）
     MEMORY_RERANK_MODE = os.getenv("MEMORY_RERANK_MODE", "soft").strip().lower()
+
+    # ---- 语义重排 rerank（opt-in，默认关闭；issue #272）----
+    # 关闭时检索路径连 core.reranker 都不导入，行为与改动前逐位一致（回归红线）。
+    # 打开后把融合候选交给 LLM 按「对回答问题的帮助程度」重排，实测 hit@5
+    # 0.867 → 1.000（60 题判卷集、oracle 池条件）。单次重排 7~15 秒，
+    # 延迟敏感路径（pre-turn 自动注入）不要打开。
+    RERANK_ENABLED = os.getenv("RERANK_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+    # 参与重排的候选深度：从融合候选里取这么多个再重排，最后截回 top_k
+    RERANK_POOL = int(os.getenv("RERANK_POOL", "40"))
+    # 每条候选喂给模型的正文长度（字符）
+    RERANK_SNIPPET_CHARS = int(os.getenv("RERANK_SNIPPET_CHARS", "240"))
+    # 单次重排超时（秒）
+    RERANK_TIMEOUT = float(os.getenv("RERANK_TIMEOUT", "20"))
+    # 输出 token 上限：默认模型是 reasoning 模型，给小值会被截断成空 content
+    RERANK_MAX_TOKENS = int(os.getenv("RERANK_MAX_TOKENS", "8000"))
+    # 推理强度（"low" 可显著缩短 reasoning）；空 = 不传该字段
+    RERANK_REASONING_EFFORT = os.getenv("RERANK_REASONING_EFFORT", "low").strip()
+    # 模型名：空 = 用 DEEPSEEK_MODEL
+    RERANK_MODEL = os.getenv("RERANK_MODEL", "").strip()
     # ---- 常驻域（issue #176）------------------------------------------------
     # 每轮**无条件**注入的 domain：该 domain 的 active 节点按 importance 倒序拼进
     # pre-turn 的注入文本，不参与语义相似度竞争——解决「常驻规则与当前消息语义无关
