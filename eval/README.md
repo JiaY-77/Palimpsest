@@ -45,7 +45,8 @@ venv/Scripts/python.exe eval/gen_candidates_from_usage.py --top-n 25
 
 ## 题集版本
 
-- **当前判卷依据**：`eval_set_v2.json`（v2，148 题）——由 `reresolve_gold.py` 对旧 138 题做内容级 gold 重解析产出（2026-10-28），2026-10-29 落地 Phase-1 判词候选（4 条人工确认入集 / 6 条剔除）。每题带显式 `status`（live / reresolved / quarantined / dropped）+ `reasons` + `original_gold_ids`，无静默失效；分层、确定性、参考点见 `docs/RETRIEVAL_QUALITY.md` §8。
+- **当前判卷依据**：`eval_set_v3.json`（v3，148 题；判卷 60 / quarantined 2 / dropped 66 / live 24，gold 均 3.9 条/题）——**池化判读重建**：`vec`/`fts`/`rrf`/`cascade` 四通道各取 top-20 合并去重建候选池，再由双盲判读（提示词只给「问题 + 候选内容」，不给通道名/排名/类型/来源路径）指认 gold，方法学同 TREC 池化判读（TREC relevance judgments / RAGAS testset generation / LoCoMo）。v3 是**新基线**；题集文件不入库（`eval/*.json` 已 gitignore），方法按 `docs/RETRIEVAL_QUALITY.md` §8.11 可复现。每题带显式 `status`（live / reresolved / quarantined / dropped）+ `reasons` + `original_gold_ids`，无静默失效；分层、确定性、参考点见 `docs/RETRIEVAL_QUALITY.md` §8。
+- **v2（`eval_set_v2.json`，已作废，历史留档）**：由 `reresolve_gold.py` 对旧 138 题做内容级 gold 重解析产出（2026-10-28），2026-10-29 落地 Phase-1 判词候选。其 gold 归根结底由「top1 余弦 ≥ 0.60 且 margin < 0.06」机械反推，存在三类结构性缺陷（gold 命中同文档标题段 / 13 条 gold 是「用户提问原话」的自证循环 / 2 条题池内无候选能回答），**历史数字不可与 v3 横向比较**（详见 §8.11）。
 - **旧 138 题（`eval_set.json`，已作废）**：gold 存裸节点 id，2026-09-10 库 rebuild 后 id 重排；内容级验证下 118 条正样本无一存活（2026-10-22 抽查 + #225 全量复证）。历史数字一律不可信，保留仅作对照。
 - **历史题集**：`eval_set_v1_149.json`（149 题版本）与 `manual_set.json`（手工题）保存在本地评测数据目录，同样不入库。
 - **调参/报告切分**：`split_eval_set.py --pin-manifest` 按 qid 冻结 tune / held-out（详见 §split 与 docs §8.5）。
