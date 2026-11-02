@@ -1,4 +1,4 @@
-"""语义重排（rerank，opt-in，issue #272）失败路径 + 挂载回归测试。
+"""语义重排（rerank，opt-in，issue #272 / #274）失败路径 + 挂载回归测试。
 
 覆盖任务书要求的硬性场景（全部用替身发请求，绝不真打网络）：
 
@@ -12,10 +12,18 @@
 8. RERANK_ENABLED=0 时 _hybrid_rrf 的 channels 无 "rerank" 键（回归红线）
 
 另附 build_prompt / parse_ranking 的单元测试（label 严格性 / 围栏容忍 / 去重兜底）。
+
+local_ce 后端（本地 cross-encoder，issue #274）的契约测试见文件后半部分 §10：
+全部 mock 掉 llama_cpp（CI 没有 635MB 模型），重点钉死：
+rank-only 不变量 / 打分器异常 fail-open / 模型缺失只走一次磁盘 /
+逐条调用契约（防止后人改成批量子弹打死进程）/ 关闭时不 import。
 """
 
 from __future__ import annotations
 
+import sys
+
+import pytest
 import requests
 
 # ================================================================
@@ -44,6 +52,7 @@ def _enable_rerank(monkeypatch, **over):
 
     settings = {
         "RERANK_ENABLED": True,
+        "RERANK_BACKEND": "llm",
         "DEEPSEEK_API_KEY": "test-key",
         "DEEPSEEK_BASE_URL": "https://api.test.example",
         "DEEPSEEK_MODEL": "base-model",
@@ -374,3 +383,296 @@ def test_hybrid_rrf_deepens_semantic_pool_when_enabled(monkeypatch):
     assert seen and seen[-1] == 40  # 语义候选按 RERANK_POOL 拉深
     assert channels.get("rerank") == "ok"
     assert len(items) == 5  # 重排后仍截回 top_k
+
+
+# ================================================================
+# 10. local_ce 后端（issue #274：本地 cross-encoder；llama_cpp 全部 mock，
+#     CI 没有 635MB 的模型文件）
+# ================================================================
+
+
+@pytest.fixture()
+def _reset_ce_state():
+    """local_ce 模块级单例/门闩复位：测试之间互不串台。"""
+    import core.reranker as rr
+
+    rr._CE_MODEL = None
+    rr._CE_BLOCKED = ""
+    rr._BACKEND_WARNED = False
+    yield
+    rr._CE_MODEL = None
+    rr._CE_BLOCKED = ""
+    rr._BACKEND_WARNED = False
+
+
+class _FakeCE:
+    """替身本地 cross-encoder：记录每次 create_embedding 收到的输入列表。
+
+    返回向量刻意做成 1024 维：第 0 维是分数，其余填充「分数 + 1」——
+    实现若不老实读第 0 维、对整向量做任何聚合，测试当场红
+    （真实 llama.cpp 的填充位是 NaN/0，聚合出来的必然是垃圾）。
+    """
+
+    def __init__(self, scores: dict[str, float], fail: Exception | None = None):
+        self._scores = scores
+        self._fail = fail
+        self.inputs: list[list[str]] = []  # 原样记录每次调用收到的列表
+
+    def create_embedding(self, inputs: list):
+        self.inputs.append(list(inputs))
+        if self._fail is not None:
+            raise self._fail
+        text = inputs[0]
+        _, _, doc = text.partition("</s>")  # 输入形状 f"{query}</s>{doc}"
+        score = self._scores[doc]
+        return {"data": [{"embedding": [score] + [score + 1.0] * 1023}]}
+
+
+def _ce_enable(monkeypatch, **over):
+    """rerank 已启用 + local_ce 后端的最小配置现场。"""
+    _enable_rerank(monkeypatch, RERANK_BACKEND="local_ce", **over)
+
+
+def _install_ce(monkeypatch, scores: dict, fail: Exception | None = None) -> _FakeCE:
+    """把 local_ce 的模型装配缝换成替身（真实现根本不加载模型）。"""
+    import core.reranker as rr
+
+    fake = _FakeCE(scores, fail=fail)
+    monkeypatch.setattr(rr, "_get_ce_model", lambda: fake)
+    return fake
+
+
+CE_SCORES_DESC_3_5_1_2_4 = {
+    "正文-1": 0.50,
+    "正文-2": 0.20,
+    "正文-3": 0.95,
+    "正文-4": 0.10,
+    "正文-5": 0.70,
+}
+
+
+# ----------------------------------------------------------------
+# 10.1 rank-only 不变量：长度不变/无重复/只有顺序变化
+# ----------------------------------------------------------------
+
+
+def test_local_ce_rank_only_invariant(monkeypatch, _reset_ce_state):
+    """local_ce 重排：前 top_k 按分数降序、其余按原顺序补齐，长度与传参一致。"""
+    import core.reranker as rr
+
+    _ce_enable(monkeypatch, RERANK_POOL=20)
+    _install_ce(monkeypatch, CE_SCORES_DESC_3_5_1_2_4)
+    items = _five_items()
+    out, status = rr.rerank("问题", items, 2)
+    assert status == "ok"
+    # 分数降序取前 2（正文-3 > 正文-5），其余 1/2/4 按**原顺序**补在后面
+    assert [it["id"] for it in out] == [3, 5, 1, 2, 4]
+    assert len(out) == len(items) == 5  # rank-only：长度不变，绝不置空（红线 1）
+    assert [it["id"] for it in out].count(3) == 1  # 无丢失、无重复
+    assert {it["id"] for it in out} == set(range(1, 6))
+    assert out[0] is items[2]  # 元素本身未被拷贝改写
+
+
+def test_local_ce_ties_keep_original_order(monkeypatch, _reset_ce_state):
+    """同分（打分器给全池同一分数）→ 保持原顺序，仍 status ok。"""
+    import core.reranker as rr
+
+    _ce_enable(monkeypatch)
+    _install_ce(monkeypatch, {f"正文-{i}": 0.5 for i in range(1, 6)})
+    items = _five_items()
+    out, status = rr.rerank("问题", items, 2)
+    assert status == "ok"
+    assert [it["id"] for it in out] == [1, 2, 3, 4, 5]
+
+
+def test_local_ce_pool_bigger_than_items_skips_scoring(monkeypatch, _reset_ce_state):
+    """候选数 ≤ top_k 时整池都要 → 与 llm 路径同语义：原样返回 ok，不碰模型。"""
+    import core.reranker as rr
+
+    _ce_enable(monkeypatch)
+    fake = _install_ce(monkeypatch, {})
+    items = _five_items()
+    out, status = rr.rerank("问题", items, 5)
+    assert status == "ok"
+    assert out is items
+    assert fake.inputs == []  # 没有任何打分调用、模型从未加载
+
+
+# ----------------------------------------------------------------
+# 10.2 fail-open：打分器异常 / 模型缺失
+# ----------------------------------------------------------------
+
+
+def test_local_ce_scorer_exception_fail_open(monkeypatch, _reset_ce_state):
+    """create_embedding 抛异常 → 原顺序 + degraded，绝不抛（红线 2）。"""
+    import core.reranker as rr
+
+    _ce_enable(monkeypatch)
+    _install_ce(monkeypatch, {"正文-1": 0.9}, fail=RuntimeError("cross-encoder boom"))
+    items = _five_items()
+    out, status = rr.rerank("问题", items, 2)
+    assert status == "degraded"
+    assert out is items  # 原对象、原顺序
+
+
+def test_local_ce_missing_model_loads_disk_once(monkeypatch, _reset_ce_state):
+    """模型文件缺失 → degraded，且第二次调用不再走磁盘（不重复加载尝试）。"""
+    import core.reranker as rr
+
+    _ce_enable(monkeypatch, RERANK_LOCAL_MODEL_PATH="models/definitely-missing.gguf")
+
+    hits: list[int] = []
+
+    def counting_exists(path):
+        hits.append(1)
+        return False  # 模型文件不存在
+
+    monkeypatch.setattr(rr, "_model_file_exists", counting_exists)
+
+    items = _five_items()
+    out1, status1 = rr.rerank("问题", items, 2)
+    out2, status2 = rr.rerank("问题", items, 2)
+    assert status1 == "degraded" and status2 == "degraded"
+    assert out1 is items and out2 is items
+    assert len(hits) == 1  # 只探测过一次磁盘，第二次直接被门闩挡住
+
+
+def test_local_ce_missing_model_real_path_resolve(monkeypatch, _reset_ce_state):
+    """真实文件检查路径下同样 degraded：相对路径按项目根解析，缺文件留痕原序返回。"""
+    import core.reranker as rr
+
+    _ce_enable(monkeypatch, RERANK_LOCAL_MODEL_PATH="models/no-such-model.gguf")
+    resolved = rr._resolve_local_model_path()
+    assert resolved.name == "no-such-model.gguf"  # 相对路径基于项目根解析
+    assert not resolved.is_file()
+
+    items = _five_items()
+    out, status = rr.rerank("问题", items, 2)
+    assert status == "degraded"
+    assert out is items  # 原顺序原对象，绝不置空（红线 1+2）
+
+
+# ----------------------------------------------------------------
+# 10.3 后端分派：llm 显式走 HTTP；非法值视同 local_ce（warn 一次）
+# ----------------------------------------------------------------
+
+
+def test_backend_llm_explicit_routes_to_http(monkeypatch):
+    """RERANK_BACKEND="llm" → 走远端 HTTP listwise（假端点），绝不触碰 local_ce 装配。"""
+    import core.reranker as rr
+
+    _enable_rerank(monkeypatch, RERANK_BACKEND="llm")
+
+    def _boom():
+        raise AssertionError("llm 后端不应触碰 local_ce 模型装配缝")
+
+    monkeypatch.setattr(rr, "_get_ce_model", _boom)
+    calls: list = []
+    _stub_post(monkeypatch, calls, payload=_chat_payload('{"ranking": ["C2", "C4"]}'))
+    items = _five_items()
+    out, status = rr.rerank("问题", items, 2)
+    assert status == "ok"
+    assert [it["id"] for it in out] == [2, 4]  # llm 行为与 issue #272 落地时逐位一致
+    assert len(calls) == 1  # HTTP 路径确实命中
+
+
+def test_backend_invalid_falls_back_to_local_ce_once(monkeypatch, _reset_ce_state, caplog):
+    """RERANK_BACKEND 非法值 → 视同 local_ce 继续干活，并只 warn 一次（不抛）。"""
+    import logging
+
+    import core.reranker as rr
+
+    _enable_rerank(monkeypatch, RERANK_BACKEND="weird-backend")
+    _install_ce(monkeypatch, CE_SCORES_DESC_3_5_1_2_4)
+
+    with caplog.at_level(logging.WARNING, logger="core.reranker"):
+        out1, status1 = rr.rerank("问题", _five_items(), 2)
+        _out2, status2 = rr.rerank("问题", _five_items(), 2)
+    assert status1 == "ok" and status2 == "ok"  # 非法后端值没有打断检索
+    assert [it["id"] for it in out1] == [3, 5, 1, 2, 4]
+    warns = [r for r in caplog.records if "RERANK_BACKEND" in r.getMessage()]
+    assert len(warns) == 1  # 只 warn 一次，不是每条查询刷一遍
+
+
+# ----------------------------------------------------------------
+# 10.4 逐条调用契约：一次调用只送一条 (query, doc)，防批量 abort 生产进程
+# ----------------------------------------------------------------
+
+
+def test_local_ce_one_pair_per_call_contract(monkeypatch, _reset_ce_state):
+    """mock create_embedding：每次调用只收 1 条输入，任何批量都算违约。
+
+    真实 llama.cpp 的 encoder 路径在批量下会触发 C 层断言直接 abort，
+    Python 捕不到这条异常——所以这个契约必须由测试钉死，防止后人图省事。
+    """
+    import core.reranker as rr
+
+    _ce_enable(monkeypatch)
+    fake = _install_ce(monkeypatch, CE_SCORES_DESC_3_5_1_2_4)
+    out, status = rr.rerank("问题", _five_items(), 2)
+    assert status == "ok"
+    assert [it["id"] for it in out] == [3, 5, 1, 2, 4]
+    assert all(len(inputs) == 1 for inputs in fake.inputs)  # 每次 1 条，绝不批量
+    assert len(fake.inputs) == 5  # 5 条候选 = 5 次逐条调用
+    assert fake.inputs[0][0].index("</s>") == len("问题")  # 输入形状 f"{query}</s>{doc}"
+
+
+# ----------------------------------------------------------------
+# 10.5 关闭时零成本：连 core.reranker 模块都不被导入（红线 3 回归）
+# ----------------------------------------------------------------
+
+
+def test_reranker_module_not_imported_when_disabled(monkeypatch):
+    """RERANK_ENABLED=0 → _hybrid_rrf 全程不 import core.reranker。"""
+    import mcp_tools.memory as mm
+    from config import Config
+
+    monkeypatch.setattr(Config, "RERANK_ENABLED", False)
+    sys.modules.pop("core.reranker", None)
+
+    monkeypatch.setattr(
+        mm,
+        "_sem_candidate_items",
+        lambda *a, **k: [
+            {"id": 11, "type": "memory", "score": 0.9, "summary": "甲", "meta": {}},
+        ],
+    )
+    monkeypatch.setattr(mm, "search_fts_status", lambda q, limit=50: ([{"node_id": 11}], "ok"))
+
+    items, channels = mm._hybrid_rrf("固定查询甲乙丙", "all", "", "", 5, 50, "")
+    assert "core.reranker" not in sys.modules  # 调用后仍未导入
+    assert "rerank" not in channels
+    assert [it["id"] for it in items] == [11]
+
+
+# ----------------------------------------------------------------
+# 10.6 挂载集成：local_ce 启用时全长返回、零出网、候选深度 = RERANK_POOL
+# ----------------------------------------------------------------
+
+
+def test_hybrid_rrf_local_ce_keeps_full_pool_and_no_network(monkeypatch, _reset_ce_state):
+    """启用 local_ce：零出网请求；返回池全长（top_k 之外仍按原顺序补齐）。"""
+    import mcp_tools.memory as mm
+
+    _ce_enable(monkeypatch, RERANK_POOL=20)
+    fake = _install_ce(
+        monkeypatch,
+        {f"甲{i}": i * 0.1 for i in range(1, 9)},  # 甲8 最高
+    )
+    calls: list = []
+    _stub_post(monkeypatch, calls)  # 一旦走网络立刻可观察
+
+    def _fake_sem(query, scope, domain, bias, top_k, block, **kw):
+        return [
+            {"id": i, "type": "memory", "score": 0.9 - i * 0.01, "summary": f"甲{i}", "meta": {}} for i in range(1, 9)
+        ]
+
+    monkeypatch.setattr(mm, "_sem_candidate_items", _fake_sem)
+    monkeypatch.setattr(mm, "search_fts_status", lambda q, limit=50: ([], "ok"))
+
+    items, channels = mm._hybrid_rrf("固定查询甲乙丙", "all", "", "", 5, 50, "")
+    assert channels.get("rerank") == "ok"
+    assert calls == []  # local_ce 全程零出网
+    assert len(items) == 8  # rank-only：池全长（不是截回 top_k）
+    assert items[0]["id"] == 8  # 打分最高者排最前
+    assert len(fake.inputs) == 8  # 逐条打分
