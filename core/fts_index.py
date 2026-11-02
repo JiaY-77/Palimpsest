@@ -113,6 +113,17 @@ def _even_indices(total: int, k: int) -> list[int]:
     return [round(i * (total - 1) / (k - 1)) for i in range(k)]
 
 
+def _quote_gram(gram: str) -> str:
+    """把单个 gram 包成 FTS5 字符串字面量。
+
+    gram 来自自然语言切片，可能含 `.`（版本号 `0.8.6` / `3.5B`）等 FTS5
+    语法字符。裸拼接时整条 MATCH 抛 OperationalError，调用方
+    `search_fts_status()` 只能把它降级成 degraded —— 整条 FTS 通道对这次
+    查询失效，混合检索静默退化为纯语义。加引号后按字面量匹配。
+    """
+    return '"' + gram.replace('"', '""') + '"'
+
+
 def build_fts_query(query: str, n: int = 3, max_grams: int = 12) -> str:
     """把自然语言查询改写为 FTS5 trigram OR 查询（长查询专用）。
 
@@ -122,6 +133,7 @@ def build_fts_query(query: str, n: int = 3, max_grams: int = 12) -> str:
     - 段长 < n 且 < 3 字符的丢弃（trigram 至少 3 字符）
     - 全局片段上限 max_grams（12），用 " OR " 连接
     - 无有效片段返回 ""
+    - 每个 gram 包成 FTS5 字符串字面量（见 `_quote_gram`）
     """
     if not query:
         return ""
@@ -140,7 +152,7 @@ def build_fts_query(query: str, n: int = 3, max_grams: int = 12) -> str:
         return ""
     if len(grams) > max_grams:
         grams = [grams[i] for i in _even_indices(len(grams), max_grams)]
-    return " OR ".join(grams)
+    return " OR ".join(_quote_gram(g) for g in grams)
 
 
 def search_fts(query: str, limit: int = 10) -> list[dict]:
