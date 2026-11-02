@@ -52,6 +52,21 @@ class TestBuildFtsQuery:
     def test_all_short_parts_returns_empty(self):
         assert build_fts_query("你 好 a") == ""
 
+    def test_grams_are_quoted(self):
+        """每个 gram 必须包成 FTS5 字符串字面量（含点号的查询不能再炸）"""
+        q = "图数据库0.8.6版遍历中取边锁冲突怎么解？"
+        result = build_fts_query(q)
+        assert result
+        for gram in result.split(" OR "):
+            assert gram.startswith('"') and gram.endswith('"'), f"未加引号: {gram!r}"
+
+    def test_inner_quote_escaped(self):
+        """gram 内部的 " 按 FTS5 规则转义成两个双引号"""
+        # 双引号会被 _SPLIT_RE 切走，故直接对 _quote_gram 单测
+        from core.fts_index import _quote_gram
+
+        assert _quote_gram('a"b') == '"a""b"'
+
 
 @pytest.fixture
 def fts_env(monkeypatch, tmp_path):
@@ -101,3 +116,14 @@ class TestSearchFtsIntegration:
     def test_empty_query_returns_empty(self, fts_env):
         assert search_fts("") == []
         assert search_fts(None) == []
+
+    def test_dotted_query_not_degraded(self, fts_env, monkeypatch):
+        """含版本号的查询必须返回 ok，不能降级成 degraded"""
+        docs = [(10, "图数据库0.8.6版遍历中取边锁冲突的解法是把锁粒度收窄")]
+        for nid, content in docs:
+            fts_env.index_node(nid, content, f"doc_{nid}")
+        from core.fts_index import search_fts_status
+
+        rows, status = search_fts_status("图数据库0.8.6版遍历中取边锁冲突怎么解？")
+        assert status == "ok", f"应 ok，实际 {status}（FTS 通道被语法错误打挂）"
+        assert 10 in [r["node_id"] for r in rows]
