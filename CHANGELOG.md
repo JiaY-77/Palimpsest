@@ -4,7 +4,7 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
-## [Unreleased]
+## [2.22.0] - 2026-11-02
 
 ### 新增
 
@@ -772,6 +772,7 @@ M1a 按 kill criteria 停：`reach@2` 20%（越过 15% 门槛，但上升全部�
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
 [Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.20.1...HEAD
+[2.22.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.22.0
 [2.21.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.21.0
 [2.20.1]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.20.1
 [2.20.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.20.0

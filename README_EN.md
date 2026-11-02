@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| Version | v2.21.0 |
+| Version | v2.22.0 |
 | **LTS** | **Yes — first LTS, supported until 2027-10-30** ([contract](docs/LTS.md)) |
 | Python | 3.10+ |
 | License | MIT |
