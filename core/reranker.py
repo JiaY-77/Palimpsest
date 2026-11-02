@@ -128,14 +128,13 @@ def _ce_score_all(model: Any, query: str, docs: list[str]) -> list[float]:
     直接 abort——Python 捕不到这个异常，进程直接死；实测批量也更慢（4 条
     395 ms/对 vs 单条 263 ms/对）。
     """
-    import numpy as np  # 运行时跟随 triviumdb 一并就位；缺了走外层 fail-open
-
     scores: list[float] = []
     for doc in docs:
         out = model.create_embedding([f"{query}</s>{doc}"])
         # 返回 1024 维向量，**只有第 0 维是有效分数**，其余维度是 llama.cpp 的填充位
         # （实测 NaN/0）——对整向量做任何聚合都得到垃圾，这里只读第 0 维。
-        scores.append(float(np.asarray(out["data"][0]["embedding"], dtype=np.float32).ravel()[0]))
+        # 刻意不引入 numpy（结果只有一个标量；CI 与运行环境也都不携带它）。
+        scores.append(float(out["data"][0]["embedding"][0]))
     return scores
 
 
