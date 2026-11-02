@@ -1294,8 +1294,14 @@ def _hybrid_rrf(
     避免「通道挂了」被误读成「确实没命中」；`exact_query` / `fts_weight`
     透出精确标识符判定与本次实际使用的 FTS 权重（线上排查走没走抬高路）。
     """
+    # 语义重排（opt-in）：关闭时零成本——连模块都不导入，行为与改动前逐位一致。
+    # 启用时**语义候选也要拉深**到 RERANK_POOL：只把融合那一步的 top_k 放大是不够的，
+    # 语义通道只取 top_k 条时深池里几乎没有语义候选，重排就退化成给 FTS 结果排序。
+    rerank_enabled = bool(getattr(Config, "RERANK_ENABLED", False))
+    candidate_k = max(top_k, getattr(Config, "RERANK_POOL", 40)) if rerank_enabled else top_k
+
     sem_items = _sem_candidate_items(
-        query, scope, domain, domain_bias, top_k, block, include_outdated=include_outdated, tier=tier, as_of=as_of
+        query, scope, domain, domain_bias, candidate_k, block, include_outdated=include_outdated, tier=tier, as_of=as_of
     )
     fts, fts_status = search_fts_status(query, limit=fts_limit)
     if fts_status == "degraded":
@@ -1333,7 +1339,7 @@ def _hybrid_rrf(
     ranked = _rrf_fuse(
         [it.get("id") for it in sem_items if it.get("id") is not None],
         [r.get("node_id") for r in fts if r.get("node_id") is not None],
-        top_k,
+        candidate_k,
         Config.RRF_K,
         w_sem=Config.RRF_SEM_WEIGHT,
         w_fts=w_fts,
@@ -1361,8 +1367,17 @@ def _hybrid_rrf(
         item["meta"] = meta
         item["score"] = round(score, 4)
         merged.append(item)
-        if len(merged) >= top_k:
+        if len(merged) >= candidate_k:
             break
+
+    # 语义重排（opt-in，issue #272）：打开时把融合候选交给 LLM 按「对回答问题的
+    # 帮助程度」重排；rerank 内部任何异常都 fail-open 回原顺序，不影响主链。
+    rerank_status = ""
+    if rerank_enabled:
+        from core.reranker import rerank as _rerank
+
+        merged, rerank_status = _rerank(query, merged, top_k)
+
     channels = {
         "semantic": "ok" if sem_items else "empty",
         "fts": fts_status,
@@ -1372,6 +1387,9 @@ def _hybrid_rrf(
     if tdb_status:
         # 仅启用 TDB 文本通道时才出现该键（默认关闭的输出逐位不变）。
         channels["tdb_text"] = tdb_status
+    if rerank_status:
+        # 仅启用 rerank 时才出现该键（disabled / degraded / ok）。
+        channels["rerank"] = rerank_status
     return merged, channels
 
 
@@ -1398,15 +1416,19 @@ def _hybrid_cascade(
     if fts_status == "degraded":
         logger.warning("混合检索降级：FTS 通道不可用（query=%r），级联退化为纯语义", query[:60])
     fts_ids = {r.get("node_id") for r in fts if r.get("node_id") is not None}
+    # 语义重排（opt-in）：关闭时零成本——连模块都不导入，行为与改动前逐位一致。
+    # 启用时把候选池拉深到 RERANK_POOL 再交给 LLM 重排，最后截回 top_k。
+    rerank_enabled = bool(getattr(Config, "RERANK_ENABLED", False))
+    candidate_k = max(top_k, getattr(Config, "RERANK_POOL", 40)) if rerank_enabled else top_k
     sem_items = _sem_candidate_items(
-        query, scope, domain, domain_bias, top_k, block, include_outdated=include_outdated, tier=tier, as_of=as_of
+        query, scope, domain, domain_bias, candidate_k, block, include_outdated=include_outdated, tier=tier, as_of=as_of
     )
 
     in_candidate = [it for it in sem_items if it.get("id") in fts_ids]
     rest = [it for it in sem_items if it.get("id") not in fts_ids]
-    picked = in_candidate[:top_k]
-    if len(picked) < top_k:
-        picked = picked + rest[: top_k - len(picked)]
+    picked = in_candidate[:candidate_k]
+    if len(picked) < candidate_k:
+        picked = picked + rest[: candidate_k - len(picked)]
 
     items = []
     for it in picked:
@@ -1417,7 +1439,19 @@ def _hybrid_cascade(
         it["meta"] = meta
         it["score"] = round(_to_float(it.get("score"), 0.0), 4)
         items.append(it)
+
+    # 语义重排（opt-in，issue #272）：打开时把级联候选交给 LLM 重排；内部任何
+    # 异常都 fail-open 回原顺序（rerank 自己保证），不影响主链。
+    rerank_status = ""
+    if rerank_enabled:
+        from core.reranker import rerank as _rerank
+
+        items, rerank_status = _rerank(query, items, top_k)
+
     channels = {"semantic": "ok" if sem_items else "empty", "fts": fts_status}
+    if rerank_status:
+        # 仅启用 rerank 时才出现该键（disabled / degraded / ok）。
+        channels["rerank"] = rerank_status
     return items, channels
 
 

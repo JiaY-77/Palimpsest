@@ -617,4 +617,39 @@ RAGAS 的 testset generation、LoCoMo 的基准构建同一思路——先由多
 | 题集每条带显式状态（live/reresolved/quarantined/dropped） | 库 rebuild 后裸 id 全失效，静默留坏 gold 比没有 gold 更糟（#221） |
 | 新鲜度权重默认 0，非零取值须 sweep 数据背书 | 时效信号有价值，但常数必须来自真实查询集（issue #175） |
 
+
+## 十、语义重排（rerank，opt-in）
+
+`RERANK_ENABLED=1` 时，混合检索（`mem_hybrid_search` 的 `rrf` / `cascade` 两条路径）把融合候选
+（深度 `RERANK_POOL`，默认 40）交给 LLM 按「对回答这个问题的帮助程度」listwise 重排，
+输出前 `top_k` 个再截回。prompt 与实现见 `core/reranker.py`；配置项见 [CONFIGURATION.md](CONFIGURATION.md)。
+
+**为什么 opt-in**：单次重排要调一次 LLM，实测 7~15 秒，不适合 pre-turn 自动注入这类延迟敏感
+路径；默认关闭时检索路径连 `core.reranker` 模块都不导入，行为与未引入前逐位一致（回归测试
+`tests/test_reranker.py` 覆盖关闭态逐位一致与全部 fail-open 路径）。
+
+三条红线（每条都有实测依据）：
+
+1. **只排序、不筛选**：prompt 要求「输出前 N 个、禁止空列表」——允许模型返回空列表时，它会以
+   「某候选与问题不直接对应」为由把整条查询的候选全部丢掉。进一步兜底：模型排出的编号不足 N 个
+   （输出被截断 / 格式跑偏）时，整个结果视为不可信，fail-open 回原顺序。
+2. **fail-open**：网络异常 / 超时 / 非 JSON / 空结果 / `finish_reason != "stop"` 一律返回原顺序，
+   并把 `channels.rerank` 标成 `"degraded"`；主检索链绝不因此抛异常或丢结果。
+3. **默认关闭零成本**：见上。
+
+实测（60 题判卷集、oracle 池条件；判卷集构建与口径见本文前文「池化判读」一节：hit@5 分母为题、
+命中任一 gold 即算）：
+
+| 配置（对照） | hit@5 |
+|---|---|
+| 基线（无 rerank） | 0.867（52/60） |
+| rerank + `max_tokens=4000` | 0.867（52/60，零增益）：reasoning 吃光 token 配额（同一题单条 reasoning 达 13447 字符），`finish_reason=length`、`content` 为空，对外表现为「模型返回空排序」，fail-open 生效 |
+| rerank + `max_tokens=8000` | **1.000（60/60）**，52 条已命中零丢失 |
+
+`RERANK_REASONING_EFFORT=low` 可把单题 reasoning 压到约 1000 字符，显著缩短延迟；重排请求`temperature=0`。
+
+**读数边界**：oracle 池条件下的 1.000 只说明「gold 已在候选池里、却在 top-5 之外」的题被重排
+救回来了，**不代表线上任意查询**——线上没有 oracle 保证 gold 在池内；52 条已命中题零回退，是
+把「排序」当增益接口最起码的验收要求（排序不许丢已命中的东西）。
+
 *本页只公开方法与汇总结论；原始题集、逐题结果与含个人数据的报告保留在本地。*

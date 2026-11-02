@@ -6,6 +6,10 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **语义重排 rerank（opt-in，默认关闭）**（#272）：`RERANK_ENABLED=1` 时把混合检索的融合候选（深度 `RERANK_POOL`=40）交给 LLM 按「对回答问题的帮助程度」listwise 重排，再截回 `top_k`。离线实测（60 题判卷集、oracle 池条件）hit@5 **0.867 → 1.000**，52 条已命中零丢失。三条红线：只排序不筛选、任何异常 fail-open 回原顺序（`channels.rerank = "degraded"`）、关闭时连模块都不导入（行为与改动前逐位一致）。单次重排 7~15 秒，不适用于 pre-turn 自动注入。需要 `DEEPSEEK_API_KEY`。
+
 ### 修复
 
 - **FTS 3-gram 碎片未做 FTS5 转义，含小数/版本号的查询整条 FTS 通道降级**（#270）：`build_fts_query()` 返回的碎片里可能含 `.`（`0.8.6` / `3.5B`），裸拼接让 `MATCH` 抛 `fts5: syntax error near "."`，`search_fts_status()` 按契约束缚会降级成 `degraded`，混合检索静默退化为纯语义通道。60 题离线题集中 4 题（6.7%）因此丢整条 FTS 通道。现在每个 gram 包成 FTS5 字符串字面量，4 题全部恢复，其余 56 题命中行数逐条不变。
