@@ -196,7 +196,7 @@ def test_iter_payloads_fails_loud_when_payload_missing(http, rs):
 def test_search_similar_defaults_are_protocol_faithful(http, rs):
     """偏离钉：协议层检索不过滤——默认 body 显式 scope="all" / tier=""。
 
-    REST 端点模型默认 tier="facts"（检索视图摘日志层）；RemoteStore 作为
+    REST 端点模型有自己的检索视图默认（2.21 起跟随 DEFAULT_TIER）；RemoteStore 作为
     protocols.Store 实现不得静默继承该视图默认（否则 Local/Remote 默认语义
     对不上）。白名单显式透传的调用方不受影响。
     """

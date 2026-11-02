@@ -179,7 +179,7 @@ SEARCH_SCHEMA = {
             "include_neighbors": {"type": "boolean", "description": "是否附带图谱邻居（默认 false）"},
             "tier": {
                 "type": "string",
-                "description": "记忆分层：facts(默认，只回事实层) / logs(只回日志层) / 空串(不过滤)",
+                "description": "记忆分层：留空/不传(默认，不过滤，#266) / facts(只回事实层) / logs(只回日志层)",
             },
             "domain": {"type": "string", "description": "域（默认 hermes）"},
         },
@@ -259,7 +259,9 @@ class PalimpsestMemoryProvider(MemoryProvider):
         # 注入最低相关度门槛可配，默认与旧硬编码一致 0.3，可调高再砍噪音。
         self._include_neighbors = os.environ.get("PALIMPSEST_PREFETCH_NEIGHBORS", "false").lower() == "true"
         self._min_score = float(os.environ.get("PALIMPSEST_PREFETCH_MIN_SCORE", "0.3"))
-        # 记忆分层：默认只注入事实层，日志层（record/event/git_commit）不进上下文。
+        # 记忆分层：prefetch 自动注入默认只取事实层，日志层（record/event/git_commit）
+        # 不进上下文。此值【仅用于 prefetch / pre-turn 注入路径】；MCP 工具调用
+        # （_tool_search）不传 tier、跟随服务端默认（2.21 起不过滤，issue #266）。
         self._tier = os.environ.get("PALIMPSEST_PREFETCH_TIER", "facts")
         # 召回范围：默认 memory（只召回记忆节点）。修 #46——旧默认 all 会让 kb_chunk
         # 混进注入池并挤占 top_k 名额（kb_chunk 的 domain 恒为 "kb"，domain 过滤对它
@@ -597,17 +599,21 @@ class PalimpsestMemoryProvider(MemoryProvider):
             return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
     def _tool_search(self, args: dict[str, Any]) -> dict:
-        return _http_post(
-            f"{self._base_url}/mem/search",
-            {
-                "query": args.get("query", ""),
-                "scope": args.get("scope", "all"),
-                "domain": args.get("domain", self._domain),
-                "top_k": int(args.get("top_k", 5)),
-                "include_neighbors": (str(args.get("include_neighbors", False)).lower() == "true"),
-                "tier": args.get("tier", self._tier),
-            },
-        )
+        payload = {
+            "query": args.get("query", ""),
+            "scope": args.get("scope", "all"),
+            "domain": args.get("domain", self._domain),
+            "top_k": int(args.get("top_k", 5)),
+            "include_neighbors": (str(args.get("include_neighbors", False)).lower() == "true"),
+        }
+        # tier：用户显式传了才透传（"facts"/"logs"/""=不过滤）；没传则省略该键，
+        # 让服务端默认生效（2.21 起服务端默认不过滤，issue #266）。
+        # 注意：不能把 None 透传成字面量 "None"，也不传 self._tier 盖掉服务端默认
+        # （prefetch 注入的保守 facts 语义只属于 /lifecycle/pre-turn 路径）。
+        user_tier = args.get("tier")
+        if user_tier is not None:
+            payload["tier"] = str(user_tier)
+        return _http_post(f"{self._base_url}/mem/search", payload)
 
     def _tool_ingest(self, args: dict[str, Any]) -> dict:
         return _http_post(

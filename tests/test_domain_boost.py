@@ -28,7 +28,7 @@ def _run(query: str, domain_boost: str = "") -> dict:
     """真实调用被测函数，返回 {node_id: score}。
 
     显式传 tier="" —— 本文件测的是 domain_boost 加权逻辑，与记忆分层（T-81）无关；
-    种子节点用 type=event（logs 层），若不隔离会被默认 tier="facts" 过滤掉。
+    显式 tier="" 与分层解耦（2.21 起默认即不过滤，显式传参让本文件不依赖默认值）。
     分层本身的回归在 tests/test_memory_tier.py。
     """
     out = _mem_search_impl(query, scope="all", top_k=20, domain_boost=domain_boost, tier="")

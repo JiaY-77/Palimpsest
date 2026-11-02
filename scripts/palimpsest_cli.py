@@ -55,6 +55,7 @@ try:
     from core.doctor import run_doctor
     from core.startup_check import run_startup_check
     from core.trivium_store import is_valid_block
+    from config import Config  # 仅读默认值常量，不触发 store 初始化
 except ImportError as _import_err:
     _hint = (
         "\n"
@@ -508,7 +509,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--block", default="", help="图谱扩散只走同区块边（内置：task/kb/hermes/general；可传自定义 domain）"
     )
     sp.add_argument(
-        "--tier", default="facts", help="记忆分层：facts(默认，只回事实层) | logs(只回日志层) | ''(不过滤，改动前行为)"
+        "--tier",
+        default=Config.DEFAULT_TIER,
+        help="记忆分层：''(2.21 起默认，不过滤，#266) | facts(只回事实层，设 DEFAULT_TIER=facts 可回退为默认) | logs(只回日志层)",
     )
     sp.set_defaults(fn=cmd_search)
 
@@ -522,7 +525,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--fts-limit", type=int, default=50, help="FTS 侧候选量（粗筛/桶大小）")
     sp.add_argument(
-        "--tier", default="facts", help="记忆分层：facts(默认，只回事实层) | logs(只回日志层) | ''(不过滤，改动前行为)"
+        "--tier",
+        default=Config.DEFAULT_TIER,
+        help="记忆分层：''(2.21 起默认，不过滤，#266) | facts(只回事实层，设 DEFAULT_TIER=facts 可回退为默认) | logs(只回日志层)",
     )
     sp.set_defaults(fn=cmd_hybrid_search)
 
@@ -604,8 +609,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--domain", default="")
     sp.add_argument(
         "--tier",
-        default="facts",
-        help="记忆分层（仅作用于 recent_ingests）：facts(默认，只回事实层) | logs(只回日志层) | ''(不过滤，改动前行为)",
+        default=Config.DEFAULT_TIER,
+        help="记忆分层（仅作用于 recent_ingests）：''(2.21 起默认，不过滤，#266) | facts(只回事实层) | logs(只回日志层)",
     )
     sp.set_defaults(fn=cmd_review)
 

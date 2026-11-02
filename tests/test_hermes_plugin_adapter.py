@@ -157,6 +157,43 @@ class TestPrefetchForwarding:
 
 
 # ---------------------------------------------------------------------------
+# MCP 工具调用 _tool_search -> POST /mem/search（tier 透传契约，issue #266）
+# ---------------------------------------------------------------------------
+
+
+class TestToolSearchTierForwarding:
+    """工具主动检索「用户没传 tier 就不传」：省略该键让服务端默认生效；
+
+    prefetch 注入的保守 facts 语义（self._tier）只属于 /lifecycle/pre-turn 路径，
+    不得盖到工具调用上；None（JSON null）不得透传成字面量 "None"。
+    """
+
+    def test_no_tier_arg_omits_key(self):
+        cap = _CapturingProvider(response={"results": []})
+        cap._run("_tool_search", {"query": "x"})
+        _, payload = cap.sent[0]
+        assert "tier" not in payload, "用户没传 tier 时必须省略该键，让服务端默认生效（#266）"
+
+    def test_null_tier_does_not_become_literal_none(self):
+        cap = _CapturingProvider(response={"results": []})
+        cap._run("_tool_search", {"query": "x", "tier": None})
+        _, payload = cap.sent[0]
+        assert "tier" not in payload, 'JSON null 不得变成字面量 "None"'
+
+    def test_explicit_tier_is_forwarded(self):
+        cap = _CapturingProvider(response={"results": []})
+        cap._run("_tool_search", {"query": "x", "tier": "logs"})
+        _, payload = cap.sent[0]
+        assert payload["tier"] == "logs"
+
+    def test_explicit_empty_tier_is_forwarded(self):
+        cap = _CapturingProvider(response={"results": []})
+        cap._run("_tool_search", {"query": "x", "tier": ""})
+        _, payload = cap.sent[0]
+        assert payload["tier"] == "", "显式空串 = 不过滤，必须与「没传」区分开"
+
+
+# ---------------------------------------------------------------------------
 # thought_skeleton_context -> /lifecycle/pre-turn (thought_skeleton=True)
 # ---------------------------------------------------------------------------
 
