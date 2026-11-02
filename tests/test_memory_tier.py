@@ -162,7 +162,8 @@ def test_logs_tier_returns_only_logs(iso):
     assert fact_id not in ids
 
 
-def test_all_three_log_types_filtered(iso):
+def test_default_tier_returns_all_log_types(iso):
+    """2.21 起默认不过滤（#266）：record / event / git_commit 三类日志节点全部可达。"""
     q = "分层回归丁：格陵兰冰芯气泡的古大气成分"
     log_ids = set()
     for i, t in enumerate(("record", "event", "git_commit")):
@@ -170,6 +171,14 @@ def test_all_three_log_types_filtered(iso):
 
     out = _mem_search_impl(q, scope="all", top_k=20)
     assert log_ids <= _ids(out), "默认（不过滤）三个日志类型都应可达"
+
+
+def test_explicit_facts_filters_all_log_types(iso):
+    """显式 tier="facts"：三个日志类型全挡；显式 tier="" 全回（回退通道不变）。"""
+    q = "分层回归丁：格陵兰冰芯气泡的古大气成分"
+    log_ids = set()
+    for i, t in enumerate(("record", "event", "git_commit")):
+        log_ids.add(_insert(iso, {"type": t, "domain": "hermes", "importance": 0.5}, f"{q} 第{i}号"))
 
     out_facts = _mem_search_impl(q, scope="all", top_k=20, tier="facts")
     assert log_ids & _ids(out_facts) == set(), "显式 tier='facts' 时三个日志类型都不该返回"

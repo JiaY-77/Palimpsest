@@ -123,6 +123,19 @@ def test_env_example_dead_key_warns(checker: ModuleType, tmp_path: Path) -> None
     assert any("DEAD_KNOB" in w for w in warnings), warnings
 
 
+def test_env_example_value_drift_is_an_error(checker: ModuleType, tmp_path: Path) -> None:
+    """示例值与 config.py 默认不一致 = error：示例被整份拷走，照抄即静默改行为。"""
+    root = _build_repo(tmp_path, env_extra="REST_PORT=9999\n")  # 同名后行覆盖，造值漂移
+    errors = checker.check_config_keys(root).errors
+    assert any("REST_PORT" in e and "示例值" in e for e in errors), errors
+
+
+def test_env_example_placeholder_for_empty_default_is_ok(checker: ModuleType, tmp_path: Path) -> None:
+    """空默认键（凭证类）的示例值是占位符语义（YOUR_API_KEY），不参与值比对。"""
+    root = _build_repo(tmp_path, env_extra="PALIMPSEST_API_KEY=YOUR_API_KEY\n")
+    assert checker.check_config_keys(root).errors == []
+
+
 def test_strict_turns_warning_into_failure(checker: ModuleType, tmp_path: Path) -> None:
     """CI 依赖这条：只有警告时普通模式放行、--strict 必须非零退出。"""
     root = _build_repo(tmp_path, env_extra="DEAD_KNOB=1\n")

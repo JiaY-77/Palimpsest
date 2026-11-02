@@ -335,11 +335,11 @@ class RemoteStore:
           ``mcp_tools.memory.mem_search`` 都没有该字段（即便塞进 body 也会被
           FastAPI 模型静默丢弃），故收到非空过滤时直接抛 ``NotImplementedError``——
           静默忽略会让调用方以为过滤生效了。
-        - 默认 body 显式发 ``scope="all"`` / ``tier=""``：REST 端点模型的默认
-          ``tier="facts"`` 是检索**视图**过滤（日志层摘出），协议层语义是
-          「不过滤」——不静默继承服务端视图默认。显式参数仍经白名单透传
-          （scope / domain_bias / include_neighbors / include_outdated /
-          tier / domain_boost）。
+        - 默认 body 显式发 ``scope="all"`` / ``tier=""``：协议层（``protocols.Store``）
+          的检索语义是「不过滤」，Local / Remote 双端对拍必须同口径——不随服务端
+          检索视图默认（``DEFAULT_TIER``，可被环境变量调整、2.21 起默认即 ""）
+          漂移。显式参数仍经白名单透传（scope / domain_bias / include_neighbors /
+          include_outdated / tier / domain_boost）。
         - 服务端检索端点不接受 ``expand_depth``（总是用
           ``Config.RETRIEVAL_EXPAND_DEPTH``）——与 Local 同参数对拍时，
           Local 一侧需显式传同值（见 tests/test_store_protocol.py）。
@@ -373,9 +373,17 @@ class RemoteStore:
         data = self._req("POST", "/tasks/backfill", json={"apply": not dry_run})
         return data if isinstance(data, dict) else {}
 
-    def mem_review(self, days: int = 7, domain: str = "", tier: str = "facts") -> dict:
-        """复盘盘点 —— 经 ``POST /mem/review``（只读）。"""
-        data = self._req("POST", "/mem/review", json={"days": days, "domain": domain, "tier": tier})
+    def mem_review(self, days: int = 7, domain: str = "", tier: str | None = None) -> dict:
+        """复盘盘点 —— 经 ``POST /mem/review``（只读）。
+
+        tier：调用方显式指定才进 body（``"facts"`` / ``"logs"`` / ``""``=不过滤）；
+        未指定（``None``）时省略该键，跟随服务端默认（2.21 起跟随
+        ``DEFAULT_TIER``，#266）——客户端不把任何一层的默认盖回去。
+        """
+        body: dict[str, Any] = {"days": days, "domain": domain}
+        if tier is not None:
+            body["tier"] = tier
+        data = self._req("POST", "/mem/review", json=body)
         return data if isinstance(data, dict) else {}
 
     def consolidate(
