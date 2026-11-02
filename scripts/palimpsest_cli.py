@@ -51,11 +51,11 @@ try:
     # promote / ingest-git / fts-rebuild / fts-search / reindex / task-archive）
     # 也改走 REST 业务级端点，本文件不再出现同类 Trivium Store 构造——
     # CLI 进程完全不碰库文件，所有开库都被服务端独占。
+    from config import Config  # 仅读默认值常量，不触发 store 初始化
     from core.doctor import render_text as doctor_render
     from core.doctor import run_doctor
     from core.startup_check import run_startup_check
     from core.trivium_store import is_valid_block
-    from config import Config  # 仅读默认值常量，不触发 store 初始化
 except ImportError as _import_err:
     _hint = (
         "\n"
