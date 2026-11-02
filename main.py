@@ -769,7 +769,7 @@ class MemSearchRequest(BaseModel):
     include_outdated: bool = False
     block: str = ""
     domain_boost: str = ""  # 加性软加权：对 node_domain == domain_boost 的候选加分
-    tier: str = "facts"  # 记忆分层：facts(默认) | logs | ""(不过滤，改动前行为)
+    tier: str = Config.DEFAULT_TIER  # 记忆分层：跟随 DEFAULT_TIER（2.21 起默认不过滤，#266）| facts | logs
     as_of: float | None = None  # bi-temporal 历史视图：按该时间点回看事实是否为真
 
 
@@ -832,7 +832,7 @@ class MemHybridSearchRequest(BaseModel):
     neighbor_limit: int = 5
     include_outdated: bool = False
     block: str = ""
-    tier: str = "facts"  # 记忆分层：facts(默认) | logs | ""(不过滤，改动前行为)
+    tier: str = Config.DEFAULT_TIER  # 记忆分层：跟随 DEFAULT_TIER（2.21 起默认不过滤，#266）| facts | logs
     as_of: float | None = None  # bi-temporal 历史视图
 
 
@@ -893,7 +893,7 @@ class MemPromoteRequest(BaseModel):
 class MemReviewRequest(BaseModel):
     days: int = 7
     domain: str = ""
-    tier: str = "facts"
+    tier: str = Config.DEFAULT_TIER  # 跟随 DEFAULT_TIER（2.21 起默认不过滤，#266）
 
 
 class MemIngestGitRequest(BaseModel):

@@ -293,8 +293,9 @@ class Config:
     SESSION_CAPSULE_RECOVER_INTERVAL_SECONDS = int(os.getenv("SESSION_CAPSULE_RECOVER_INTERVAL_SECONDS", "300"))
 
     # ---- 记忆分层（tier）：检索侧视图，不改存储、不迁数据 ----
-    # facts = 事实层（默认检索与注入池）；logs = 日志层（从默认池摘出）；
-    # ""（空串）= 不过滤，回到改动前的全量行为（显式历史通道）。
+    # facts = 事实层（prefetch 自动注入池的默认；检索默认自 2.21 起为不过滤，见下）；
+    # logs = 日志层（从默认池摘出）；
+    # ""（空串）= 不过滤，全量行为（2.21 起的检索默认，issue #266）。
     # kb_chunk / novel_chunk 不入本体系，走既有 scope 隔离；
     # 未登记的 type 一律归 facts（保守兜底，避免静默丢结果）。
     # 逗号分隔便于按部署调整，无需改代码（默认值与 2.0 行为一致）。
@@ -309,7 +310,12 @@ class Config:
     TIER_LOGS = frozenset(
         t.strip() for t in os.getenv("TIER_LOGS", "record,event,git_commit,thought,session").split(",") if t.strip()
     )
-    DEFAULT_TIER = os.getenv("DEFAULT_TIER", "facts")
+    # 检索默认分层。2.21 起默认 ""（不过滤）：tier=facts 会把日志层（record/event/
+    # git_commit/thought/session）整体排除在候选之外，实测 62 条判卷题中 27% 的
+    # gold 因此不可达（hit@5 0.613 → 放宽后 0.887，issue #266）。
+    # 一键回退：设 DEFAULT_TIER=facts 即恢复 2.20 行为（LTS 行为变更条款：
+    # 默认配置值可在次版本调整，须 CHANGELOG 显式列出 + 环境变量一键回退）。
+    DEFAULT_TIER = os.getenv("DEFAULT_TIER", "")
 
     # 代码内已知会写入的节点 type 全集（守护测试 tests/test_tier_registry.py 用：
     # 断言它 ⊆ TIER_FACTS ∪ TIER_LOGS，防止新 type 既不登记 facts 也不登记 logs、

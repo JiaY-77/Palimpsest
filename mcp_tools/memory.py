@@ -729,8 +729,9 @@ def mem_review(days: int = 7, domain: str = "", tier: str = DEFAULT_TIER) -> str
     供每日复盘使用：维护者裁决后升级/清理，再存 type=review 节点。
 
     tier：记忆分层视图，仅作用于 recent_ingests（与 mem_search 同款判定，
-    复用 _tier_matches）——"facts"（默认）只回事实层 / "logs" 只回日志层 /
-    ""（空串）不过滤（等价改动前行为）。kb_chunk / novel_chunk 不入本体系，
+    复用 _tier_matches）——"facts" 只回事实层 / "logs" 只回日志层 /
+    ""（空串）不过滤。2.21 起默认跟随 DEFAULT_TIER = ""（不过滤，#266）。
+    kb_chunk / novel_chunk 不入本体系，
     走既有 scope 隔离；未登记的 type 一律归 facts。
 
     A3 候选集回退全遍历：triviumdb 0.8.3 的 TQL FIND/MATCH 硬截断 5000 条，且
@@ -1073,9 +1074,12 @@ def mem_search(
     v4.0 outdated 语义：默认只回当前有效节点（status != "outdated"）——被新版本取代的
         旧版保留在库中可追溯但不参与普通检索；include_outdated=True 时返回全部
         （历史可追溯通道）。
-    v5.0 记忆分层（tier）：tier="facts"（默认）只回事实层，把日志层（record/event/
+    v5.0 记忆分层（tier）：tier="facts" 只回事实层，把日志层（record/event/
         git_commit，约占活跃节点四成）从检索池摘出；tier="logs" 只回日志层；
-        tier=""（空串）不过滤，等价于改动前行为（显式历史通道）。
+        tier=""（空串）不过滤，等价于改动前行为。
+        2.21 起默认跟随 DEFAULT_TIER = ""（不过滤，issue #266：facts 默认曾把
+        27% 判卷题的日志层 gold 挡在候选外）；设环境变量 DEFAULT_TIER=facts
+        可一键回到 2.20 行为。
         kb_chunk / novel_chunk 不入本体系，走 scope 隔离；未登记 type 一律归 facts。
     v6.0 bi-temporal as_of 历史视图：as_of（数值时间戳）非空时，按「该时刻事实是否
         为真」（valid_at <= as_of 且未在 as_of 前 invalid_at）过滤，以时间窗为准、

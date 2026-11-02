@@ -67,7 +67,7 @@
 | `RETRIEVAL_EXPAND_DEPTH` | `0` | 语义主序的图扩散深度：`0` = 纯语义排序（默认）；`1` = 图邻居参与语义主序（可一键回退） | 检索启用图扩散时 |
 | `TIER_FACTS` | `memory,correction,decision,plan,task,review,solution,inspiration,user_intent,character_state` | 归入事实层的记忆 type（逗号分隔）；未登记的 type 一律归事实层 | 检索与注入按 tier 过滤时 |
 | `TIER_LOGS` | `record,event,git_commit,thought,session` | 归入日志层的记忆 type（逗号分隔），默认不进检索与注入池（`session` = 会话缓冲节点：post-turn 累进各轮编号思考，session-end 合并成 `kind=handoff` 胶囊后标 `closed`，过程簿记语义同 `thought`） | 检索与注入按 tier 过滤时 |
-| `DEFAULT_TIER` | `facts` | 检索与注入的默认分层；`logs` 只回日志层，空串 = 不过滤（全量历史通道） | 未显式指定 `tier` 时 |
+| `DEFAULT_TIER` | *（空 = 不过滤；2.21 起默认，#266）* | **检索**的默认分层：空串 = 不过滤（全量），`facts` 只回事实层（设 `facts` 可一键回退 2.20 行为——facts 默认曾把 27% 判卷题的日志层 gold 挡在候选外），`logs` 只回日志层。prefetch 自动注入不受此键影响（用 `PALIMPSEST_PREFETCH_TIER` 单独控制，默认 facts） | 未显式指定 `tier` 时 |
 | `SESSION_MEMORY_INGEST` | `1` | lifecycle session-end 旧「会话要点」路径开关（`type=memory` / facts 层）：`1` = 既有行为完全不变（默认）；`0` = 停用要点路径（`skip_reason="session_memory_disabled"`），只走会话胶囊路径（缓冲合并出的 `type=task` + `kind=handoff` 胶囊，不受本开关影响） | `/lifecycle/session-end` |
 | `SESSION_BUFFER_MIN_THOUGHT_CHARS` | `400` | **已废弃**（2026-10-28，#188）：实质轮判据不再看正文长度，改成「胶囊四问任填一格即进缓冲」。常量为签名兼容保留，下个大版本连同 `is_substantive_turn(min_thought_chars=...)` 一起删。当前仍生效的两条判据：①`<thought>` 解析出的 `sections` 任一非空；②用户消息含指令动词（指令 ≠ 问句）。工具调用判据已删（#194，宿主恒不填） | `/lifecycle/post-turn` |
 | `SESSION_CAPSULE_RECOVER_ENABLED` | `1` | 会话胶囊断线自愈总开关：`1` = 服务启动后（延迟 5 秒）与每 `INTERVAL` 秒扫描一次；`0` = 后台循环不启动，`POST /lifecycle/recover-orphan-capsules` 手动端点仍可用 | `/lifecycle/post-turn`（缓冲写入）/ 服务启动 |

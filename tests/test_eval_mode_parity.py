@@ -74,7 +74,7 @@ def test_all_modes_accept_tier_parameter():
         fn = re_mod._MODE_FNS[mode]
         params = inspect.signature(fn).parameters
         assert "tier" in params, f"{mode} 缺 tier 参数（会绕过分层过滤）"
-        assert params["tier"].default == "facts", f"{mode} 的 tier 默认应为 facts"
+        assert params["tier"].default == "", f"{mode} 的 tier 默认应为不过滤（2.21，#266）"
 
 
 def test_vec_mode_uses_shared_filter_chain():

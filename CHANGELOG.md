@@ -6,6 +6,19 @@
 
 ## [Unreleased]
 
+## [2.21.0] - 2026-11-02
+
+### 行为变更
+
+- **检索默认 tier 从 `facts` 放宽为 `""`（不过滤）**（#266）：`tier=facts` 会把日志层（`record` / `event` / `git_commit` / `thought` / `session`）整体排除在候选之外，实测 62 条判卷题中 **17 条（27%）的 gold 因此不可达**——`git_commit` 5/5、`event` 3/3、`record` 5/8，另有 `thought` 类。默认口径（`""`）hit@5 0.613 → **0.887**，hit@10 0.645 → **0.903**（`vec` 单通道、窗口 top-200、库副本，逐题归因见 `eval/docs/`）。
+- **生效范围**：`mem_search` / `mem_hybrid_search` / `mem_review` 的 MCP 工具与对应 REST 端点（`/mem/search`、`/mem/hybrid-search`、`/mem/review`）、CLI `search` / `hybrid-search` / `review` 的未显式指定 `tier` 时默认值。
+- **不适用**：prefetch 自动注入（`/lifecycle/pre-turn` 与 hermes 插件的 prefetch 路径）仍默认 `facts`（`PALIMPSEST_PREFETCH_TIER` 独立控制），注入池保持只含事实层。显式传 `tier` 参数的调用不受任何影响。
+- **一键回退**：设环境变量 `DEFAULT_TIER=facts` 并重启服务，即恢复 2.20 检索行为（已实测复现旧数字 hit@5 0.613 / hit@10 0.645）。
+
+### 文档
+
+- **LTS「行为冻结」条款修订**（#266）：行为冻结 = 接口冻结 + 数据格式冻结；默认配置值可在次版本调整，但必须 ① `CHANGELOG` 的「行为变更」节显式列出 ② 提供环境变量一键回退 ③ 不改任何接口名/签名/库文件格式。「默认配置值都不动」的旧表述从 `docs/LTS.md` 移除；默认配置值调整不落入 2.31 的「小破坏性」边界。
+
 ## [2.20.1] - 2026-10-31
 
 ### 依赖
@@ -745,6 +758,7 @@ M1a 按 kill criteria 停：`reach@2` 20%（越过 15% 门槛，但上升全部�
 更早版本（v0.x / v1.x / v2.x）为内部迭代版本，未对外发布，不在此记录。
 
 [Unreleased]: https://github.com/JiaY-77/Palimpsest/compare/v2.20.1...HEAD
+[2.21.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.21.0
 [2.20.1]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.20.1
 [2.20.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.20.0
 [2.19.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.19.0

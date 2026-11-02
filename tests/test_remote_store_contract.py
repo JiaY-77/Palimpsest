@@ -196,7 +196,7 @@ def test_iter_payloads_fails_loud_when_payload_missing(http, rs):
 def test_search_similar_defaults_are_protocol_faithful(http, rs):
     """偏离钉：协议层检索不过滤——默认 body 显式 scope="all" / tier=""。
 
-    REST 端点模型默认 tier="facts"（检索视图摘日志层）；RemoteStore 作为
+    REST 端点模型有自己的检索视图默认（2.21 起跟随 DEFAULT_TIER）；RemoteStore 作为
     protocols.Store 实现不得静默继承该视图默认（否则 Local/Remote 默认语义
     对不上）。白名单显式透传的调用方不受影响。
     """
@@ -207,6 +207,29 @@ def test_search_similar_defaults_are_protocol_faithful(http, rs):
     body = http["calls"][0][2]["json"]
     assert body == {"query": "q", "top_k": 2, "scope": "all", "tier": ""}, body
     assert "scope" in body and "tier" in body, f"scope/tier 必须显式发送：{body}"
+
+
+def test_mem_review_omits_tier_unless_given(http, rs):
+    """偏离钉：mem_review 未指定 tier 时不发该键（跟随服务端默认，#266/#267）。
+
+    服务端 `/mem/review` 的默认已改为跟随 `DEFAULT_TIER`（2.21 起不过滤）；
+    客户端写死任何一层默认（旧代码发 "facts"）都会把环境变量的回退/调整盖掉。
+    显式指定才进 body——`""` = 不过滤，必须与「没传」区分开。
+    """
+    http["responses"][("POST", "/mem/review")] = _Resp(200, {})
+
+    rs.mem_review(days=3)
+    body = http["calls"][0][2]["json"]
+    assert body == {"days": 3, "domain": ""}, body
+    assert "tier" not in body, "未指定 tier 时必须省略该键，让服务端默认生效"
+
+    rs.mem_review(days=3, tier="logs")
+    body = http["calls"][1][2]["json"]
+    assert body["tier"] == "logs"
+
+    rs.mem_review(days=3, tier="")
+    body = http["calls"][2][2]["json"]
+    assert body["tier"] == "", "显式空串 = 不过滤，必须与「没传」区分开"
 
 
 def test_iter_nodes_matches_iter_payloads_semantics(http, rs):

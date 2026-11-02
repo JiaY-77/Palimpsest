@@ -3,13 +3,14 @@
 ========================
 验证 T-81 的核心契约：
 
-  1. tier="" 不过滤 —— 逐条等价于改动前行为（回归红线）
-  2. tier="facts"（默认）只回事实层；日志层（record/event/git_commit）被摘出
+  1. tier="" 不过滤 —— 逐条等价于改动前行为（2.21 起为检索默认，issue #266）
+  2. tier="facts" 只回事实层；日志层（record/event/git_commit）被摘出
   3. tier="logs" 只回日志层
   4. 未登记的 type 保守归 facts（不静默丢结果）
   5. kb_chunk / novel_chunk 不受 tier 约束（走已有 scope 隔离）
   6. FTS-only 侧与语义侧同受约束（否则日志层会从 FTS 路漏回）
-  7. MCP 工具层 / REST 模型 / CLI 的参数存在性（全链路透传）
+  7. MCP 工具层 / REST 模型 / CLI 的参数存在性（全链路透传）；
+     默认值统一跟随 Config.DEFAULT_TIER（可用环境变量一键回退）
 
 隔离说明：本模块用【自建独立临时库】（iso_store 模式，同 test_mem_stats），
 不经由 conftest 的 session 级共享库。原因：共享库另有多组测试断言全库一致性
@@ -121,21 +122,23 @@ class TestTierMatches:
         assert _tier_matches("record", "LOGS") is True
         assert _tier_matches("memory", "Facts") is True
 
-    def test_default_tier_constant_is_facts(self):
-        assert DEFAULT_TIER == "facts"
+    def test_default_tier_constant_is_no_filter(self):
+        # 2.21 起默认 ""（不过滤，issue #266）；环境变量 DEFAULT_TIER=facts 一键回退。
+        assert DEFAULT_TIER == ""
 
 
 # ---------------------------------------------------------------------------
-# 2. 端到端：默认 facts 过滤日志层，tier="" 全回
+# 2. 端到端：默认（""）全回不过滤，tier="facts" 显式摘日志层
 # ---------------------------------------------------------------------------
-def test_default_tier_excludes_logs(iso):
+def test_default_tier_includes_logs(iso):
+    # 2.21 起默认不过滤（#266）：日志层答案必须可达。
     q = "分层回归甲：北极航道破冰船的柴油机维护周期记录"
     fact_id = _insert(iso, {"type": "memory", "domain": "hermes", "importance": 0.5}, q)
     log_id = _insert(iso, {"type": "record", "domain": "hermes", "importance": 0.5}, q + "（日志）")
 
     default_out = _mem_search_impl(q, scope="all", top_k=20)
     assert fact_id in _ids(default_out)
-    assert log_id not in _ids(default_out), "默认 facts 层不应回日志节点"
+    assert log_id in _ids(default_out), "默认（不过滤）应能回日志层节点"
 
 
 def test_empty_tier_returns_both(iso):
@@ -159,14 +162,26 @@ def test_logs_tier_returns_only_logs(iso):
     assert fact_id not in ids
 
 
-def test_all_three_log_types_filtered(iso):
+def test_default_tier_returns_all_log_types(iso):
+    """2.21 起默认不过滤（#266）：record / event / git_commit 三类日志节点全部可达。"""
     q = "分层回归丁：格陵兰冰芯气泡的古大气成分"
     log_ids = set()
     for i, t in enumerate(("record", "event", "git_commit")):
         log_ids.add(_insert(iso, {"type": t, "domain": "hermes", "importance": 0.5}, f"{q} 第{i}号"))
 
     out = _mem_search_impl(q, scope="all", top_k=20)
-    assert log_ids & _ids(out) == set(), "三个日志类型都不该被 facts 层返回"
+    assert log_ids <= _ids(out), "默认（不过滤）三个日志类型都应可达"
+
+
+def test_explicit_facts_filters_all_log_types(iso):
+    """显式 tier="facts"：三个日志类型全挡；显式 tier="" 全回（回退通道不变）。"""
+    q = "分层回归丁：格陵兰冰芯气泡的古大气成分"
+    log_ids = set()
+    for i, t in enumerate(("record", "event", "git_commit")):
+        log_ids.add(_insert(iso, {"type": t, "domain": "hermes", "importance": 0.5}, f"{q} 第{i}号"))
+
+    out_facts = _mem_search_impl(q, scope="all", top_k=20, tier="facts")
+    assert log_ids & _ids(out_facts) == set(), "显式 tier='facts' 时三个日志类型都不该返回"
 
     out_all = _mem_search_impl(q, scope="all", top_k=20, tier="")
     assert log_ids <= _ids(out_all), "tier='' 时应全回"
@@ -204,7 +219,10 @@ def test_hybrid_respects_tier(iso, mode):
 
     default_ids = _ids(_hybrid_search_impl(q, scope="all", top_k=20, mode=mode))
     assert fact_id in default_ids
-    assert log_id not in default_ids, f"mode={mode} 时日志层应从 FTS 侧也被挡住"
+    assert log_id in default_ids, f"mode={mode} 时默认（不过滤）日志层应可达"
+
+    facts_ids = _ids(_hybrid_search_impl(q, scope="all", top_k=20, mode=mode, tier="facts"))
+    assert log_id not in facts_ids, f"mode={mode} 时显式 tier='facts' 应从 FTS 侧也挡住日志层"
 
     all_ids = _ids(_hybrid_search_impl(q, scope="all", top_k=20, mode=mode, tier=""))
     assert fact_id in all_ids and log_id in all_ids
@@ -220,18 +238,19 @@ def test_mcp_tools_accept_tier():
 
     for fn in (mem_search, mem_hybrid_search):
         assert "tier" in inspect.signature(fn).parameters
-        assert inspect.signature(fn).parameters["tier"].default == "facts"
+        assert inspect.signature(fn).parameters["tier"].default == ""
 
 
 def test_rest_models_accept_tier():
     from main import MemHybridSearchRequest, MemSearchRequest
 
-    assert MemSearchRequest.model_fields["tier"].default == "facts"
-    assert MemHybridSearchRequest.model_fields["tier"].default == "facts"
-    # 默认值必须真实生效（不只是字段存在）
-    assert MemSearchRequest(query="x").tier == "facts"
-    assert MemHybridSearchRequest(query="x").tier == "facts"
+    assert MemSearchRequest.model_fields["tier"].default == ""
+    assert MemHybridSearchRequest.model_fields["tier"].default == ""
+    # 默认值必须真实生效（不只是字段存在），且显式传参语义不受默认变化影响
+    assert MemSearchRequest(query="x").tier == ""
+    assert MemHybridSearchRequest(query="x").tier == ""
     assert MemSearchRequest(query="x", tier="").tier == ""
+    assert MemSearchRequest(query="x", tier="facts").tier == "facts"
     assert MemSearchRequest(query="x", tier="logs").tier == "logs"
 
 
@@ -239,28 +258,29 @@ def test_cli_parsers_accept_tier():
     from scripts.palimpsest_cli import build_parser
 
     for cmd in ("search", "hybrid-search"):
-        assert build_parser().parse_args([cmd, "词"]).tier == "facts", f"{cmd} 默认应为 facts"
+        assert build_parser().parse_args([cmd, "词"]).tier == "", f"{cmd} 默认应为不过滤（2.21，#266）"
         assert build_parser().parse_args([cmd, "词", "--tier", ""]).tier == ""
+        assert build_parser().parse_args([cmd, "词", "--tier", "facts"]).tier == "facts"
 
 
 # ---------------------------------------------------------------------------
 # 5. mem_review 的 tier 参数（Issue 6：检索分层一致性）
 # ---------------------------------------------------------------------------
-def test_mem_review_accepts_tier_default_facts():
+def test_mem_review_accepts_tier_default_follows_config():
     import inspect
 
     from mcp_tools.memory import mem_review
 
     params = inspect.signature(mem_review).parameters
     assert "tier" in params, "mem_review 应新增 tier 参数"
-    assert params["tier"].default == "facts", "默认应与其它检索函数一致（facts）"
+    assert params["tier"].default == "", "默认应与其它检索函数一致（2.21 起不过滤，#266）"
 
 
 def test_cli_review_parser_accepts_tier():
     from scripts.palimpsest_cli import build_parser
 
     p = build_parser()
-    assert p.parse_args(["review", "--days", "3"]).tier == "facts"
+    assert p.parse_args(["review", "--days", "3"]).tier == ""
     assert p.parse_args(["review", "--tier", ""]).tier == ""
     assert p.parse_args(["review", "--tier", "logs"]).tier == "logs"
 
@@ -268,8 +288,8 @@ def test_cli_review_parser_accepts_tier():
 def test_mem_review_tier_filters_recent_ingests(iso):
     """recent_ingests 仅收录 type=memory（现状）；tier 在既有 type 约束上再过滤：
 
-    - tier=""：不过滤，窗口内 memory 全回（回归红线）；
-    - tier="facts"（默认)：memory 属事实层，照常返回；
+    - tier=""（2.21 起默认）：不过滤，窗口内 memory 全回（回归红线）；
+    - tier="facts"：memory 属事实层，照常返回；
     - tier="logs"：memory 非日志层 → recent_ingests 为空（真实行为）。
     记录型（record）节点历来不在 recent_ingests（type=memory 硬过滤），
     tier 参数不改变这一既有约束。
@@ -289,8 +309,8 @@ def test_mem_review_tier_filters_recent_ingests(iso):
     assert fact in ids_all, "tier='' 时应回窗口内 memory"
     assert log not in ids_all, "record 历来不被 recent_ingests 收录（type=memory 硬过滤）"
 
-    ids_facts = {it["id"] for it in json.loads(mem_review(days=7))["recent_ingests"]}
-    assert fact in ids_facts, "默认 facts 层应回 memory"
+    ids_facts = {it["id"] for it in json.loads(mem_review(days=7, tier="facts"))["recent_ingests"]}
+    assert fact in ids_facts, "tier='facts' 应回 memory"
 
     logs_ids = {it["id"] for it in json.loads(mem_review(days=7, tier="logs"))["recent_ingests"]}
     assert logs_ids == set(), "tier='logs' 时 memory 不在日志层 → recent_ingests 为空"

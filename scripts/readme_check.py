@@ -485,7 +485,9 @@ def check_config_keys(root: Path) -> Report:
                 f"config.py: 键 {key} 的默认值不是字面量且未登记"
                 "（请加入 CONFIG_DERIVED_DEFAULTS 或 CONFIG_READ_OUTSIDE_CONFIG_PY）"
             )
-    env = set(re.findall(r"^([A-Z][A-Z0-9_]+)=", (root / ".env.example").read_text(encoding="utf-8"), re.MULTILINE))
+    env_src = (root / ".env.example").read_text(encoding="utf-8")
+    env = set(re.findall(r"^([A-Z][A-Z0-9_]+)=", env_src, re.MULTILINE))
+    env_values = dict(re.findall(r"^([A-Z][A-Z0-9_]+)=(.*)$", env_src, re.MULTILINE))
     report.info = (
         f"config.py {len(cfg)} 个（默认值比对 {len(comparable)} · 派生值 {len(cfg) - len(comparable)}："
         f"{'、'.join(sorted(CONFIG_DERIVED_DEFAULTS))}）· .env.example {len(env)} 个"
@@ -499,6 +501,24 @@ def check_config_keys(root: Path) -> Report:
             f".env.example: 有、config.py 未读取 —— {name}"
             "（死键请删；确由 config.py 之外读取，请登记进 CONFIG_READ_OUTSIDE_CONFIG_PY）"
         )
+    # .env.example 的值必须与 config.py 的字面量默认一致：示例文件会被整份拷走，
+    # 示例值漂移 = 「照抄示例」的用户静默改行为（#267 复核：TIER_LOGS 示例缺
+    # thought/session，照抄即静默丢两类日志节点）。
+    # config 默认为空串的键（须用户填写的凭证类）不参与值比对——示例里放的是
+    # YOUR_API_KEY 这类占位符，语义是「填这里」，不是行为默认。
+    for key in sorted((env & cfg) - outside):
+        expr = defaults[key]
+        if not _is_literal_default(expr):
+            continue
+        code_value = _canon_code_default(expr)
+        if not code_value:
+            continue
+        env_value = env_values.get(key, "").strip()
+        if env_value != code_value:
+            report.errors.append(
+                f".env.example: `{key}` 示例值与 config.py 默认不一致 —— config `{code_value}` / 示例 `{env_value}`"
+                "（示例会被整份拷走，照抄即静默改行为）"
+            )
 
     # README 只保留用户必配子集，docs/CONFIGURATION.md 放全表；
     # 「文档未写」按两者并集判定：任一文档写了即视为已记录，但每个出现的默认值都要对。
