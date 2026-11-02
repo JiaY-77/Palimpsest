@@ -93,12 +93,25 @@ class Config:
 
     # ---- 语义重排 rerank（opt-in，默认关闭；issue #272）----
     # 关闭时检索路径连 core.reranker 都不导入，行为与改动前逐位一致（回归红线）。
-    # 打开后把融合候选交给 LLM 按「对回答问题的帮助程度」重排，实测 hit@5
-    # 0.867 → 1.000（60 题判卷集、oracle 池条件）。单次重排 7~15 秒，
-    # 延迟敏感路径（pre-turn 自动注入）不要打开。
+    # 打开后把融合候选交给重排后端（RERANK_BACKEND）按「对回答问题的帮助程度」
+    # 重排，实测 hit@5（60 题判卷集、oracle 池条件）：
+    #   llm     0.867 → 1.000，7~15 秒/查询，耗 API 额度；
+    #   local_ce 0.867 → 0.967，约 4.8 秒/查询（池 20），零额度。
+    # 两者实测都零回退（52 条已命中零丢失）；延迟敏感路径（pre-turn 自动注入）不要打开。
     RERANK_ENABLED = os.getenv("RERANK_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
-    # 参与重排的候选深度：从融合候选里取这么多个再重排，最后截回 top_k
-    RERANK_POOL = int(os.getenv("RERANK_POOL", "40"))
+    # 重排后端：local_ce = 本地 cross-encoder（llama-cpp-python + bge-reranker-v2-m3
+    # GGUF，零 API 额度）；llm = 远端 chat-completions listwise（issue #272 原路径）。
+    # 非法值视同 local_ce：warn 一次继续，不抛异常。
+    RERANK_BACKEND = os.getenv("RERANK_BACKEND", "local_ce").strip().lower()
+    # local_ce 模型文件：相对项目根解析（与 models/Qwen3-Embedding-*.gguf 同一约定），
+    # 或给绝对路径；models/ 已在 .gitignore（635 MB 不进仓库）。
+    RERANK_LOCAL_MODEL_PATH = os.getenv("RERANK_LOCAL_MODEL_PATH", "models/bge-reranker-v2-m3-Q8_0.gguf")
+    # local_ce 推理线程数；0 = 交 llama.cpp 自动决定
+    RERANK_LOCAL_N_THREADS = int(os.getenv("RERANK_LOCAL_N_THREADS", "0"))
+    # 参与重排的候选深度。默认 20 是 local_ce 实测调优（issue #274）：4.8 s/查询
+    # vs 池 40 的 10.3 s，hit@5 只差 1 题（0.967 vs 0.983，在判官噪声地板内）。
+    # 回退旧深度：RERANK_POOL=40。
+    RERANK_POOL = int(os.getenv("RERANK_POOL", "20"))
     # 每条候选喂给模型的正文长度（字符）
     RERANK_SNIPPET_CHARS = int(os.getenv("RERANK_SNIPPET_CHARS", "240"))
     # 单次重排超时（秒）

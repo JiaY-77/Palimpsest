@@ -8,7 +8,13 @@
 
 ### 新增
 
-- **语义重排 rerank（opt-in，默认关闭）**（#272）：`RERANK_ENABLED=1` 时把混合检索的融合候选（深度 `RERANK_POOL`=40）交给 LLM 按「对回答问题的帮助程度」listwise 重排，再截回 `top_k`。离线实测（60 题判卷集、oracle 池条件）hit@5 **0.867 → 1.000**，52 条已命中零丢失。三条红线：只排序不筛选、任何异常 fail-open 回原顺序（`channels.rerank = "degraded"`）、关闭时连模块都不导入（行为与改动前逐位一致）。单次重排 7~15 秒，不适用于 pre-turn 自动注入。需要 `DEEPSEEK_API_KEY`。
+- **语义重排 rerank（opt-in，默认关闭）**（#272）：`RERANK_ENABLED=1` 时把混合检索的融合候选（深度 `RERANK_POOL`，当时默认 40）交给远端 LLM 按「对回答问题的帮助程度」listwise 重排，再截回 `top_k`。离线实测（60 题判卷集、oracle 池条件）hit@5 **0.867 → 1.000**，52 条已命中零丢失。三条红线：只排序不筛选、任何异常 fail-open 回原顺序（`channels.rerank = "degraded"`）、关闭时连模块都不导入（行为与改动前逐位一致）。单次重排 7~15 秒，不适用于 pre-turn 自动注入。需要 `DEEPSEEK_API_KEY`。
+
+- **本地 cross-encoder 重排后端（`RERANK_BACKEND=local_ce`，默认）**（#274）：`RERANK_ENABLED=1` 时检索按后端分派。`local_ce` 用 llama-cpp-python 进程内加载 bge-reranker-v2-m3 GGUF 逐条给候选打分，零 API 额度、零出网、无 provider header 依赖。同口径实测（60 题判卷集，与 #272 同一冻结池与记分）：hit@5 0.867 → **0.967**，约 4.8 秒/查询（池 20；池 40 为 0.983 / 10.3 秒），52 条已命中题全零回退，唯一差额在判官噪声地板内。三条红线（#272）不变：返回列表长度与传入一致（只排序不筛选）、任何异常 / 模型缺失 fail-open 回原顺序（`channels.rerank = "degraded"`，缺模型只探测一次磁盘）、关闭时连模块都不导入。`RERANK_BACKEND=llm` 保持 #272 原路径行为不变；新增配置项 `RERANK_BACKEND` / `RERANK_LOCAL_MODEL_PATH` / `RERANK_LOCAL_N_THREADS`，模型与依赖安装指引见 docs/CONFIGURATION.md。
+
+### 行为变更
+
+- **`RERANK_POOL` 默认 40 → 20**（#274）：`RERANK_BACKEND=local_ce`（新默认后端）的实测调优——单题约 4.8 秒（池 40 约 10.3 秒），hit@5 差 1 题（0.967 vs 0.983），差额在题集判官噪声地板（约 5%）以内。**回退方式：`RERANK_POOL=40`**（恢复 #272 时的候选深度）。该键只在 `RERANK_ENABLED=1` 时生效；默认关闭 rerank 的用户不受任何影响。
 
 ### 修复
 

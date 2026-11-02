@@ -41,6 +41,19 @@ ollama pull qwen3-embedding:0.6b
 python -m pytest tests/ -v
 ```
 
+Optional: the local cross-encoder rerank backend (`RERANK_BACKEND=local_ce`, the
+default once `RERANK_ENABLED=1`) needs `llama-cpp-python` (it only ships CPU
+wheels on its own wheel index) and a bge-reranker-v2-m3 Q8_0 GGUF placed under
+`models/` (gitignored, ~635 MB):
+
+```bash
+pip install "llama-cpp-python>=0.3.36,<0.4" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+# then download the model into models/ — see docs/CONFIGURATION.md
+```
+
+Without those two things the search chain still works: the reranker is opt-in
+(`RERANK_ENABLED=0` by default) and degrades to the original candidate order.
+
 Optional but recommended before first run:
 
 ```bash

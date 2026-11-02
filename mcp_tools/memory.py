@@ -1298,7 +1298,7 @@ def _hybrid_rrf(
     # 启用时**语义候选也要拉深**到 RERANK_POOL：只把融合那一步的 top_k 放大是不够的，
     # 语义通道只取 top_k 条时深池里几乎没有语义候选，重排就退化成给 FTS 结果排序。
     rerank_enabled = bool(getattr(Config, "RERANK_ENABLED", False))
-    candidate_k = max(top_k, getattr(Config, "RERANK_POOL", 40)) if rerank_enabled else top_k
+    candidate_k = max(top_k, getattr(Config, "RERANK_POOL", 20)) if rerank_enabled else top_k
 
     sem_items = _sem_candidate_items(
         query, scope, domain, domain_bias, candidate_k, block, include_outdated=include_outdated, tier=tier, as_of=as_of
@@ -1417,9 +1417,10 @@ def _hybrid_cascade(
         logger.warning("混合检索降级：FTS 通道不可用（query=%r），级联退化为纯语义", query[:60])
     fts_ids = {r.get("node_id") for r in fts if r.get("node_id") is not None}
     # 语义重排（opt-in）：关闭时零成本——连模块都不导入，行为与改动前逐位一致。
-    # 启用时把候选池拉深到 RERANK_POOL 再交给 LLM 重排，最后截回 top_k。
+    # 启用时把候选池拉深到 RERANK_POOL 再交给重排后端（RERANK_BACKEND：
+    # local_ce 本地 cross-encoder / llm 远端 listwise）重排。
     rerank_enabled = bool(getattr(Config, "RERANK_ENABLED", False))
-    candidate_k = max(top_k, getattr(Config, "RERANK_POOL", 40)) if rerank_enabled else top_k
+    candidate_k = max(top_k, getattr(Config, "RERANK_POOL", 20)) if rerank_enabled else top_k
     sem_items = _sem_candidate_items(
         query, scope, domain, domain_bias, candidate_k, block, include_outdated=include_outdated, tier=tier, as_of=as_of
     )
