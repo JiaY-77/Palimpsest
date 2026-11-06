@@ -40,6 +40,7 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8090
 | `POST` | `/mem/search` | 统一检索（每项返回 150 字 `summary` + 逐字 `excerpt`：`summary` 是硬截断**不是摘要**，不得据此断言事实完整，`excerpt` ≤ `SEARCH_EXCERPT_CHARS`；要全文用 `GET /memory/{id}`） |
 | `POST` | `/skill/search` | 技能语义检索 |
 | `POST` | `/mem/hybrid-search` | FTS5 + 向量混合检索（返回字段与边界口径同 `/mem/search`：`summary` 是硬截断非摘要，全文用 `GET /memory/{id}`） |
+| `POST` | `/skill/reindex` | 重建技能语义索引（与 `scripts/build_skill_index.py` 同一 `build()` 实现，在服务进程内复用共享连接；body：`full`（默认 false = 增量按 `source_mtime`）、`skills_dir`（空 = 服务端按其 env 解析）；返回 `{indexed, skipped, cleaned, failed, failed_paths, total, elapsed, output}`。技能目录解析不到 → 400。REST 常驻持库时 CLI 默认经此端点刷新，无需停服务） |
 | `POST` | `/mem/ingest` | 写入新记忆（含冲突检测 + 敏感扫描；`replaces` 字段显式声明取代；可选 `meta` 是键值均为字符串的元数据字典——键 ≤8 / 键名 `^[a-zA-Z0-9_]{1,32}$` / 值 ≤256 字符，通过校验原样落 payload 的 `meta` 子字典，不传则 payload 不含该键） |
 | `POST` | `/mem/purge-by-meta` | 按「域名 + 自定义元数据」精确定位并批量删除（body：`domain` 必填非空（缺失/空串 400，不存在全库级删除）、`meta_key` / `meta_value` 必填、`dry_run`（默认 true 只预览）/ `max_delete`（默认 50，匹配数超出 409 拒绝执行）；真实删除逐条走节点级联删除（边 + FTS/TDB 文本通道一并清理），每次写一条不带 `meta` 的 `type=record` 审计节点） |
 | `POST` | `/mem/retag-by-meta` | 按「域名 + 自定义元数据」批量改写 `meta` 值——重命名聊天后同步改标，防记忆变孤儿（body：`domain` 必填非空、`meta_key` / `old_value` / `new_value` 必填、`old_value == new_value` → 400、`dry_run`（默认 true 只预览）/ `max_update`（默认 500，匹配数超出 409 拒绝执行）；改写为合并式 `{**cur_meta, key: new_value}`，其他 meta 键不冲掉；写一个 `meta_key: new_value` 不合法 → 400；每次写一条不带 `meta` 的 `type=record` 审计节点） |

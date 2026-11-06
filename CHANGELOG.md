@@ -10,11 +10,9 @@
 
 - **Hermes 插件思维底片收侧开关 `PALIMPSEST_THOUGHT_CAPTURE`（默认 `true`）**（#287）：设为 `false` 时，插件的 `sync_turn` 跳过把宿主剥离的模型 reasoning 拼回 `<thought>` 块随 post-turn 上报，payload 不再产出 `type=thought` 节点（实测收侧约占库增量一半）；post-turn 请求照常发，每轮常规沉淀与会话胶囊不受影响。给侧开关 `PALIMPSEST_THOUGHT_SKELETON` 行为不变，零改本体。
 
-### Added
-
-# [Unreleased]
-
 - **search excerpt：检索结果新增逐字 `excerpt` 字段**：`mem_search` / `mem_hybrid_search` / `mem_retrieve` 每项在 150 字 `summary` 之外附逐字 `excerpt`。无摘要生成，只选截断点——优先落句边界（。！？.!? / 换行），无句读退化为词边界（空格/逗号），仍无硬截断；英文小数点两侧均为数字不当句点。长度可配 `SEARCH_EXCERPT_CHARS`（默认 400）。`summary` 150 字语义不变——它是硬截断**不是摘要**，调用方不得据此断言事实完整，要全文用 `mem_get_full`；prefetch / pre-turn 注入路径仍只用 `summary`（防 prompt 膨胀）。
+
+- **技能索引服务侧入口：`POST /skill/reindex`，CLI 默认走 REST**（#285）：`scripts/build_skill_index.py` 直连库需要 read_write 连接，而生产 REST 服务以独占模式常驻持库，两者物理互斥——索引更新排不上队，`skill_search` 长期检索旧内容。现在 REST 在服务进程内复用共享长连接执行同一 `build(store=...)` 逻辑（增量按 `source_mtime` 对比 + 孤儿清理 + 幂等可重入），返回 `{indexed, skipped, cleaned, failed, failed_paths, total, elapsed}`；CLI 默认把请求 POST 给该端点（`PALIMPSEST_BASE_URL` 可覆盖，`--endpoint` 显式指定），`--direct` 才退回直连库；连接失败 / HTTP >= 400 以退出码 1 给出明确错误，绝不静默当成功（否则 cron 会拿旧索引还当刷新过）。
 
 ## [2.22.0] - 2026-11-02
 

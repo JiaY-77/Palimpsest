@@ -361,6 +361,7 @@ def root():
             "/memory/{node_id}/open",
             "/mem/search",
             "/skill/search",
+            "/skill/reindex",
             "/mem/hybrid-search",
             "/mem/ingest",
             "/mem/purge-by-meta",
@@ -927,6 +928,17 @@ class MemReindexRequest(BaseModel):
     yes: bool = False
 
 
+class SkillReindexRequest(BaseModel):
+    """技能语义索引重建请求（issue #285：服务侧唯一写路径）。
+
+    ``skills_dir`` 为空 = 按服务端环境解析（与 CLI 同一规则）；非空 = 显式覆盖
+    （服务端将相对路径绝对化，测试与跨机部署传绝对路径）。
+    """
+
+    full: bool = False
+    skills_dir: str | None = None
+
+
 class MemoryHubUnpackRequest(BaseModel):
     path: str
     preview_chars: int = 80
@@ -1005,6 +1017,37 @@ def mem_search(req: MemSearchRequest):
 @app.post("/skill/search")
 def skill_search(req: SkillSearchRequest):
     return _as_json(_mcp_skill_search(req.query, top_k=req.top_k))
+
+
+@app.post("/skill/reindex")
+def skill_reindex(req: SkillReindexRequest):
+    """重建技能语义索引：在服务进程内执行，复用共享长连接（issue #285）。
+
+    调用与 ``scripts/build_skill_index.py`` 完全相同的 ``build(store=...)`` 实现
+    （增量按 ``source_mtime`` 跳过未变化文件 + 孤儿清理 + 幂等可重入）。此前
+    CLI 直连库需要 read_write 连接，而本服务以独占模式常驻持库——脚本只能
+    ``DatabaseBusyError``；此端点是补上的服务侧写路径，cron 无需停服务。
+
+    技能目录解析不到时（服务器未看到技能目录）返回 400，避免误按空目录
+    触发孤儿清理。脚本 stdout（单行摘要）捕获进 ``output`` 一并返回。
+    """
+    import contextlib
+    import io
+    import time
+
+    from scripts.build_skill_index import SkillsDirNotFoundError
+    from scripts.build_skill_index import build as _build_skill_index
+
+    store = _get_store()
+    started = time.perf_counter()
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            result = _build_skill_index(skills_dir=req.skills_dir, store=store, full=req.full)
+    except SkillsDirNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    elapsed = round(time.perf_counter() - started, 3)
+    return {**result, "elapsed": elapsed, "output": buf.getvalue()}
 
 
 @app.post("/mem/hybrid-search")
