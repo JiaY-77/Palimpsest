@@ -35,19 +35,9 @@ def iso_store(tmp_path, monkeypatch):
         shutil.rmtree(tmp_path, ignore_errors=True)
 
 
-@pytest.fixture
-def fake_embedder(monkeypatch):
-    """用可解释的 token 向量替代真实 embedding。"""
-
-    def _embed(text: str) -> list[float]:
-        vector = [0.0] * 1024
-        for token in str(text).lower().split():
-            index = sum(ord(char) for char in token) % len(vector)
-            vector[index] += 1.0
-        return vector
-
-    monkeypatch.setattr(TriviumStore, "embed_text", staticmethod(_embed))
-    return _embed
+# fake embedding 复用 conftest 的 session 级 fake_embedder（autouse）：该 fixture
+# 同时 patch embed_text 与 embed_text_with_audit，保证索引构建与查询在同一向量
+# 空间。模块级同名夹具曾只 patch embed_text，把 autouse 版遮蔽掉（issue #268）。
 
 
 def _write_skill(root, relative_dir: str, name: str, description: str, body: str) -> str:
