@@ -4,7 +4,13 @@
 递归扫描技能目录中的 ``SKILL.md``，每个文件作为一个 ``skill_chunk`` 节点写入
 TriviumDB，供 ``mcp_tools.skill.skill_search`` 做语义检索。
 
-技能目录按下列顺序解析（见 :func:`resolve_skills_dir`）：
+**默认经 REST 执行**（issue #285）：生产 REST 服务以独占模式常驻持库，CLI
+直连迟早 ``DatabaseBusyError``；缺省把请求 POST 给 ``/skill/reindex``，在
+服务进程内复用共享长连接构建（``PALIMPSEST_BASE_URL`` 可覆盖基地址，
+``--endpoint`` 显式指定）。``--direct`` 才退回传统的直连库模式：
+
+技能目录按下列顺序解析（见 :func:`resolve_skills_dir`，仅 ``--direct`` 时在
+本进程执行；HTTP 模式由服务端按同样的规则解析）：
 
 1. 显式 ``--skills-dir``
 2. 当 ``HERMES_HOME`` 未指向档案目录、而 ``HERMES_PROFILE`` 指定的档案目录存在时，
@@ -433,15 +439,65 @@ def build(skills_dir: str | None = None, store=None, full: bool = False) -> dict
     return result
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Hermes 技能语义索引构建（默认增量，--full 全量）")
+def _reindex_via_rest(endpoint: str, full: bool, skills_dir: str | None) -> None:
+    """经 REST ``POST /skill/reindex`` 执行（默认路径，issue #285）。
+
+    服务进程以独占模式常驻持库，CLI 直连只会 ``DatabaseBusyError``；经 REST
+    在服务进程内复用共享长连接完成同一 ``build()`` 逻辑，无需停服务。
+
+    连接失败 / HTTP >= 400 都以退出码 1 结束并给出明确错误——**绝不静默
+    按成功继续**（否则 cron 会拿旧索引还当刷新过）。
+    """
+    import httpx
+
+    body: dict[str, Any] = {"full": full}
+    if skills_dir:
+        body["skills_dir"] = os.path.abspath(os.path.expanduser(skills_dir))
+    try:
+        resp = httpx.post(f"{endpoint.rstrip('/')}/skill/reindex", json=body, timeout=600.0)
+    except Exception as exc:  # 统一转成可读错误，不抛栈
+        print(f"[错误] 无法连接 REST 服务 {endpoint}：{exc}", file=sys.stderr)
+        print("提示：先启动服务（python -m uvicorn main:app --port 8090），或改用 --direct 直连库。", file=sys.stderr)
+        raise SystemExit(1) from exc
+    if resp.status_code >= 400:
+        print(f"[错误] REST 返回 {resp.status_code}：{resp.text[:500]}", file=sys.stderr)
+        raise SystemExit(1)
+    data = resp.json()
+    print(
+        f"经 REST 服务端完成：索引 {data.get('indexed')} | 跳过 {data.get('skipped')} "
+        f"| 清理 {data.get('cleaned')} | 失败 {data.get('failed')} | 总节点 {data.get('total')} "
+        f"| 耗时 {data.get('elapsed')}s"
+    )
+    for path in data.get("failed_paths") or []:
+        print(f"[跳过] 技能索引失败 {path}", file=sys.stderr)
+    print("[建边] 默认 HTTP 模式不在本地执行建边（直接开库会撞 REST 独占锁）。")
+    print("       如需自动补边，用 --direct 在库空闲时跑，或单独调 scripts/build_structural_edges.py。")
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Hermes 技能语义索引构建（默认经 REST 增量构建，--full 全量）")
     parser.add_argument(
         "--skills-dir",
         default=None,
         help="技能根目录；省略时自动解析（档案目录 → <HERMES_HOME>/skills → ~/.hermes/skills）",
     )
     parser.add_argument("--full", action="store_true", help="强制刷新所有技能文件")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--direct",
+        action="store_true",
+        help="不走 REST，直连数据库执行（显式降级；要求库未被其他进程独占，REST 常驻时会报 DatabaseBusyError）",
+    )
+    parser.add_argument(
+        "--endpoint",
+        default=None,
+        help="REST 基地址；缺省读环境变量 PALIMPSEST_BASE_URL，再缺省 http://127.0.0.1:8090",
+    )
+    args = parser.parse_args(argv)
+
+    if not args.direct:
+        endpoint = args.endpoint or os.getenv("PALIMPSEST_BASE_URL") or "http://127.0.0.1:8090"
+        _reindex_via_rest(endpoint, full=args.full, skills_dir=args.skills_dir)
+        return
 
     try:
         skills_dir = resolve_skills_dir(args.skills_dir)

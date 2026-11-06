@@ -188,7 +188,7 @@ mem_ingest(content="[doing] 修 tier 分层遗漏", type="task", importance=0.8)
 |---|---|
 | 扫描 + 切片 + 入库 | `python scripts/build_kb_index.py` |
 | 小说 vault（整文件一节点） | `python scripts/build_novel_index.py --source <vault>` |
-| 技能库（`SKILL.md`） | `python scripts/build_skill_index.py` |
+| 技能库（`SKILL.md`） | `python scripts/build_skill_index.py`（默认经 REST `POST /skill/reindex` 在服务进程内构建，REST 常驻时无需停服务；`--direct` 才直连库，要求库空闲；`--endpoint` / `PALIMPSEST_BASE_URL` 覆盖地址） |
 | 自定义切片 / 分类规则 | `--rules rules.json`（模板见 `examples/index-rules.example.json`） |
 | 语义搜索 | `palimpsest_cli.py kb "..."` 或 `mem_search(scope="kb")` |
 
