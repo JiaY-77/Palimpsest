@@ -29,7 +29,7 @@ from core.strategy import THOUGHT_TYPE, decide_import, detect_thought_origin, no
 from core.task_state import HANDOFF_KIND, _handoff_title, _is_handoff, _iso_from_epoch
 from core.trivium_store import EmbeddingInputTooLongError, EmbeddingUnavailableError, domain_in_block, node_domain
 from core.utils import _to_float
-from mcp_tools._common import _shorten, _to_json, mcp, store
+from mcp_tools._common import _excerpt, _shorten, _to_json, mcp, store
 from mcp_tools.graph import _collect_neighbors
 
 logger = logging.getLogger(__name__)
@@ -56,7 +56,9 @@ def mem_retrieve(
     query: str, domain: str = "", top_k: int = 5, include_outdated: bool = False, as_of: float | None = None
 ) -> str:
     """
-    语义检索记忆：返回 150 字摘要 + meta（绝不返回全文，省 token 的关键设计）。
+    语义检索记忆：返回 150 字 summary + 逐字 excerpt + meta。
+    ⚠ summary 是硬截断不是摘要：只有前 150 字，不得据此断言事实完整；
+    excerpt 同样是原文逐字截取（≤ SEARCH_EXCERPT_CHARS，默认 400，截断落句边界）。
     全文请用 mem_get_full 按 id 单独取。
     v4.0 outdated 语义：默认只回当前有效节点（status != "outdated"）；
     include_outdated=True 时返回全部（历史可追溯通道）。
@@ -90,6 +92,7 @@ def mem_retrieve(
                 "id": r.get("id"),
                 "score": round(_to_float(r.get("score"), 0.0), 4),
                 "summary": _shorten(payload.get("content", ""), 150),
+                "excerpt": _excerpt(payload.get("content", ""), Config.SEARCH_EXCERPT_CHARS),
                 "meta": {
                     "type": payload.get("type", ""),
                     "importance": payload.get("importance", 0.5),
@@ -1022,6 +1025,7 @@ def _mem_search_impl(
                 "type": ptype,
                 "score": round(score, 4),
                 "summary": _shorten(payload.get("content", ""), 150),
+                "excerpt": _excerpt(payload.get("content", ""), Config.SEARCH_EXCERPT_CHARS),
                 "meta": meta,
             }
         )
@@ -1066,7 +1070,10 @@ def mem_search(
     domain_boost 非空时对 node_domain(payload) == domain_boost 的候选在语义分上
         「加」Config.DOMAIN_BOOST_EPS（加性软加权，不同于 domain 的硬过滤、也不同于
         domain_bias 的乘性加权）；默认为空 = 不改变任何现有行为。
-    双层返回原则不变：只返回 150 字摘要 + meta，不返回全文（全文请用 mem_get_full）。
+    双层返回原则不变：只返回 150 字 summary + 逐字 excerpt + meta，不返回全文。
+    ⚠ summary 是硬截断不是摘要：只有前 150 字，不得据此断言事实完整；
+    excerpt ≤ SEARCH_EXCERPT_CHARS（默认 400，截断落句边界），同为逐字原文。
+    全文请用 mem_get_full。
     v3.0 分区返回：include_neighbors=True 时，语义区（results）原样返回，
         额外附 neighbors 图关联区（语义命中节点的一跳邻居，score = via_score × weight，
         去重、relation 大写、按 score 降序）。include_neighbors=False 时输出与旧版完全一致。
@@ -1206,6 +1213,7 @@ def _fts_only_item(
         "type": ptype,
         "score": 0.0,
         "summary": _shorten(payload.get("content", ""), 150),
+        "excerpt": _excerpt(payload.get("content", ""), Config.SEARCH_EXCERPT_CHARS),
         "meta": meta,
     }
 
@@ -1578,7 +1586,9 @@ def mem_hybrid_search(
     mode 取值："rrf"（默认，Reciprocal Rank Fusion，k=60，单侧命中也算）/
               "cascade"（FTS 粗筛候选集 → 向量精排交集，交集不足从剩余语义补足）。
     scope 同 mem_search（memory/kb/all）；fts_limit 控制 FTS 侧候选量；
-    每项返回 {id, type, score, summary, meta}，meta 含 fts_hit/sem_hit 命中来源标记；
+    每项返回 {id, type, score, summary, excerpt, meta}，meta 含 fts_hit/sem_hit 命中来源标记；
+    ⚠ summary 是硬截断（150 字）不是摘要，不得据此断言事实完整；
+    excerpt 为逐字原文（≤ SEARCH_EXCERPT_CHARS，默认 400，截断落句边界），全文用 mem_get_full。
     include_neighbors=True 时附 neighbors 图关联区（复用 _collect_neighbors）。
     其余参数（domain/domain_bias/neighbor_limit/block）语义同 mem_search。
     v4.0 outdated 语义：默认过滤 status=="outdated" 旧版本；include_outdated=True 时返回全部

@@ -153,7 +153,7 @@ hermes config set context.engine palimpsest-graph
 | 有一堆 Markdown，AI 读不过来 | 按 `##`/`###` **标题**切片入库（标题＝人写下的语义边界），`[[双链]]` 转图谱边 | `build_kb_index.py` → `kb "关键词"` |
 | 它记不住「当时为什么这么定」 | 节点带类型 / 重要度 / 时间维度；推理过程另存为 `thought` 节点 | `mem_fact_history <id>` |
 | 记忆存在别人服务器上 | 全部在本机 `data/` 目录；冷备份整组文件即可搬家 | `python scripts/backup_db.py --keep 7` |
-| 多轮之后上下文爆掉 | 检索默认只回 **150 字摘要 + 元数据**，全文按需二次拉取 | 看 `mem_retrieve` 返回体积 |
+| 多轮之后上下文爆掉 | 检索默认只回 **150 字 `summary` + ≤400 字逐字 `excerpt` + 元数据**，全文按需二次拉取 | 看 `mem_retrieve` 返回体积 |
 
 **一条设计底线**：任何节点默认**不会因为相似度高就被自动取代**。相似只作相关提示（`related_ids`），要不要取代由有完整上下文的那一方说了算——因为「我喜欢吃苹果」和「我喜欢吃苹果派」相似度很高，但根本不是同一件事。
 
@@ -237,6 +237,7 @@ python scripts/palimpsest_cli.py doctor
 | `RERANK_LOCAL_MODEL_PATH` | `models/bge-reranker-v2-m3-Q8_0.gguf` | 本地 cross-encoder 模型路径（相对项目根或绝对路径）；模型下载与依赖安装见 docs/CONFIGURATION.md |
 | `RERANK_LOCAL_N_THREADS` | `0` | 本地重排推理线程数；`0` = 交 llama.cpp 自动 |
 | `RERANK_POOL` | `20` | 参与重排的候选深度；回退旧深度 `RERANK_POOL=40` |
+| `SEARCH_EXCERPT_CHARS` | `400` | 检索结果逐字 `excerpt` 的截取上限（截断落句边界）；150 字 `summary` 保持硬截断不变——它是截断不是摘要，要全文用 `mem_get_full` |
 
 完整配置表见 [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)（全部配置项的默认值与生效条件，以检查器逐项比对为准）。
 

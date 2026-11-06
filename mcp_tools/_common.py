@@ -42,6 +42,56 @@ def _shorten(text: str, length: int) -> str:
     return text[:length] if len(text) > length else text
 
 
+# 句边界字符（excerpt 截断点优先级最高的边界）；换行单独处理（截断点留在行尾）
+_SENT_END_CHARS = "。！？!?."
+# 词边界字符（句边界缺失时的退化边界，截断点停在词尾、不留分隔符）
+_WORD_SEP_CHARS = " \t，,、"
+
+
+def _excerpt(text: str, length: int) -> str:
+    """逐字截取检索 excerpt：不生成摘要，只挑截断点（verbatim，不改写原文）。
+
+    目标长度 length（config.SEARCH_EXCERPT_CHARS，默认 400）：
+      1. 截断点优先落在句边界（。！？.? 或换行），句读本身留在 excerpt 内
+         （换行除外——截断停在行尾、不带尾随空白）；
+      2. 最强句边界落在窗口前半段（< length/2）或缺失时，退化为词边界
+         （空格/逗号，截断停在词尾）；
+      3. 仍无 → 硬截断（与 _shorten 同形：原文前 length 个字符）。
+    英文小数点两侧均为数字（如 3.14）不当句点。输出恒为原文前缀。
+    """
+    text = text or ""
+    n = int(length)
+    if n <= 0:
+        return ""
+    if len(text) <= n:
+        return text
+    window = text[:n]
+    # 前半段门槛：最强边界比这还靠前时返回的 excerpt 会短得没有信息量，
+    # 此时按「更长的降级边界」退一档（句边界 → 词边界 → 硬截断）
+    floor = n // 2
+    # 句边界：从窗口末尾往前找最后一个句界
+    for i in range(n - 1, -1, -1):
+        ch = window[i]
+        if ch == "\n":
+            if i >= floor:
+                return window[:i]
+            break
+        if ch in _SENT_END_CHARS:
+            nxt = text[i + 1] if i + 1 < len(text) else ""
+            if ch == "." and window[i - 1].isdigit() and nxt.isdigit():
+                continue  # 小数点（如 3.14）不当句点
+            if i + 1 >= floor:
+                return window[: i + 1]
+            break
+    # 词边界：最后一个空格/逗号处截断（停在词尾）
+    for i in range(n - 1, -1, -1):
+        if window[i] in _WORD_SEP_CHARS:
+            if i >= floor:
+                return window[:i]
+            break
+    return window  # 硬截断
+
+
 def _kb_md_files() -> list:
     """遍历知识库目录，返回所有 .md 文件（绝对路径，排序稳定）"""
     files = []
