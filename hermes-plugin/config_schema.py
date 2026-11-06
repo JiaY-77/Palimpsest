@@ -85,6 +85,13 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             description="每轮 LLM 调用前注入 Palimpsest 按情境挑的思考骨架（思维预设层给侧）；闲聊/过短轮本体自动不给",
         ),
         ProviderField(
+            key="thought_capture",
+            label="思考上报",
+            default="true",
+            kind="bool",
+            description="每轮把模型思考拼回 <thought> 块随 post-turn 上报（思维预设层收侧）；关闭时普通沉淀与胶囊不受影响",
+        ),
+        ProviderField(
             key="thought_timeout",
             label="骨架超时(秒)",
             default="2.0",

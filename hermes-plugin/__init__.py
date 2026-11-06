@@ -273,6 +273,12 @@ class PalimpsestMemoryProvider(MemoryProvider):
         # 这里只传输 + fail-open。默认开——功能价值只在开启时体现，风险由 fail-open
         # + 短超时压住；关闸设 PALIMPSEST_THOUGHT_SKELETON=false。
         self._thought_skeleton = os.environ.get("PALIMPSEST_THOUGHT_SKELETON", "true").lower() != "false"
+        # 思维底片收侧开关（issue #287）：``sync_turn`` 是否把 reasoning 拼回
+        # ``<thought>`` 块随 post-turn 上报（本体落 ``type=thought`` 节点）。
+        # 默认开；关闸设 PALIMPSEST_THOUGHT_CAPTURE=false——post-turn 请求照常发
+        # （普通沉淀 / 胶囊不受影响），只是 payload 不带 ``<thought>``，本体
+        # ``decide_thought_store`` 无可存。给侧骨架（下面一行）独立开关。
+        self._thought_capture = os.environ.get("PALIMPSEST_THOUGHT_CAPTURE", "true").lower() != "false"
         # 骨架是热路径，宁缺毋慢：本地 REST 通常 <500ms，慢 embedding 时 fail-open
         # 只丢骨架不丢正文。默认 2.0s，可用 PALIMPSEST_THOUGHT_TIMEOUT 调。
         self._thought_timeout = float(os.environ.get("PALIMPSEST_THOUGHT_TIMEOUT", "2.0"))
@@ -519,7 +525,9 @@ class PalimpsestMemoryProvider(MemoryProvider):
         if not self._enabled or not self._auto_ingest:
             return
         assistant_message = assistant_content or ""
-        reasoning = _assistant_reasoning(messages)
+        # 收侧开关（issue #287）：关闸时跳过 reasoning 拼接——post-turn 照常发
+        # （普通沉淀 / 胶囊不受影响），payload 不带 ``<thought>`` 即无可存节点。
+        reasoning = _assistant_reasoning(messages) if self._thought_capture else ""
         if reasoning:
             if assistant_message.strip():
                 assistant_message = f"{assistant_message}\n<thought>{reasoning}</thought>"
