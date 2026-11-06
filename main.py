@@ -556,22 +556,53 @@ def delete_memory(node_id: int):
         raise HTTPException(status_code=404, detail="删除失败：节点不存在或已被删除") from e
 
 
-def _sync_fts_after_update(node_id: int) -> None:
-    """更新节点后同步 FTS 全文索引（失败不阻塞主更新，可手动 fts-rebuild 兜底）。"""
+# issue #296：FTS/TDB 索引同步失败时随 PUT/PATCH 响应告警（与 #52 的向量警告同风格）。
+# 只提示 + 给补救路径，不吓人：主更新已成功，一次索引失败可由 rebuild 修复。
+_FTS_SYNC_FAIL_WARNING = (
+    "节点已更新，但全文索引同步失败（FTS 或 TDB 通道）——"
+    "关键词检索暂可能命中旧正文。失败原因见服务日志；"
+    "可运行 python scripts/check_fts_consistency.py --repair 全量重建索引。"
+)
+
+
+def _sync_fts_after_update(node_id: int) -> bool:
+    """更新节点后同步 FTS 全文索引 + TDB 文本通道，返回「双通道是否都成功」。
+
+    issue #296 根因固化（治本，不打补丁）：``core.fts_index.sync_node`` 内部
+    把索引写失败吞成 ``False``（仅 logger.warning），而**本函数此前把该返回值
+    直接丢掉**——两层都不断链。索引写入一旦失败（典型如 fts.db 瞬时被其他
+    进程的读连接占锁 ``database is locked``），主更新照常成功、响应无任何
+    信号、也没有补同步机制，索引行停留在旧正文，直到下一次覆盖该节点的
+    同步成功才恢复；期间唯一痕迹是一条没人看的 WARNING。这是独立的工程
+    弱点（失败不可见、不自愈），任何一次索引写失败都会中招。
+
+    修复契约：
+    - 各通道失败只 warning 不抛出——**一次索引失败绝不毁掉主写路径**；
+    - 但失败状态必须可观测：调用方拿返回值，在 PUT/PATCH 响应里透出
+      ``fts_synced`` + ``warning``（API 侧可感知，不再依赖没人看的日志）。
+    """
+    synced = True
     try:
         node = _get_store().get_node(node_id)
         content = ((node or {}).get("payload") or {}).get("content", "")
-        sync_node(node_id, content)
-    except Exception as e:  # noqa: BLE001 —— FTS 同步失败仅告警不阻塞节点更新
+        # sync_node 失败不抛异常只回 False——**必须接住返回值**（#296：此前忽略）
+        synced = sync_node(node_id, content) and synced
+    except Exception as e:  # noqa: BLE001 —— 读节点本体失败同样不阻塞主更新
         logger.warning("FTS 索引同步失败 node=%s: %s", node_id, e)
+        synced = False
     # TDB 文本通道（默认关闭零成本；失败 warning 不阻断，可 rebuild 兜底）：
     # 与 FTS 同一份 content——立即读仓库当前正文，update_content 已落库。
-    try:
-        node = _get_store().get_node(node_id)
-        content = ((node or {}).get("payload") or {}).get("content", "")
-        _tdb_text.sync_node(node_id, content)
-    except Exception as e:  # noqa: BLE001 —— TDB 同步失败仅告警不阻塞节点更新
-        logger.warning("TDB 文本索引同步失败 node=%s: %s", node_id, e)
+    # 只在启用时计入聚合——关闭通道的 ``sync_node`` 恒返回 False（门控契约，
+    # 非「失败」），照单全收会把每一次成功更新都误报成同步失败。
+    if Config.TDB_TEXT_ENABLED:
+        try:
+            node = _get_store().get_node(node_id)
+            content = ((node or {}).get("payload") or {}).get("content", "")
+            synced = _tdb_text.sync_node(node_id, content) and synced
+        except Exception as e:  # noqa: BLE001 —— TDB 同步失败仅告警不阻塞节点更新
+            logger.warning("TDB 文本索引同步失败 node=%s: %s", node_id, e)
+            synced = False
+    return synced
 
 
 def _apply_payload_update(node_id: int, payload: dict) -> dict:
@@ -589,19 +620,23 @@ def _apply_payload_update(node_id: int, payload: dict) -> dict:
             raise HTTPException(status_code=404, detail="更新失败：节点不存在或数据格式错误")
         if (node.get("payload") or {}).get("type") == "task":
             result = apply_task_patch(store, node_id, payload)
-            _sync_fts_after_update(node_id)
+            fts_synced = _sync_fts_after_update(node_id)
             response = {
                 "status": "ok",
                 "message": f"节点 {node_id} payload 已更新",
                 "task_state": result["state"],
                 "state_changed": result["changed"],
+                # issue #296：索引同步结果永久暴露（成功也带，杜绝静默失联歧义）
+                "fts_synced": fts_synced,
             }
+            if not fts_synced:
+                response["warning"] = _FTS_SYNC_FAIL_WARNING
             if result["changed"]:
                 response["previous_state"] = result["previous_state"]
             return response
         store.update_payload(node_id, payload)
-        _sync_fts_after_update(node_id)
-        result = {"status": "ok", "message": f"节点 {node_id} payload 已更新"}
+        fts_synced = _sync_fts_after_update(node_id)
+        result = {"status": "ok", "message": f"节点 {node_id} payload 已更新", "fts_synced": fts_synced}
         # issue #52：改 content 不会自动重算向量（避免在写路径里塞网络调用），
         # 但必须让调用方知道——否则语义检索静默按旧文本漂移。
         if "content" in payload:
@@ -609,6 +644,13 @@ def _apply_payload_update(node_id: int, payload: dict) -> dict:
                 "content 已更新，但向量未重算——语义检索与冲突检测仍按旧文本执行。"
                 f"如需同步，调用 POST /memory/{node_id}/reembed。"
             )
+        # issue #296：索引同步失败必须告警（可叠加在 #52 的向量警告后，不吞不覆盖）
+        if not fts_synced:
+            _fts_warning = _FTS_SYNC_FAIL_WARNING
+            if result.get("warning"):
+                result["warning"] = result["warning"] + "\n" + _fts_warning
+            else:
+                result["warning"] = _fts_warning
         return result
     except HTTPException:
         raise

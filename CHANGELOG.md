@@ -16,6 +16,8 @@
 
 ### 修复
 
+- **PUT/PATCH 响应对索引同步失败零信号：静默吞掉**（#296）：`sync_node` 内部自己就把 FTS/TDB 写失败吞成一行 `warning`，而 `_sync_fts_after_update` 此前把该返回值直接丢掉——两层都不断链，FTS/TDB 写入一旦失败（典型如 fts.db 被其他进程的读连接瞬间占锁），主更新照常 200、响应无任何信号、也没有补同步机制，索引行会停在旧正文、直到下一次覆盖该节点的同步成功才恢复——独立的工程弱点（失败不可见、不自愈），任何一次索引写失败都会中招。现在：同步结果（FTS / TDB 双通道，TDB 关闭时按门控豁免不计失败）聚合返回，PUT/PATCH 响应新增 `fts_synced` 字段，失败时附 `warning` 与 rebuild 补救提示——一次索引失败依旧绝不阻塞主写路径，但**不再静默**。修复覆盖普通节点、`type=task`（`apply_task_patch`）与 PATCH 三条路径。`/doctor` 的「FTS 索引完整性」行数阈值判定不在本条范围（该检查只对账行数、不比对内容，内容级对账已在 `check_fts_consistency`）。
+
 - **`status="archived"` 不生效：已归档节点仍出现在检索结果里**（#293）：候选层过滤只剔 `outdated`，`PATCH {"status":"archived"}` 之后节点照样进 top-k——归档字段等于白设。现在 `outdated` 与 `archived` 一并从候选剔除，缺省 status（老节点）仍视为 active 保留；`completed` / `done` 等任务完成态不受影响，历史查询不断链。
 ### 文档
 
