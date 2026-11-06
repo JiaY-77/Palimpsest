@@ -14,6 +14,10 @@
 
 - **技能索引服务侧入口：`POST /skill/reindex`，CLI 默认走 REST**（#285）：`scripts/build_skill_index.py` 直连库需要 read_write 连接，而生产 REST 服务以独占模式常驻持库，两者物理互斥——索引更新排不上队，`skill_search` 长期检索旧内容。现在 REST 在服务进程内复用共享长连接执行同一 `build(store=...)` 逻辑（增量按 `source_mtime` 对比 + 孤儿清理 + 幂等可重入），返回 `{indexed, skipped, cleaned, failed, failed_paths, total, elapsed}`；CLI 默认把请求 POST 给该端点（`PALIMPSEST_BASE_URL` 可覆盖，`--endpoint` 显式指定），`--direct` 才退回直连库；连接失败 / HTTP >= 400 以退出码 1 给出明确错误，绝不静默当成功（否则 cron 会拿旧索引还当刷新过）。
 
+### 修复
+
+- **`status="archived"` 不生效：已归档节点仍出现在检索结果里**（#293）：候选层过滤只剔 `outdated`，`PATCH {"status":"archived"}` 之后节点照样进 top-k——归档字段等于白设。现在 `outdated` 与 `archived` 一并从候选剔除，缺省 status（老节点）仍视为 active 保留；`completed` / `done` 等任务完成态不受影响，历史查询不断链。
+
 ## [2.22.0] - 2026-11-02
 
 ### 新增

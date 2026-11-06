@@ -332,12 +332,23 @@ def node_domain(payload: dict) -> str:
     return (payload.get("domain", "") or payload.get("character_name", "") or "general").strip().lower()
 
 
-def _drop_outdated_candidates(scored: list[tuple[float, dict]]) -> list[tuple[float, dict]]:
-    """候选层过滤：剔除 status="outdated" 的节点。
+# 检索候选层要剔除的状态：被新版取代（outdated）与显式退役（archived）。
+# 两者都不该占用候选名额——outdated 是「事实被更新」，archived 是「按策略停用」。
+_INACTIVE_SEARCH_STATUSES = ("outdated", "archived")
 
-    被新版取代的旧记忆不应占用候选名额（6x 候选余量中有约 24% 是 outdated）。
+
+def _drop_outdated_candidates(scored: list[tuple[float, dict]]) -> list[tuple[float, dict]]:
+    """候选层过滤：剔除 status 为 outdated / archived 的节点。
+
+    被新版取代的旧记忆不应占用候选名额（6x 候选余量中有约 24% 是 outdated）；
+    archived 是显式退役（策略性停用的历史节点），同样不该再出现在检索结果里。
+    缺省 status（老节点）视为 active 保留。
     """
-    return [(s, n) for s, n in scored if (n.get("payload", {}) or {}).get("status") != "outdated"]
+    return [
+        (s, n)
+        for s, n in scored
+        if ((n.get("payload", {}) or {}).get("status") or "active") not in _INACTIVE_SEARCH_STATUSES
+    ]
 
 
 def _rerank_by_decay(scored: list[tuple[float, dict]]) -> list[tuple[float, dict]]:
