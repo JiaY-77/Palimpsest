@@ -16,6 +16,7 @@ from config import Config
 from core import tdb_text_index as _tdb_text
 from core.bitemporal import freshness_decay, is_valid_at, stamp_new_fact, time_fields
 from core.capsule_guard import validate_capsule_fields
+from core.chunk_index import index_node_chunks
 from core.conflict import resolve_conflict
 from core.db_health import check_db_health, health_hint
 from core.fts_index import index_node, search_fts_status
@@ -221,6 +222,10 @@ def _post_ingest_side_effects(
         _tdb_text.sync_node(node_id, content)
     except Exception as e:  # noqa: BLE001 —— TDB 同步失败仅告警主链已提交
         logger.warning("TDB 文本索引同步失败 node=%s: %s", node_id, e)
+
+    # chunk 级向量索引同步（core.chunk_index.index_node_chunks）：函数内部整段
+    # try/except（失败仅 warning 不阻塞），开关 CHUNK_INDEX_ENABLED 关闭时直接跳过
+    index_node_chunks(store, node_id, content)
 
     _link_kb_references(store, node_id, linked_kb_ids or [])
 

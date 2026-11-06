@@ -38,6 +38,7 @@ from config import Config
 from core import pin as _pin
 from core import tdb_text_index as _tdb_text
 from core.capsule_guard import validate_capsule_fields
+from core.chunk_index import index_node_chunks
 from core.fts_index import sync_node
 from core.meta_guard import validate_meta
 from core.policy import check_search_query
@@ -621,6 +622,10 @@ def _apply_payload_update(node_id: int, payload: dict) -> dict:
         if (node.get("payload") or {}).get("type") == "task":
             result = apply_task_patch(store, node_id, payload)
             fts_synced = _sync_fts_after_update(node_id)
+            # chunk 级向量索引同步（仅当 payload 含 content 时；index_node_chunks
+            # 内部整段 try/except，失败只 warning 不阻塞主更新，可 rebuild 兜底）
+            if "content" in payload:
+                index_node_chunks(store, node_id, payload.get("content") or "")
             response = {
                 "status": "ok",
                 "message": f"节点 {node_id} payload 已更新",
@@ -636,6 +641,10 @@ def _apply_payload_update(node_id: int, payload: dict) -> dict:
             return response
         store.update_payload(node_id, payload)
         fts_synced = _sync_fts_after_update(node_id)
+        # chunk 级向量索引同步（仅当 payload 含 content 时；index_node_chunks
+        # 内部整段 try/except，失败只 warning 不阻塞主更新，可 rebuild 兜底）
+        if "content" in payload:
+            index_node_chunks(store, node_id, payload.get("content") or "")
         result = {"status": "ok", "message": f"节点 {node_id} payload 已更新", "fts_synced": fts_synced}
         # issue #52：改 content 不会自动重算向量（避免在写路径里塞网络调用），
         # 但必须让调用方知道——否则语义检索静默按旧文本漂移。
@@ -775,6 +784,11 @@ def reembed_memory(node_id: int):
         raise HTTPException(status_code=404, detail="重算失败：节点不存在或数据格式错误") from e
     if not ok:
         raise HTTPException(status_code=404, detail=f"节点 {node_id} 不存在")
+    # chunk 级向量索引随重嵌同步重建（index_node_chunks 内部整段 try/except，
+    # 失败只 warning 不影响本响应；三处写入接入之一）
+    _store = _get_store()
+    content = ((_store.get_node(node_id) or {}).get("payload") or {}).get("content", "")
+    index_node_chunks(_store, node_id, content)
     return {"status": "ok", "message": f"节点 {node_id} 向量已按当前 content 重算"}
 
 
