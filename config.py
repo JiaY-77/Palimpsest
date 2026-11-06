@@ -178,6 +178,13 @@ class Config:
     # 不可用」，排查方向被带偏）。默认 8000 字符。
     MEM_SEARCH_MAX_QUERY_CHARS = int(os.getenv("MEM_SEARCH_MAX_QUERY_CHARS", "8000"))
 
+    # ---- 检索结果 excerpt 长度（summary 是硬截断非摘要，见 docs/API.md）----
+    # mem_search / mem_hybrid_search / mem_retrieve 在 150 字 summary 之外，
+    # 附逐字 excerpt（截断点落句边界，详见 mcp_tools._common._excerpt）。
+    # summary 150 字语义保持不变（兼容既有宿主与 UI）；要全文用 mem_get_full。
+    # excerpt 只用于检索浏览，prefetch / pre-turn 注入路径不使用（防 prompt 膨胀）。
+    SEARCH_EXCERPT_CHARS = int(os.getenv("SEARCH_EXCERPT_CHARS", "400"))
+
     # ---- 写入口约束护栏（write-guard policy，见 core/policy.py）----
     # 模式：warn（默认，只记日志不改行为）/ enforce（真正拦截）。
     # 默认 warn——攒一阶段数据后再显式开 enforce；非法值回退 warn。

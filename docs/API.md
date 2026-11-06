@@ -37,9 +37,9 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8090
 | `PATCH` | `/memory/{id}/vector` | 更新节点的向量（维度需一致） |
 | `POST` | `/memory/{id}/reembed` | 按当前 content 重算并写回向量（改 content 后语义漂移的补救入口，服务端自己生成向量） |
 | `POST` | `/memory/{id}/open` | 记录胶囊被会话接手（body：`session_id` 可空串=未知会话；首次写 `opened_at`、每个新会话 `open_count` +1、`opened_by` 去重按首次顺序上限 10；同 `session_id` 重复调用幂等不重复计数；不改 content / `last_touched_at`——检索命中计数 `hit_count` 与「被接手」是两回事） |
-| `POST` | `/mem/search` | 统一检索 |
+| `POST` | `/mem/search` | 统一检索（每项返回 150 字 `summary` + 逐字 `excerpt`：`summary` 是硬截断**不是摘要**，不得据此断言事实完整，`excerpt` ≤ `SEARCH_EXCERPT_CHARS`；要全文用 `GET /memory/{id}`） |
 | `POST` | `/skill/search` | 技能语义检索 |
-| `POST` | `/mem/hybrid-search` | FTS5 + 向量混合检索 |
+| `POST` | `/mem/hybrid-search` | FTS5 + 向量混合检索（返回字段与边界口径同 `/mem/search`：`summary` 是硬截断非摘要，全文用 `GET /memory/{id}`） |
 | `POST` | `/mem/ingest` | 写入新记忆（含冲突检测 + 敏感扫描；`replaces` 字段显式声明取代；可选 `meta` 是键值均为字符串的元数据字典——键 ≤8 / 键名 `^[a-zA-Z0-9_]{1,32}$` / 值 ≤256 字符，通过校验原样落 payload 的 `meta` 子字典，不传则 payload 不含该键） |
 | `POST` | `/mem/purge-by-meta` | 按「域名 + 自定义元数据」精确定位并批量删除（body：`domain` 必填非空（缺失/空串 400，不存在全库级删除）、`meta_key` / `meta_value` 必填、`dry_run`（默认 true 只预览）/ `max_delete`（默认 50，匹配数超出 409 拒绝执行）；真实删除逐条走节点级联删除（边 + FTS/TDB 文本通道一并清理），每次写一条不带 `meta` 的 `type=record` 审计节点） |
 | `POST` | `/mem/retag-by-meta` | 按「域名 + 自定义元数据」批量改写 `meta` 值——重命名聊天后同步改标，防记忆变孤儿（body：`domain` 必填非空、`meta_key` / `old_value` / `new_value` 必填、`old_value == new_value` → 400、`dry_run`（默认 true 只预览）/ `max_update`（默认 500，匹配数超出 409 拒绝执行）；改写为合并式 `{**cur_meta, key: new_value}`，其他 meta 键不冲掉；写一个 `meta_key: new_value` 不合法 → 400；每次写一条不带 `meta` 的 `type=record` 审计节点） |

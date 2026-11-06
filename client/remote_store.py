@@ -343,7 +343,9 @@ class RemoteStore:
         - 服务端检索端点不接受 ``expand_depth``（总是用
           ``Config.RETRIEVAL_EXPAND_DEPTH``）——与 Local 同参数对拍时，
           Local 一侧需显式传同值（见 tests/test_store_protocol.py）。
-        - 返回元素为服务端检索条目 ``{"id","type","score","summary","meta"}``。
+        - 返回元素为服务端检索条目 ``{"id","type","score","summary","excerpt","meta"}``
+          （``excerpt`` 为逐字原文截取，≤ 服务端 ``SEARCH_EXCERPT_CHARS``；``summary``
+          是 150 字硬截断不是摘要，不得据此断言事实完整）。
         """
         if payload_filter:
             raise NotImplementedError(

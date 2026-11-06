@@ -24,9 +24,9 @@ python scripts/build_kb_index.py --rules rules.json
 
 | 工具 | 说明 |
 |---|---|
-| `mem_search` | 统一检索：记忆 / 知识库 / 两者；可选图谱邻居扩展、域偏置、**域软加权 `domain_boost`**、块级隔离、**记忆分层 `tier`**（2.21 起默认 `""` 不过滤，#266；`facts` 只回事实层不含 `record`/`event`/`git_commit`、`logs` 只回日志层；`DEFAULT_TIER=facts` 一键回退 2.20 行为） |
-| `mem_hybrid_search` | 混合检索：FTS5 + 向量；`mode=rrf`（k=60）或 `cascade`；同样支持 `domain_boost` 域软加权与 `tier` 分层；命中标注 `fts_hit` / `sem_hit` |
-| `mem_retrieve` | 语义检索，返回 150 字摘要 + 元数据（绝不返回全文） |
+| `mem_search` | 统一检索：记忆 / 知识库 / 两者；每项返回 150 字 `summary` + 逐字 `excerpt`（≤ `SEARCH_EXCERPT_CHARS`，截断落句边界）——**`summary` 是硬截断不是摘要，不得据此断言事实完整**，要全文用 `mem_get_full`；可选图谱邻居扩展、域偏置、**域软加权 `domain_boost`**、块级隔离、**记忆分层 `tier`**（2.21 起默认 `""` 不过滤，#266；`facts` 只回事实层不含 `record`/`event`/`git_commit`、`logs` 只回日志层；`DEFAULT_TIER=facts` 一键回退 2.20 行为） |
+| `mem_hybrid_search` | 混合检索：FTS5 + 向量；`mode=rrf`（k=60）或 `cascade`；返回字段口径同 `mem_search`（`summary` 硬截断 / `excerpt` 逐字）；同样支持 `domain_boost` 域软加权与 `tier` 分层；命中标注 `fts_hit` / `sem_hit` |
+| `mem_retrieve` | 语义检索，返回 150 字 `summary` + 逐字 `excerpt` + 元数据（`summary` 是硬截断不是摘要，绝不返回全文；全文用 `mem_get_full`） |
 | `mem_get_full` | 按 ID 拉取节点完整内容 |
 | `mem_ingest` | 写入新记忆——含冲突检测（取代默认**由写入方显式声明**：`replaces="<id>,<id>"` 标旧节点 `outdated` 并建 `REVISED_BY` 修订链）、敏感扫描、长度护栏 |
 | `mem_recent` | 最近的记忆（新的在前） |

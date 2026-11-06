@@ -10,6 +10,12 @@
 
 - **Hermes 插件思维底片收侧开关 `PALIMPSEST_THOUGHT_CAPTURE`（默认 `true`）**（#287）：设为 `false` 时，插件的 `sync_turn` 跳过把宿主剥离的模型 reasoning 拼回 `<thought>` 块随 post-turn 上报，payload 不再产出 `type=thought` 节点（实测收侧约占库增量一半）；post-turn 请求照常发，每轮常规沉淀与会话胶囊不受影响。给侧开关 `PALIMPSEST_THOUGHT_SKELETON` 行为不变，零改本体。
 
+### Added
+
+# [Unreleased]
+
+- **search excerpt：检索结果新增逐字 `excerpt` 字段**：`mem_search` / `mem_hybrid_search` / `mem_retrieve` 每项在 150 字 `summary` 之外附逐字 `excerpt`。无摘要生成，只选截断点——优先落句边界（。！？.!? / 换行），无句读退化为词边界（空格/逗号），仍无硬截断；英文小数点两侧均为数字不当句点。长度可配 `SEARCH_EXCERPT_CHARS`（默认 400）。`summary` 150 字语义不变——它是硬截断**不是摘要**，调用方不得据此断言事实完整，要全文用 `mem_get_full`；prefetch / pre-turn 注入路径仍只用 `summary`（防 prompt 膨胀）。
+
 ## [2.22.0] - 2026-11-02
 
 ### 新增

@@ -85,6 +85,7 @@
 | `SESSION_CAPSULE_RECOVER_INTERVAL_SECONDS` | `300` | 后台扫描间隔（秒） | `SESSION_CAPSULE_RECOVER_ENABLED=1` 时 |
 | `MEM_INGEST_MAX_LENGTH` | `50000` | 单条记忆 content 最大字符数，超长拒绝写入 | `mem_ingest` 写入时 |
 | `MEM_SEARCH_MAX_QUERY_CHARS` | `8000` | 检索 query 最大字符数，超长在检索入口直接拒绝（REST 422 / pre-turn fail-open 并标 `skip_reason="query_too_long"`），不再打到 embedding 模型侧报「exceeds the context length」 | `/mem/search`、`/mem/hybrid-search`、`/lifecycle/pre-turn` |
+| `SEARCH_EXCERPT_CHARS` | `400` | 检索结果逐字 `excerpt` 的目标长度：无摘要生成，只选截断点——优先落句边界（。！？.? / 换行），无句读退化为词边界（空格/逗号），仍无硬截断；150 字 `summary` 语义不变（硬截断，不是摘要，不得据此断言事实完整），要全文用 `mem_get_full`。prefetch / pre-turn 注入路径仍只用 `summary`（防 prompt 膨胀） | `/mem/search`、`/mem/hybrid-search`、`/mem/retrieve`（MCP `mem_retrieve`） |
 | `POLICY_MODE` | `warn` | 写入口护栏模式：`warn` = 只记日志与结果字段，不改写行为（默认）；`enforce` = 策略真正拦截；非法值回退 `warn` | `mem_ingest` 写入时 |
 | `POLICY_PROTECTED_TYPES` | `rule` | 受保护 type（逗号分隔）：`enforce` 模式下不参与自动覆盖（不被标 `outdated` / 建 `REVISED_BY` 边）；`payload.protected=True` 的节点亦受保护 | `mem_ingest` 写入时的冲突检测 |
 | `POLICY_TYPE_LIMITS` | `record:8000,memory:8000,task:10000,plan:12000,kb_chunk:8000,novel_chunk:12000` | 按 type 分级的软上限（形如 `task:20000,plan:80000`）；`warn` 模式只告警不拒，`enforce` 模式拒绝。默认值取自实测内容长度分布（各类型 p90 的 3-5 倍），正常写入不受影响 | `mem_ingest` 写入时 |

@@ -159,7 +159,7 @@ hermes config set context.engine palimpsest-graph
 | A pile of Markdown the AI cannot read through | Sliced into the store **by headings** (a heading is a semantic boundary a human drew), with `[[wikilinks]]` turned into graph edges | `build_kb_index.py` then `kb "TERM"` |
 | It forgets *why* a decision was made | Nodes carry type / importance / time dimensions; reasoning is stored as `thought` nodes | `mem_fact_history <id>` |
 | Memory lives on someone else's server | Everything stays in the local `data/` directory; back up the whole file group to move it | `python scripts/backup_db.py --keep 7` |
-| Context blows up after many turns | Retrieval returns a **150-char summary + metadata** by default; full text is fetched on demand | watch the size of a `mem_retrieve` response |
+| Context blows up after many turns | Retrieval returns a **150-char `summary` + a ≤400-char verbatim `excerpt` + metadata** by default; full text is fetched on demand | watch the size of a `mem_retrieve` response |
 
 **One design floor:** no node is ever superseded **because it looks similar**. Similarity produces only relevance hints (`related_ids`); whether to supersede is decided by the party holding the full context — "I like apples" and "I like apple pie" are highly similar and are not the same thing at all.
 
@@ -241,6 +241,7 @@ All configuration is read from environment variables (a `.env` file is loaded au
 | `RERANK_LOCAL_MODEL_PATH` | `models/bge-reranker-v2-m3-Q8_0.gguf` | Local cross-encoder model path (absolute, or relative to the project root); download + install steps in docs/CONFIGURATION.md |
 | `RERANK_LOCAL_N_THREADS` | `0` | Local rerank inference threads; `0` = let llama.cpp decide |
 | `RERANK_POOL` | `20` | Candidate depth fed to rerank; revert to the old depth with `RERANK_POOL=40` |
+| `SEARCH_EXCERPT_CHARS` | `400` | Max chars of the verbatim `excerpt` returned per search hit (truncation prefers sentence boundaries); the 150-char `summary` stays a hard truncation, not a real summary -- for full content call `mem_get_full` |
 
 The full table (all configuration keys with defaults and activation conditions, kept consistent with the code by the doc checker) is in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) (Chinese).
 

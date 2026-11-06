@@ -44,7 +44,7 @@ Palimpsest 是一个 **本地优先的嵌入式长期记忆系统**，将 **语�
 - 🗃️ **混合检索** —— 语义向量（cosine）× FTS5 全文（`trigram` 分词，支持中文子串），经 RRF 或级联融合，命中标注来源。另有**默认关闭**的 TDB BM25 文本通道（`TDB_TEXT_ENABLED=1`，CJK 2-gram，第二路中文召回，供 A/B —— 见 `scripts/tdb_text_ab.py`）
 - 🔗 **图谱扩散召回** —— 节点由加权边（`RELATED_TO` / `REVISED_BY` / `CAUSES` / `REFERS_TO`）相连，BFS 沿边扩散，可按「块」隔离防跨域污染
 - 🕸️ **社区发现** —— 内置 Leiden 聚类，把记忆库分成主题簇
-- ✂️ **省 token 设计** —— 检索默认只返回 **150 字摘要 + 元数据**，完整内容按需二次拉取
+- ✂️ **省 token 设计** —— 检索默认只返回 **150 字 summary + ≤400 字逐字 excerpt + 元数据**，完整内容按需二次拉取
 
 **记忆演化**
 - 🔄 **冲突检测与版本链** —— 取代由写入方**显式声明**（`mem_ingest(replaces=...)`，**不论相似度**）：被取代的旧版标 `outdated` 并经 `REVISED_BY` 链向新版；**默认不因相似度自动取代**（相似候选只记入 `related_ids` 作相关提示，`CONFLICT_AUTO_SUPERSEDE` 可开启旧行为）；type / domain 双隔离防跨类误标
