@@ -531,6 +531,42 @@ class TestThoughtExtractionFromReasoning:
 
 
 # ---------------------------------------------------------------------------
+# 思维底片收侧开关（issue #287）：PALIMPSEST_THOUGHT_CAPTURE=false 时跳过
+# reasoning 拼接，post-turn 请求照常发（普通沉淀 / 胶囊不受影响）
+# ---------------------------------------------------------------------------
+
+
+class TestThoughtCaptureGate:
+    def test_capture_off_drops_thought_block_but_posts_normal(self):
+        cap = _CapturingProvider(PALIMPSEST_THOUGHT_CAPTURE="false")
+        cap._enabled = True
+        msgs = [
+            {"role": "user", "content": "帮我改一个函数"},
+            {"role": "assistant", "content": "先看代码", "reasoning": "1. 要改什么：改函数"},
+            {"role": "assistant", "content": "改好了"},
+        ]
+        cap._run("sync_turn", "帮我改一个函数", "改好了", session_id="s-capture-off", messages=msgs)
+        assert len(cap.sent) == 1, "关收侧只是不带 <thought>，post-turn 请求必须照常发"
+        url, payload = cap.sent[0]
+        assert url.endswith("/lifecycle/post-turn")
+        assert payload["assistant_message"] == "改好了", "普通正文必须原样上报"
+        assert "<thought>" not in payload["assistant_message"], "关收侧时不得出现 <thought> 块"
+
+    def test_capture_default_true_keeps_thought_block(self):
+        """回归锁：不设 PALIMPSEST_THOUGHT_CAPTURE（默认开）时行为与改动前一致。"""
+        cap = _CapturingProvider()
+        cap._enabled = True
+        msgs = [
+            {"role": "user", "content": "帮我改一个函数"},
+            {"role": "assistant", "content": "先看代码", "reasoning": "1. 要改什么：改函数"},
+            {"role": "assistant", "content": "改好了"},
+        ]
+        cap._run("sync_turn", "帮我改一个函数", "改好了", session_id="s-capture-on", messages=msgs)
+        _, payload = cap.sent[0]
+        assert payload["assistant_message"] == "改好了\n<thought>1. 要改什么：改函数</thought>"
+
+
+# ---------------------------------------------------------------------------
 # on_session_end -> /lifecycle/session-end
 # ---------------------------------------------------------------------------
 

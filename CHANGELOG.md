@@ -4,6 +4,12 @@
 
 版本格式：`主版本.次版本.修订号`。发布流程见 [RELEASING.md](docs/RELEASING.md)。
 
+## [Unreleased]
+
+### 新增
+
+- **Hermes 插件思维底片收侧开关 `PALIMPSEST_THOUGHT_CAPTURE`（默认 `true`）**（#287）：设为 `false` 时，插件的 `sync_turn` 跳过把宿主剥离的模型 reasoning 拼回 `<thought>` 块随 post-turn 上报，payload 不再产出 `type=thought` 节点（实测收侧约占库增量一半）；post-turn 请求照常发，每轮常规沉淀与会话胶囊不受影响。给侧开关 `PALIMPSEST_THOUGHT_SKELETON` 行为不变，零改本体。
+
 ## [2.22.0] - 2026-11-02
 
 ### 新增
