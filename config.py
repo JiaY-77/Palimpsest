@@ -304,6 +304,10 @@ class Config:
     # 写入调用 index_node_chunks（失败仅告警不阻塞主写入）。默认开；关闭时
     # 三处全部跳过（不写不删，chunk_stats 不变），第 3 步检索侧读不到即可。
     CHUNK_INDEX_ENABLED = os.getenv("CHUNK_INDEX_ENABLED", "1").lower() in ("1", "true", "yes", "on")
+    # chunk 召回在检索侧的融合权重：node_score = max(主向量分, chunk cos × 本权重)。
+    # 0 = 检索侧整条 chunk 路关闭（零成本不查询，结果与未引入前逐位一致）；
+    # 默认 1.0——chunk 段与全文同处一个向量空间、同为余弦可比。
+    CHUNK_SCORE_WEIGHT = float(os.getenv("CHUNK_SCORE_WEIGHT", "1.0"))
 
     # ---- lifecycle session-end：旧「会话要点」路径开关 ----
     # 会话胶囊（type=task kind=handoff，由 session 缓冲合并）上线后保留的兼容

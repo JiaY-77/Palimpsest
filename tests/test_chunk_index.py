@@ -193,3 +193,56 @@ def test_search_dim_mismatch_row_skipped(chunk_db):
     # 维度分布进入 stats（便于发现脏行）
     stats = ci.chunk_stats()
     assert stats["by_dim"] == {"8": 1, "5": 1}
+
+
+# ---------- split_chunks 标题块（#295：标题与段落语义强互补，只存一种覆盖一半）----------
+
+
+def test_title_first_line_becomes_chunk0():
+    """首行 ≥ 8 字的标题独立成第 0 个 chunk，且后续段落块不含标题文本。"""
+    title = "接续点 会话接续 新聊天先读"
+    text = title + "\n\n" + "甲" * 210 + "\n\n" + "乙" * 210
+    parts = ci.split_chunks(text)
+    assert parts[0] == title
+    assert len(parts) == 3
+    # 标题不得在段落块里重复出现（同一段文本不被 embed 两次）
+    assert all(title not in p for p in parts[1:])
+    # 段落切分从其余行开始：段落块内容不含标题
+    assert parts[1].startswith("甲")
+    assert parts[2].startswith("乙")
+
+
+def test_title_too_short_not_separated():
+    """标题 < 8 字时不单列，随首段一起切——改动前行为不变。"""
+    title = "短小题"  # 3 字
+    text = title + "\n\n" + "甲" * 210 + "\n\n" + "乙" * 210
+    parts = ci.split_chunks(text)
+    assert len(parts) == 2
+    assert parts[0].startswith(title)
+    # 标题没有独立成行（作为首段的一部分）
+    assert not any(p == title for p in parts)
+
+
+def test_title_boundary_exact_eight():
+    """标题边界：8 字（≥ 门槛）单列；7 字不单列。"""
+    t8 = "刚好八个字标题号"  # 8 字
+    parts8 = ci.split_chunks(t8 + "\n\n" + "甲" * 210)
+    assert parts8[0] == t8
+    parts7 = ci.split_chunks("七个字标题哦呀" + "\n\n" + "甲" * 210)
+    assert len(parts7) == 1
+    assert parts7[0].startswith("七个字标题哦呀")
+
+
+def test_short_content_with_title_stays_single():
+    """短内容（< 1500 字、无空行）不拆标题——保持既有行为。"""
+    text = "接续点 会话接续 新聊天先读\n后续一行说明（无空行）"
+    assert ci.split_chunks(text) == [text]
+    assert ci.split_chunks("纯单行内容") == ["纯单行内容"]
+
+
+def test_long_first_paragraph_not_treated_as_title():
+    """首行长段落（> 64 字上限）不当标题：旧合并行为不变。"""
+    text = "甲" * 100 + "\n\n" + "乙" * 100 + "\n\n" + "丙" * 250
+    parts = ci.split_chunks(text)
+    assert len(parts) == 2
+    assert not any(p == "甲" * 100 for p in parts)

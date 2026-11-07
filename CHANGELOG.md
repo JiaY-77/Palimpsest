@@ -8,11 +8,14 @@
 
 ### 新增
 
+- **chunk 级向量索引：检索侧并入 + 切分器标题块 + 存量回填脚本**（#295）：长文档先前只有「全文池化」一个向量，末段独有内容语义检索常常够不着。三层补齐——① `split_chunks` 先取首行，长度在 8~64 字之间时独立成第 0 个 chunk（标题与段落语义强互补，实测 6 条查询：接续点类标题查询 cos 0.78 vs 段落 0.44；段落切分从其余行开始，标题不在段落块重复 embed，短内容不改行为）；② `mem_search` 主向量召回之后、过滤之前并入一路 chunk 召回（`node_chunks.db` 宽召回 `max(top_k×5, 50)`、按节点聚合取最大余弦，`node_score = max(主向量分, chunk cos × CHUNK_SCORE_WEIGHT)`），chunk-only 命中的节点补进候选并走同一套 outdated / tier / scope / domain / block 过滤与排序；表缺失 / 损坏 / 模型不匹配静默降级，不抛异常。`CHUNK_SCORE_WEIGHT`（env，默认 `1.0`）置 0 或 `CHUNK_INDEX_ENABLED=false` 时整条路关闭，结果与引入前逐位一致；`CHUNK_DB_PATH` 可改 chunk 库位置。③ `scripts/backfill_chunks.py` 存量回填：默认 dry-run 只统计待回填节点（missing / stale_model / stale_content / short_orphan）与预计耗时，`--apply` 才落盘，幂等可重入，生产库须停服窗口（脚本头注释给出停服 → 冷备 → 自检 → 回填 → 复核的完整顺序）。
+
 - **Hermes 插件思维底片收侧开关 `PALIMPSEST_THOUGHT_CAPTURE`（默认 `true`）**（#287）：设为 `false` 时，插件的 `sync_turn` 跳过把宿主剥离的模型 reasoning 拼回 `<thought>` 块随 post-turn 上报，payload 不再产出 `type=thought` 节点（实测收侧约占库增量一半）；post-turn 请求照常发，每轮常规沉淀与会话胶囊不受影响。给侧开关 `PALIMPSEST_THOUGHT_SKELETON` 行为不变，零改本体。
 
 - **search excerpt：检索结果新增逐字 `excerpt` 字段**：`mem_search` / `mem_hybrid_search` / `mem_retrieve` 每项在 150 字 `summary` 之外附逐字 `excerpt`。无摘要生成，只选截断点——优先落句边界（。！？.!? / 换行），无句读退化为词边界（空格/逗号），仍无硬截断；英文小数点两侧均为数字不当句点。长度可配 `SEARCH_EXCERPT_CHARS`（默认 400）。`summary` 150 字语义不变——它是硬截断**不是摘要**，调用方不得据此断言事实完整，要全文用 `mem_get_full`；prefetch / pre-turn 注入路径仍只用 `summary`（防 prompt 膨胀）。
 
-- **技能索引服务侧入口：`POST /skill/reindex`，CLI 默认走 REST**（#285）：`scripts/build_skill_index.py` 直连库需要 read_write 连接，而生产 REST 服务以独占模式常驻持库，两者物理互斥——索引更新排不上队，`skill_search` 长期检索旧内容。现在 REST 在服务进程内复用共享长连接执行同一 `build(store=...)` 逻辑（增量按 `source_mtime` 对比 + 孤儿清理 + 幂等可重入），返回 `{indexed, skipped, cleaned, failed, failed_paths, total, elapsed}`；CLI 默认把请求 POST 给该端点（`PALIMPSEST_BASE_URL` 可覆盖，`--endpoint` 显式指定），`--direct` 才退回直连库；连接失败 / HTTP >= 400 以退出码 1 给出明确错误，绝不静默当成功（否则 cron 会拿旧索引还当刷新过）。
+- **技能索引服务侧入口：`POST /skill/reindex`，CLI 默认走 REST**（#285）：`scripts/build_skill_index.py` 直连库需要 read_write 连接，而生产 REST 服务以独占模式常驻持库，两者物理互斥——索引更新排不上队，`skill_search` 长期检索旧内容。现在 REST 在服务进程内复用共享长连接执行同一 `build(store=...)` 逻辑（增量按 `source_mtime` 对比 + 孤儿清理 + 幂等可重入），返回 `{indexed, skipped, cleaned, failed, failed_paths, total, elapsed}`；CLI 默认把请求 POST 给该端点（`PALIMPSEST_BASE_URL` 可覆盖，`--endpoint` 显式指定），`--direct` 才退回直连库；连接失败 / HTTP >= 400 以退出码 1 给出明确错误，绝不静默当成功（否则 cron 会拿旧索引还当刷新过）。
+
 
 ### 修复
 
@@ -804,7 +807,8 @@ M1a 按 kill criteria 停：`reach@2` 20%（越过 15% 门槛，但上升全部�
 [2.20.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.20.0
 [2.19.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.19.0
 [2.18.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.18.0
-[2.17.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.17.0
+[2.17.0]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.17.0
+
 
 [2.16.2]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.16.2
 [2.16.1]: https://github.com/JiaY-77/Palimpsest/releases/tag/v2.16.1

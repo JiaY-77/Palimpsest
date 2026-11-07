@@ -174,15 +174,21 @@ _SENTENCE_SPLIT_RE = re.compile(r"(?<=[。；;])")
 
 _CHUNK_MIN_CHARS = 200
 _CHUNK_MAX_CHARS = 1500
+_TITLE_MIN_CHARS = 8
+# 标题长度上限：真标题（「接续点 …」「学习计划 …」）都在这一量级；
+# 首行超过它几乎必是段落正文（如 700 字长段），不当标题拆。
+_TITLE_MAX_CHARS = 64
 
 
-def split_chunks(content: str) -> list[str]:
+def _is_title_line(lines: list[str], first_line: str) -> bool:
+    return len(lines) > 1 and _TITLE_MIN_CHARS <= len(first_line) <= _TITLE_MAX_CHARS
+
+
+def _paragraph_chunks(content: str) -> list[str]:
     """按空行分段 → 过短段向后合并 → 超长段按句号/分号二次切。
 
     单段内容（无空行且 < 1500 字，≈512 token 内）原样返回 [content]。
     """
-    if not content or not content.strip():
-        return []
     if "\n\n" not in content and len(content) < _CHUNK_MAX_CHARS:
         return [content]
 
@@ -227,6 +233,29 @@ def split_chunks(content: str) -> list[str]:
         final.extend(parts)
 
     return final or [content]
+
+
+def split_chunks(content: str) -> list[str]:
+    """按空行分段切块；首行 ≥ 8 字时先把标题单独成第 0 个 chunk。
+
+    标题块（issue #295 实测：标题与段落语义强互补，只存一种覆盖一半）：
+    - 首行 ``content.split("\\n")[0].strip()`` 长度 ≥ 8 字时作为第 0 个 chunk 输出，
+      段落切分只作用于其余行（标题不得在段落块里重复出现，避免同一段文本被 embed 两次）
+    - 短内容（无空行且 < 1500 字）仍返回单元素、不拆标题——保持既有行为；
+      标题 < 8 字时不单列，随首段一起切（改动前行为）
+    """
+    if not content or not content.strip():
+        return []
+    if "\n\n" not in content and len(content) < _CHUNK_MAX_CHARS:
+        return [content]
+
+    # 标题块：先于段落切分提取（标题独立成 chunk 0，其余行进入段落管线）
+    lines = content.split("\n")
+    title = lines[0].strip()
+    if _is_title_line(lines, title):
+        rest = "\n".join(lines[1:])
+        return [title, *_paragraph_chunks(rest)]
+    return _paragraph_chunks(content)
 
 
 # ---- 三处写入接入的统一入口（mem_ingest / reembed / PUT-PATCH 改 content）----

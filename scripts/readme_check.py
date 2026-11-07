@@ -75,6 +75,7 @@ EXEMPT_PREFIXES = ("/tmp/", "~/", "<", "${")
 # 写明「谁在读」，否则这些键既躲过 config.py 的键名/默认值比对，又会被误判成文档漂移。
 CONFIG_READ_OUTSIDE_CONFIG_PY = {
     "KNOWLEDGE_DIR": "core/task_archive.py · mcp_tools/_common.py",
+    "CHUNK_DB_PATH": "core/chunk_index.py",
 }
 
 # 默认值不是字面量、无法与文档逐字比对的键 → 值 = 不能比对的原因（会打印在报告 info 里，避免静默跳过）

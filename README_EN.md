@@ -260,6 +260,9 @@ All configuration is read from environment variables (a `.env` file is loaded au
 | `RERANK_LOCAL_MODEL_PATH` | `models/bge-reranker-v2-m3-Q8_0.gguf` | Local cross-encoder model path (absolute, or relative to the project root); download + install steps in docs/CONFIGURATION.md |
 | `RERANK_LOCAL_N_THREADS` | `0` | Local rerank inference threads; `0` = let llama.cpp decide |
 | `RERANK_POOL` | `20` | Candidate depth fed to rerank; revert to the old depth with `RERANK_POOL=40` |
+| `CHUNK_INDEX_ENABLED` | `1` | Chunk-level vector index write wiring (separate `node_chunks.db`): `mem_ingest` / `reembed` / content rewrites embed each segment of multi-paragraph content; `0` skips all three write paths |
+| `CHUNK_SCORE_WEIGHT` | `1.0` | Weight of chunk recall in `mem_search` ranking: `node_score = max(main score, chunk cosine × weight)`; `0` disables the whole chunk path (results bitwise unchanged) |
+| `CHUNK_DB_PATH` | *(optional)* | Path of the chunk store; when unset it lives next to `DB_PATH` as `node_chunks.db` |
 | `SEARCH_EXCERPT_CHARS` | `400` | Max chars of the verbatim `excerpt` returned per search hit (truncation prefers sentence boundaries); the 150-char `summary` stays a hard truncation, not a real summary -- for full content call `mem_get_full` |
 
 The full table (all configuration keys with defaults and activation conditions, kept consistent with the code by the doc checker) is in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) (Chinese).
