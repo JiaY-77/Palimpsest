@@ -32,8 +32,8 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8090
 | `GET` | `/memory/{id}` | 读取单节点完整 payload |
 | `POST` | `/report` | **`[实验性]`** 基于当前存储生成 LLM 分析报告（Prompt 面向小说创作 / 角色扮演场景，不是通用摘要；输出随外部模型变化） |
 | `DELETE` | `/memory/{id}` | 删除记忆节点（FTS 索引同步） |
-| `PUT` | `/memory/{id}` | 更新节点 payload（**合并语义**：只改传入字段，其余保留；自动同步 FTS） |
-| `PATCH` | `/memory/{id}` | 部分更新节点 payload（与 PUT 同合并语义，REST 语义更精确） |
+| `PUT` | `/memory/{id}` | 更新节点 payload（**合并语义**：只改传入字段，其余保留；自动同步 FTS）。响应含 `fts_synced`（全文索引双通道同步是否成功）——`false` 时附 `warning`：主更新已成功、关键词检索暂可能命中旧正文，失败原因见服务日志，可 `POST /fts/rebuild` 或 `python scripts/check_fts_consistency.py --repair` 重建；一次索引失败绝不阻塞主写路径 |
+| `PATCH` | `/memory/{id}` | 部分更新节点 payload（与 PUT 同合并语义，REST 语义更精确；响应字段与 PUT 完全一致，含 `fts_synced` / `warning`） |
 | `PATCH` | `/memory/{id}/vector` | 更新节点的向量（维度需一致） |
 | `POST` | `/memory/{id}/reembed` | 按当前 content 重算并写回向量（改 content 后语义漂移的补救入口，服务端自己生成向量） |
 | `POST` | `/memory/{id}/open` | 记录胶囊被会话接手（body：`session_id` 可空串=未知会话；首次写 `opened_at`、每个新会话 `open_count` +1、`opened_by` 去重按首次顺序上限 10；同 `session_id` 重复调用幂等不重复计数；不改 content / `last_touched_at`——检索命中计数 `hit_count` 与「被接手」是两回事） |
