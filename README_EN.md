@@ -30,6 +30,8 @@
 
 A **local memory store**: what an AI session learns becomes nodes in one database on your machine, and any later session can find it again **by meaning**, not by keyword.
 
+On the boundary, in one line: this is a **retrieval service plus governance mechanism** — it stores, finds and versions what you write. It does **not** promise to "turn conversations into reliable memory automatically": deciding what to write and when an old fact is superseded belongs to the caller (see [docs/USAGE.md](docs/USAGE.md) §2).
+
 - **Runs without an API key.** Storage, retrieval, the graph and version chains happen entirely locally; an LLM is only used when generating reports and can be left unconfigured.
 - **Zero external dependencies.** A built-in vector engine (`llama-cpp-python` + a bundled GGUF model) runs fully offline once installed; Ollama is an optional speed-up path, not a requirement.
 - **One process is the single writer.** REST on `:8090` is the only entry point — MCP / CLI / scripts all go through it, so no second writer can corrupt the store.
@@ -165,6 +167,23 @@ hermes config set context.engine palimpsest-graph
 
 **Day-to-day usage** (what to record, how to grade `importance`, when to supersede) is in **[`docs/USAGE.md`](docs/USAGE.md)** (Chinese).
 
+## Cross-session handoff
+
+A fresh session has no idea what the last one did — the most common break in agent work. Palimpsest turns it into **one data shape**, with nothing for the model to remember:
+
+| Step | How |
+|---|---|
+| **Write** | When a working session wraps up: `mem_ingest(content="Handoff / …", type="task", importance=0.9)`. A first line starting with the handoff marker auto-tags `kind=handoff` and excludes it from the active-task list (it is not pending work) |
+| **Read** | Before the first turn of a new session: `tasks_active(include_handoff=true)` brings the previous capsule straight up, so the user never re-explains |
+| **Trace** | `POST /memory/{id}/open` (body `{"session_id": …}`) records that this session picked it up — who read it, how many times |
+
+Three boundaries:
+
+- **Timing**: write when a session wraps up, a long task hits a milestone, or context is about to be lost. Not for a plain question and answer.
+- **Settle before writing**: close this round's finished / abandoned tasks first (`PUT /memory/{id}` with `[done]` / `[canceled]` on the first line). Unsettled tasks become zombies that keep polluting `tasks_active`.
+- **Manual and automatic share one shape**: `POST /lifecycle/session-end` composes a capsule automatically; a hand-written handoff is for the rounds you judge especially important. Both are retrieved the same way.
+
+No special integration — it is two tool calls. Full recipe: [`docs/HERMES_INTEGRATION.md`](docs/HERMES_INTEGRATION.md).
 ---
 
 ## Why not the others

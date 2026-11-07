@@ -237,6 +237,36 @@ python scripts/palimpsest_cli.py kb search "你的知识库里的任意主题"
 
 ---
 
+## 跨会话交接：打开与收尾配方
+
+接续点（`type=task` + `kind=handoff`）是把「上一轮做到哪」传给下一轮的唯一可靠载体。它是**两个工具调用**，不需要额外的集成——只需要 agent 知道什么时候用。
+
+**会话打开时**
+
+1. 第一句之前先调 `tasks_active(include_handoff=true)`，上一轮的接续点直接带出来，不要让用户重讲。
+2. 读到后 `POST /memory/{id}/open`（body `{"session_id": "<本轮 id>"}`）留接手痕迹——`opened_at` / `open_count` / `opened_by` 由此可查，与检索计数 `hit_count` 不是一回事。
+3. 看 `pending` 节里还剩哪些没做，那是上一轮明确留下的缺口。
+
+**会话收尾时**
+
+1. **先结账**：本轮做完 / 作废的任务当场改状态——`PUT /memory/{id}`，content 首行加 `[完成]` / `[取消]`，后端自动解析并写日志。任务节点不会自己收口，不结账就积成僵尸，一直污染 `tasks_active`。
+2. **再写接续点**：
+
+```
+mem_ingest(
+  content    = "接续点 / 会话接续 / 新聊天先读 —— ★<日期> <主题>\n"
+               "【思路】…\n【做了什么（含可核验 handle）】…\n【下一步】…\n【踩的坑】…",
+  type       = "task",
+  importance = 0.9
+)
+```
+
+   首行以「接续点」开头即自动打 `kind=handoff`，并从 `tasks_active` 的默认列表里排除。
+3. 也可以让 `POST /lifecycle/session-end` 自动合成胶囊，再用 `PUT /memory/{id}` 补齐缺的节——**注意 `sections` 是整体替换不是按节合并**，只传一节会丢掉其余节，取值要先读回来。
+
+**为什么必须显式传 `include_handoff=true`**：接续点不是待办，默认不出现在 `tasks_active` 里。不主动要，就永远看不到它——这正是「新会话从零开始」的常见成因。
+---
+
 ## 故障排查
 
 | 现象 | 可能原因 | 处理 |
