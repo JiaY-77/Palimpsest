@@ -10,6 +10,7 @@
   ⑨     domain 字段迁移状态（无 domain 但有 character_name 的历史兼容镜像存量）
   ⑩     运行时路径字符集（中文用户名等非 ASCII 路径下的依赖兼容性风险）
   ⑪     向量空间一致性（指纹守卫：库内记录的 space_id/engine vs 当前配置，core.embedding_fingerprint）
+  ⑫     备份组侧车库覆盖（数据目录全部 *.db 是否进最近一份备份组，issue #301）
 
 设计原则：
   - 单项失败不中断（embedding 不可用时其余检查项仍全部执行并展示）
@@ -234,6 +235,56 @@ def _check_embedding_space():
     return (False, verdict["reason"], verdict["hint"], False)
 
 
+def _check_backup_db_coverage():
+    """备份组侧车库覆盖：数据目录里的 *.db 是否进最近一份备份组（issue #301）。
+
+    #295 引入 node_chunks.db（chunk 级向量索引的独立 SQLite）后，只认主库
+    后缀清单的 backup_db.py 把独立侧车库结构性漏掉——恢复后 chunk 表静默
+    为空、长文档语义检索悄悄退化，服务无任何报错（最难归因的一类故障）。
+    本检查不看当前脚本的收集算法，而是直接看**最近一份备份**的文件组是否
+    覆盖数据目录当下的全部 *.db：没覆盖 → 失败（说明那份备份由旧版脚本
+    生成，恢复时会静默缺库）。数据目录取 Config.DB_PATH 的目录（backup_db.py
+    的取库口），与其行为同源。
+
+    返回 (ok, detail, fix)。内部永不抛异常。
+    """
+    try:
+        data_dir = os.path.dirname(os.path.abspath(str(Config.DB_PATH)))
+        db_names = sorted(
+            name
+            for name in os.listdir(data_dir)
+            if name.endswith(".db") and os.path.isfile(os.path.join(data_dir, name))
+        )
+    except Exception as e:  # noqa: BLE001 —— 数据目录读不到不阻断其余体检项
+        return (True, f"已跳过（无法确定数据目录）: {e}", "")
+
+    if not db_names:
+        return (True, "数据目录没有 *.db 侧车库（尚未建立）", "")
+
+    backups_dir = os.path.join(data_dir, "backups")
+    if not os.path.isdir(backups_dir):
+        return (True, f"尚未做过整组备份（{backups_dir} 不存在）——跑一次 scripts/backup_db.py 后此项自动生效", "")
+    stamps = sorted(
+        name
+        for name in os.listdir(backups_dir)
+        if name.startswith("backup_") and os.path.isdir(os.path.join(backups_dir, name))
+    )
+    if not stamps:
+        return (True, "尚无已完成的备份目录——跑一次 scripts/backup_db.py 后此项自动生效", "")
+
+    latest = stamps[-1]
+    produced = set(os.listdir(os.path.join(backups_dir, latest)))
+    missing = [name for name in db_names if name not in produced]
+    if missing:
+        return (
+            False,
+            f"最近备份 {latest} 未覆盖数据目录侧车库: {', '.join(missing)}"
+            "（该备份由旧版脚本生成，恢复后会静默缺库——例如 chunk 级语义检索悄悄退化）",
+            "用当前版本脚本重做一次整组备份: python scripts/backup_db.py（#301 起覆盖数据目录全部 *.db）",
+        )
+    return (True, f"最近备份 {latest} 覆盖数据目录全部 {len(db_names)} 个 *.db 侧车库", "")
+
+
 def run_doctor() -> dict:
     """执行全部体检，返回结构化结果（永不抛异常）。
 
@@ -301,6 +352,17 @@ def run_doctor() -> dict:
             "detail": detail,
             "fix": fix,
             "warn": warn,
+        }
+    )
+
+    # 第六阶段：备份组侧车库覆盖（issue #301）
+    ok, detail, fix = _check_backup_db_coverage()
+    checks.append(
+        {
+            "name": "备份组侧车库覆盖",
+            "ok": ok,
+            "detail": detail,
+            "fix": fix,
         }
     )
 

@@ -25,8 +25,9 @@ from mcp_tools import store
 #      分块配置 / GPU 卸载配置）
 #   ⑨ 向量维度一致性   ⑩ domain 字段迁移状态   ⑪ 运行时路径字符集
 #   ⑫ 向量空间一致性（指纹守卫；startup_check 里同名那项是轻量 WARN 版，doctor 会跳过它）
+#   ⑬ 备份组侧车库覆盖（issue #301）
 # 新增检查项时只改这一处（原先三处硬编码 6，加第 ⑦ 项时三处齐红）。
-_EXPECTED_CHECK_COUNT = 12
+_EXPECTED_CHECK_COUNT = 13
 
 
 @pytest.fixture
@@ -444,3 +445,71 @@ def test_doctor_reports_fts_fix_command(cfg_iso_db):
     text = render_text(result)
     assert "FTS 索引完整性" in text
     assert "--repair" in text
+
+
+# ================================================================
+# issue #301：备份组侧车库覆盖检查
+# #295 引入 node_chunks.db 后，只认主库后缀清单的 backup_db.py 把独立
+# 侧车库结构性漏掉——恢复后 chunk 表静默为空、检索悄悄退化。doctor 要能
+# 从**最近一份备份**的文件组里发现「数据目录的 *.db 没被覆盖」这一信号。
+# ================================================================
+
+
+def _iso_data_dir(tmp_path, monkeypatch):
+    """把主库指向 tmp_path 下的隔离路径（数据目录来源与 backup_db 同口：Config.DB_PATH）。"""
+    from config import Config
+
+    db_dir = tmp_path / "data"
+    db_dir.mkdir(exist_ok=True)
+    db = str(db_dir / "mh_test.db")
+    monkeypatch.setattr(Config, "DB_PATH", db)
+    return db_dir
+
+
+def test_backup_coverage_warns_when_latest_backup_lacks_side_db(tmp_path, monkeypatch):
+    """最近备份缺数据目录 *.db（旧版脚本产物）→ 该项失败并给修复命令。"""
+    from core.doctor import _check_backup_db_coverage
+
+    db_dir = _iso_data_dir(tmp_path, monkeypatch)
+    (db_dir / "node_chunks.db").write_bytes(b"")
+    latest = db_dir / "backups" / "backup_20261101_000000"
+    latest.mkdir(parents=True)
+    for name in ("mh_test.db", "fts.db"):  # 主库 + fts 在，恰好漏了 node_chunks.db
+        (latest / name).write_bytes(b"")
+
+    ok, detail, fix = _check_backup_db_coverage()
+    assert ok is False
+    assert "node_chunks.db" in detail
+    assert "backup_db.py" in fix
+
+
+def test_backup_coverage_passes_when_all_side_dbs_covered(tmp_path, monkeypatch):
+    """最近备份覆盖全部 *.db → 通过。"""
+    from core.doctor import _check_backup_db_coverage
+
+    db_dir = _iso_data_dir(tmp_path, monkeypatch)
+    extra = ("node_chunks.db", "fts.db", "alpha.db")
+    for name in extra:
+        (db_dir / name).write_bytes(b"")
+    latest = db_dir / "backups" / "backup_20261101_000000"
+    latest.mkdir(parents=True)
+    for name in ("mh_test.db", *extra):
+        (latest / name).write_bytes(b"")
+
+    ok, detail, fix = _check_backup_db_coverage()
+    assert ok is True
+    assert "全部" in detail
+    assert fix == ""
+
+
+def test_backup_coverage_skips_without_backups(tmp_path, monkeypatch):
+    """没做过备份（backups/ 不存在）→ 跳过说明，不算失败。"""
+    from core.doctor import _check_backup_db_coverage
+
+    db_dir = _iso_data_dir(tmp_path, monkeypatch)
+    (db_dir / "node_chunks.db").write_bytes(b"")
+
+    ok, detail, fix = _check_backup_db_coverage()
+    assert ok is True
+    assert "尚未" in detail
+    assert fix == ""
