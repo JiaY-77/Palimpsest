@@ -65,13 +65,28 @@ _spec.loader.exec_module(_mod)  # type: ignore[union-attr]
 PalimpsestContextEngine = _mod.PalimpsestContextEngine
 
 
+# 行为参数的「出厂默认」底座（issue #302）：构造时没显式传的开关一律钉在默认
+# 值，不再继承宿主进程 export 的 PALIMPSEST_*——context_engine 在构造期读
+# DOMAIN / GRAPH_TOPICS / GRAPH_TIMEOUT，宿主环境若把这仨 export 成异常值
+# （如 #290 的 .env 注入场景本机已复现过一次），依赖默认值的用例整页落红。
+# 显式 kwargs 优先盖过底座。**不钉路径/端点类变量**（PALIMPSEST_BASE_URL
+# 等）：它们属传输配置，该由运行环境给，测试不掺和。模块级常量而非类属性：
+# ruff RUF012 不允许可变默认值挂类上（共享可变对象）。
+_ENV_DEFAULTS = {
+    "PALIMPSEST_DOMAIN": "hermes",
+    "PALIMPSEST_GRAPH_TOPICS": "3",
+    "PALIMPSEST_GRAPH_TIMEOUT": "8.0",
+}
+
+
 class _CapturingEngine(PalimpsestContextEngine):
     """Engine that records request payloads instead of doing HTTP."""
 
     def __init__(self, response: dict | None = None, **env: str) -> None:
         self.sent: list[tuple[str, dict]] = []
         self._response = response if response is not None else {}
-        with patch.dict("os.environ", env, clear=False):
+        pinned = {**_ENV_DEFAULTS, **env}
+        with patch.dict("os.environ", pinned, clear=False):
             super().__init__()
 
     def _http_post(self, url: str, payload: dict, timeout: float = 4.0) -> dict:  # type: ignore[override]
@@ -133,6 +148,42 @@ class TestGraphEnhancementForwarding:
     def test_error_response_yields_empty(self):
         engine = _CapturingEngine(response={"error": "boom"})
         assert engine._graph_enhancement([{"role": "user", "content": "hi"}], None) == ""
+
+
+# ---------------------------------------------------------------------------
+# 宿主环境隔离（issue #302）：行为参数由测试自己钉死，不继承宿主 export
+# ---------------------------------------------------------------------------
+
+
+class TestAmbientEnvIsolation:
+    """宿主把行为参数 export 进进程环境（.env 注入子进程）时，本文件用例必须照常全绿。
+
+    双向回归锁：``_CapturingEngine`` 构造时没显式传的变量必须落在出厂默认底座，
+    只有用例显式传入的 ``**env`` 才能盖过底座。用例先污染进程环境、再构造
+    不带 env 的引擎，证明宿主值漏不进来（#302 的根因是继承宿主环境）。
+    """
+
+    def test_ambient_values_do_not_leak_into_construction(self, monkeypatch):
+        monkeypatch.setenv("PALIMPSEST_DOMAIN", "__ambient__")
+        monkeypatch.setenv("PALIMPSEST_GRAPH_TOPICS", "999")
+        monkeypatch.setenv("PALIMPSEST_GRAPH_TIMEOUT", "999")
+        engine = _CapturingEngine()
+        assert engine._domain == "hermes", "宿主 DOMAIN 不得漏进底座默认"
+        assert engine._max_topics == 3, "宿主 GRAPH_TOPICS 不得漏进底座默认"
+        assert engine._graph_timeout_budget == 8.0, "宿主 GRAPH_TIMEOUT 不得漏进底座默认"
+
+    def test_non_numeric_topics_still_lands_on_default(self):
+        engine = _CapturingEngine(PALIMPSEST_GRAPH_TOPICS="xxx")
+        assert engine._max_topics == 3
+
+    def test_explicit_kwargs_win_over_ambient_pollution(self, monkeypatch):
+        monkeypatch.setenv("PALIMPSEST_DOMAIN", "__ambient__")
+        monkeypatch.setenv("PALIMPSEST_GRAPH_TOPICS", "999")
+        engine = _CapturingEngine(PALIMPSEST_DOMAIN="novel", PALIMPSEST_GRAPH_TOPICS="4")
+        engine._graph_enhancement([{"role": "user", "content": "hi"}], None)
+        payload = engine.sent[0][1]
+        assert payload["domain"] == "novel", "显式传参必须盖过被污染的宿主环境"
+        assert payload["max_topics"] == 4, "显式传参必须盖过被污染的宿主环境"
 
 
 # ---------------------------------------------------------------------------
