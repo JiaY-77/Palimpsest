@@ -67,13 +67,28 @@ SEARCH_SCHEMA = _mod.SEARCH_SCHEMA
 INGEST_SCHEMA = _mod.INGEST_SCHEMA
 
 
+# 行为开关的「出厂默认」底座（issue #290）：构造时没显式传的开关一律钉在
+# 默认值，不再继承宿主进程 export 的 PALIMPSEST_*——宿主 .env 里把
+# PALIMPSEST_THOUGHT_SKELETON/THOUGHT_CAPTURE export 成 false 时，依赖
+# 默认开闸的 thought 链路用例整链落红（9 条）。设为 "true" 与「未设」
+# 等价（产品侧读法都是 ``!= "false"``）。只钉行为开关，路径/端点类变量
+# （BASE_URL 等）不动。模块级常量而非类属性：ruff RUF012 要求可变默认值不能
+# 挂在类上（它是共享可变对象）。
+_ENV_DEFAULTS = {
+    "PALIMPSEST_THOUGHT_SKELETON": "true",
+    "PALIMPSEST_THOUGHT_CAPTURE": "true",
+    "PALIMPSEST_AUTO_INGEST": "true",
+}
+
+
 class _CapturingProvider(PalimpsestMemoryProvider):
     """Provider that records request payloads instead of doing HTTP."""
 
     def __init__(self, response: dict | None = None, **env: str) -> None:
         self.sent: list[tuple[str, dict]] = []
         self._response = response if response is not None else {}
-        with patch.dict("os.environ", env, clear=False):
+        pinned = {**_ENV_DEFAULTS, **env}
+        with patch.dict("os.environ", pinned, clear=False):
             super().__init__()
 
     def _fake_post(self, url: str, payload: dict, timeout: float = 5.0) -> dict:
@@ -564,6 +579,44 @@ class TestThoughtCaptureGate:
         cap._run("sync_turn", "帮我改一个函数", "改好了", session_id="s-capture-on", messages=msgs)
         _, payload = cap.sent[0]
         assert payload["assistant_message"] == "改好了\n<thought>1. 要改什么：改函数</thought>"
+
+
+# ---------------------------------------------------------------------------
+# 宿主环境隔离（issue #290）：行为开关由测试自己钉死，不继承宿主 export
+# ---------------------------------------------------------------------------
+
+
+class TestAmbientEnvIsolation:
+    """宿主把开关 export 进进程环境（.env 注入子进程）时，本文件用例必须照常全绿。
+
+    回归锁：``_CapturingProvider`` 构造时没显式传的开关必须落在出厂默认底座，
+    只有用例显式传入的 ``**env`` 才能盖过底座。本类先污染进程环境、再构造
+    不带 env 的 provider，证明宿主的关闸漏不进来（#290 的根因是继承宿主环境）。
+    """
+
+    def test_host_off_switches_do_not_leak_into_skeleton(self, monkeypatch):
+        monkeypatch.setenv("PALIMPSEST_THOUGHT_SKELETON", "false")
+        skeleton = "- 目标："
+        cap = _CapturingProvider(response={"thought_skeleton": skeleton, "thought_skeleton_kind": "default"})
+        cap._enabled = True
+        out = cap._run("thought_skeleton_context", user_message="帮我改一个函数", session_id="s290")
+        assert out.endswith(skeleton), "宿主关闸不得让默认开闸的给侧骨架静默落空"
+        assert cap.sent and cap.sent[0][1]["thought_skeleton"] is True
+
+    def test_host_off_capture_still_captures_by_default(self, monkeypatch):
+        monkeypatch.setenv("PALIMPSEST_THOUGHT_CAPTURE", "false")
+        monkeypatch.setenv("PALIMPSEST_AUTO_INGEST", "false")
+        cap = _CapturingProvider()
+        cap._enabled = True
+        msgs = [
+            {"role": "user", "content": "帮我改一个函数"},
+            {"role": "assistant", "content": "先看代码", "reasoning": "1. 要改什么：改函数"},
+            {"role": "assistant", "content": "改好了"},
+        ]
+        cap._run("sync_turn", "帮我改一个函数", "改好了", session_id="s290b", messages=msgs)
+        assert len(cap.sent) == 1, "宿主关 AUTO_INGEST 不得让默认闸下的 post-turn 静默不发"
+        _, payload = cap.sent[0]
+        assert "<thought>" in payload["assistant_message"], "宿主关 CAPTURE 不得让默认闸下的 thought 块丢失"
 
 
 # ---------------------------------------------------------------------------
