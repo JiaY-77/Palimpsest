@@ -17,6 +17,14 @@
 ### 修复
 
 - **`status="archived"` 不生效：已归档节点仍出现在检索结果里**（#293）：候选层过滤只剔 `outdated`，`PATCH {"status":"archived"}` 之后节点照样进 top-k——归档字段等于白设。现在 `outdated` 与 `archived` 一并从候选剔除，缺省 status（老节点）仍视为 active 保留；`completed` / `done` 等任务完成态不受影响，历史查询不断链。
+### 文档
+
+- **事实归属判定规则：文件还是记忆，线画在哪**（#282）：`docs/USAGE.md` 新增 §2.0——三分法（仓库/知识库文件、记忆节点、都不写）加三组正反例，并写明写错的代价是双向的：库越积越重（过期口径在候选池里互相稀释）、文件越来越轻（约定散落在记忆里，新来的人找不到）。`mem_ingest` 的工具描述加同一条边界提示，README / README_EN 定位段各补一句「检索服务 + 治理机制，不承诺自动把对话变成可靠记忆」。
+
+- **跨会话交接的用法写进工具描述与文档**（#277）：机制早已实现，缺的是「什么时候用」——`mem_ingest` / `tasks_active` 的 docstring 各加一段时机说明（收尾时写接续点、会话开始时用 `include_handoff=true` 读回来），README / README_EN 新增 Cross-session handoff 章节，`docs/HERMES_INTEGRATION.md` 补「会话打开 / 收尾配方」。无行为改动。
+
+- **README 命令参考行不再复述数字**（#264）：散文里的「44 条 REST 路由」改为指向 `docs/REFERENCE.md` 的权威表——计数会在每次新增路由时静默过期，而 `readme_check` 只校验表格、看不见散文句中的数字（#264 已记录的已知盲区）。
+
 
 ## [2.22.0] - 2026-11-02
 

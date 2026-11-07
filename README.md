@@ -27,6 +27,8 @@
 
 一个**本地记忆库**：把 AI 会话里的收获写成节点，存进本机一个数据库，之后任何会话都能**按意思**（不是按关键词）找回来。
 
+一句话说清边界：它是**检索服务 + 治理机制**——负责「存得下、找得回、版本可追溯」；它**不承诺「自动把对话变成可靠记忆」**。什么时候写、写什么、要不要取代旧事实，判定归调用方（判据见 [docs/USAGE.md](docs/USAGE.md) §2）。
+
 - **不需要 API key 就能跑。** 存储、检索、图谱、版本链全部本地完成；LLM 只在生成报告时用到，可以完全不配。
 - **零外部依赖。** 内置向量引擎（`llama-cpp-python` + 自带 GGUF 模型），装完即可离线运行；Ollama 只是可选的加速路径，不是必需。
 - **一个进程是唯一写者。** REST `:8090` 是唯一入口，MCP / CLI / 各脚本都经它，所以不存在多进程写坏库。
@@ -159,6 +161,23 @@ hermes config set context.engine palimpsest-graph
 
 **日常怎么用**（该记什么、`importance` 怎么给、什么时候该取代）见 **[`docs/USAGE.md`](docs/USAGE.md)**。
 
+## Cross-session handoff（跨会话交接）
+
+新会话不知道上一轮做过什么——这是 agent 最常见的断层。Palimpsest 把它做成**一种固定的数据形态**，不依赖模型记住任何东西：
+
+| 环节 | 怎么做 |
+|---|---|
+| **写** | 收尾时 `mem_ingest(content="接续点 / …", type="task", importance=0.9)`。首行以「接续点」开头 → 自动打 `kind=handoff`，并默认从活跃任务列表排除（它不是待办） |
+| **读** | 新会话第一句之前调 `tasks_active(include_handoff=true)`，上一轮的接续点直接带出来，不用让用户重讲 |
+| **留痕** | `POST /memory/{id}/open`（body `{"session_id": …}`）记录「这一轮被接手过」：谁读过、读过几次可查 |
+
+三条边界：
+
+- **时机**：一段工作收尾、长任务到里程碑、上下文即将丢失时写；一问一答不用写。
+- **先结账再写**：写接续点前把本轮做完 / 作废的任务当场改状态（`PUT /memory/{id}`，content 首行加 `[完成]` / `[取消]`），不结账就积成僵尸任务，一直污染 `tasks_active`。
+- **手写与自动同一形态**：`POST /lifecycle/session-end` 能自动合成胶囊；手写接续点用于「这一轮我判断特别重要」的场合。两者检索路径一致。
+
+不需要任何特殊集成——就是两个工具调用。完整配方见 [`docs/HERMES_INTEGRATION.md`](docs/HERMES_INTEGRATION.md)。
 ---
 
 ## Why not the others
@@ -256,7 +275,7 @@ README 只放「上手要用的」。其余按职责分在 `docs/`——**加东
 | 你想做什么 | 看这篇 |
 |---|---|
 | 装（三条向量引擎路径、硬件要求、换模型） | [docs/INSTALL.md](docs/INSTALL.md) |
-| 查命令（21 个 MCP 工具 / 25 个 CLI 子命令 / 44 条 REST 路由 / 区块语义 / 索引规则） | [docs/REFERENCE.md](docs/REFERENCE.md) |
+| 查命令（MCP 工具 / CLI 子命令 / REST 路由全表 / 区块语义 / 索引规则） | [docs/REFERENCE.md](docs/REFERENCE.md) |
 | 知道什么时候用哪个工具 | [docs/USAGE.md](docs/USAGE.md) |
 | 配环境变量（配置全表） | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) |
 | 懂设计（机制清单、与其它方案对比、Markdown 定位、适用场景） | [docs/DESIGN.md](docs/DESIGN.md) |
