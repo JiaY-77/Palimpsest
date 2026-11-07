@@ -26,6 +26,8 @@
 - **README 命令参考行不再复述数字**（#264）：散文里的「44 条 REST 路由」改为指向 `docs/REFERENCE.md` 的权威表——计数会在每次新增路由时静默过期，而 `readme_check` 只校验表格、看不见散文句中的数字（#264 已记录的已知盲区）。
 
 
+- **Hermes 插件适配器测试继承宿主 `PALIMPSEST_*` 环境变量**（#290）：宿主把 `PALIMPSEST_THOUGHT_SKELETON=false` / `PALIMPSEST_THOUGHT_CAPTURE=false` export 进子进程时，`tests/test_hermes_plugin_adapter.py` 依赖默认开闸的 9 条 thought 链路用例整链落红（骨架注入断言落空）。现在 `_CapturingProvider` 构造时把行为开关（`THOUGHT_SKELETON` / `THOUGHT_CAPTURE` / `AUTO_INGEST`）钉死在出厂默认，用例显式传入的 `**env` 才能覆盖；新增宿主污染回归锁（进程环境先关闸再构造，默认行为不受影响）。只钉行为开关，路径类变量不动；产品代码零改动。
+
 ## [2.22.0] - 2026-11-02
 
 ### 新增
