@@ -256,6 +256,9 @@ python scripts/palimpsest_cli.py doctor
 | `RERANK_LOCAL_MODEL_PATH` | `models/bge-reranker-v2-m3-Q8_0.gguf` | 本地 cross-encoder 模型路径（相对项目根或绝对路径）；模型下载与依赖安装见 docs/CONFIGURATION.md |
 | `RERANK_LOCAL_N_THREADS` | `0` | 本地重排推理线程数；`0` = 交 llama.cpp 自动 |
 | `RERANK_POOL` | `20` | 参与重排的候选深度；回退旧深度 `RERANK_POOL=40` |
+| `CHUNK_INDEX_ENABLED` | `1` | chunk 级向量索引写入接线（独立 `node_chunks.db`）：`mem_ingest` / `reembed` / 改 content 三处写入对多段内容逐段 embed；`0` = 三处全部跳过 |
+| `CHUNK_SCORE_WEIGHT` | `1.0` | chunk 召回参与 `mem_search` 排序的权重：`node_score = max(主向量分, chunk cos × 权重)`；`0` = 检索侧整条 chunk 路关闭，结果与未引入前逐位一致 |
+| `CHUNK_DB_PATH` | *（可选）* | chunk 库路径；未设置时落在 `DB_PATH` 同目录的 `node_chunks.db` |
 | `SEARCH_EXCERPT_CHARS` | `400` | 检索结果逐字 `excerpt` 的截取上限（截断落句边界）；150 字 `summary` 保持硬截断不变——它是截断不是摘要，要全文用 `mem_get_full` |
 
 完整配置表见 [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)（全部配置项的默认值与生效条件，以检查器逐项比对为准）。

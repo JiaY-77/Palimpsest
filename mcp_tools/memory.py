@@ -16,6 +16,7 @@ from config import Config
 from core import tdb_text_index as _tdb_text
 from core.bitemporal import freshness_decay, is_valid_at, stamp_new_fact, time_fields
 from core.capsule_guard import validate_capsule_fields
+from core.chunk_index import index_node_chunks
 from core.conflict import resolve_conflict
 from core.db_health import check_db_health, health_hint
 from core.fts_index import index_node, search_fts_status
@@ -221,6 +222,10 @@ def _post_ingest_side_effects(
         _tdb_text.sync_node(node_id, content)
     except Exception as e:  # noqa: BLE001 —— TDB 同步失败仅告警主链已提交
         logger.warning("TDB 文本索引同步失败 node=%s: %s", node_id, e)
+
+    # chunk 级向量索引同步（core.chunk_index.index_node_chunks）：函数内部整段
+    # try/except（失败仅 warning 不阻塞），开关 CHUNK_INDEX_ENABLED 关闭时直接跳过
+    index_node_chunks(store, node_id, content)
 
     _link_kb_references(store, node_id, linked_kb_ids or [])
 
@@ -967,6 +972,40 @@ def _mem_search_impl(
         block=block,
         include_outdated=_fetch_outdated,
     )
+
+    # ---- chunk 级向量召回（issue #295，主力是为长文档准备的独立 node_chunks.db）----
+    # 位置约定（第 3 步验收）：主向量召回之后、过滤/重排之前。
+    # - 取 max(top_k*5, 50) 宽召回，按 node 聚合取该 node 全部 chunk 的 max cos
+    # - 并入主向量候选：node_score = max(主向量分, chunk cos × CHUNK_SCORE_WEIGHT)；
+    #   只在 chunk 路命中、主向量没召回的节点以 chunk cos × 权重作为基础分补进候选，
+    #   再走下方同一套 outdated / tier / scope / domain / block 过滤与排序（不绕过）
+    # - CHUNK_SCORE_WEIGHT=0 或 CHUNK_INDEX_ENABLED=false → 整条路关闭，
+    #   候选与得分与未引入前逐位一致（回归红线，有一致性验证钉住）
+    # - node_chunks.db 缺失 / 损坏 / 模型不匹配 → 静默降级为只走主向量，
+    #   debug 日志留原因，不抛异常
+    chunk_cos_by_node: dict[int, float] = {}
+    if getattr(Config, "CHUNK_SCORE_WEIGHT", 0.0) and getattr(Config, "CHUNK_INDEX_ENABLED", True):
+        try:
+            from core.chunk_index import embedding_model_id as _chunk_model_id
+            from core.chunk_index import search_chunks as _search_chunks
+
+            hits = _search_chunks(emb, max(top_k * 5, 50), _chunk_model_id(store))
+            for node_id, _chunk_idx, cos in hits:
+                if cos > chunk_cos_by_node.get(node_id, float("-inf")):
+                    chunk_cos_by_node[node_id] = cos
+        except Exception as e:  # noqa: BLE001 —— chunk 召回失败只降级不阻塞检索
+            logger.debug("chunk 召回不可用，降级为只走主向量（query=%r）: %s", query[:60], e)
+    if chunk_cos_by_node:
+        main_ids = {r.get("id") for r in results}
+        for nid, _cos_unused in chunk_cos_by_node.items():
+            if nid in main_ids:
+                continue
+            node = store.get_node(nid)
+            if not node:
+                continue
+            # 合成最小候选，score 先记 0，下方与主候选同一套过滤 + 打分管线统一处理
+            results.append({"id": nid, "payload": node.get("payload", {}) or {}, "score": 0.0})
+
     items = []
     for r in results:
         payload = r.get("payload", {}) or {}
@@ -998,7 +1037,14 @@ def _mem_search_impl(
         if block and not domain_in_block(node_domain(payload), block):
             continue
         # v2.0 统一语义层加权：过滤之后、排序之前应用（只乘系数，不改变过滤逻辑）
+        # chunk 路并入（#295）：node_score = max(主向量分, chunk cos × CHUNK_SCORE_WEIGHT)；
+        # chunk_cos_by_node 为空时该行退化为原 score，逐位一致。
         score = _to_float(r.get("score"), 0.0)
+        _nid = r.get("id")
+        if _nid is not None:
+            _chunk_score = chunk_cos_by_node.get(_nid, 0.0) * getattr(Config, "CHUNK_SCORE_WEIGHT", 0.0)
+            if _chunk_score > score:
+                score = _chunk_score
         if (domain_bias == "memory" and not is_kb) or (domain_bias == "kb" and is_kb):
             score *= Config.DOMAIN_BIAS_WEIGHT
         if domain_boost and node_domain(payload) == domain_boost.strip().lower():

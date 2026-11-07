@@ -299,6 +299,16 @@ class Config:
     # 0 = 永不跳过（等价于引入本项前的「启用即永远走 TDB」）。
     TDB_TEXT_FTS_FLOOR = int(os.getenv("TDB_TEXT_FTS_FLOOR", "3"))
 
+    # ---- chunk 级向量索引（core/chunk_index.py，独立 node_chunks.db）----
+    # 写入路径接线总开关：mem_ingest / reembed / PUT(PATCH) 改 content 三处
+    # 写入调用 index_node_chunks（失败仅告警不阻塞主写入）。默认开；关闭时
+    # 三处全部跳过（不写不删，chunk_stats 不变），第 3 步检索侧读不到即可。
+    CHUNK_INDEX_ENABLED = os.getenv("CHUNK_INDEX_ENABLED", "1").lower() in ("1", "true", "yes", "on")
+    # chunk 召回在检索侧的融合权重：node_score = max(主向量分, chunk cos × 本权重)。
+    # 0 = 检索侧整条 chunk 路关闭（零成本不查询，结果与未引入前逐位一致）；
+    # 默认 1.0——chunk 段与全文同处一个向量空间、同为余弦可比。
+    CHUNK_SCORE_WEIGHT = float(os.getenv("CHUNK_SCORE_WEIGHT", "1.0"))
+
     # ---- lifecycle session-end：旧「会话要点」路径开关 ----
     # 会话胶囊（type=task kind=handoff，由 session 缓冲合并）上线后保留的兼容
     # 开关：默认开 = 既有行为完全不变（要点照旧写 facts 层）；关闭后 session-end
