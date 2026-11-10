@@ -287,7 +287,7 @@ README 只放「上手要用的」。其余按职责分在 `docs/`——**加东
 | 接 Hermes（双插件七步接入） | [docs/HERMES_INTEGRATION.md](docs/HERMES_INTEGRATION.md) |
 | 接 Obsidian 知识库 | [docs/OBSIDIAN.md](docs/OBSIDIAN.md) |
 | 双时态 / 安全 / 记忆包 / 完整 API | [BITEMPORAL](docs/BITEMPORAL.md) · [SECURITY](SECURITY.md) · [MEMORYHUB](docs/MEMORYHUB.md) · [API](docs/API.md) |
-| 检索质量与实测数据 | [RETRIEVAL_QUALITY](docs/RETRIEVAL_QUALITY.md) · [CONFIDENCE](docs/CONFIDENCE.md) |
+| 检索质量与实测数据 | [RETRIEVAL_QUALITY](docs/RETRIEVAL_QUALITY.md) · [CONFIDENCE](docs/CONFIDENCE.md) · [实验记录索引](eval/docs/README.md) |
 | 长期支持承诺 / 版本规则 / 接口稳定性分级 | [LTS](docs/LTS.md) |
 | 发版流程 / 变更历史 / 弃用计划 | [RELEASING](docs/RELEASING.md) · [CHANGELOG](CHANGELOG.md) · [DEPRECATIONS](docs/DEPRECATIONS.md) |
 

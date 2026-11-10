@@ -99,3 +99,8 @@ htmlcov/
 models/
 *.gguf
 *.gguf.part
+
+# Internal working notes: refactor plans, task briefs, one-off analysis.
+# Public-facing docs live in docs/ and eval/docs/; these are maintainer scratch
+# and must not ship to readers.
+docs/archive/
