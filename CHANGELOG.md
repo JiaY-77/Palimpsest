@@ -7,6 +7,7 @@
 ## [Unreleased]
 
 ### 新增
+- **时间索引（到期扫描）：写侧日期打标 + 读侧 RRF 第五路（默认关闭）**：聊天里「后天 / 下周三 / 这个月27号」这类相对日期，语义与 FTS 都抓不住（提问侧没有任何字面/语义线索）。新模块 `core/time_index.py`：写侧 `mem_ingest` 新增可选 `event_time`（消息发生时刻，三级回退：显式给 → 正文首个 ISO 时间戳 → created_at 墙钟），把日期表达解析成绝对日期存进 `payload["dates"]`（`due`=未来声明 / `mention`=当天与回顾，各升序去重最多 8 条）；读侧 `mem_hybrid_search` 新增可选 `today`（空=本机今天），按「今天」扫出到期节点作为第五路并入 RRF 融合（命中条目附 `meta["time_hit"]`，通道状态见 `channels["time"]` = ok/empty，级联模式如实标 skipped）。四个新配置 `TIME_INDEX_ENABLED` / `TIME_INDEX_WEIGHT` / `TIME_INDEX_LIMIT` / `TIME_INDEX_WINDOW_DAYS`，默认全关 = 零成本（payload 不出现 dates 键、检索输出与引入前逐位一致，有回归测试钉住）。已知边界：农历/节日/节前节后不解析、周期表达（每周三）不当单日到期、存量数据不回填（后续 PR）。
 
 - **chunk 级向量索引：检索侧并入 + 切分器标题块 + 存量回填脚本**（#295）：长文档先前只有「全文池化」一个向量，末段独有内容语义检索常常够不着。三层补齐——① `split_chunks` 先取首行，长度在 8~64 字之间时独立成第 0 个 chunk（标题与段落语义强互补，实测 6 条查询：接续点类标题查询 cos 0.78 vs 段落 0.44；段落切分从其余行开始，标题不在段落块重复 embed，短内容不改行为）；② `mem_search` 主向量召回之后、过滤之前并入一路 chunk 召回（`node_chunks.db` 宽召回 `max(top_k×5, 50)`、按节点聚合取最大余弦，`node_score = max(主向量分, chunk cos × CHUNK_SCORE_WEIGHT)`），chunk-only 命中的节点补进候选并走同一套 outdated / tier / scope / domain / block 过滤与排序；表缺失 / 损坏 / 模型不匹配静默降级，不抛异常。`CHUNK_SCORE_WEIGHT`（env，默认 `1.0`）置 0 或 `CHUNK_INDEX_ENABLED=false` 时整条路关闭，结果与引入前逐位一致；`CHUNK_DB_PATH` 可改 chunk 库位置。③ `scripts/backfill_chunks.py` 存量回填：默认 dry-run 只统计待回填节点（missing / stale_model / stale_content / short_orphan）与预计耗时，`--apply` 才落盘，幂等可重入，生产库须停服窗口（脚本头注释给出停服 → 冷备 → 自检 → 回填 → 复核的完整顺序）。
 
