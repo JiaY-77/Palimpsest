@@ -298,6 +298,7 @@ def mem_ingest(
     meta: dict[str, str] | None = None,
     sections: dict[str, str] | None = None,
     pending: list[str] | None = None,
+    event_time: str = "",
 ) -> str:
     """
     写入新记忆。
@@ -365,6 +366,18 @@ def mem_ingest(
     **启发式字段**（skeleton / native / unknown，判据与诚实边界见
     ``core.strategy.detect_thought_origin``）。任何通道写 thought 节点都自动带
     ``thought_origin``，新节点无需回填。
+
+    时间索引写侧打标（可选 ``event_time``，仅 ``TIME_INDEX_ENABLED=1`` 时生效）：
+    开关打开时，把 content 里的日期表达（「后天 / 下周三 / 这个月27号」等）
+    解析成绝对日期存进 payload 的 ``dates`` 字典（``due`` = 未来声明，可能是
+    到期日/计划日；``mention`` = 当天提及与过去回顾；``ref`` = 解析基准），
+    供读侧 ``mem_hybrid_search(today=...)`` 的到期扫描通道取用。
+    ``event_time`` 是这条消息发生时的时间（``2026-09-05T17:45:00+08:00`` 或
+    ``2026-09-05``）——相对日期以它为基准展开；不给则依次回退：正文首个
+    ISO 时间戳 → 写入墙钟。开关关闭（默认）时本参数不产生任何效果，
+    payload 形状与引入前逐键一致（不出现 ``dates`` 键）。解析边界
+    （农历 / 节日 / 节前节后不解析）见 ``core.time_index`` 模块说明与
+    docs/USAGE.md「时间索引」一节。
     """
     now = time.time()
     # ---- 入口校验（write-guard policy）：空内容 / 超长 / 分级上限 ----
@@ -449,6 +462,19 @@ def mem_ingest(
         # （lifecycle:post-turn[:session_id]）配合判重——见 main.lifecycle_post_turn。
         if turn_index is not None:
             node_data["turn_index"] = int(turn_index)
+    # 时间索引写侧打标（默认关闭零成本，开关见 config.TIME_INDEX_ENABLED）：
+    # 打开时把 content 里的日期表达解析成绝对日期存进 payload["dates"]
+    # （due=未来声明 / mention=当天与回顾），供读侧到期扫描
+    # （core.time_index.due_candidates）取用。解析基准三级回退（顺序写死）：
+    # event_time 显式给 → 正文首个 ISO 时间戳 → created_at（写入墙钟）；
+    # 基准永远是「这条消息发生时的时间」，详见 core.time_index 模块说明。
+    # 开关关闭时整段跳过，payload 形状与引入前逐键一致（不出现 dates 键）。
+    if getattr(Config, "TIME_INDEX_ENABLED", False):
+        from core.time_index import time_date_fields  # 可选能力，默认不导入
+
+        fields = time_date_fields(content, event_time, now)
+        if fields:
+            node_data["dates"] = fields
     # bi-temporal：新事实补 valid_at（世界时间 = 事实开始为真之时；缺省=写入时刻）。
     # 非事实类型（kb_chunk / record 等）自动跳过，见 core.bitemporal。
     stamp_new_fact(node_data, now)
@@ -1350,6 +1376,7 @@ def _hybrid_rrf(
     include_outdated: bool = False,
     tier: str = DEFAULT_TIER,
     as_of: float | None = None,
+    today: str = "",
 ) -> tuple[list, dict]:
     """RRF 融合：语义排名 + FTS 排名的 reciprocal rank 求和（k=60）。
 
@@ -1359,6 +1386,12 @@ def _hybrid_rrf(
     （`fts` / `semantic`），FTS 通道降级时如实标出并在日志留痕，
     避免「通道挂了」被误读成「确实没命中」；`exact_query` / `fts_weight`
     透出精确标识符判定与本次实际使用的 FTS 权重（线上排查走没走抬高路）。
+
+    ``today``（可选，仅 TIME_INDEX_ENABLED=1 时生效）：到期扫描通道的
+    「今天」锚（YYYY-MM-DD 或完整 ISO；空 = 本机今天）。打开开关时把
+    payload["dates"].due 命中今天的节点作为第五路并入融合，条目附
+    ``meta["time_hit"]``、channels 附 ``time`` 状态；关闭时本参数无效果，
+    输出与引入前逐位一致。
     """
     # 语义重排（opt-in）：关闭时零成本——连模块都不导入，行为与改动前逐位一致。
     # 启用时**语义候选也要拉深**到 RERANK_POOL：只把融合那一步的 top_k 放大是不够的，
@@ -1402,6 +1435,31 @@ def _hybrid_rrf(
             tdb_hit_set = set(tdb_hit_ids)
             extra_channels.append((tdb_hit_ids, Config.TDB_TEXT_WEIGHT))
 
+    # 时间索引通道（第五路，默认关闭）：TIME_INDEX_ENABLED=0 时零成本，连模块
+    # 都不导入，保证默认路径与引入前逐位一致。打开时按「今天」扫出写侧
+    # （mem_ingest）打的 payload["dates"].due 到期节点，作为一条额外通道并入
+    # 下方 _rrf_fuse；这类 query 在语义/FTS 侧常为零命中（提问里没有任何
+    # 字面与语义线索），只有日期这一条线索。
+    time_status: str = ""
+    time_hit_set: set = set()  # 无序（per-item 命中标记用）
+    if getattr(Config, "TIME_INDEX_ENABLED", False):
+        from core.time_index import due_candidates, resolve_today  # 可选通道
+
+        ids = due_candidates(
+            store,
+            resolve_today(today),
+            domain=domain,
+            block=block,
+            limit=Config.TIME_INDEX_LIMIT,
+            window_days=Config.TIME_INDEX_WINDOW_DAYS,
+        )
+        time_hit_set = set(ids)
+        if ids:
+            extra_channels.append((ids, Config.TIME_INDEX_WEIGHT))
+            time_status = "ok"
+        else:
+            time_status = "empty"
+
     ranked = _rrf_fuse(
         [it.get("id") for it in sem_items if it.get("id") is not None],
         [r.get("node_id") for r in fts if r.get("node_id") is not None],
@@ -1430,6 +1488,11 @@ def _hybrid_rrf(
             # skipped（FTS 够好跳过）与真正未命中靠此处 False + channels 里的
             # "tdb_text": "skipped" 区分开。
             meta["tdb_text_hit"] = nid in tdb_hit_set
+        if time_status:
+            # 仅启用时间索引通道时才出现该键（默认关闭的输出逐位不变）；
+            # empty（今天没有到期节点）靠此处 False + channels 里的
+            # "time": "empty" 区分开。
+            meta["time_hit"] = nid in time_hit_set
         item["meta"] = meta
         item["score"] = round(score, 4)
         merged.append(item)
@@ -1453,6 +1516,9 @@ def _hybrid_rrf(
     if tdb_status:
         # 仅启用 TDB 文本通道时才出现该键（默认关闭的输出逐位不变）。
         channels["tdb_text"] = tdb_status
+    if time_status:
+        # 仅启用时间索引通道时才出现该键（默认关闭的输出逐位不变）。
+        channels["time"] = time_status
     if rerank_status:
         # 仅启用 rerank 时才出现该键（disabled / degraded / ok）。
         channels["rerank"] = rerank_status
@@ -1516,6 +1582,11 @@ def _hybrid_cascade(
         items, rerank_status = _rerank(query, items, top_k)
 
     channels = {"semantic": "ok" if sem_items else "empty", "fts": fts_status}
+    if getattr(Config, "TIME_INDEX_ENABLED", False):
+        # 时间索引（到期扫描）只接在 RRF 模式：级联是「FTS 粗筛 ∩ 语义精排」的
+        # 交集语义，与「额外独立通道」不兼容，暂不支持——如实标注 skipped
+        # （文档已写明），不静默假装支持。
+        channels["time"] = "skipped"
     if rerank_status:
         # 仅启用 rerank 时才出现该键（disabled / degraded / ok）。
         channels["rerank"] = rerank_status
@@ -1536,6 +1607,7 @@ def _hybrid_search_impl(
     include_outdated: bool = False,
     tier: str = DEFAULT_TIER,
     as_of: float | None = None,
+    today: str = "",
 ) -> dict:
     """
     mem_hybrid_search 的核心实现（返回 dict，供 mem_hybrid_search 工具复用）。
@@ -1586,6 +1658,7 @@ def _hybrid_search_impl(
                 include_outdated=include_outdated,
                 tier=tier,
                 as_of=as_of,
+                today=today,
             )
         result: dict[str, Any] = {"results": items, "scope": scope, "mode": mode, "channels": channels}
         if channels.get("fts") == "degraded":
@@ -1638,6 +1711,7 @@ def mem_hybrid_search(
     include_outdated: bool = False,
     tier: str = DEFAULT_TIER,
     as_of: float | None = None,
+    today: str = "",
 ) -> str:
     """
     混合检索：FTS5 精确检索 + 语义向量检索的融合排序。
@@ -1655,6 +1729,12 @@ def mem_hybrid_search(
         ""（空串）不过滤（等价改动前行为）。语义侧与 FTS-only 侧同时受约束。
     v6.0 bi-temporal as_of：非空时按时间窗回看（语义侧与 FTS-only 侧同口径），
         以时间窗为准、不看当前 status；为空 = 原行为不变。
+    时间索引（到期扫描，仅 TIME_INDEX_ENABLED=1 时生效）：``today``（YYYY-MM-DD
+        或完整 ISO；空 = 本机今天）为「今天」锚——把写侧 mem_ingest 打了
+        payload["dates"] 且 due 命中今天的节点作为第五路并入 RRF 融合，命中
+        条目附 meta["time_hit"]，channels 附 time 状态（ok/empty）；级联模式
+        如实标 skipped（暂不支持）。关闭开关时本参数无效果，输出与引入前
+        逐位一致。
     """
     return _to_json(
         _hybrid_search_impl(
@@ -1671,6 +1751,7 @@ def mem_hybrid_search(
             include_outdated,
             tier,
             as_of,
+            today,
         )
     )
 

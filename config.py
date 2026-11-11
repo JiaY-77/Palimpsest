@@ -299,6 +299,23 @@ class Config:
     # 0 = 永不跳过（等价于引入本项前的「启用即永远走 TDB」）。
     TDB_TEXT_FTS_FLOOR = int(os.getenv("TDB_TEXT_FTS_FLOOR", "3"))
 
+    # ---- 时间索引（到期扫描）：写侧日期打标 + 读侧 RRF 第五路，默认关闭 ----
+    # 背景：聊天里「后天 / 下周三 / 这个月27号」这类相对日期，语义与 FTS 都
+    # 抓不住（提问侧没有任何字面/语义线索）。开启后写侧（mem_ingest）把日期
+    # 表达解析成绝对日期存进 payload["dates"]，读侧（mem_hybrid_search 且
+    # mode=rrf）按「今天」扫出到期节点作为一条额外通道并入 RRF 融合。
+    # 总开关：1=启用；0=完全零成本（写读两侧都不导入模块，payload 不出现
+    # dates 键，检索输出与引入前逐位一致）。解析边界（农历/节日/节前节后
+    # 不解析、级联模式 skipped）见 docs/USAGE.md「时间索引」一节。
+    TIME_INDEX_ENABLED = os.getenv("TIME_INDEX_ENABLED", "0") == "1"
+    # 该路在 RRF 融合中的权重（对比 FTS 路默认 0.1 / 精确标识符路 1.5）。
+    TIME_INDEX_WEIGHT = float(os.getenv("TIME_INDEX_WEIGHT", "1.0"))
+    # 该路候选量上限（到期节点按 created_at 升序取前 N）。
+    TIME_INDEX_LIMIT = int(os.getenv("TIME_INDEX_LIMIT", "20"))
+    # 到期日窗口（天）：0 = 只取「今天到期」；N = [today-N, today+N] 都算到期
+    # （跨时区/提前一天提醒场景用，默认不开窗）。
+    TIME_INDEX_WINDOW_DAYS = int(os.getenv("TIME_INDEX_WINDOW_DAYS", "0"))
+
     # ---- chunk 级向量索引（core/chunk_index.py，独立 node_chunks.db）----
     # 写入路径接线总开关：mem_ingest / reembed / PUT(PATCH) 改 content 三处
     # 写入调用 index_node_chunks（失败仅告警不阻塞主写入）。默认开；关闭时
