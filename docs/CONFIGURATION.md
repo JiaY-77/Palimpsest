@@ -103,6 +103,7 @@
 | `CONFLICT_SKIP_TYPES` | *（空）* | 跳过冲突检测的 type（逗号分隔），列出的 type 不再被标 `outdated` / 建 `REVISED_BY` 边；默认空 = 行为不变。用于 `task` 这类「累积关系」而非「同一事实被取代」的场景 | `mem_ingest` 写入时的冲突检测 |
 | `CONFLICT_TIME_WINDOW` | *（空）* | 启用 bi-temporal 时间窗冲突判定：相似但世界时间窗不重叠的事实（如「十年前住北京」≠「现在住上海」）不判为互相取代。默认关 = 行为逐字节不变（高风险语义变更，验证后再开） | `mem_ingest` 写入时的冲突检测 |
 | `CONFLICT_AUTO_SUPERSEDE` | *（空）* | 启用**自动相似取代**。默认关：写入绝不因相似度把旧记忆标 `outdated`——相似候选只记入 `related_ids`，取代仅由调用方显式声明（`mem_ingest` 的 `replaces` 参数）触发。开启则回退旧行为（相似度 > 0.75 → 标 `outdated`）。理由：「相似」不等于「同一事实被取代」，仅凭阈值会误吞同主题互补内容 | `mem_ingest` 写入时的冲突检测 |
+| `DEDUPE_REJECT_THRESHOLD` | `0.85` | **机械去重闸门**的相似度门槛（`mem_ingest` 的 `dedupe=reject` / `merge` 判定用）。**与冲突检测的 0.4 无关**——0.4 是「话题相关」，不是「重复」。默认值由生产库全量分布实测选定（同 type 门内相似对 p99 = 0.725；>0.85 仅占 0.089%，>0.92 仅 0.024%）。闸门不做语义判断：`allow`（默认，行为不变）/ `reject`（高相似拒写并返回 `duplicate_of`）/ `merge`（合并进 `dedupe_target` 指定节点，不新建） | `mem_ingest` 写入时的机械闸门 |
 | `RP_MODE` | *（空）* | **RP 专用实例开关**（`1`/`true`/`yes`/`on` 开；默认关 = 行为完全不变）。开启后两条变化：① 所有带 `domain`（或不带）的入口域锁死为 `RP_DOMAIN`——不传自动补，传别的 domain → 400 拒绝；② ingest 不再挂 `kb_chunk` 知识关联（`linked_from` 保持空、不建 REFERENCES 边） | 酒馆记忆桥独立部署（RP 域隔离） |
 | `RP_DOMAIN` | `rp` | `RP_MODE` 开启时的锁死域名；空值回退 `rp` | `RP_MODE` |
 | `KNOWLEDGE_DIR` | *（可选）* | 知识库根目录（待索引的 Obsidian `.md` 文件） | 使用 `kb_index` / `build_kb_index.py` 时 |

@@ -179,6 +179,63 @@ def resolve_conflict(
     return {"outdated_ids": outdated_ids, "related_ids": related_ids, "policy_warnings": policy_warnings}
 
 
+def find_duplicate_candidates(
+    store, embedding: list[float], new_payload: dict, threshold: float, top_k: int = 5
+) -> list[dict]:
+    """机械去重闸门（issue #280）的候选查找：返回高相似旧记忆 [{id, score, excerpt}]。
+
+    与 ``resolve_conflict`` 的分工：本函数**只找不判**——不做取代、不标 outdated、
+    不建边，把「撞到高相似」这一事实原样报给调用方（``mem_ingest`` 的 dedupe
+    三档闸门据此拒写 / 合并 / 提示）。语义判断（是否同一事实、该怎么处置）归调用方。
+
+    门规则（与冲突检测同源，但有两处有意放宽，见下）：
+      - type 隔离：旧节点 type 必须与新节点一致（kb_chunk 永不参与）；
+      - domain 隔离：双方非 general 且不同 → 跳过（同 ``_passes_gates``）；
+      - **不做类型白名单**（memory/task/plan 之外的 type 也参与）：白名单只约束
+        *自动*取代——去重闸门是调用方显式选择的机制（与显式 replaces 同一原则：
+        显式意图优先于自动策略），且 ``dedupe=reject`` 只在调用方点名时才生效，
+        不会误伤任何默认路径；
+      - **不读 CONFLICT_SKIP_TYPES**：同理，豁免清单只针对自动判定。
+    候选按 score 降序；``store`` 需提供 ``search_similar``（不衰减、不扩散，
+    与冲突检测的检索语义一致）。检索失败降级空列表，不阻断写入。
+    """
+    new_type = new_payload.get("type")
+    new_domain = node_domain(new_payload)
+    if new_type == "kb_chunk" or threshold <= 0:
+        return []
+    try:
+        similar = store.search_similar(embedding, top_k=top_k, expand_depth=0, apply_decay=False)
+    except Exception as e:  # noqa: BLE001 —— 候选检索失败降级空结果，不阻断主写入
+        logger.warning("dedupe 候选检索失败，返回空列表: %s", e)
+        return []
+    out: list[dict] = []
+    for r in similar:
+        old_id = r.get("id")
+        score = float(r.get("score", 0.0))
+        if old_id is None or score <= threshold:
+            continue
+        old_node = store.get_node(old_id)
+        old_payload = old_node.get("payload", {}) if old_node else {}
+        if not old_payload:
+            continue
+        if old_payload.get("type") != new_type:
+            continue
+        old_domain = node_domain(old_payload)
+        if new_domain != old_domain and new_domain != "general" and old_domain != "general":
+            continue
+        out.append(
+            {
+                "id": old_id,
+                "score": round(score, 4),
+                # 逐字截取（与检索 excerpt 同口径的硬截断）：给调用方一段可读
+                # 片段判断「是不是同一件事」，不生成摘要。
+                "excerpt": str(old_payload.get("content") or "")[:200],
+            }
+        )
+    out.sort(key=lambda x: x["score"], reverse=True)
+    return out
+
+
 def _similar_hits(db, embedding: list[float]) -> list[dict]:
     """事务内查找相似旧记忆（对已打开连接 db 用原生 search：只返回已提交节点）。
 

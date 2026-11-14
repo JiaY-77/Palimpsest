@@ -53,12 +53,15 @@ def record_ingest(
     related_count: int,
     replaced_count: int,
     outdated_count: int,
+    dedupe: str = "",
     db_path: str | None = None,
 ) -> None:
     """往观测文件追加一行写入判定记录（一行一个 JSON 对象，ensure_ascii=False）。
 
-    字段固定 7 个：ts / node_id / type / domain / related_count / replaced_count /
-    outdated_count——**绝不记录 content 或任何记忆正文**（脱敏硬要求）。
+    字段：ts / node_id / type / domain / related_count / replaced_count /
+    outdated_count，**绝不记录 content 或任何记忆正文**（脱敏硬要求）。
+    ``dedupe`` 非空（issue #280 机械去重闸门的 reject / merge 路径）时才追加
+    ``dedupe`` 字段——老行保持 7 字段原样，新行多一字段（聚合端兼容两者）。
 
     **写失败必须静默降级**：整个函数体包 try/except，出错只 logger.warning，
     绝不允许异常冒泡影响 mem_ingest 主流程（本模块最关键的约束）。
@@ -73,6 +76,8 @@ def record_ingest(
             "replaced_count": int(replaced_count),
             "outdated_count": int(outdated_count),
         }
+        if dedupe:
+            row["dedupe"] = str(dedupe)
         with open(_metrics_file(db_path), "a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
     except Exception as e:  # noqa: BLE001 —— 观测写失败静默降级，绝不影响写入主流程
@@ -93,6 +98,10 @@ def aggregate(days: int = 30, db_path: str | None = None) -> dict:
         "explicit_replace_rate": 0.0,
         "related_hit_rate": 0.0,
         "high_similar_unreplaced_rate": 0.0,
+        "dedupe_rejects": 0,
+        "dedupe_merges": 0,
+        "dedupe_reject_rate": 0.0,
+        "dedupe_merge_rate": 0.0,
         "outdated_in_window": 0,
         "by_type": {
             t: {"writes": 0, "related_hit_rate": 0.0, "high_similar_unreplaced_rate": 0.0} for t in _WHITELIST_TYPES
@@ -116,6 +125,8 @@ def aggregate(days: int = 30, db_path: str | None = None) -> dict:
     related_hits = 0
     high_similar_unreplaced = 0
     outdated_in_window = 0
+    dedupe_rejects = 0
+    dedupe_merges = 0
     per = {t: {"writes": 0, "related_hits": 0, "high_similar_unreplaced": 0} for t in _WHITELIST_TYPES}
 
     for line in lines:
@@ -136,6 +147,16 @@ def aggregate(days: int = 30, db_path: str | None = None) -> dict:
         t = row.get("type")
         if t not in _WHITELIST_TYPES:
             continue  # 类型白名单：非 memory/task/plan 不计入
+        # issue #280 机械去重闸门的 reject / merge 行：单独计数、不计入 writes
+        # （reject 没有写入发生，merge 是更新既有节点不新建——都不是「新写一条」；
+        #  混进 writes 会污染 explicit_replace_rate 等既有口径的分母）。
+        dedupe_action = row.get("dedupe")
+        if dedupe_action == "reject":
+            dedupe_rejects += 1
+            continue
+        if dedupe_action == "merge":
+            dedupe_merges += 1
+            continue
         related = _as_int(row.get("related_count"))
         replaced = _as_int(row.get("replaced_count"))
         outdated = _as_int(row.get("outdated_count"))
@@ -155,6 +176,16 @@ def aggregate(days: int = 30, db_path: str | None = None) -> dict:
 
     result["writes"] = writes
     result["outdated_in_window"] = outdated_in_window
+    # 去重闸门观测率（issue #280）：分母 = 窗口内到达写入判定层的全部尝试
+    # （writes + rejects + merges）——reject 的行本身没有写入，若按 writes 做
+    # 分母，连续拒绝会让「拒绝占尝试的比例」恒为 0。老行无 dedupe 字段、
+    # 照旧计入 writes，两个新率在无闸门活动的窗口恒为 0。
+    attempts = writes + dedupe_rejects + dedupe_merges
+    result["dedupe_rejects"] = dedupe_rejects
+    result["dedupe_merges"] = dedupe_merges
+    if attempts:
+        result["dedupe_reject_rate"] = dedupe_rejects / attempts
+        result["dedupe_merge_rate"] = dedupe_merges / attempts
     if writes:
         result["explicit_replace_rate"] = replace_hits / writes
         result["related_hit_rate"] = related_hits / writes

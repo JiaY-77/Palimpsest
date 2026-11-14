@@ -251,6 +251,17 @@ class Config:
     #   作为过渡兼容开关，验证期可一键回退。
     CONFLICT_AUTO_SUPERSEDE = os.getenv("CONFLICT_AUTO_SUPERSEDE", "").strip().lower() in ("1", "true", "yes", "on")
 
+    # ---- 机械去重闸门（issue #280，mem_ingest 的 dedupe 参数）----
+    # 候选/拒写阈值。与冲突检测 related 的 0.4 无关——0.4 是「话题相关」，
+    # 不是「重复」，不能当去重线用。默认 0.85 由生产库实测分布选定
+    # （scripts/probe_dedupe_dist.py：619 个 active 白名单节点、16920 个门内
+    # 同 type 相似对：p99=0.725，>0.85 仅占 0.089%，>0.92 仅 0.024%；人工
+    # 核对 ≥0.87 的对几乎全为同一事实的重复写入，仅个别同模板不同事实落在
+    # 0.94——那类本就该显式声明 replaces，闸门不拦）。merge 不另设阈值：
+    # 合并目标由调用方显式指定（dedupe_target），语义判断归调用方，机械层
+    # 不设第二道线（两个阈值会出现「reject 拒、merge 收」的不一致窗口）。
+    DEDUPE_REJECT_THRESHOLD = float(os.getenv("DEDUPE_REJECT_THRESHOLD", "0.85"))
+
     # 语义主序的图扩散深度：0 = 纯语义排序（默认；实测 R@5 0.7542）
     # 1 = 原行为（图邻居参与语义主序，实测 R@5 0.5000；可一键回退）
     RETRIEVAL_EXPAND_DEPTH = int(os.getenv("RETRIEVAL_EXPAND_DEPTH", "0"))

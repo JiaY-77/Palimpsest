@@ -851,6 +851,11 @@ class MemIngestRequest(BaseModel):
     # payload 不含这两个键，行为与旧版完全一致。
     sections: dict[str, str] | None = None
     pending: list[str] | None = None
+    # 机械去重闸门（issue #280）：allow=默认旧行为；reject=撞高相似即拒写
+    # （返回 duplicate_of + duplicate_candidates）；merge=合并进 dedupe_target
+    # 指定节点（不新建）。显式 replaces 优先于本闸门。缺省 = allow。
+    dedupe: str = "allow"
+    dedupe_target: int | None = None
 
 
 class MemPurgeByMetaRequest(BaseModel):
@@ -1143,6 +1148,15 @@ def mem_ingest(req: MemIngestRequest):
         cap_ok, cap_err, _ = validate_capsule_fields(req.sections, req.pending)
         if not cap_ok:
             raise HTTPException(status_code=422, detail=cap_err)
+    # 机械去重闸门参数校验（issue #280）：非法档位 / 目标组合直接 422，
+    # 不去打 embedding——与 meta / capsule 的提前拦同范式。
+    dedupe_mode = (req.dedupe or "allow").strip().lower()
+    if dedupe_mode not in ("allow", "reject", "merge"):
+        raise HTTPException(status_code=422, detail=f"dedupe 参数非法: {req.dedupe!r}（可选 allow / reject / merge）")
+    if req.dedupe_target is not None and dedupe_mode != "merge":
+        raise HTTPException(status_code=422, detail='dedupe_target 仅在 dedupe="merge" 档有效')
+    if dedupe_mode == "merge" and req.dedupe_target is None:
+        raise HTTPException(status_code=422, detail='dedupe="merge" 需要显式给 dedupe_target（要合并进的旧节点 id）')
     result = _mcp_mem_ingest(
         req.content,
         type=req.type,
@@ -1153,6 +1167,8 @@ def mem_ingest(req: MemIngestRequest):
         meta=req.meta,
         sections=req.sections,
         pending=req.pending,
+        dedupe=dedupe_mode,
+        dedupe_target=req.dedupe_target,
     )
     # 校验类拒绝（空内容 / 超长）：REST 侧映射为 422，返回友好 message；
     # 其余 stored:false（如事务失败/secret 强拒，不携带 node_id 键）仍按 JSON 原样返回，不改语义。
