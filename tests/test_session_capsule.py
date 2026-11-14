@@ -561,8 +561,11 @@ def test_capsule_reachable_via_tasks_active_channel(db_path):
     assert capsule["node_id"] not in [item["id"] for item in hidden["results"]]
 
 
-def test_session_end_without_buffer_unchanged_response(db_path):
+def test_session_end_without_buffer_unchanged_response(db_path, monkeypatch):
     """无缓冲的 session-end：返回体不加 capsule 字段，既有字段不变（回归保护）。"""
+    from config import Config
+
+    monkeypatch.setattr(Config, "SESSION_MEMORY_INGEST", True)  # 要点路径回退模式（#278 起默认关）
     client = _client()
     body = client.post(
         "/lifecycle/session-end",

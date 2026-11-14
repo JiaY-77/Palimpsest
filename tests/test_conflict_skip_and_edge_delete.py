@@ -62,7 +62,7 @@ class _FakeStore:
         self.updated = []
         self.edges = []
 
-    def search_similar(self, embedding, top_k=3, expand_depth=0, apply_decay=False):
+    def search_similar(self, embedding, top_k=3, expand_depth=0, apply_decay=False, **kwargs):
         return self._similar
 
     def get_node(self, node_id):

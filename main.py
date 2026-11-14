@@ -1891,6 +1891,9 @@ def lifecycle_pre_turn(req: PreTurnRequest):
             top_k=req.top_k,
             include_neighbors=req.include_neighbors,
             tier=req.tier,
+            # issue #278：pre-turn 注入路径的命中计到 inject_count（与 MCP 工具
+            # 主动检索的 hit_count 分开盘点），不与「真实复用」混算。
+            count_kind="inject",
         )
     )
     hits = raw.get("results", []) if isinstance(raw, dict) else []
@@ -2095,6 +2098,9 @@ def lifecycle_post_turn(req: PostTurnRequest):
                 type=decision["type"],
                 importance=decision["importance"],
                 domain=domain,
+                # issue #278 写入侧打来源标记：用户原话沉淀默认不进检索候选
+                # （meta.origin=dialogue_digest），降级可达性、不删历史节点。
+                meta={"origin": "dialogue_digest"},
             )
         )
         decision["stored"] = bool(ingest.get("stored"))
@@ -2555,7 +2561,17 @@ def lifecycle_session_end(req: SessionEndRequest):
         decision["skip_reason"] = "session_memory_disabled"
         return decision
 
-    probe = _as_json(_mcp_mem_search(decision["content"], scope="memory", top_k=1))
+    probe = _as_json(
+        _mcp_mem_search(
+            decision["content"],
+            scope="memory",
+            top_k=1,
+            # issue #278：查重要能看见历史 digest（要点路径回退模式下拦截重复
+            # 写入）；且查重是内部动作，不计任何命中计数。
+            include_digest=True,
+            count_kind="none",
+        )
+    )
     dup_hits = probe.get("results", []) if isinstance(probe, dict) else []
     if _strategy_is_near_duplicate(dup_hits):
         out = {
@@ -2576,6 +2592,9 @@ def lifecycle_session_end(req: SessionEndRequest):
             type=decision["type"],
             importance=decision["importance"],
             domain=_resolve_domain(""),
+            # issue #278 写入侧打来源标记：会话要点默认不进检索候选
+            # （meta.origin=session_digest），降级可达性、不删历史节点。
+            meta={"origin": "session_digest"},
         )
     )
     out = {

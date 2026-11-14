@@ -19,6 +19,7 @@ from core.capsule_guard import validate_capsule_fields
 from core.chunk_index import index_node_chunks
 from core.conflict import find_duplicate_candidates, resolve_conflict
 from core.db_health import check_db_health, health_hint
+from core.digest import is_digest_payload
 from core.fts_index import index_node, search_fts_status
 from core.judgment_metrics import record_ingest
 from core.memoryhub import apply_import, read_pack, summarize_pack
@@ -54,7 +55,12 @@ DEFAULT_TIER = Config.DEFAULT_TIER
 
 @mcp.tool()
 def mem_retrieve(
-    query: str, domain: str = "", top_k: int = 5, include_outdated: bool = False, as_of: float | None = None
+    query: str,
+    domain: str = "",
+    top_k: int = 5,
+    include_outdated: bool = False,
+    as_of: float | None = None,
+    include_digest: bool = False,
 ) -> str:
     """
     语义检索记忆：返回 150 字 summary + 逐字 excerpt + meta。
@@ -65,6 +71,9 @@ def mem_retrieve(
     include_outdated=True 时返回全部（历史可追溯通道）。
     as_of 非空时按 bi-temporal 时间窗回看（valid_at <= as_of 且未在 as_of 前
     invalid_at），以时间窗为准、不看当前 status；为空 = 原行为不变。
+    v6.x 对话残渣降权（issue #278）：digest 类节点（meta.origin=session_digest /
+    dialogue_digest，或历史 content 前缀命中）默认不进候选窗口；include_digest=True
+    为显式审计/回溯通道。
     """
     emb = store.embed_text(query)
     # v1.1 拉宽召回：与 mem_search 一致，top_k*3 召回再过滤，避免 kb_chunk 挤占名额导致记忆条数凑不满
@@ -74,6 +83,7 @@ def mem_retrieve(
         top_k=max(top_k * 3, 30),
         expand_depth=getattr(Config, "RETRIEVAL_EXPAND_DEPTH", 0),
         include_outdated=include_outdated or (as_of is not None),
+        include_digest=include_digest,
     )
     items = []
     for r in results:
@@ -81,6 +91,10 @@ def mem_retrieve(
         # v4.0 outdated 语义：默认跳过被取代的旧版本，include_outdated=True 保留；
         # as_of 非空时以时间窗为准（不看 status）——判据集中在 _visible()，多路共用。
         if not _visible(payload, include_outdated=include_outdated, as_of=as_of):
+            continue
+        # 对话残渣降权（issue #278）：digest 类节点默认不可达；include_digest=True
+        # 为显式审计/回溯通道。底层候选已过滤，此处兜住同签名直调的差异实现。
+        if not include_digest and is_digest_payload(payload):
             continue
         # domain 过滤：只保留指定角色/域的记忆（domain 正式字段，character_name 兼容镜像已退役）
         if domain and node_domain(payload) != (domain or "").strip().lower():
@@ -1099,6 +1113,8 @@ def _mem_search_impl(
     domain_boost: str = "",
     tier: str = DEFAULT_TIER,
     as_of: float | None = None,
+    include_digest: bool = False,
+    count_kind: str = "hit",
 ) -> dict:
     """
     mem_search 的核心实现（返回 dict，供 mem_search 工具复用）。
@@ -1115,6 +1131,10 @@ def _mem_search_impl(
         freshness_decay）；默认 0 = 关闭（逐位一致）。as_of 历史视图下不生效。
       - v4.0 outdated 语义：默认过滤 status=="outdated" 的旧版本（只回当前有效节点），
         include_outdated=True 时不过滤，返回全部（显式历史可追溯通道）。
+      - v6.x 对话残渣降权（issue #278）：digest 类节点默认不进候选（多路与底层
+        search_similar 同口径）；include_digest=True 为显式审计/回溯通道。
+        count_kind 透传底层命中计数（hit=主动检索 / inject=pre-turn 注入 /
+        none=内部判重不计），仅影响计数不影响结果。
     """
     if scope not in ("memory", "kb", "all"):
         scope = "all"
@@ -1134,6 +1154,8 @@ def _mem_search_impl(
         expand_depth=getattr(Config, "RETRIEVAL_EXPAND_DEPTH", 0),
         block=block,
         include_outdated=_fetch_outdated,
+        include_digest=include_digest,
+        count_kind=count_kind,
     )
 
     # ---- chunk 级向量召回（issue #295，主力是为长文档准备的独立 node_chunks.db）----
@@ -1183,6 +1205,11 @@ def _mem_search_impl(
             if not include_outdated and payload.get("status") == "outdated":
                 continue
         elif not is_valid_at(payload, as_of):
+            continue
+        # 对话残渣降权（issue #278）：digest 类节点默认不可达；include_digest=True
+        # 为显式审计/回溯通道。底层 search_similar 已过滤语义路候选，此处兜住
+        # chunk 路（store.get_node 直查）补进来的候选——多路过滤口径必须一致。
+        if not include_digest and is_digest_payload(payload):
             continue
         # 记忆分层（tier）：后置视图过滤，与 scope/domain/block 并列。
         # tier="" 时 _tier_matches 恒 True，逐条等价于改动前行为（回归红线）。
@@ -1278,6 +1305,8 @@ def mem_search(
     domain_boost: str = "",
     tier: str = DEFAULT_TIER,
     as_of: float | None = None,
+    include_digest: bool = False,
+    count_kind: str = "hit",
 ) -> str:
     """
     统一检索入口：记忆 + 知识库混合检索。
@@ -1313,6 +1342,11 @@ def mem_search(
         为真」（valid_at <= as_of 且未在 as_of 前 invalid_at）过滤，以时间窗为准、
         不看当前 status——当时为真的节点即使现已被标 outdated 也会返回。as_of 为空
         = 原行为不变。
+    v6.x 对话残渣降权（include_digest，issue #278）：digest 类节点（meta.origin=
+        session_digest / dialogue_digest，或历史 content 前缀命中）默认不进候选
+        窗口——语义极泛 + 每次 session-end 固定写入，会把结论型记忆挤出 top_k；
+        include_digest=True 为显式审计/回溯通道。count_kind：命中计数类型
+        （hit=主动检索，默认 / inject=pre-turn 注入 / none=不计），仅影响计数。
     """
     return _to_json(
         _mem_search_impl(
@@ -1328,6 +1362,8 @@ def mem_search(
             domain_boost=domain_boost,
             tier=tier,
             as_of=as_of,
+            include_digest=include_digest,
+            count_kind=count_kind,
         )
     )
 
@@ -1360,6 +1396,8 @@ def _sem_candidate_items(
     include_outdated: bool = False,
     tier: str = DEFAULT_TIER,
     as_of: float | None = None,
+    include_digest: bool = False,
+    count_kind: str = "hit",
 ) -> list:
     """语义候选：复用 _mem_search_impl 宽松召回（top_k*3），按 score 降序排名。"""
     sem = _mem_search_impl(
@@ -1373,6 +1411,8 @@ def _sem_candidate_items(
         include_outdated=include_outdated,
         tier=tier,
         as_of=as_of,
+        include_digest=include_digest,
+        count_kind=count_kind,
     )
     items = sem.get("results", [])
     return sorted(items, key=lambda it: it.get("score", 0.0), reverse=True)
@@ -1386,6 +1426,7 @@ def _fts_only_item(
     include_outdated: bool = False,
     tier: str = DEFAULT_TIER,
     as_of: float | None = None,
+    include_digest: bool = False,
 ):
     """FTS 命中但语义未命中的节点：按 payload 补全 mem_search 同构条目。
 
@@ -1398,6 +1439,9 @@ def _fts_only_item(
     payload = node.get("payload", {}) or {}
     ptype = payload.get("type", "")
     is_kb = ptype == "kb_chunk"
+    # 对话残渣降权（issue #278）：FTS-only 侧与语义侧同口径，digest 默认不可达
+    if not include_digest and is_digest_payload(payload):
+        return None
     # v4.0 outdated 语义：FTS-only 侧与语义侧保持一致，默认过滤旧版本
     # as_of 非空时以时间窗为准（不看 status），与语义侧口径一致
     if as_of is None:
@@ -1514,6 +1558,7 @@ def _hybrid_rrf(
     tier: str = DEFAULT_TIER,
     as_of: float | None = None,
     today: str = "",
+    include_digest: bool = False,
 ) -> tuple[list, dict]:
     """RRF 融合：语义排名 + FTS 排名的 reciprocal rank 求和（k=60）。
 
@@ -1537,7 +1582,16 @@ def _hybrid_rrf(
     candidate_k = max(top_k, getattr(Config, "RERANK_POOL", 20)) if rerank_enabled else top_k
 
     sem_items = _sem_candidate_items(
-        query, scope, domain, domain_bias, candidate_k, block, include_outdated=include_outdated, tier=tier, as_of=as_of
+        query,
+        scope,
+        domain,
+        domain_bias,
+        candidate_k,
+        block,
+        include_outdated=include_outdated,
+        tier=tier,
+        as_of=as_of,
+        include_digest=include_digest,
     )
     fts, fts_status = search_fts_status(query, limit=fts_limit)
     if fts_status == "degraded":
@@ -1613,7 +1667,16 @@ def _hybrid_rrf(
     for nid, score, fts_hit_flag, sem_hit_flag in ranked:
         item = by_id.get(nid)
         if item is None:
-            item = _fts_only_item(nid, scope, domain, block, include_outdated=include_outdated, tier=tier, as_of=as_of)
+            item = _fts_only_item(
+                nid,
+                scope,
+                domain,
+                block,
+                include_outdated=include_outdated,
+                tier=tier,
+                as_of=as_of,
+                include_digest=include_digest,
+            )
             if item is None:
                 continue
         item = dict(item)
@@ -1673,6 +1736,7 @@ def _hybrid_cascade(
     include_outdated: bool = False,
     tier: str = DEFAULT_TIER,
     as_of: float | None = None,
+    include_digest: bool = False,
 ) -> tuple[list, dict]:
     """级联：FTS 粗筛候选集 → 向量精排（只留交集）→ 不足 top_k 从剩余语义补足。
 
@@ -1691,7 +1755,16 @@ def _hybrid_cascade(
     rerank_enabled = bool(getattr(Config, "RERANK_ENABLED", False))
     candidate_k = max(top_k, getattr(Config, "RERANK_POOL", 20)) if rerank_enabled else top_k
     sem_items = _sem_candidate_items(
-        query, scope, domain, domain_bias, candidate_k, block, include_outdated=include_outdated, tier=tier, as_of=as_of
+        query,
+        scope,
+        domain,
+        domain_bias,
+        candidate_k,
+        block,
+        include_outdated=include_outdated,
+        tier=tier,
+        as_of=as_of,
+        include_digest=include_digest,
     )
 
     in_candidate = [it for it in sem_items if it.get("id") in fts_ids]
@@ -1745,6 +1818,7 @@ def _hybrid_search_impl(
     tier: str = DEFAULT_TIER,
     as_of: float | None = None,
     today: str = "",
+    include_digest: bool = False,
 ) -> dict:
     """
     mem_hybrid_search 的核心实现（返回 dict，供 mem_hybrid_search 工具复用）。
@@ -1782,6 +1856,7 @@ def _hybrid_search_impl(
                 include_outdated=include_outdated,
                 tier=tier,
                 as_of=as_of,
+                include_digest=include_digest,
             )
         else:
             items, channels = _hybrid_rrf(
@@ -1796,6 +1871,7 @@ def _hybrid_search_impl(
                 tier=tier,
                 as_of=as_of,
                 today=today,
+                include_digest=include_digest,
             )
         result: dict[str, Any] = {"results": items, "scope": scope, "mode": mode, "channels": channels}
         if channels.get("fts") == "degraded":
@@ -1849,6 +1925,7 @@ def mem_hybrid_search(
     tier: str = DEFAULT_TIER,
     as_of: float | None = None,
     today: str = "",
+    include_digest: bool = False,
 ) -> str:
     """
     混合检索：FTS5 精确检索 + 语义向量检索的融合排序。
@@ -1872,6 +1949,8 @@ def mem_hybrid_search(
         条目附 meta["time_hit"]，channels 附 time 状态（ok/empty）；级联模式
         如实标 skipped（暂不支持）。关闭开关时本参数无效果，输出与引入前
         逐位一致。
+    v6.x 对话残渣降权（issue #278）：digest 类节点默认不进候选（语义侧与
+        FTS-only 侧同口径）；include_digest=True 为显式审计/回溯通道。
     """
     return _to_json(
         _hybrid_search_impl(
@@ -1889,6 +1968,7 @@ def mem_hybrid_search(
             tier,
             as_of,
             today,
+            include_digest,
         )
     )
 

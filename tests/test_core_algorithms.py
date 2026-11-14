@@ -169,7 +169,7 @@ class _RecordingStore:
         payload = self.nodes.get(node_id)
         return {"id": node_id, "payload": payload} if payload is not None else None
 
-    def search_similar(self, embedding, top_k=3, expand_depth=0, apply_decay=True):
+    def search_similar(self, embedding, top_k=3, expand_depth=0, apply_decay=True, **kwargs):
         return self.similar
 
     def update_payload(self, node_id, new_payload):

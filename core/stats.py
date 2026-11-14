@@ -18,6 +18,7 @@ import contextlib
 import logging
 import time
 
+from core.digest import digest_origin_of
 from core.judgment_metrics import aggregate as aggregate_write_judgment
 from core.utils import _to_float
 
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 # 可选分节清单（CLI --section 可独立开关，缺省全给）：
 #   domains = totals 里的按 domain 分布（CLI 别名，compute_stats 仍归并在 totals.by_domain）
-SECTIONS = ("totals", "kinds", "importance", "time", "graph", "domains", "write_judgment")
+SECTIONS = ("totals", "kinds", "importance", "time", "graph", "domains", "digest", "write_judgment")
 
 # importance 分布区间（左闭右开，末段含右端点）
 _IMP_BUCKETS = (
@@ -63,6 +64,11 @@ def _new_accumulator() -> dict:
         "label_dist": {},
         "hit_count_total": 0,
         "hit_nodes": [],
+        "inject_count_total": 0,
+        "inject_nodes": [],
+        "digest_active": 0,
+        "digest_by_origin": {},
+        "digest_nodes": [],
         "secret_hint": 0,
     }
 
@@ -119,13 +125,43 @@ def _accumulate_node(acc: dict, nid, node, db) -> None:
         lab = getattr(e, "label", "") or getattr(e, "relation", "") or "unknown"
         label_dist[lab] = label_dist.get(lab, 0) + 1
 
+    # 对话残渣（issue #278）：digest 类节点（meta.origin 打标或历史 content 前缀）
+    # 默认不进检索候选，其命中单独入 digest 分节——top_hit_nodes / top_inject_nodes
+    # 只反映默认检索可达节点的「真实复用」，不再被存量 digest 污染。
+    d_origin = digest_origin_of(payload)
+    is_digest = d_origin is not None
+    if is_digest and status != "outdated":
+        acc["digest_active"] += 1
+        acc["digest_by_origin"][d_origin] = acc["digest_by_origin"].get(d_origin, 0) + 1
+
     hc = _to_float(payload.get("hit_count"), 0)
     if hc:
         acc["hit_count_total"] += int(hc)
-        acc["hit_nodes"].append(
+        if is_digest:
+            acc["digest_nodes"].append(
+                {
+                    "id": nid,
+                    "hit_count": int(hc),
+                    "origin": d_origin,
+                    "content": (payload.get("content") or "")[:60],
+                }
+            )
+        else:
+            acc["hit_nodes"].append(
+                {
+                    "id": nid,
+                    "hit_count": int(hc),
+                    "content": (payload.get("content") or "")[:60],
+                }
+            )
+    # inject_count（issue #278 双计数器）：pre-turn 注入路径命中，与主动检索分开盘点
+    ic = _to_float(payload.get("inject_count"), 0)
+    if ic and not is_digest:
+        acc["inject_count_total"] += int(ic)
+        acc["inject_nodes"].append(
             {
                 "id": nid,
-                "hit_count": int(hc),
+                "inject_count": int(ic),
                 "content": (payload.get("content") or "")[:60],
             }
         )
@@ -182,6 +218,9 @@ def _build_stats_result(acc: dict, start: float) -> dict:
     top_labels = sorted(acc["label_dist"].items(), key=lambda kv: kv[1], reverse=True)[:10]
     avg_outdegree = round(acc["total_edges"] / total, 2) if total else 0.0
     hit_nodes = sorted(acc["hit_nodes"], key=lambda x: x["hit_count"], reverse=True)
+    inject_nodes = sorted(acc["inject_nodes"], key=lambda x: x["inject_count"], reverse=True)
+    digest_nodes = sorted(acc["digest_nodes"], key=lambda x: x["hit_count"], reverse=True)
+    active = acc["active"]
 
     return {
         "totals": {
@@ -203,7 +242,21 @@ def _build_stats_result(acc: dict, start: float) -> dict:
             "label_dist_top10": dict(top_labels),
             "avg_outdegree": avg_outdegree,
             "hit_count_total": acc["hit_count_total"],
+            # top_hit_nodes 只按 hit_count（真实复用）排序，且排除 digest 类节点——
+            # digest 的命中单独进 digest 分节（issue #278）
             "top_hit_nodes": hit_nodes[:10],
+            # inject_count（issue #278 双计数器）：pre-turn 注入路径命中的总量与热点
+            "inject_count_total": acc["inject_count_total"],
+            "top_inject_nodes": inject_nodes[:10],
+        },
+        # 对话残渣残留占比分节（issue #278）：digest 类节点默认已降级不可达，
+        # 此处回答「库里还剩多少 / 占多少 / 曾经吸走多少命中」——只降级可达性，
+        # 不删历史节点，盘点可见性保留。
+        "digest": {
+            "active": acc["digest_active"],
+            "share_of_active": round(acc["digest_active"] / active, 4) if active else 0.0,
+            "by_origin": dict(sorted(acc["digest_by_origin"].items())),
+            "top_hit_nodes": digest_nodes[:10],
         },
         # 写入判定观测分节（core/judgment_metrics.py）：读库旁观测文件按 30 天窗汇总；
         # 文件缺失 / 损坏由 aggregate 静默降级，不抛异常、不阻断盘点。
@@ -228,7 +281,10 @@ def compute_stats(store) -> dict:
         "importance": {小于0.4 / 0.4到0.6 / 0.6到0.8 / 大于等于0.8},
         "time":   {"2026-08": n, ...}（created_at 为 null/0 的跳过），
         "graph":  {nodes_with_edges, total_edges, label_dist(top10),
-                   avg_outdegree, hit_count_total, top_hit_nodes},
+                   avg_outdegree, hit_count_total, top_hit_nodes（排除 digest 类）,
+                   inject_count_total, top_inject_nodes}，
+        "digest": {active, share_of_active, by_origin, top_hit_nodes}——
+                   digest 类（对话残渣）残留占比与存量命中盘点（issue #278），
         "write_judgment": 近 30 天写入判定观测汇总（writes / explicit_replace_rate /
                    related_hit_rate / high_similar_unreplaced_rate / outdated_in_window /
                    by_type / file / file_exists；观测文件缺失或损坏时降级为全 0 结构），
