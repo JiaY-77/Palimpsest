@@ -28,7 +28,7 @@
 
 ## What it is
 
-A **local memory store**: what an AI session learns becomes nodes in one database on your machine, and any later session can find it again **by meaning**, not by keyword.
+A **domain-adaptable personal memory store**: a **memory kernel** (storage / retrieval / versioning / isolation) plus **per-domain packages** (one set of write and injection rules per scenario). One base; role-play, TRPG hosting, personal knowledge and a personal assistant each get their own rules — not general-purpose, but deep in the scenario it serves. What a session learns becomes nodes in one database on your machine, for any later session to find.
 
 On the boundary, in one line: this is a **retrieval service plus governance mechanism** — it stores, finds and versions what you write. It does **not** promise to "turn conversations into reliable memory automatically": deciding what to write and when an old fact is superseded belongs to the caller (see [docs/USAGE.md](docs/USAGE.md) §2).
 
@@ -36,6 +36,8 @@ On the boundary, in one line: this is a **retrieval service plus governance mech
 - **Zero external dependencies.** A built-in vector engine (`llama-cpp-python` + a bundled GGUF model) runs fully offline once installed; Ollama is an optional speed-up path, not a requirement.
 - **One process is the single writer.** REST on `:8090` is the only entry point — MCP / CLI / scripts all go through it, so no second writer can corrupt the store.
 - **The data is one directory.** `.db` + `.vec` / `.gidx` / `.pidx` sidecars plus `fts.db` under `data/`: back all of it up and you can move the store. After a restore, run doctor (`python scripts/palimpsest_cli.py doctor`) to confirm the FTS index is complete.
+
+**Three things that hold up** (the basis of this positioning): **no cross-talk** — nodes carry a `domain`, retrieval and graph diffusion are partitioned by it, so a character's / project's / knowledge memories do not bleed into each other; **no self-contradiction** — superseding is declared by the writer (`replaces`); the old version is marked `outdated` and stays queryable through a `REVISED_BY` chain plus `valid_at` bi-temporal times; **not on the cloud** — runs with zero API keys, a built-in GGUF vector engine, one portable data directory. Semantic retrieval is a built-in capability, not the claimed unique advantage: in a controlled test a plain 80-line character-bigram BM25 baseline scored 16/24 on entity-dense queries, above hybrid's 13/24 (issue #283) — so the depth goes into structure, not into betting on retrieval precision.
 
 ---
 
@@ -157,6 +159,7 @@ hermes config set context.engine palimpsest-graph
 | Symptom | How it is solved | Run it yourself |
 |---|---|---|
 | A new session forgets what you talked about | High-signal points are written into the local store; a new session recalls them **semantically**, not by keyword | `mem_search "the architecture we discussed"` |
+| TRPG lore, work notes and the knowledge base bleed into each other | Nodes carry a `domain`; retrieval and graph diffusion are partitioned by it, so domains do not cross-talk | filter `mem_search` by `domain` |
 | Memory piles up, several versions of one thing | Superseding is **declared by the writer** (`replaces`); the old version is marked `outdated` and linked through a `REVISED_BY` chain — never silently overwritten | `mem_version_history <id>` |
 | A pile of Markdown the AI cannot read through | Sliced into the store **by headings** (a heading is a semantic boundary a human drew), with `[[wikilinks]]` turned into graph edges | `build_kb_index.py` then `kb "TERM"` |
 | It forgets *why* a decision was made | Nodes carry type / importance / time dimensions; reasoning is stored as `thought` nodes | `mem_fact_history <id>` |
