@@ -108,6 +108,14 @@ class Config:
     RERANK_LOCAL_MODEL_PATH = os.getenv("RERANK_LOCAL_MODEL_PATH", "models/bge-reranker-v2-m3-Q8_0.gguf")
     # local_ce 推理线程数；0 = 交 llama.cpp 自动决定
     RERANK_LOCAL_N_THREADS = int(os.getenv("RERANK_LOCAL_N_THREADS", "0"))
+    # local_ce 的 llama.cpp 物理批大小（n_batch）。4096 = 历史行为（issue #274 起）。
+    # 注意与 EMBEDDING_LOCAL_N_BATCH 无关——那是 store 侧 embedding 模型的旋钮。
+    RERANK_LOCAL_N_BATCH = int(os.getenv("RERANK_LOCAL_N_BATCH", "4096"))
+    # local_ce 的 llama.cpp 物理 ubatch（一次送进计算的 token 上限）。0 = 不显式
+    # 传（由 llama.cpp 取 n_ubatch = n_batch 的默认，即历史行为）。issue #307：
+    # 本地 embedding + local_ce 交替使用多轮后 decode_batch 段错误，实测显式把
+    # n_ubatch 压到 512 稳定（对照实验见 PR）。
+    RERANK_LOCAL_N_UBATCH = int(os.getenv("RERANK_LOCAL_N_UBATCH", "512"))
     # 参与重排的候选深度。默认 20 是 local_ce 实测调优（issue #274）：4.8 s/查询
     # vs 池 40 的 10.3 s，hit@5 只差 1 题（0.967 vs 0.983，在判官噪声地板内）。
     # 回退旧深度：RERANK_POOL=40。

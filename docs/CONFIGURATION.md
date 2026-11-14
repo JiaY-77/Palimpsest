@@ -75,6 +75,8 @@
 | `RERANK_BACKEND` | `local_ce` | 重排后端：`local_ce` = 本地 cross-encoder（llama-cpp-python 加载 `RERANK_LOCAL_MODEL_PATH` 指向的 GGUF，逐条打 query-doc 对、零 API 额度；#274）；`llm` = 远端 chat-completions listwise（#272 原路径，行为不变）。非法值（含空串）视同 `local_ce`，只 warn 一次，不抛异常 | `RERANK_ENABLED=1` |
 | `RERANK_LOCAL_MODEL_PATH` | `models/bge-reranker-v2-m3-Q8_0.gguf` | `local_ce` 后端的模型文件：绝对路径，或相对**项目根**解析（模型文件不进仓库，指向用户本地放置的 GGUF — 同向量模型的 `models/` 约定）。文件缺失 / 依赖缺失 / 加载失败 → `channels.rerank = "degraded"` 回原顺序，且日志给出下载指引；加载失败原因会被记住，不每条查询重复试。下载与安装见下文「本地重排模型」 | `RERANK_BACKEND=local_ce` 时 |
 | `RERANK_LOCAL_N_THREADS` | `0` | `local_ce` 推理线程数；`0` = 交 llama.cpp 自动决定 | `RERANK_BACKEND=local_ce` 时 |
+| `RERANK_LOCAL_N_BATCH` | `4096` | `local_ce` 的 llama.cpp 物理批大小（`n_batch`）。注意与 `EMBEDDING_LOCAL_N_BATCH` 无关——那是 store 侧向量模型的旋钮 | `RERANK_BACKEND=local_ce` 时 |
+| `RERANK_LOCAL_N_UBATCH` | `512` | `local_ce` 的 llama.cpp 物理 ubatch（一次送进计算的 token 上限）；`0` = 不显式传（取 llama.cpp 默认 `n_ubatch = n_batch`，即 #307 修复前的历史行为）。**修复后默认 512**：与 `EMBEDDING_PROVIDER=local` 的向量模型同进程交替使用多轮时，历史行为会在 `decode_batch` 段错误（Windows exit 139），显式压到 512 实测稳定（40 轮 × 2 次零崩溃，对照实验见 #307 PR）。打分仍逐条调用，此值只影响物理批缓冲 | `RERANK_BACKEND=local_ce` 时 |
 | `RERANK_POOL` | `20` | 参与重排的候选深度：融合候选取前这么多条交给重排后端（启用时语义候选同步拉深到这里，见 [RETRIEVAL_QUALITY.md](RETRIEVAL_QUALITY.md)）。默认 20 是 `local_ce` 实测调优（#274：约 4.8 秒/查询 vs 池 40 的 10.3 秒，hit@5 差 1 题、在判官噪声地板内）；**回退旧深度：`RERANK_POOL=40`** | `RERANK_ENABLED=1` 时 |
 | `RERANK_SNIPPET_CHARS` | `240` | 每条候选喂给模型的正文长度（字符）。实测（#274）：`local_ce` 降到 160 会再丢一条救回且提速有限，保持 240 | `RERANK_ENABLED=1` 时 |
 | `RERANK_TIMEOUT` | `20` | 单次重排超时（秒；连接/读取同一值）。`llm` 后端专用，`local_ce` 本地推理不走网络、不受它约束 | `RERANK_ENABLED=1` 时 |
@@ -121,6 +123,8 @@
 2. **模型文件**：下载 `bge-reranker-v2-m3`（BAAI，官方权重约 0.6B 参数）的 **Q8_0 GGUF**（约 635 MB），放到 `models/`（已在 `.gitignore`，不进仓库），保持默认的 `RERANK_LOCAL_MODEL_PATH=models/bge-reranker-v2-m3-Q8_0.gguf` 指向即可。GGUF 量化版可在 HuggingFace 搜 `bge-reranker-v2-m3 GGUF` 找社区转换（如 gpustack 组织）。
 
 两样都缺/缺一样时**检索不会坏**：后端检测到不可用会把 `channels.rerank` 标成 `degraded`、按原顺序返回候选，日志给出上述指引，且不会每条查询重复探测。
+
+`local_ce` 的两个 llama.cpp 批参数（#307）：`RERANK_LOCAL_N_BATCH`（默认 4096）是物理批大小，`RERANK_LOCAL_N_UBATCH`（默认 512）是一次送进计算的 token 上限——打分是逐条调用，这两个值只影响底层批缓冲，不影响语义。**`RERANK_LOCAL_N_UBATCH` 保持 512（或至少显式设一个小于 `n_batch` 的值）**：当 `EMBEDDING_PROVIDER=local` 时，store 的向量模型实例与 reranker 的 cross-encoder 实例同进程交替使用，历史上不设 `n_ubatch`（默认等于 `n_batch=4096`）会在重复多轮后于 llama.cpp `decode_batch` 触发段错误（Windows exit 139），进程直接死。`RERANK_LOCAL_N_UBATCH=0` 可显式还原历史行为（不推荐）。另：某轮打分若所有候选分数完全相同（模型输出失去区分度），该轮不采用重排、按原序返回，`channels.rerank` 标 `rerank_degenerate`。
 
 ## 更换向量模型 / 重嵌全库
 
