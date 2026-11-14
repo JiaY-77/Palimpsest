@@ -17,7 +17,7 @@ from core import tdb_text_index as _tdb_text
 from core.bitemporal import freshness_decay, is_valid_at, stamp_new_fact, time_fields
 from core.capsule_guard import validate_capsule_fields
 from core.chunk_index import index_node_chunks
-from core.conflict import resolve_conflict
+from core.conflict import find_duplicate_candidates, resolve_conflict
 from core.db_health import check_db_health, health_hint
 from core.fts_index import index_node, search_fts_status
 from core.judgment_metrics import record_ingest
@@ -250,6 +250,70 @@ def _post_ingest_side_effects(
     return secret_hint, node_domain(payload)
 
 
+def _merge_dedupe_target(
+    store,
+    target_id: int,
+    node_data: dict,
+    duplicate_candidates: list[dict],
+    policy_warnings: list[str],
+) -> str:
+    """dedupe=merge 档：把本次内容并进调用方指定的既有节点，不新建节点（issue #280）。
+
+    merge 语义（定稿）：**追加正文**——目标 content 尾部以空行接本次 content；
+    合并后按合并全文重算向量（``reembed_node``：update_vector + 嵌入审计 +
+    清 ``vector_stale``），FTS / TDB 全文索引由 ``update_content`` 同步。目标的
+    type / domain / importance / status 等其余字段原样保留——merge 不做任何
+    语义改写、不标 outdated、不建边，只把「这版内容也属于这条记忆」落成正文。
+
+    机械护栏（不做语义判断，只挡调用方笔误）：
+      - ``dedupe_target`` 必须存在；
+      - 目标 type 必须与本次 type 一致（跨 type 合并几乎必是调用方笔误，硬拒）。
+    domain 不设护栏：general 互通是既有口径，跨域合并由调用方自己确认。
+    """
+    target = store.get_node(int(target_id))
+    if not target:
+        return _to_json({"stored": False, "error": f"dedupe=merge：dedupe_target 不存在（id={target_id}）"})
+    target_payload = target.get("payload", {}) or {}
+    target_type = target_payload.get("type")
+    if target_type != node_data.get("type"):
+        return _to_json(
+            {
+                "stored": False,
+                "error": (
+                    f"dedupe=merge：目标节点 type={target_type!r} 与本次 type={node_data.get('type')!r} "
+                    "不一致，拒绝跨 type 合并（确认目标无误后重试）"
+                ),
+            }
+        )
+    old_content = str(target_payload.get("content") or "")
+    new_content = str(node_data.get("content") or "")
+    merged_content = new_content if not old_content.strip() else old_content + "\n\n" + new_content
+    # update_content：改 content + 同步 FTS/TDB（失败仅告警）+ 标 vector_stale；
+    # reembed_node：按合并全文重算向量 + 沉淀嵌入审计 + 清 vector_stale。
+    store.update_content(int(target_id), merged_content)
+    store.reembed_node(int(target_id))
+    record_ingest(
+        int(target_id),
+        node_data.get("type", ""),
+        node_domain(target_payload),
+        related_count=0,
+        replaced_count=0,
+        outdated_count=0,
+        dedupe="merge",
+    )
+    payload = {
+        "stored": True,
+        "node_id": int(target_id),
+        "merged": True,
+    }
+    # 与 allow 档同口径：撞到高相似才带候选键，无命中时返回形状保持干净
+    if duplicate_candidates:
+        payload["duplicate_candidates"] = duplicate_candidates
+    if policy_warnings:
+        payload["policy_warnings"] = policy_warnings
+    return _to_json(payload)
+
+
 def _build_ingest_result(
     node_id,
     domain_out: str,
@@ -257,6 +321,7 @@ def _build_ingest_result(
     linked_kb_ids: list[int],
     secret_hint: list,
     policy_warnings: list | None = None,
+    duplicate_candidates: list[dict] | None = None,
 ) -> str:
     """组装 mem_ingest 的返回 JSON（含 outdated 修订链提示 + 策略告警）。"""
     outdated_ids = conflict["outdated_ids"]
@@ -282,6 +347,10 @@ def _build_ingest_result(
     # 仅在有告警时加字段，避免污染既有严格断言
     if all_warnings:
         payload["policy_warnings"] = all_warnings
+    # issue #280：未声明 replaces 且撞到高相似（> DEDUPE_REJECT_THRESHOLD）时
+    # 附带去重候选（id + score + 可读片段）；无命中时不加键，返回形状与旧行为一致。
+    if duplicate_candidates:
+        payload["duplicate_candidates"] = duplicate_candidates
     return _to_json(payload)
 
 
@@ -299,6 +368,8 @@ def mem_ingest(
     sections: dict[str, str] | None = None,
     pending: list[str] | None = None,
     event_time: str = "",
+    dedupe: str = "allow",
+    dedupe_target: int | None = None,
 ) -> str:
     """
     写入新记忆。
@@ -341,6 +412,28 @@ def mem_ingest(
         内容被误吞。
       - 旧「相似度 >0.75 自动取代」行为仅在 ``CONFLICT_AUTO_SUPERSEDE=true`` 时启用
         （默认关闭，过渡兼容开关）。
+
+    机械去重闸门（可选 ``dedupe``，三档；默认 ``allow`` = 旧行为完全不变）：
+    只问「这事你确认过了吗」，**不做语义判断**——是不是同一件事、该怎么处置，
+    仍由调用方决定。判定只对「未声明 ``replaces``」的写入生效：显式声明了
+    ``replaces`` 就视为调用方已确认，闸门不再重复触发（不拒、不合并）。
+
+      - ``allow``（默认）：照常写入；若撞到高相似旧记忆（相似度 > 阈值
+        ``DEDUPE_REJECT_THRESHOLD``，默认 0.85，实测分布选定），返回值附带
+        ``duplicate_candidates: [{id, score, excerpt}]``——只是提示，不影响写入。
+      - ``reject``：命中高相似即**拒写**（``stored:false``），返回 ``duplicate_of``
+        （最相似候选）与 ``duplicate_candidates``，不落库；未命中照常写入。
+        适合「宁可停下问一句」的严口径调用方。
+      - ``merge``：合并进 ``dedupe_target`` 指定的既有节点，**不新建节点**。
+        语义 = 追加正文：目标 content 尾部空行接本次 content，合并后重算向量、
+        同步全文索引；目标其余字段原样保留，不标 outdated、不建边。要求
+        ``dedupe_target`` 显式给出，且与本次 type 一致（跨 type 硬拒）。
+        ``dedupe_target`` 只在 ``merge`` 档有效。
+    未声明 ``replaces`` 且撞到高相似时，三种档的返回值都带 ``duplicate_candidates``
+    （含 ``duplicate_of`` = 最相似候选）。候选查找与冲突检测同门（type 隔离 +
+    domain 隔离，kb_chunk 永不参与），但不做类型白名单——闸门是调用方显式选择
+    的机制，与显式 ``replaces`` 同一原则。
+
     自定义元数据打标（``meta``，可选）：键值均为字符串的字典，写入节点
     payload 的 ``meta`` 子字典（如 ``{"chat_id": "..."}``），供外部宿主按
     「域名 + meta 键值」精确定位并批量删除（REST ``/mem/purge-by-meta``）。
@@ -387,6 +480,14 @@ def mem_ingest(
     if not policy_res["ok"]:
         return _to_json({"stored": False, "node_id": None, "error": policy_res["error"]})
     policy_warnings: list[str] = list(policy_res["warnings"])
+    # ---- 机械去重闸门（issue #280）：参数先校验，非法组合不烧 embedding ----
+    dedupe_mode = (dedupe or "allow").strip().lower()
+    if dedupe_mode not in ("allow", "reject", "merge"):
+        return _to_json({"stored": False, "error": f"dedupe 参数非法: {dedupe!r}（可选 allow / reject / merge）"})
+    if dedupe_target is not None and dedupe_mode != "merge":
+        return _to_json({"stored": False, "error": 'dedupe_target 仅在 dedupe="merge" 档有效'})
+    if dedupe_mode == "merge" and dedupe_target is None:
+        return _to_json({"stored": False, "error": 'dedupe="merge" 需要显式给 dedupe_target（要合并进的旧节点 id）'})
     # issue #232：写入路径的向量同根生成，但要把嵌入审计一起拿到——
     # 沉淀进 payload["embedding"]，长文本不再静默只嵌前缀而不留痕。
     emb, embed_audit = store.embed_text_with_audit(content)
@@ -479,6 +580,40 @@ def mem_ingest(
     # 非事实类型（kb_chunk / record 等）自动跳过，见 core.bitemporal。
     stamp_new_fact(node_data, now)
 
+    # ---- 机械去重闸门（issue #280）：候选只找不判，语义仍归调用方 ----
+    # 显式 replaces 优先于 dedupe：声明了取代 = 调用方已确认，闸门不重复触发
+    # （不拒、不合并、不计算候选，返回形状与旧路径逐字节一致）。
+    duplicate_candidates: list[dict] = []
+    if not replace_ids:
+        duplicate_candidates = find_duplicate_candidates(store, emb, node_data, Config.DEDUPE_REJECT_THRESHOLD)
+        if dedupe_mode == "reject" and duplicate_candidates:
+            # 命中即拒写：不落库，回报最相似候选 + 全部候选，观测记 dedupe=reject
+            record_ingest(
+                None,
+                node_data["type"],
+                node_domain(node_data),
+                related_count=0,
+                replaced_count=0,
+                outdated_count=0,
+                dedupe="reject",
+            )
+            return _to_json(
+                {
+                    "stored": False,
+                    "error": (
+                        "dedupe=reject：命中高相似记忆，已拒绝写入"
+                        "（确认取代用 replaces / 合并用 dedupe=merge / 照写用 dedupe=allow）"
+                    ),
+                    "duplicate_of": duplicate_candidates[0],
+                    "duplicate_candidates": duplicate_candidates,
+                }
+            )
+        if dedupe_mode == "merge":
+            # merge 档：目标由调用方显式指定（dedupe_target），不看阈值、
+            # 不再判相似——机械层只负责把内容并进指定节点，语义已由调用方拍板
+            assert dedupe_target is not None  # 入口校验已保证：merge 档必须显式给目标
+            return _merge_dedupe_target(store, dedupe_target, node_data, duplicate_candidates, policy_warnings)
+
     # ---- 事务化写入链路（2026-08-29 止血加事务）----
     # 「insert（含 created_at）+ resolve_conflict 标脏」整体包进单事务，任一步
     # 抛异常 → 自动 rollback → 不留半状态；连接管理细节见 _insert_with_conflict。
@@ -512,7 +647,9 @@ def mem_ingest(
             logger.error("写入失败后健康探测不通过：%s", health.get("error"))
         return _to_json(payload)
 
-    result = _build_ingest_result(node_id, domain_out, conflict, linked_kb_ids, secret_hint, policy_warnings)
+    result = _build_ingest_result(
+        node_id, domain_out, conflict, linked_kb_ids, secret_hint, policy_warnings, duplicate_candidates
+    )
 
     # 写入判定观测（write_judgment，core/judgment_metrics.py）：仅成功路径记录；
     # 函数内部静默降级，观测写失败绝不影响本返回值。
