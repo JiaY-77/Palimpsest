@@ -335,7 +335,20 @@ def node_domain(payload: dict) -> str:
 
 # 检索候选层要剔除的状态：被新版取代（outdated）与显式退役（archived）。
 # 两者都不该占用候选名额——outdated 是「事实被更新」，archived 是「按策略停用」。
+# 唯一口径：所有「候选该不该出现」的判断都走 is_inactive_status，不要在别处再手写
+# 状态字面量（#294 修了主向量路，chunk 路漏掉了 archived，退役节点因此回流 —— #312）。
 _INACTIVE_SEARCH_STATUSES = ("outdated", "archived")
+
+
+def is_inactive_status(payload: dict[str, Any] | None) -> bool:
+    """payload 的 status 是否属于「不该出现在检索候选里」的状态。
+
+    ``outdated``（被新版取代）与 ``archived``（显式退役）为 True；缺省 status 或
+    其他任何取值为 False（老节点没有 status 字段，一律视为 active 保留）。
+
+    供多路候选合并处复用（主向量路 / chunk 补候选 / 后置统一过滤），保证口径一致。
+    """
+    return ((payload or {}).get("status") or "active") in _INACTIVE_SEARCH_STATUSES
 
 
 def _drop_outdated_candidates(scored: list[tuple[float, dict]]) -> list[tuple[float, dict]]:
@@ -345,11 +358,7 @@ def _drop_outdated_candidates(scored: list[tuple[float, dict]]) -> list[tuple[fl
     archived 是显式退役（策略性停用的历史节点），同样不该再出现在检索结果里。
     缺省 status（老节点）视为 active 保留。
     """
-    return [
-        (s, n)
-        for s, n in scored
-        if ((n.get("payload", {}) or {}).get("status") or "active") not in _INACTIVE_SEARCH_STATUSES
-    ]
+    return [(s, n) for s, n in scored if not is_inactive_status(n.get("payload", {}) or {})]
 
 
 def _rerank_by_decay(scored: list[tuple[float, dict]]) -> list[tuple[float, dict]]:
@@ -1033,7 +1042,7 @@ class TriviumStore:
             kb_chunk（知识不老化）:
               final = score + ε × KB_SOFT_RERANK_MULT
 
-        候选阶段已排除 status="outdated" 的节点（新版取代旧版的过期记忆）。
+        候选阶段已排除 status 为 outdated / archived 的节点（前者被新版取代、后者显式退役）。
 
         对话残渣降权（issue #278）：
           - include_digest（默认 False）：digest 类节点（core.digest.is_digest_payload

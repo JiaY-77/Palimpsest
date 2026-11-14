@@ -29,7 +29,13 @@ from core.search import is_exact_identifier_query
 from core.secret_scan import SecretScanError
 from core.strategy import THOUGHT_TYPE, decide_import, detect_thought_origin, normalize_skeleton_kind
 from core.task_state import HANDOFF_KIND, _handoff_title, _is_handoff, _iso_from_epoch
-from core.trivium_store import EmbeddingInputTooLongError, EmbeddingUnavailableError, domain_in_block, node_domain
+from core.trivium_store import (
+    EmbeddingInputTooLongError,
+    EmbeddingUnavailableError,
+    domain_in_block,
+    is_inactive_status,
+    node_domain,
+)
 from core.utils import _to_float
 from mcp_tools._common import _excerpt, _shorten, _to_json, mcp, store
 from mcp_tools.graph import _collect_neighbors
@@ -1196,13 +1202,16 @@ def _mem_search_impl(
         payload = r.get("payload", {}) or {}
         ptype = payload.get("type", "")
         is_kb = ptype == "kb_chunk"
-        # v4.0 outdated 语义：默认跳过被取代的旧版本（不区分类型；kb_chunk 若被标
-        # outdated 同样过滤），显式 include_outdated=True 时保留（历史可追溯）。
+        # v4.0 outdated 语义 + v6.x archived 语义：默认跳过不该出现的状态（不区分类型；
+        # kb_chunk 若被标同状态同样过滤），显式 include_outdated=True 时保留（历史可追溯）。
+        # 口径统一走 core.trivium_store.is_inactive_status（outdated + archived）——
+        # 此处是多路候选（主向量 / chunk 补候选）合并后的唯一收口，别再手写状态字面量：
+        # #312 就是 chunk 路继承了这个只认 outdated 的旧判断，退役节点从 chunk 路回流。
         # bi-temporal as_of 历史视图：as_of 非空时以「时间窗」为准决定去留——
         # 当时为真的节点应返回，哪怕它现在 status=outdated（这正是一期
         # 「按时间点回看」的价值）。故 as_of 模式下跳过基于当前 status 的过滤。
         if as_of is None:
-            if not include_outdated and payload.get("status") == "outdated":
+            if not include_outdated and is_inactive_status(payload):
                 continue
         elif not is_valid_at(payload, as_of):
             continue

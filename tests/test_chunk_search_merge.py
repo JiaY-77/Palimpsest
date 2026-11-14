@@ -151,6 +151,29 @@ def test_chunk_only_hit_injected_and_filtered(monkeypatch):
     assert nid not in [it["id"] for it in hits["results"]]
 
 
+@pytest.mark.parametrize("status", ["outdated", "archived"])
+def test_chunk_only_hit_dropped_for_every_inactive_status(monkeypatch, status):
+    """#312：chunk 路补候选必须与主向量路同口径，outdated 与 archived 都不得回流。
+
+    回归背景：``_drop_outdated_candidates``（主向量路）剔 outdated + archived，
+    而多路合并后的收口只判 ``status == "outdated"`` ——于是 archived 节点（按策略
+    退役的历史节点，典型是长文思维底片）只从 chunk 路回流，实测占 top-10 的 41%。
+    """
+    r = _ingest()
+    nid = r["node_id"]
+    monkeypatch.setattr(memory_tool.store, "search_similar", lambda *a, **k: [])
+
+    ok = memory_tool._mem_search_impl("接续点 会话接续 新聊天先读", top_k=5)
+    assert nid in [it["id"] for it in ok["results"]], "前置：该节点确实只能由 chunk 路召回"
+
+    node = memory_tool.store.get_node(nid)
+    assert node is not None
+    memory_tool.store.update_payload(nid, {**node["payload"], "status": status})
+
+    hits = memory_tool._mem_search_impl("接续点 会话接续 新聊天先读", top_k=5)
+    assert nid not in [it["id"] for it in hits["results"]], f"{status} 节点不得经 chunk 路回流"
+
+
 # ---------- 4. node_score = max(主向量分, chunk cos × 权重) ----------
 
 

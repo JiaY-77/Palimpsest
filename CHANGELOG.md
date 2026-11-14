@@ -22,6 +22,8 @@
 
 ### 修复
 
+- **chunk 路候选绕过 status 过滤：已退役节点经 chunk 通道回流**（#312）：`#293/#294` 只把 `outdated` / `archived` 从**主向量候选层**剔除，而 chunk 级向量召回（`#295`，晚一天上线）补候选之后的那层多路收口仍只判 `status == "outdated"`——`archived` 节点因此能且只能从 chunk 路回流：实测 8 条查询的 top-10 里 33/80 = **41.2%** 是已退役节点（全部 `type=thought` 长文思维底片，chunk 多、`max chunk cos` 天然高），`status=archived` 在这条路上形同虚设，也是「对话残渣仍霸榜」投诉在 `#278` 之后依然成立的直接原因之一。现在状态口径收敛为 `core.trivium_store.is_inactive_status`（`outdated` + `archived`）**唯一实现**：主向量候选层、chunk 补候选后的统一收口都只调它，不再在别处手写状态字面量；`include_outdated=true` 与 `as_of` 历史视图行为不变。补回归测试钉住两种状态经 chunk 路都不得回流（旧测试只覆盖 `outdated`，正是这个缺口的镜像）。
+
 - **整文件组冷备份把数据目录全部 `*.db` 侧车库一并带走**（#301）：`scripts/backup_db.py` 原先只认主库后缀清单与单独点名的 `fts.db`，#295 引入的 `node_chunks.db`（chunk 级向量索引的独立 SQLite）被结构性漏掉——用旧备份恢复后 chunk 表静默为空、长文档语义检索悄悄退化。现在备份组改为「主库组 + 数据目录下全部 `*.db` 及其 `-wal` / `-shm` 侧车（存在才拷）」，按目录收集而非硬编码文件名，未来新增侧车库自动覆盖；`node_chunks.db` 存在时回读报告 chunk 行数与被覆盖 node 数，不存在（老库未建立）时跳过说明。`doctor` 新增「备份组侧车库覆盖」检查：最近一份备份缺数据目录 `*.db` 时标红，并给出用当前版本脚本重做整组备份的修复命令。
 
 - **PUT/PATCH 响应对索引同步失败零信号：静默吞掉**（#296）：`sync_node` 内部自己就把 FTS/TDB 写失败吞成一行 `warning`，而 `_sync_fts_after_update` 此前把该返回值直接丢掉——两层都不断链，FTS/TDB 写入一旦失败（典型如 fts.db 被其他进程的读连接瞬间占锁），主更新照常 200、响应无任何信号、也没有补同步机制，索引行会停在旧正文、直到下一次覆盖该节点的同步成功才恢复——独立的工程弱点（失败不可见、不自愈），任何一次索引写失败都会中招。现在：同步结果（FTS / TDB 双通道，TDB 关闭时按门控豁免不计失败）聚合返回，PUT/PATCH 响应新增 `fts_synced` 字段，失败时附 `warning` 与 rebuild 补救提示——一次索引失败依旧绝不阻塞主写路径，但**不再静默**。修复覆盖普通节点、`type=task`（`apply_task_patch`）与 PATCH 三条路径。`/doctor` 的「FTS 索引完整性」行数阈值判定不在本条范围（该检查只对账行数、不比对内容，内容级对账已在 `check_fts_consistency`）。
