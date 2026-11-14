@@ -7,10 +7,9 @@
 覆盖：
   1. POST /lifecycle/pre-turn      简单输入跳过；命中则返回可注入文本 + 决策日志
   2. POST /lifecycle/post-turn     强信号才写；写 logs 层；无聊文本不写
-  3. POST /lifecycle/session-end   要点写 facts 层；近似重复跳过
-  4. POST /lifecycle/pre-compress  只回文本、不写库
-  5. 一次完整多轮会话的最终分层契约（混合 turn 批量走一遍）
-  6. POST /lifecycle/context-enhance 挑主题、进程内查图谱、组装注入文本；不写库
+  3. POST /lifecycle/pre-compress  只回文本、不写库
+  4. 一次完整多轮会话的最终分层契约（混合 turn 批量走一遍）
+  5. POST /lifecycle/context-enhance 挑主题、进程内查图谱、组装注入文本；不写库
 
 隔离保证：conftest 已把 DB_PATH 指向临时库 + fake embedder，不触碰正式库。
 """
@@ -140,62 +139,7 @@ def test_post_turn_operational_tool_output_not_ingested(db_path):
     assert r.json()["store"] is False
 
 
-# ---------------------------------------------------------------------------
-# 3. session-end
-# ---------------------------------------------------------------------------
-
-
-def test_session_end_writes_facts_tier(db_path, monkeypatch):
-    # #278 起要点路径默认停用（SESSION_MEMORY_INGEST 默认 0）；本测试覆盖的是
-    # 要点路径自身行为，显式开启（回退模式，默认关闭行为由
-    # test_session_memory_switch_off_skips_legacy_path_only / test_digest_demotion 钉）。
-    from config import Config
-
-    monkeypatch.setattr(Config, "SESSION_MEMORY_INGEST", True)
-    client = _client()
-    msgs = [
-        {"role": "user", "content": "记住这个偏好：报告用极简风"},
-        {"role": "user", "content": "不对，标题要左对齐"},
-    ]
-    r = client.post("/lifecycle/session-end", json={"messages": msgs})
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["store"] is True
-    assert body["stored"] is True
-    assert body["tier_distribution"] == {"facts": 1}
-    got = client.get(f"/memory/{body['node_id']}").json()
-    assert got["payload"]["type"] == "memory"  # facts 层
-
-
-def test_session_end_near_duplicate_is_skipped(db_path, monkeypatch):
-    from config import Config
-
-    monkeypatch.setattr(Config, "SESSION_MEMORY_INGEST", True)  # 要点路径回退模式（#278 起默认关）
-    from mcp_tools import store
-
-    content = "会话要点（Palimpsest 策略引擎提炼）：\n[user] 记住：项目代号凤凰"
-    emb = store.embed_text(content)
-    store.insert_node(
-        {"type": "memory", "content": content, "importance": 0.55, "domain": "hermes"},
-        emb,
-    )
-    # 同一段消息再走一次 → 触发近似重复跳过
-    client = _client()
-    msgs = [{"role": "user", "content": "记住：项目代号凤凰"}]
-    r = client.post("/lifecycle/session-end", json={"messages": msgs})
-    body = r.json()
-    assert body["store"] is False
-    assert body.get("skip_reason") == "near_duplicate"
-
-
-def test_session_end_no_points_writes_nothing(db_path):
-    client = _client()
-    r = client.post("/lifecycle/session-end", json={"messages": [{"role": "user", "content": "今天天气不错"}]})
-    assert r.json()["store"] is False
-
-
-# ---------------------------------------------------------------------------
-# 4. pre-compress
+# 3. pre-compress
 # ---------------------------------------------------------------------------
 
 
@@ -212,15 +156,12 @@ def test_pre_compress_returns_text_without_writing(db_path):
 
 
 # ---------------------------------------------------------------------------
-# 5. 契约：一次完整多轮会话（10 条模拟 turn）不崩、分层正确
+# 4. 契约：一次完整多轮会话（10 条模拟 turn）不崩、分层正确
 # ---------------------------------------------------------------------------
 
 
-def test_full_session_cycle_layering(db_path, monkeypatch):
+def test_full_session_cycle_layering(db_path):
     """喂一批混合 turn，断言只有该写的写了，且分层各自正确。"""
-    from config import Config
-
-    monkeypatch.setattr(Config, "SESSION_MEMORY_INGEST", True)  # 要点路径回退模式（#278 起默认关）
     client = _client()
     pre_turn = client.post("/lifecycle/pre-turn", json={"user_message": "回忆一下项目代号", "domain": "hermes"})
     assert pre_turn.status_code == 200
@@ -246,15 +187,6 @@ def test_full_session_cycle_layering(db_path, monkeypatch):
             assert body["tier_distribution"] == {"logs": 1}
 
     assert stored == 3, f"expected 3 logs-tier writes, got {stored}"
-
-    # 会话结束 → facts 层一条
-    end = client.post(
-        "/lifecycle/session-end",
-        json={"session_id": "s1", "messages": [{"role": "user", "content": "记住：周报用极简风模板"}]},
-    )
-    ebody = end.json()
-    assert ebody["store"] is True
-    assert ebody["tier_distribution"] == {"facts": 1}
 
 
 # ---------------------------------------------------------------------------

@@ -36,7 +36,6 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8090
 | `PATCH` | `/memory/{id}` | 部分更新节点 payload（与 PUT 同合并语义，REST 语义更精确；响应字段与 PUT 完全一致，含 `fts_synced` / `warning`） |
 | `PATCH` | `/memory/{id}/vector` | 更新节点的向量（维度需一致） |
 | `POST` | `/memory/{id}/reembed` | 按当前 content 重算并写回向量（改 content 后语义漂移的补救入口，服务端自己生成向量） |
-| `POST` | `/memory/{id}/open` | 记录胶囊被会话接手（body：`session_id` 可空串=未知会话；首次写 `opened_at`、每个新会话 `open_count` +1、`opened_by` 去重按首次顺序上限 10；同 `session_id` 重复调用幂等不重复计数；不改 content / `last_touched_at`——检索命中计数 `hit_count` 与「被接手」是两回事） |
 | `POST` | `/mem/search` | 统一检索（每项返回 150 字 `summary` + 逐字 `excerpt`：`summary` 是硬截断**不是摘要**，不得据此断言事实完整，`excerpt` ≤ `SEARCH_EXCERPT_CHARS`；要全文用 `GET /memory/{id}`） |
 | `POST` | `/skill/search` | 技能语义检索 |
 | `POST` | `/mem/hybrid-search` | FTS5 + 向量混合检索（返回字段与边界口径同 `/mem/search`：`summary` 是硬截断非摘要，全文用 `GET /memory/{id}`） |
@@ -50,15 +49,13 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8090
 | `DELETE` | `/mem/edge` | 删除图边（body：`source_id` / `target_id` / `relation`；幂等） |
 | `POST` | `/mem/fact-history` | 单条事实的 bi-temporal 时间线与取代关系（body：`node_id`） |
 | `POST` | `/mem/recent` | 最近记忆列表（按 created_at 倒序） |
-| `GET` | `/tasks/active` | 活跃任务列表（query：`project` / `states` / `limit` / `include_handoff`（列出会话接续点，默认 false——接续点由写入层自动打 `kind=handoff`，显式列出时不受状态过滤，`task_state` 为空也能取回；补产胶囊 `payload.recovered=true` 不进接续点置顶组，排在普通任务组里照常可见）；按状态优先级 → 最近触碰倒序） |
+| `GET` | `/tasks/active` | 活跃任务列表（query：`project` / `states` / `limit` / `fresh_days`；按状态优先级 → 最近触碰倒序） |
 | `POST` | `/mem/stats` | 库级盘点统计 |
 | `POST` | `/graph/neighbors` | 某节点的图谱邻居 |
 | `POST` | `/graph/communities` | Leiden 社区发现 |
 | `POST` | `/lifecycle/pre-turn` | **记忆策略 + 思考骨架**：每轮模型调用前决定召回哪些记忆，返回可注入 prompt 的文本（trivial/过短自动跳过）+ 按情境动态挑的思考骨架（`thought_skeleton`；闲聊/过短不给，宿主可关） |
 | `POST` | `/lifecycle/post-turn` | **记忆策略 + 思考记录**：每轮回复后决定是否沉淀、写什么内容、写哪一层（logs/facts）；并从 `assistant_message` 抽取 `<thought>...</thought>` 段写 `type="thought"`（tier=logs，不命中不落库但响应可观测；落库 content 带 `[思维底片]` 前缀，与前缀约定一致） |
-| `POST` | `/lifecycle/session-end` | **记忆策略**：会话结束提炼要点、去重、写入 facts 层 |
 | `POST` | `/lifecycle/pre-compress` | **记忆策略**：压缩前抽取要点（只回文本，不写库） |
-| `POST` | `/lifecycle/recover-orphan-capsules` | **断线自愈**：扫描静默超过 `SESSION_CAPSULE_RECOVER_AFTER_SECONDS` 的活跃会话缓冲（`type=session` / `status=active`），按 session 补产成 `type=task` + `kind=handoff` 胶囊（进程被硬砍、session-end 没跑时的兜底）；`dry_run=true` 只报告不写库。单 session 失败只记 warning 并计入 `failed`，不中断整批 |
 | `POST` | `/lifecycle/context-enhance` | **记忆策略**：压缩前挑主题、查图谱关键链、组装注入文本（只回文本，不写库） |
 | `POST` | `/mem/consolidate` | 容量合并（请求体可选 `apply`（默认 false=只读 dry-run 预览；true 才执行合并）、`threshold`（默认 0.85）、`max_importance`（默认 0.8）） |
 | `POST` | `/mem/promote` | 高频记忆自动升级（请求体可选 `apply`（默认 false=dry-run 预览；true 才升权打标）、`days`（默认 30）、`min_hits`（默认 5）） |

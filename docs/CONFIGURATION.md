@@ -85,13 +85,8 @@
 | `RERANK_MODEL` | *（空 = 用 `DEEPSEEK_MODEL`）* | 重排用的模型标识（`llm` 后端专用）；空则复用对话模型 | `RERANK_ENABLED=1` 时 |
 | `RETRIEVAL_EXPAND_DEPTH` | `0` | 语义主序的图扩散深度：`0` = 纯语义排序（默认）；`1` = 图邻居参与语义主序（可一键回退） | 检索启用图扩散时 |
 | `TIER_FACTS` | `memory,correction,decision,plan,task,review,solution,inspiration,user_intent,character_state` | 归入事实层的记忆 type（逗号分隔）；未登记的 type 一律归事实层 | 检索与注入按 tier 过滤时 |
-| `TIER_LOGS` | `record,event,git_commit,thought,session` | 归入日志层的记忆 type（逗号分隔），默认不进检索与注入池（`session` = 会话缓冲节点：post-turn 累进各轮编号思考，session-end 合并成 `kind=handoff` 胶囊后标 `closed`，过程簿记语义同 `thought`） | 检索与注入按 tier 过滤时 |
+| `TIER_LOGS` | `record,event,git_commit,thought` | 归入日志层的记忆 type（逗号分隔），默认不进检索与注入池 | 检索与注入按 tier 过滤时 |
 | `DEFAULT_TIER` | *（空 = 不过滤；2.21 起默认，#266）* | **检索**的默认分层：空串 = 不过滤（全量），`facts` 只回事实层（设 `facts` 可一键回退 2.20 行为——facts 默认曾把 27% 判卷题的日志层 gold 挡在候选外），`logs` 只回日志层。prefetch 自动注入不受此键影响（用 `PALIMPSEST_PREFETCH_TIER` 单独控制，默认 facts） | 未显式指定 `tier` 时 |
-| `SESSION_MEMORY_INGEST` | `0` | lifecycle session-end 旧「会话要点」路径开关（`type=memory` / facts 层）。**#278 起默认 `0`**：要点是每次会话固定写入的对话残渣，默认停用，session-end 只走会话胶囊路径（`type=task` + `kind=handoff`，不受本开关影响），要点路径跳过可观测（`skip_reason=session_memory_disabled`）；`1` = 回退旧行为（要点照旧写入，且带 `meta.origin=session_digest` 打标，默认不出现在检索候选——见 docs/USAGE.md §2.3.1 对话残渣降权） | `/lifecycle/session-end` |
-| `SESSION_BUFFER_MIN_THOUGHT_CHARS` | `400` | **已废弃**（2026-10-28，#188）：实质轮判据不再看正文长度，改成「胶囊四问任填一格即进缓冲」。常量为签名兼容保留，下个大版本连同 `is_substantive_turn(min_thought_chars=...)` 一起删。当前仍生效的两条判据：①`<thought>` 解析出的 `sections` 任一非空；②用户消息含指令动词（指令 ≠ 问句）。工具调用判据已删（#194，宿主恒不填） | `/lifecycle/post-turn` |
-| `SESSION_CAPSULE_RECOVER_ENABLED` | `1` | 会话胶囊断线自愈总开关：`1` = 服务启动后（延迟 5 秒）与每 `INTERVAL` 秒扫描一次；`0` = 后台循环不启动，`POST /lifecycle/recover-orphan-capsules` 手动端点仍可用 | `/lifecycle/post-turn`（缓冲写入）/ 服务启动 |
-| `SESSION_CAPSULE_RECOVER_AFTER_SECONDS` | `1800` | **孤儿判定阈值**（秒）：缓冲的 `updated_at`（缺时间戳的老数据回退 `started_at`）距今 ≥ 此值才判为断线孤儿并补产成胶囊。30 分钟刻意保守——正聊着的会话轮间隔远小于它，不误伤；即使误判也**不丢轮次**（session-end 合并全部缓冲，胶囊节点 id 不变，只是中间多一条半截产物）。胶囊 payload 会打 `recovered=true` + `recovered_at` 留痕 | 后台循环 / `POST /lifecycle/recover-orphan-capsules` |
-| `SESSION_CAPSULE_RECOVER_INTERVAL_SECONDS` | `300` | 后台扫描间隔（秒） | `SESSION_CAPSULE_RECOVER_ENABLED=1` 时 |
 | `MEM_INGEST_MAX_LENGTH` | `50000` | 单条记忆 content 最大字符数，超长拒绝写入 | `mem_ingest` 写入时 |
 | `MEM_SEARCH_MAX_QUERY_CHARS` | `8000` | 检索 query 最大字符数，超长在检索入口直接拒绝（REST 422 / pre-turn fail-open 并标 `skip_reason="query_too_long"`），不再打到 embedding 模型侧报「exceeds the context length」 | `/mem/search`、`/mem/hybrid-search`、`/lifecycle/pre-turn` |
 | `SEARCH_EXCERPT_CHARS` | `400` | 检索结果逐字 `excerpt` 的目标长度：无摘要生成，只选截断点——优先落句边界（。！？.? / 换行），无句读退化为词边界（空格/逗号），仍无硬截断；150 字 `summary` 语义不变（硬截断，不是摘要，不得据此断言事实完整），要全文用 `mem_get_full`。prefetch / pre-turn 注入路径仍只用 `summary`（防 prompt 膨胀） | `/mem/search`、`/mem/hybrid-search`、`/mem/retrieve`（MCP `mem_retrieve`） |

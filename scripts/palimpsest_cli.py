@@ -266,12 +266,8 @@ def cmd_recent(args):
 
 def cmd_tasks_active(args):
     """活跃任务列表（只读）：走 REST ``GET /tasks/active``，不在本进程开库。"""
-    include = "true" if getattr(args, "include_handoff", False) else "false"
     fresh = int(getattr(args, "fresh_days", 30))
-    params = (
-        f"?project={quote(args.project)}&states={quote(args.states)}&limit={int(args.limit)}"
-        f"&include_handoff={include}&fresh_days={fresh}"
-    )
+    params = f"?project={quote(args.project)}&states={quote(args.states)}&limit={int(args.limit)}&fresh_days={fresh}"
     print(_rest_call("GET", f"/tasks/active{params}"))
 
 
@@ -587,11 +583,6 @@ def build_parser() -> argparse.ArgumentParser:
     tp.add_argument("--project", default="", help="只列该项目（payload.project）的任务")
     tp.add_argument("--states", default="todo,doing,blocked", help="逗号分隔的状态集")
     tp.add_argument("--limit", type=int, default=15, help="返回条数上限（total 仍为过滤后总数）")
-    tp.add_argument(
-        "--include-handoff",
-        action="store_true",
-        help="同时列出会话接续点（kind=handoff 的跨会话交接记录，默认排除）",
-    )
     tp.add_argument(
         "--fresh-days",
         type=int,

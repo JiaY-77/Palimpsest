@@ -15,18 +15,16 @@ Palimpsest 的**记忆智能**住在这一层：判断「什么值得记、记�
   文本/要写入的内容），但**不自己发 HTTP、不开库**。存储访问由调用方（main.py 的
   端点）通过既有的 mcp_tools 函数完成。
 
-三个决策入口（对应 lifecycle 协议的三端点）
+两个决策入口（对应 lifecycle 协议的两端点）
 -------------------------------------------
 - :func:`decide_pre_turn`   —— 要不要召回、召回哪些、怎么排序（给 pre-turn）
 - :func:`decide_post_turn`  —— 这轮要不要沉淀、写什么内容、写哪层（给 post-turn）
-- :func:`decide_session_end`—— 会话要点提炼 + 分层（给 session-end）
 
 分层归属（tier semantics）
 --------------------------
 - ``logs`` 层：逐轮抓到的**用户原话片段**（未加工），来自 post-turn 的强信号命中。
-- ``facts`` 层：**提炼后的结论**（多轮压缩成要点），来自 session-end。
-  这与「facts 是事实层、logs 是日志层」的既有约定一致，也修了历史 bug：会话要点
-  曾误写 logs 层，导致 prefetch 默认 tier=facts 时「只写不读」而静默失效。
+- ``facts`` 层：**提炼后的结论**，来自人工写入与显式升格
+  （logs 层的过程记录经验证后可升 facts，不自动提炼）。
 """
 
 from __future__ import annotations
@@ -41,7 +39,7 @@ from core.secret_scan import scan_secret_classified
 # 常量与规则（原 hermes-plugin/__init__.py L42-L59 下沉而来，语义不变）
 # ---------------------------------------------------------------------------
 
-# 强信号：命中即触发会话要点提炼（session-end）/ 压缩前抽取。
+# 强信号：命中即触发压缩前抽取（pre-compress 的要点候选）。
 # 保守锚定中文语料：纠正、偏好、决策、规则、启动类动词。
 # 注意：此正则偏「宽」——它的产出是「会话要点」（人工可读的提炼），不是逐条自动
 # 落库的事实，所以容忍一定噪音。post-turn 的自动落库另用 _EXPLICIT_INSTRUCTION_RE，
@@ -67,8 +65,6 @@ _EXPLICIT_INSTRUCTION_RE = re.compile(
 # 纠正类词：命中则 importance 抬到 0.7（原插件 sync_turn 的 0.7/0.6 分档）。
 _CORRECTION_WORDS = ("不对", "不是这样", "错了", "纠正", "更正")
 
-# 会话要点（facts 层）的 importance。
-_SESSION_FACTS_IMPORTANCE = 0.55
 
 # 近似重复阈值：/mem/search top-1 与它的语义匹配分比较，≥ 视为已存在。
 # fail-open：HTTP 错误 / 空结果 / 缺 score 一律视为「不重复」。
@@ -83,8 +79,6 @@ PRE_TURN_TOP_K = 5
 PRE_TURN_MIN_SCORE = 0.0  # 原插件 _min_score 默认；0 = 不额外过滤
 PRE_TURN_MIN_LEN = 4
 POST_TURN_TRUNCATE = 300
-SESSION_END_LIMIT = 8
-SESSION_END_PER_MSG_CHARS = 150
 PRE_COMPRESS_LIMIT = 10
 PRE_COMPRESS_PER_MSG_CHARS = 200
 
@@ -221,7 +215,7 @@ def decide_post_turn(user_message: str, *, auto_ingest: bool = True) -> dict[str
 
     命中 ``_EXPLICIT_INSTRUCTION_RE`` 才写（保守，避免低价值轮次污染检索池）。
     分层：写 ``logs`` 层（type="record"）——抓到的是**用户原话片段**，未加工，
-    不是事实；facts 层留给 session-end 的提炼结论与人工写入。
+    不是事实；facts 层留给人工写入与显式升格。
 
     返回::
 
@@ -257,45 +251,6 @@ def decide_post_turn(user_message: str, *, auto_ingest: bool = True) -> dict[str
     }
 
 
-# ---------------------------------------------------------------------------
-# 决策三：session-end（会话要点）
-# ---------------------------------------------------------------------------
-
-
-def decide_session_end(messages: list[dict[str, Any]], *, auto_ingest: bool = True) -> dict[str, Any]:
-    """会话结束：把含强信号的消息提炼成一条要点，写 facts 层。
-
-    分层修正（历史 bug #47）：旧实现写 type="record"（logs 层），而 prefetch
-    默认 tier="facts"，导致会话要点「只写不读」而静默失效。本函数写 type="memory"
-    （facts 层），让提炼结论回到后续上下文。
-
-    返回::
-
-        {
-          "store": bool,
-          "content": str, "type": str, "importance": float, "tier": str,
-          "points": list[str],         # 供调用方做去重判断
-          "decision_log": {...},
-        }
-    """
-    if not auto_ingest:
-        return {"store": False, "points": [], "decision_log": {"reason": "auto_ingest_off"}}
-    points = extract_points(messages, limit=SESSION_END_LIMIT, per_message_chars=SESSION_END_PER_MSG_CHARS)
-    if not points:
-        return {"store": False, "points": [], "decision_log": {"reason": "no_points"}}
-    content = "会话要点（Palimpsest 策略引擎提炼）：\n" + "\n".join(points)
-    return {
-        "store": True,
-        "content": content,
-        "type": "memory",
-        "importance": _SESSION_FACTS_IMPORTANCE,
-        "tier": "facts",
-        "points": points,
-        "decision_log": {"points": len(points), "limit": SESSION_END_LIMIT},
-    }
-
-
-# ---------------------------------------------------------------------------
 # 决策四：pre-compress（压缩前抽取，不写库）
 # ---------------------------------------------------------------------------
 
@@ -595,23 +550,17 @@ _THOUGHT_RESEARCH_RE = re.compile(r"(调研|评估|对比|选型|可行性|证�
 # 模型在骨架行后续写，写出的思考天然带标记 → post-turn 的 extract_thought
 # 可解析（与 decide_thought_store 的正则对称）。
 #
-# 「骨架即胶囊」（2026-10-27）：每一问重写成**会话胶囊的一节**——四个编号答案
-# 由 post-turn 的 parse_thought_sections 按编号映射成结构化字段（见
-# _SKELETON_FIELD_MAP），累进会话缓冲，session-end 合并成一条
-# type=task kind=handoff 胶囊。文案同时保持对「决策四问」的可读性。
-# 统一骨架（2026-10-28 设计定案，issue #188）：**四问固定对应胶囊四节**。
+# 统一骨架（2026-10-28 设计定案，issue #188）：四问固定一套，答案写成编号行，
+# 每轮填一遍就是一条结构化的思考记录（思维底片，见决策七）。
 #
 # 历史包袱：原分 code / research / default 三套骨架，字段名各不相同
 # （change/failure_path/verify/deliverable、question/evidence/counterexample/
-# conclusion、goal/known_unknown/judgement/output），而胶囊四节是
-# thought/outcome/next/pitfalls —— 任何单骨架轮都填不满四节（default 没有
-# change/failure_path，code 没有 judgement/goal），实测全库自动胶囊只有
-# 【思路】有正文、另三节恒为「（待补）」。
+# conclusion、goal/known_unknown/judgement/output），任何单套场景都问不全。
 #
 # 设计意图（主人原话）：「每轮对话……都是顺手的事情，填一次呗」。填写成本
 # 必须极低、且每轮都该填得满，所以不再按场景换字段名。`kind` 保留为**归因
 # 标记**（thought_origin 仍能区分当时判成哪一类），骨架正文三套共用一份。
-_CAPSULE_QUESTIONS: tuple[tuple[str, str], ...] = (
+_SKELETON_QUESTIONS: tuple[tuple[str, str], ...] = (
     ("thought", "这一轮的核心判断 / 思路（一句话）"),
     ("outcome", "做了什么（改了什么 / 查清了什么，带可核验句柄：PR 号 / commit / 路径）"),
     ("next", "下一步 / 待办"),
@@ -620,7 +569,7 @@ _CAPSULE_QUESTIONS: tuple[tuple[str, str], ...] = (
 
 _SKELETON_BODY: str = (
     "<thought>\n"
-    + "".join(f"{idx}. {question}：\n" for idx, (_, question) in enumerate(_CAPSULE_QUESTIONS, 1))
+    + "".join(f"{idx}. {question}：\n" for idx, (_, question) in enumerate(_SKELETON_QUESTIONS, 1))
     + "</thought>"
 )
 
@@ -628,15 +577,6 @@ _THOUGHT_SKELETONS: dict[str, str] = {
     "code": _SKELETON_BODY,
     "research": _SKELETON_BODY,
     "default": _SKELETON_BODY,
-}
-
-# 每类骨架的编号问题 → 胶囊字段名。统一后三套相同；保留 dict 形状是为了
-# `normalize_skeleton_kind` 的历史 kind 仍能解析（老缓冲节点里存着旧字段名的
-# 轮次，compose_session_capsule 另有兼容取值，见该函数）。
-_SKELETON_FIELD_MAP: dict[str, tuple[str, ...]] = {
-    "code": tuple(field for field, _ in _CAPSULE_QUESTIONS),
-    "research": tuple(field for field, _ in _CAPSULE_QUESTIONS),
-    "default": tuple(field for field, _ in _CAPSULE_QUESTIONS),
 }
 
 THOUGHT_SKELETON_MIN_LEN = 4  # 与召回门槛一致：过短输入没有思考可引导，不给骨架
@@ -1012,632 +952,3 @@ def backfill_thought_origin(store, dry_run: bool = True) -> dict:
         "distribution": distribution,
         "changes": [{"id": nid, "thought_origin": origin} for nid, origin in pending],
     }
-
-
-# ---------------------------------------------------------------------------
-# 会话胶囊（「骨架即胶囊」收口）：post-turn 累进缓冲 → session-end 合并成胶囊
-#
-# 骨架问的四个问题本身就是一轮的决策记录，答案不该被扔掉。post-turn 把每轮
-# <thought> 的编号答案解析成结构化字段（parse_thought_sections），经
-# decide_session_buffer 判定后累进该 session 的**缓冲节点**（type="session"，
-# 同一 session_id 只维护一条；落库由执行层 main.py 完成——本模块纯决策不碰
-# 存储）。会话结束时 compose_session_capsule 把缓冲里的 turns 合并成一条
-# type=task + kind=handoff 的「会话胶囊」，由既有交接通道
-# （list_active_tasks(include_handoff=True)）供新会话先读。
-# 全部纯函数：不接库、不接 LLM；解析失败一律返回空、绝不抛异常。
-# ---------------------------------------------------------------------------
-
-# 编号行：前导空白 + 数字 + 分隔符（半角点 / 顿号 / 全角点）+ 同行剩余内容。
-# 数字超出字段映射范围（如 5+）只作边界（该段内容不归属任何字段）。
-_THOUGHT_NUMBERED_LINE_RE = re.compile(r"^\s*(\d+)\s*[.、．]\s*(.*)$")
-
-# 会话缓冲节点（type="session"）的约定字段与档位：过程簿记，logs 层语义
-# （不进 facts 默认注入池，见 config.TIER_LOGS 的 session 登记）。
-SESSION_BUFFER_TYPE = "session"
-SESSION_BUFFER_STATUS_ACTIVE = "active"  # 会话中；session-end 合并后改 closed
-SESSION_BUFFER_STATUS_CLOSED = "closed"
-SESSION_BUFFER_IMPORTANCE = 0.3  # 簿记节点，低于普通过程记录
-SESSION_BUFFER_RAW_MAX_CHARS = 4000  # 缓冲里每轮 thought 原文的截断上限
-
-CAPSULE_THOUGHT_MAX_CHARS = 300  # 胶囊「思路」节总长上限（纯截断，超出部分丢弃）
-CAPSULE_SECTION_TBD = "（待补）"  # 空节占位正文（不猜、不编，如实标待补）
-
-# 胶囊其余三节的总长上限（issue #244）：此前只有 thought 有上限，outcome / next /
-# pitfalls 完全没有，合并路径按行追加更没有总量闸，胶囊正文随会话轮数线性膨胀
-# （生产库最近 600 条实测：正文长度 p95 = 28540 字符）。取值 = 各节生产分布
-# p90 之上留余量（正常胶囊不触发）；最坏情况总长从 28540 收敛到
-# 300 + 1800 + 1200 + 1200 = 4800 字符。
-CAPSULE_SECTION_MAX_CHARS = {
-    "outcome": 1800,
-    "next": 1200,
-    "pitfalls": 1200,
-}
-CAPSULE_TRUNCATE_MARK = "…（本节已截断：省略 {n} 行）"
-
-# 胶囊四节固定顺序（content 节序与 pending 列表都按它）。
-_CAPSULE_SECTION_ORDER = ("thought", "outcome", "next", "pitfalls")
-
-# next 节的「下一步」信号词：句子里带这些字样才算交接需要的事（任务书口径）。
-_CAPSULE_NEXT_MARKERS = ("下一步", "待", "需", "再")
-
-# ---------------------------------------------------------------------------
-# 实质轮筛选（issue #170，胶囊第二刀）：会话缓冲只收「实质轮」
-#
-# 为什么是这三条判据（任一满足即实质轮）：三条分别覆盖「干活动作」「思考
-# 深度」「任务指派」三种实质性的来源，互为兜底——宿主可能拿不到工具信号
-# （老宿主，判据 1 失效），模型可能没照骨架写长思考（判据 2 失效），用户可
-# 能只丢一句话就指望动手（判据 3 失效）。短轮（打招呼 / 确认 / 一句话回复）
-# 三条全不中，被挡在缓冲外，胶囊不再被噪声塞满：
-#
-#   1. ~~该轮有工具调用~~——**已删除**（2026-10-28，issue #194）：宿主侧从不填
-#      ``tool_calls_count``（恒 0），而判据 2 放宽后空 ``sections`` 在更上游就被
-#      ``no_sections`` 挡掉，这条判据根本到不了。字段与代码一起删掉，不留装饰。
-#   2. 填了胶囊格子（``sections`` 任一非空）——统一骨架（issue #188）后四问固定
-#      对应四节，填一格就是一次有效填写。**2026-10-28 放宽**：旧规则是「正文
-#      ≥ ``SESSION_BUFFER_MIN_THOUGHT_CHARS`` 字 且 落在结论字段上」，与
-#      「每轮顺手填一次」的设计意图冲突，这条门槛自身确实挡掉了一批顺手填的
-#      短轮；但「全库缓冲 turns 恒为 1、自动胶囊只产 3 条」的症状不能单归因于
-#      它——那是三个成因叠加（issue #216 同日修全）：宿主恒不传 ``turn_index``
-#      （恒 0 被当同一轮幂等覆盖）、``no_sections`` 整轮丢弃原生思考，再加本
-#      门槛；
-#   3. 用户消息含指令动词（词表见 ``_SUBSTANTIVE_ZH_VERBS`` / 正则）——
-#      「做/改/查/写/跑/验证/修/提/生成/整理/分析/对比」等执行类请求。指令
-#      ≠ 问句：整句是疑问形态（「要怎么改这个配置？」）不影响判定，问句里
-#      带指令动词也算指派了任务。
-#
-# 三条判据的现实分工（2026-10-28 复核）：判据 2 放宽后，「sections 非空」是
-# 缓冲的主要入口；``decide_session_buffer`` 对「连 ``<thought>`` 原文都没有」
-# 的轮更早返回 ``no_sections``（无可缓冲内容），原生思考轮则兜底进 thought 节
-# （issue #216），所以判据 1/3 在 REST 链路里到不了——
-# 它们只剩直接调用 `is_substantive_turn` 时的意义（测试与外部调用方），以及
-# 将来允许「无结构化思考但有工具调用」的轮进缓冲时的扩展位。
-# ---------------------------------------------------------------------------
-
-# **已废弃**（2026-10-28）：判据 2 不再看正文长度。保留常量只是为了让
-# `is_substantive_turn` / `decide_session_buffer` 的签名与 Config 项继续可用，
-# 下个大版本连同 `Config.SESSION_BUFFER_MIN_THOUGHT_CHARS` 一起删除。
-SESSION_BUFFER_MIN_THOUGHT_CHARS = 400
-
-# 判据 3 的指令动词词表（任务书口径，不做同义词扩表）。中文按子串匹配
-# （单字动词无法用词边界），因此**偏宽松**：「我做了个梦」也会命中「做」。
-# 这是有意的取向——判据 3 的作用是补上宿主没有工具信号时的缺口，宁可多收
-# 一条，也不漏掉真正的任务指派；拦寒暄实际靠更上游的骨架注入（trivial 轮
-# 拿不到骨架，模型就不会按编号作答 → sections 空 → no_sections）。英文用词边界正则（``\bdo\b`` 不会误伤 docker / doing /
-# dot）。
-_SUBSTANTIVE_ZH_VERBS: tuple[str, ...] = (
-    "做",
-    "改",
-    "查",
-    "写",
-    "跑",
-    "验证",
-    "修",
-    "提",
-    "生成",
-    "整理",
-    "分析",
-    "对比",
-)
-_SUBSTANTIVE_EN_VERB_RE = re.compile(
-    r"\b(?:do|make|fix|add|check|run|verify|write|build|create|review|analyze)\b",
-    re.IGNORECASE,
-)
-
-
-def _question_stem(question: str) -> str:
-    """取问句主干：第一个括号之前的部分（``做了什么（改了什么 / 查清了什么）`` → ``做了什么``）。"""
-    return re.split(r"[（(]", question, maxsplit=1)[0].strip().rstrip("：: ")
-
-
-def _strip_question_echo(value: str, question: str) -> str:
-    """剥掉答案开头对问句的**回显**（``做了什么：新增…`` → ``新增…``）。
-
-    骨架问句是固定的四句（``_CAPSULE_QUESTIONS``），所以这是**模板匹配**而非猜测：
-    只有行首命中问句主干 + 分隔冒号才剥，其余一律原样返回。少剥只是难看，多剥会
-    吃内容，因此这里刻意保守——括号里的补充说明不参与匹配（填表人通常只回显主干）。
-    """
-    stem = _question_stem(question)
-    if not stem:
-        return value
-    matched = re.match(rf"^\s*{re.escape(stem)}\s*(?:[（(][^）)\n]*[）)])?\s*[：:]\s*", value)
-    return value[matched.end() :].strip() if matched else value
-
-
-def parse_thought_sections(text: str, skeleton_kind: str) -> dict[str, str]:
-    """把 ``<thought>`` 段里的编号答案解析成「胶囊字段 → 文本」（纯解析）。
-
-    - 按 ``_SKELETON_FIELD_MAP[skeleton_kind]`` 的字段名顺序映射编号 1..N；
-      skeleton_kind 为空或不在映射表 → 用 ``default`` 的映射。
-    - 每个字段值 = 「该编号行之后、下一个编号行之前」的文本（strip 后）；编号行
-      形如 ``1. 标签：答案``——编号之后同行的内容取到，但**开头的问句回显会被剥掉**
-      （2026-10-28：原先原样保留，导致胶囊每节都是「【做了什么】做了什么：…」的
-      双重前缀；问句固定四句，故按 `_CAPSULE_QUESTIONS` 精确匹配，剥不到就不剥，
-      绝不改写答案正文）。编号行本身的分隔符认 ``.`` / ``、`` / ``．``，
-      容忍前导空白；行内冒号全/半角均常见，但不作为编号分隔符。
-    - 缺编号 / 空值 → 该字段不出现（不猜、不补默认文案）；同编号重复出现 →
-      后见覆盖先见。
-    - 输入无 ``<thought>`` 段或解析不出任何字段 → 返回 ``{}``（非字符串同样
-      ``{}``，绝不抛异常）。
-    """
-    if not isinstance(text, str):
-        return {}
-    match = _THOUGHT_BLOCK_RE.search(text)
-    if match is None:
-        return {}
-    fields = _SKELETON_FIELD_MAP.get(
-        normalize_skeleton_kind(skeleton_kind) or "default",
-        _SKELETON_FIELD_MAP["default"],
-    )
-    sections: dict[str, str] = {}
-    current: str | None = None
-    parts: list[str] = []
-
-    def _flush() -> None:
-        if current is not None:
-            value = "\n".join(parts).strip()
-            if value:
-                sections[current] = value
-
-    for line in match.group(1).splitlines():
-        numbered = _THOUGHT_NUMBERED_LINE_RE.match(line)
-        if numbered is None:
-            if current is not None:
-                parts.append(line)
-            continue
-        _flush()
-        num = int(numbered.group(1))
-        current = fields[num - 1] if 1 <= num <= len(fields) else None
-        same_line = numbered.group(2).strip()
-        if same_line and 1 <= num <= len(_CAPSULE_QUESTIONS):
-            same_line = _strip_question_echo(same_line, _CAPSULE_QUESTIONS[num - 1][1])
-        parts = [same_line] if same_line else []
-    _flush()
-    return sections
-
-
-def is_substantive_turn(
-    thought_text: str,
-    sections: dict[str, str],
-    *,
-    user_message: str = "",
-    min_thought_chars: int = SESSION_BUFFER_MIN_THOUGHT_CHARS,
-) -> bool:
-    """判一轮是不是「实质轮」（纯函数，二条判据任一满足即 True，依据见上方判据块）。
-
-    - ``thought_text``：该轮 ``<thought>`` 段正文。**不再看长度**（2026-10-28，
-      issue #188），参数保留只为签名兼容；
-    - ``sections``：:func:`parse_thought_sections` 的解析结果（判据 2：**任一
-      非空格子**即算实质轮——四问已固定对应胶囊四节）；
-    - ``user_message``：本轮用户消息（判据 3；空串不命中）；
-    - ``min_thought_chars``：**已废弃**（判据 2 不再使用），保留签名以免破坏调用方，
-      下个大版本连同 ``Config.SESSION_BUFFER_MIN_THOUGHT_CHARS`` 一起删除。
-
-    ``tool_calls_count`` 判据已按 issue #194 删除：宿主从不填该字段（恒 0），且
-    空 ``sections`` 在 ``decide_session_buffer`` 更上游就被 ``no_sections`` 挡掉，
-    判据 1 在任何真实链路里都到不了。
-    """
-    # 判据 2：填了胶囊格子就算（「每轮顺手填一次」的设计意图，issue #188）。
-    # 统一骨架后四问直接对应四节，任一非空格子都是有效填写。旧的「正文 ≥400 字
-    # 且落在结论字段上」把模型顺手填的短轮挡在缓冲外；「缓冲 turns 恒为 1」的
-    # 实测症状另有两个叠加成因——宿主恒不传 turn_index（恒 0 被当同一轮覆盖）
-    # 与 no_sections 整轮丢弃原生思考（issue #216，同日修复），见上方判据块。
-    if any(isinstance(v, str) and v.strip() for v in (sections or {}).values()):
-        return True
-    # 判据 3：用户消息指派了任务（指令 ≠ 问句：疑问形态不影响判定）
-    message = (user_message or "").strip()
-    return bool(
-        message and (any(verb in message for verb in _SUBSTANTIVE_ZH_VERBS) or _SUBSTANTIVE_EN_VERB_RE.search(message))
-    )
-
-
-def decide_session_buffer(
-    text: str,
-    *,
-    skeleton_kind: str,
-    session_id: str,
-    turn_index: int,
-    user_message: str = "",
-    min_thought_chars: int = SESSION_BUFFER_MIN_THOUGHT_CHARS,
-) -> dict[str, Any]:
-    """判定本轮思考要不要进「会话缓冲」、进什么（post-turn 第三条路径，纯决策）。
-
-    返回 ``{"buffer": bool, "reason": str, "skeleton_kind": str,
-    "sections": dict, "raw": str}``：
-
-    - session_id 为空 → ``buffer=False, reason="no_session_id"``（老宿主兼容，
-      不落缓冲，行为与改动前一致）；
-    - 解析不出编号小节时再看 ``<thought>`` 原文：非空且不含编号行（原生思考）
-      → 整轮照收，原文截断进 thought 节（宁粗不空，issue #216：整轮丢弃曾把
-      原生思考 / 骨架没注入的轮全挡在门外，是「缓冲 turns 恒为 1」的成因之一）；
-      原文为空、或含编号行但四问全空（骨架注入了、模型照抄问句没写内容）→
-      ``buffer=False, reason="no_sections"``（真没有可缓冲的内容，保留原
-      thought 落库路径兜底）；
-    - 解析出了字段但不是实质轮 → ``buffer=False, reason="non_substantive"``
-      （issue #170 实质轮筛选：短轮不进缓冲，但**不静默丢弃**——reason 留痕、
-      sections 随诊断返回，与另两种 skip_reason 同一可观测约定）；
-    - 否则 ``buffer=True``（reason 为空串）：``sections`` 为解析结果
-      （:func:`parse_thought_sections`，无编号小节时为 thought 原文兜底节，见上），
-      ``raw`` 为 ``<thought>`` 段原文截断到
-      ``SESSION_BUFFER_RAW_MAX_CHARS`` 字；``skeleton_kind`` 为归一后的骨架类型
-      （:func:`normalize_skeleton_kind`）。
-
-    「实质轮」判定委托 :func:`is_substantive_turn`（三条判据：工具调用 / 长思考
-    含结论字段 / 用户消息指令动词，依据见其上方判据块）。老宿主不传
-    ``tool_calls_count`` / 不传 ``user_message`` → 缺省 0 / 空串，判据 1/3 永不
-    命中，行为退化到只用判据 2——缺字段绝不当成实质轮。
-
-    ``turn_index`` 不参与判定（要不要进缓冲只看 session_id、解析结果与实质
-    性）——它随调用方语义留给执行层做缓冲内幂等覆盖的键。
-    ``min_thought_chars`` 由执行层从 ``Config.SESSION_BUFFER_MIN_THOUGHT_CHARS``
-    注入（环境变量可调），本函数不接配置——纯决策不碰环境。
-    """
-    kind = normalize_skeleton_kind(skeleton_kind)
-    if not (session_id or "").strip():
-        return {"buffer": False, "reason": "no_session_id", "skeleton_kind": kind, "sections": {}, "raw": ""}
-    sections = parse_thought_sections(text, kind)
-    parsed = extract_thought(text or "")
-    if not sections:
-        # 解析不出编号小节 ≠ 没有思考（issue #216：整轮丢弃曾把原生思考 /
-        # 骨架没注入的轮全挡在门外，是「缓冲 turns 恒为 1」的成因之一）。两种
-        # 情形分开：正文含编号行（骨架注入了、模型照抄问句但四问全空）→ 真没
-        # 写出内容，维持 no_sections；正文没有编号行（原生思考）→ 原文截断进
-        # thought 节照收（宁粗不空）。
-        thought_text = parsed["text"].strip() if parsed["found"] else ""
-        has_numbered = any(_THOUGHT_NUMBERED_LINE_RE.match(line) for line in thought_text.splitlines())
-        if not thought_text or has_numbered:
-            return {"buffer": False, "reason": "no_sections", "skeleton_kind": kind, "sections": {}, "raw": ""}
-        sections = {"thought": thought_text[:CAPSULE_THOUGHT_MAX_CHARS]}
-    raw = parsed["text"][:SESSION_BUFFER_RAW_MAX_CHARS] if parsed["found"] else ""
-    if not is_substantive_turn(
-        parsed["text"] if parsed["found"] else "",
-        sections,
-        user_message=user_message,
-        min_thought_chars=min_thought_chars,
-    ):
-        # 带上 sections 便于排查「解析出了什么却被判非实质」（可观测，不静默）。
-        return {"buffer": False, "reason": "non_substantive", "skeleton_kind": kind, "sections": sections, "raw": ""}
-    return {"buffer": True, "reason": "", "skeleton_kind": kind, "sections": sections, "raw": raw}
-
-
-# ---------------------------------------------------------------------------
-# 可核验句柄抽取（M2）：自动胶囊的 outcome 节此前没有任何句柄（handles 参数
-# 早就支持但调用方没传），对比手写接续点（有 PR 号 / commit / 路径）少了对账
-# 依据。抽取是纯函数（不 import agent.*、不碰网络、不读环境），按固定正则的
-# 模板匹配——与 _strip_question_echo 同一取向：命中才算数，绝不猜。
-# ---------------------------------------------------------------------------
-
-CAPSULE_HANDLE_LIMIT = 12  # 胶囊 outcome 里的句柄条数上限（超出按首次出现顺序截断）
-
-# 形态表：**优先级序**（先出现的形态先认领文本区间）。表序兼作重叠消解依据——
-# 同一段文本被多个形态命中时留高优先级形态，如 ``D:/a/b`` 整体按 Windows 路径
-# 收，不再让 unix_path 把里面的 ``/a/b`` 碎片重复产出；``http://127.0.0.1:8090``
-# 留 ``127.0.0.1:8090`` 而不是 ``//127.0.0.1`` 碎片。所以 unix_path 这种最宽泛
-# 的形态排最后，向其余所有形态让路。
-_HANDLE_EXTRACTORS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    # Windows 绝对路径：盘符 + 斜杠起头，吃到空白 / 引号 / 括号为止。lookbehind
-    # 挡掉「前面紧跟字母的盘符」——``http://`` 不得从 ``p:/`` 起头被咬成路径。
-    # 在任务书正则基础上额外排除**全角标点**（，。、；：！？等）：中文正文里路径
-    # 后面紧跟全角标点是常态，不排除会把后半句整句吞进句柄；CJK 汉字本身保留
-    # （路径里有中文目录名是真实形态，如 Novel/乾元风云录）。
-    ("win_path", re.compile(r"(?<![A-Za-z])[A-Za-z]:[\\/][^\s`\"'）)，。、；：！？【】《》「」『』]+")),
-    ("sha_full", re.compile(r"\b[0-9a-f]{40}\b")),  # 完整 commit sha
-    ("sha_short", re.compile(r"(?<=`)[0-9a-f]{7,12}(?=`)")),  # 短 sha 必须被反引号包住（裸短串不认）
-    ("addr", re.compile(r"\b(?:127\.0\.0\.1|localhost):\d{2,5}\b")),  # 服务地址
-    ("pid", re.compile(r"\bPID[= ]\d+\b", re.IGNORECASE)),  # 进程号（PID 123 / pid=123）
-    ("node", re.compile(r"(?:节点|node)\s?\d+", re.IGNORECASE)),  # 节点号（节点 3564 / node 42）
-    ("pr_issue", re.compile(r"#\d+")),  # PR / issue 号
-    # Unix 绝对路径：最宽泛（\w 含 CJK），排最后给上面所有形态让路。lookbehind
-    # 挡掉「前面紧跟 ASCII 词字符的斜杠」——``core/strategy.py`` 里的相对路径
-    # 不得咬出 ``/strategy.py`` 这种不存在的碎片句柄；中文紧贴路径（「检查/var/log」）
-    # 不受影响（CJK 不在挡除表里）。
-    ("unix_path", re.compile(r"(?<![a-zA-Z0-9_.-])/[\w./-]{6,}")),
-)
-
-# 路径类句柄尾部的句读标点是行文带的、不是路径的一部分（「见 /a/b.py。」），
-# 剥掉；路径合法尾字符（字母数字 / - _）不在表里，不受影响。
-_HANDLE_TRAILING_PUNCT = ".,;:!?，。、；：！？…）】》"
-
-
-def extract_handles(text_blobs: list[str], *, limit: int = CAPSULE_HANDLE_LIMIT) -> list[str]:
-    """从若干段文本里抽取可核验句柄（纯函数，见上方形态表；M2）。
-
-    - 输出**按首次出现位置**排序、跨段去重，超过 ``limit`` 截断；
-    - 无命中返回 ``[]``（绝不返回 ``["无"]`` 之类的噪音占位）；
-    - 非字符串元素按字符串处理（调用方传 raw / sections 值的混拼，容忍脏值），
-      空白输入同样安全。
-    """
-    out: list[str] = []
-    seen: set[str] = set()
-    for blob in text_blobs:
-        text = blob if isinstance(blob, str) else str(blob or "")
-        if not text:
-            continue
-        # 先按优先级认领区间（同段内被高优先级形态占住的区间，低优先级不再产
-        # 碎片），再把幸存者按出现位置排序——输出序 = 首次出现序。
-        candidates: list[tuple[int, int, int, str]] = []  # (优先级, start, end, 句柄)
-        for priority, (_name, pattern) in enumerate(_HANDLE_EXTRACTORS):
-            for match in pattern.finditer(text):
-                handle = _trim_trailing_punct(match.group(0))
-                if handle:
-                    candidates.append((priority, match.start(), match.end(), handle))
-        kept: list[tuple[int, str]] = []
-        claimed: list[tuple[int, int]] = []
-        for _priority, start, end, handle in sorted(candidates, key=lambda c: (c[0], c[1], -c[2])):
-            if any(start < c_end and end > c_start for c_start, c_end in claimed):
-                continue
-            claimed.append((start, end))
-            kept.append((start, handle))
-        for _start, handle in sorted(kept, key=lambda k: k[0]):
-            if handle in seen:
-                continue
-            seen.add(handle)
-            out.append(handle)
-            if len(out) >= limit:
-                return out
-    return out
-
-
-def _trim_trailing_punct(handle: str) -> str:
-    """剥掉句柄尾部行文带的句读标点（路径后紧跟句号 / 逗号是正文常态）。"""
-    return handle.rstrip(_HANDLE_TRAILING_PUNCT)
-
-
-def format_capsule_content(session_id: str, sections: dict[str, str]) -> str:
-    """按固定四节格式拼胶囊正文（首行「接续点 / 会话接续 <session>」与
-    ``core.task_state._is_handoff`` 的首行判据对齐）。
-
-    抽成函数是因为正文有两个产出点：纯合成（``compose_session_capsule``）与
-    「已有胶囊 + 新轮次」的合并（``merge_capsule_with_existing``）——两处各拼一遍
-    格式必然漂移，四节标题又是逐字判据。
-    """
-    return (
-        f"接续点 / 会话接续 {session_id}\n"
-        f"【思路】{sections['thought']}\n"
-        f"【做了什么】{sections['outcome']}\n"
-        f"【下一步】{sections['next']}\n"
-        f"【踩的坑】{sections['pitfalls']}"
-    )
-
-
-def compose_session_capsule(turns: list[dict], *, session_id: str, handles: list[str] | None = None) -> dict:
-    """把会话缓冲的 turns 合并成胶囊内容（纯合成，不写库）。
-
-    返回 ``{"content": str, "sections": dict, "pending": list[str], "turns": int}``。
-    sections 四节（字段名见 ``_SKELETON_FIELD_MAP``，逐轮按缓冲顺序合并）：
-
-    - thought（【思路】）：从各轮 judgement / conclusion / goal 里按顺序取
-      （每轮取第一个非空字段），总长 ≤ ``CAPSULE_THOUGHT_MAX_CHARS``（纯截断）；
-    - outcome（【做了什么】）：合并各轮 change / deliverable，去重，每项一行；
-      ``handles``（PR / 文件路径 / 节点号等交付物句柄）按序拼在末尾（并入统一去重）；
-    - next（【下一步】）：合并各轮 verify / output 里带「下一步 / 待 / 需 / 再」
-      的行，去重；
-    - pitfalls（【踩的坑】）：合并各轮 failure_path，去重。
-
-    任一节为空 → 该节写「（待补）」（``CAPSULE_SECTION_TBD``）并把它记进
-    ``pending``（按 thought / outcome / next / pitfalls 顺序）。
-
-    content 固定四节格式，首行「接续点 / 会话接续 <session_id>」与
-    ``core.task_state._is_handoff`` 的首行判据对齐（显式 ``payload.kind="handoff"``
-    之外的形态层识别路径）；四节标题【思路】/【做了什么】/【下一步】/【踩的坑】
-    逐字固定。
-    """
-    thought_parts: list[str] = []
-    outcome_parts: list[str] = []
-    next_parts: list[str] = []
-    pitfall_parts: list[str] = []
-    merged = 0
-    for turn in turns:
-        if not isinstance(turn, dict):
-            continue
-        s = turn.get("sections")
-        if not isinstance(s, dict):
-            continue
-        merged += 1
-        # 新字段（统一骨架，2026-10-28）优先；旧字段名兜住历史缓冲里的轮次
-        # （老库的 turns 存的是 judgement/change/verify/failure_path 那批名字）。
-        for key in ("thought", "judgement", "conclusion", "goal"):
-            v = s.get(key)
-            if isinstance(v, str) and v.strip():
-                thought_parts.append(v.strip())
-                break
-        for key in ("outcome", "change", "deliverable"):
-            v = s.get(key)
-            if isinstance(v, str) and v.strip():
-                outcome_parts.append(v.strip())
-        # next 是「下一步 / 待办」专用格子，整段照取；旧字段 verify/output 是
-        # 「怎么验」「产出」，还得靠信号词筛出真正交接要的事。
-        nv = s.get("next")
-        if isinstance(nv, str) and nv.strip():
-            next_parts.append(nv.strip())
-        for key in ("verify", "output"):
-            v = s.get(key)
-            if isinstance(v, str) and v.strip():
-                for line in v.splitlines():
-                    line = line.strip()
-                    if line and any(mk in line for mk in _CAPSULE_NEXT_MARKERS):
-                        next_parts.append(line)
-        v = s.get("pitfalls")
-        if isinstance(v, str) and v.strip():
-            pitfall_parts.append(v.strip())
-        else:
-            v = s.get("failure_path")
-            if isinstance(v, str) and v.strip():
-                pitfall_parts.append(v.strip())
-
-    def _dedupe(items: list[str]) -> list[str]:
-        seen: set[str] = set()
-        out: list[str] = []
-        for item in items:
-            if item not in seen:
-                seen.add(item)
-                out.append(item)
-        return out
-
-    for handle in handles or []:
-        text = str(handle).strip()
-        if text:
-            outcome_parts.append(text)  # handles 拼在 outcome 末尾（并入统一去重）
-
-    thought_body = "\n".join(thought_parts)
-    if len(thought_body) > CAPSULE_THOUGHT_MAX_CHARS:
-        thought_body = thought_body[:CAPSULE_THOUGHT_MAX_CHARS]
-    raw = {
-        "thought": thought_body,
-        # 其余三节过上限闸（issue #244）：thought 沿用上方既有截断（合同不变）。
-        "outcome": _cap_capsule_section("outcome", "\n".join(_dedupe(outcome_parts))),
-        "next": _cap_capsule_section("next", "\n".join(_dedupe(next_parts))),
-        "pitfalls": _cap_capsule_section("pitfalls", "\n".join(_dedupe(pitfall_parts))),
-    }
-    sections = {name: raw[name] or CAPSULE_SECTION_TBD for name in _CAPSULE_SECTION_ORDER}
-    pending = [name for name in _CAPSULE_SECTION_ORDER if not raw[name]]
-    content = format_capsule_content(session_id, sections)
-    return {"content": content, "sections": sections, "pending": pending, "turns": merged}
-
-
-def _format_capsule_truncate_mark(n: int) -> str:
-    """截断标记展开成正式文本（n = 省略行数）。单独拎出来是给 cap 主逻辑复算预算用。"""
-    return CAPSULE_TRUNCATE_MARK.format(n=n)
-
-
-def _cap_capsule_section(name: str, body: str) -> str:
-    """把单节正文压到该节上限内（issue #244；纯函数，幂等）。
-
-    契约：
-
-    - 空串 / ``CAPSULE_SECTION_TBD`` → 原样返回；
-    - ``thought`` → 超过 ``CAPSULE_THOUGHT_MAX_CHARS`` 纯字符截断、**不加标记**
-      （保持既有合同，既有测试钉死 ``len == 300``）；
-    - 其他节 → 超过 ``CAPSULE_SECTION_MAX_CHARS[name]``（取不到上限的 name
-      原样返回）按**行**截断：留得下的行按原序拼回，末尾接
-      ``CAPSULE_TRUNCATE_MARK``，``n`` = 真实省略的行数，且**最终长度 ≤ 上限**
-      （标记自身占预算：先按行装满，用最终 ``n`` 回填后复算一次长度，
-      仍超就再少留一行，循环到守住为止）；
-    - 未超限 → 原样返回，绝不追加标记；已带标记且未超限的正文进来也是
-      原样返回（连续调用两次结果一致）。
-
-    第一行就放不下（一行超上限）→ 退化为字符级保底 ``body[:limit]``，
-    不加标记（至少保证不是空、不是乱码）。
-    """
-    if not body or body == CAPSULE_SECTION_TBD:
-        return body
-    if name == "thought":
-        return body[:CAPSULE_THOUGHT_MAX_CHARS] if len(body) > CAPSULE_THOUGHT_MAX_CHARS else body
-    limit = CAPSULE_SECTION_MAX_CHARS.get(name)
-    if limit is None or len(body) <= limit:
-        return body
-    lines = body.splitlines()
-    kept: list[str] = []  # 留得下的行的前缀（某行放不下即断行，其后全部省略）
-    used = 0  # 替代式记录已用字符（行内容 + 行间换行符 1 字符/行）
-    for line in lines:
-        add = len(line) + (1 if kept else 0)
-        if used + add > limit:
-            break
-        kept.append(line)
-        used += add
-
-    def _build(count: int) -> str:
-        seg = kept[:count]
-        dropped = len(lines) - count
-        return "\n".join(seg) + "\n" + _format_capsule_truncate_mark(dropped)
-
-    if not kept:
-        return body[:limit]
-    count = len(kept)
-    result = _build(count)
-    # 标记里 n 的位数跟着 count 变，预算要按**最终 n** 复算；不满足就再少留一行。
-    while len(result) > limit:
-        count -= 1
-        if count == 0:
-            return body[:limit]
-        result = _build(count)
-    return result
-
-
-def _merge_capsule_section_lines(old: str, new: str) -> str:
-    """两段节正文按**行**合并：追加去重，保序（旧在前）。
-
-    返回空串表示「这一节最终什么都没有」，由调用方决定是否落
-    ``CAPSULE_SECTION_TBD``。为什么按行而不是按字符 / 整段替换：节的正文本来就是
-    「每项一行」或「每轮一段」的形态（outcome / next 逐项一行，thought 逐轮一段），
-    行级去重既能挡住重复项，又不会把两轮的内容粘连成一句。
-    """
-    if not old or old == CAPSULE_SECTION_TBD:
-        return new if new and new != CAPSULE_SECTION_TBD else ""
-    if not new or new == CAPSULE_SECTION_TBD:
-        return old
-    seen: set[str] = set()
-    out: list[str] = []
-    for line in f"{old}\n{new}".splitlines():
-        key = line.strip()
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        out.append(line)
-    return "\n".join(out)
-
-
-def merge_capsule_with_existing(composed: dict, existing_sections: dict | None, *, session_id: str) -> dict:
-    """把新合成的胶囊与**已有**胶囊的四节按行合并，返回新的 composed。
-
-    为什么必须有这一步（2026-10-28 实测事故）：``_finalize_session_capsule`` 的更新
-    路径原先无条件用新合成覆盖正文。而胶囊正文里可能含**人补写的内容**——收口时按
-    接续点口径补的 outcome / next / pitfalls 并不在缓冲 turns 里，机器合成不出来。
-    一次正常的 session-end、或断线自愈的补产，都会把那些手写内容静默盖掉（实测：
-    节点 3665 的 1761 字手写接续点，会在一次 1 轮缓冲的补产下被覆盖）。
-
-    规则（取向 = 什么都不丢，宁可节变长）：
-    - 新节为空（``（待补）``）→ 保留旧节；
-    - 旧节为空 / 缺失 → 用新节；
-    - 两者都有 → 按行追加去重（旧在前，保序）；
-    - 合并结果为空 → 该节落 ``（待补）`` 并进 ``pending``。
-
-    合并结果统一过 ``_cap_capsule_section``（issue #244）：「不改丢内容」的取向
-    只在**单次合成**算数——追加去重没有总量闸，节会随会话轮数不讲道理地变长，
-    超上限的部分按行留 + 截断标记收口；thought 在这条路径也因此受 300 限制
-    （生产有 493 字的节点就是从这里绕过 compose 上限的）。
-
-    ``turns`` 沿用新合成的值（它是「缓冲里的轮数」这一事实，不是内容并集）。
-    """
-    incoming = composed.get("sections") if isinstance(composed, dict) else None
-    if not isinstance(incoming, dict):
-        return composed
-    previous = existing_sections if isinstance(existing_sections, dict) else {}
-    merged: dict[str, str] = {}
-    for name in _CAPSULE_SECTION_ORDER:
-        body = _merge_capsule_section_lines(str(previous.get(name) or ""), str(incoming.get(name) or ""))
-        merged[name] = _cap_capsule_section(name, body) or CAPSULE_SECTION_TBD
-    return {
-        "content": format_capsule_content(session_id, merged),
-        "sections": merged,
-        "pending": [name for name in _CAPSULE_SECTION_ORDER if merged[name] == CAPSULE_SECTION_TBD],
-        "turns": composed.get("turns"),
-    }
-
-
-def capsule_thickness(turns: list[dict] | None, sections: dict | None) -> dict:
-    """量化会话胶囊的「厚度」（issue #219）：多实的轮 + 多满的节。
-
-    纯函数，供落地前的门槛判定用（``_finalize_session_capsule``）：
-
-    - ``substantive_turns``：缓冲里有**至少一节非「（待补）」实质内容**的轮数。
-      占位正文（``CAPSULE_SECTION_TBD``）与空白都不算——一两句闲聊的骨架轮
-      四节全空，按 0 计。
-    - ``filled_sections``：合成结果（已与既有胶囊合并后）四节里真实内容
-      ≥ 1 节的节数。
-
-    返回 ``{"substantive_turns": int, "filled_sections": int}``。
-    """
-
-    def _filled(value: object) -> bool:
-        text = value.strip() if isinstance(value, str) else ""
-        return bool(text) and text != CAPSULE_SECTION_TBD
-
-    substantive_turns = 0
-    for turn in turns or []:
-        if not isinstance(turn, dict):
-            continue
-        turn_sections = turn.get("sections")
-        if isinstance(turn_sections, dict) and any(_filled(v) for v in turn_sections.values()):
-            substantive_turns += 1
-    filled_sections = sum(1 for v in sections.values() if _filled(v)) if isinstance(sections, dict) else 0
-    return {"substantive_turns": substantive_turns, "filled_sections": filled_sections}

@@ -4,9 +4,8 @@
 它被写错过两轮：
 
 - #178：``on_pre_compress`` 被当成事件钩子声明 —— 它其实是 ``MemoryProvider`` 的方法，
-  宿主通过 provider 接口直接调用，于是报 ``unknown hook``；
-- #183：同样的错还留在 ``on_session_end`` 上，报
-  ``declares hook 'on_session_end' but registration did not add it``。
+  宿主通过 provider 接口直接调用，于是报 ``unknown hook``（#183 曾同样错在
+  ``on_session_end`` 上，该钩子已随接续点链路一并移除）。
 
 两轮都是**声明层错误**（功能本身正常），但 WARN 常驻之后真问题就淹在噪声里，
 ``plugins doctor`` 再也回不到全绿。这里把这条契约钉成测试。
@@ -35,7 +34,7 @@ INIT_PY = PLUGIN_DIR / "__init__.py"
 
 # MemoryProvider 接口方法：宿主通过 provider 接口调用，不是事件钩子。
 # 声明进 provides_hooks 只会换来一条 WARN。
-PROVIDER_METHODS = ("on_pre_compress", "on_session_end")
+PROVIDER_METHODS = ("on_pre_compress",)
 
 
 def _declared_hooks() -> list[str]:

@@ -37,7 +37,6 @@ from pydantic import BaseModel
 from config import Config
 from core import pin as _pin
 from core import tdb_text_index as _tdb_text
-from core.capsule_guard import validate_capsule_fields
 from core.chunk_index import index_node_chunks
 from core.fts_index import sync_node
 from core.meta_guard import validate_meta
@@ -46,19 +45,9 @@ from core.reporting import generate_report
 from core.startup_check import run_startup_check
 from core.strategy import (
     GRAPH_ENHANCE_TOP_K,
-    SESSION_BUFFER_IMPORTANCE,
-    SESSION_BUFFER_STATUS_ACTIVE,
-    SESSION_BUFFER_STATUS_CLOSED,
-    SESSION_BUFFER_TYPE,
-)
-from core.strategy import (
-    capsule_thickness as _strategy_capsule_thickness,
 )
 from core.strategy import (
     clamp_max_topics as _strategy_clamp_max_topics,
-)
-from core.strategy import (
-    compose_session_capsule as _strategy_compose_session_capsule,
 )
 from core.strategy import (
     decide_post_turn as _strategy_post_turn,
@@ -70,12 +59,6 @@ from core.strategy import (
     decide_pre_turn as _strategy_pre_turn,
 )
 from core.strategy import (
-    decide_session_buffer as _strategy_decide_session_buffer,
-)
-from core.strategy import (
-    decide_session_end as _strategy_session_end,
-)
-from core.strategy import (
     decide_thought_skeleton as _strategy_decide_thought_skeleton,
 )
 from core.strategy import (
@@ -85,18 +68,9 @@ from core.strategy import (
     extract_graph_topics as _strategy_extract_graph_topics,
 )
 from core.strategy import (
-    extract_handles as _strategy_extract_handles,
-)
-from core.strategy import (
     format_graph_enhancement as _strategy_format_graph_enhancement,
 )
-from core.strategy import (
-    is_near_duplicate as _strategy_is_near_duplicate,
-)
-from core.strategy import (
-    merge_capsule_with_existing as _strategy_merge_capsule_with_existing,
-)
-from core.task_state import HANDOFF_KIND, _now_iso, apply_task_patch
+from core.task_state import apply_task_patch
 from core.trivium_store import DatabaseBusyError, EmbeddingInputTooLongError, EmbeddingUnavailableError, TriviumStore
 from core.trivium_store import shutdown as _shutdown_shared_db
 from core.version import get_version
@@ -153,18 +127,9 @@ async def _lifespan(app: FastAPI):
     """
     async with _mcp_server.session_manager.run():
         await _startup_self_check()
-        # 断线自愈（孤儿缓冲补产）：常驻服务的后台周期扫描，Config 可关。
-        recover_task: asyncio.Task[None] | None = None
-        if Config.SESSION_CAPSULE_RECOVER_ENABLED:
-            recover_task = asyncio.create_task(_orphan_recovery_loop())
         try:
             yield
         finally:
-            if recover_task is not None:
-                # cancel + 吞 CancelledError：lifespan 退出的正常路径，不算错误。
-                recover_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await recover_task
             # ASGI shutdown：进程级共享连接（issue #167 单例长连接）flush 全量
             # 落盘后关闭。flush 失败只记日志、不阻塞退出（WAL 模式下已提交事务
             # 不丢）；atexit 已注册兜底，覆盖脚本/CLI 等非 lifespan 退出路径。
@@ -359,7 +324,6 @@ def root():
             "/memory/{node_id}",
             "/memory/{node_id}/vector",
             "/memory/{node_id}/reembed",
-            "/memory/{node_id}/open",
             "/mem/search",
             "/skill/search",
             "/skill/reindex",
@@ -389,10 +353,8 @@ def root():
             "/doctor",
             "/lifecycle/pre-turn",
             "/lifecycle/post-turn",
-            "/lifecycle/session-end",
             "/lifecycle/pre-compress",
             "/lifecycle/context-enhance",
-            "/lifecycle/recover-orphan-capsules",
         ],
     }
 
@@ -695,77 +657,6 @@ def patch_memory_payload(node_id: int, payload: dict):
     return _apply_payload_update(node_id, payload)
 
 
-# 胶囊接手留痕（issue #208）：opened_by 最多记多少个接手会话。留足够追溯线索
-# 又不让 payload 无界膨胀；超限丢最老（保留最近接手的会话）。
-CAPSULE_OPENED_BY_LIMIT = 10
-
-
-class CapsuleOpenRequest(BaseModel):
-    """POST /memory/{id}/open 请求体：接手会话的 session_id。
-
-    ``None`` / 缺省 / 空串一律按「未知会话」处理（宿主侧拿不到 id 也得能留痕）。
-    """
-
-    session_id: str | None = None
-
-
-def _open_capsule(node_id: int, session_id: str) -> dict:
-    """记录「胶囊被会话接手」（issue #208）：opened_at / open_count / opened_by。
-
-    为什么不走 PUT/PATCH 的任务写路径：``apply_task_patch`` 会补
-    ``last_touched_at``——那会让胶囊看起来「刚动过」，污染新鲜度判据
-    （``fresh_days`` 折叠会把刚被接手的老胶囊误判成活跃）。接手留痕只需要
-    三个 payload 字段，直连 ``store.update_payload`` 合并，content /
-    ``last_touched_at`` 零改动；FTS/TDB 索引的是 content，本次不碰 content，
-    也无需同步索引。
-
-    语义：
-    - ``opened_at`` 只在首次写入，之后**永不刷新**——「首次被接手」是事实，
-      不随后续接手变化（payload 里已有值就保留，含手工预置的历史值）；
-    - ``open_count`` 只在**新**会话首调时 +1（与 ``opened_by`` 去重同判据）；
-    - ``opened_by`` 按首次接手顺序去重，超 :data:`CAPSULE_OPENED_BY_LIMIT`
-      丢最老；
-    - 幂等：同一 ``session_id`` 重复调用不重复计数；空串 ``session_id``
-      按「未知会话」走同一套去重 / 计数逻辑（空名会话），不做特判分支。
-    """
-    store = _get_store()
-    node = store.get_node(node_id)
-    if node is None:
-        # 404 + 固定提示（不泄漏内部异常，安全审计要求；与 PUT 端点同一口径）
-        raise HTTPException(status_code=404, detail="更新失败：节点不存在或数据格式错误")
-    payload = node.get("payload") or {}
-    opened_by = [str(sid) for sid in (payload.get("opened_by") or [])]
-    open_count = int(payload.get("open_count") or 0)
-    if session_id not in opened_by:
-        # 新会话首调：计数 +1 并登记（append 后截尾 = 丢最老）
-        open_count += 1
-        opened_by = [*opened_by, session_id][-CAPSULE_OPENED_BY_LIMIT:]
-    update = {
-        # opened_at 只在首次写：payload 里已有（含手工预置的历史值）就不覆盖
-        "opened_at": payload.get("opened_at") or _now_iso(),
-        "open_count": open_count,
-        "opened_by": opened_by,
-    }
-    store.update_payload(node_id, update)
-    return {"status": "ok", **update}
-
-
-@app.post("/memory/{node_id}/open")
-def open_memory_node(node_id: int, req: CapsuleOpenRequest | None = None):
-    """记录胶囊被当前会话接手（issue #208）。
-
-    胶囊（``type=task`` + ``kind=handoff`` 的会话交接节点）被新会话接手时调用：
-    首次写 ``opened_at``，每个**新**会话首调 ``open_count`` +1，``opened_by``
-    记接手过的 session_id（去重、按首次顺序、上限 10、超限丢最老）。
-    同一 ``session_id`` 重复调用幂等不重复计数。不动 content /
-    ``last_touched_at``——那两处一个是要紧正文、一个是新鲜度判据，接手不该
-    碰（检索命中计数 ``hit_count`` / ``last_hit_at`` 是 ``mem_search`` 自动
-    +1 的另一回事，与本端点的「接手」语义互不代替）。
-    """
-    body = req or CapsuleOpenRequest()
-    return _open_capsule(node_id, (body.session_id or "").strip())
-
-
 @app.post("/memory/{node_id}/reembed")
 def reembed_memory(node_id: int):
     """按当前 content 重算并写回该节点的向量（issue #52）。
@@ -846,11 +737,6 @@ class MemIngestRequest(BaseModel):
     # 可选自定义元数据（如 {"chat_id": "..."}）：结构校验见 core.meta_guard，
     # 通过后原样写入 payload 的 meta 子字典；不传 / 空字典时 payload 不含 meta 键。
     meta: dict[str, str] | None = None
-    # 可选手写胶囊结构字段：形状与自动胶囊（core.strategy.compose_session_capsule）
-    # 一致，校验见 core.capsule_guard（pending 未传时自动算空节）；不传时
-    # payload 不含这两个键，行为与旧版完全一致。
-    sections: dict[str, str] | None = None
-    pending: list[str] | None = None
     # 机械去重闸门（issue #280）：allow=默认旧行为；reject=撞高相似即拒写
     # （返回 duplicate_of + duplicate_candidates）；merge=合并进 dedupe_target
     # 指定节点（不新建）。显式 replaces 优先于本闸门。缺省 = allow。
@@ -1140,16 +1026,8 @@ def mem_ingest(req: MemIngestRequest):
         meta_ok, meta_err = validate_meta(req.meta)
         if not meta_ok:
             raise HTTPException(status_code=422, detail=meta_err)
-    # 手写胶囊结构校验（core.capsule_guard）：不合法直接 422，不去打 embedding。
-    # 裁决仍在 MCP 写入路径（转调时原样透传，由同一校验函数再兜一道），这里
-    # 提前拦只为把拒绝映射成 422——stored:false 响应不带 node_id 键，下方
-    # 的 422 兜底不会触发，与 meta 校验的既有范式同构。
-    if req.sections is not None or req.pending is not None:
-        cap_ok, cap_err, _ = validate_capsule_fields(req.sections, req.pending)
-        if not cap_ok:
-            raise HTTPException(status_code=422, detail=cap_err)
     # 机械去重闸门参数校验（issue #280）：非法档位 / 目标组合直接 422，
-    # 不去打 embedding——与 meta / capsule 的提前拦同范式。
+    # 不去打 embedding——与 meta 校验的提前拦同范式。
     dedupe_mode = (req.dedupe or "allow").strip().lower()
     if dedupe_mode not in ("allow", "reject", "merge"):
         raise HTTPException(status_code=422, detail=f"dedupe 参数非法: {req.dedupe!r}（可选 allow / reject / merge）")
@@ -1165,8 +1043,6 @@ def mem_ingest(req: MemIngestRequest):
         source=req.source,
         replaces=req.replaces,
         meta=req.meta,
-        sections=req.sections,
-        pending=req.pending,
         dedupe=dedupe_mode,
         dedupe_target=req.dedupe_target,
     )
@@ -1693,18 +1569,14 @@ def tasks_active(
     project: str = "",
     states: str = "todo,doing,blocked",
     limit: int = 15,
-    include_handoff: bool = False,
     fresh_days: int = 30,
 ):
     """活跃任务列表：``type=task`` & ``status=active`` & 状态命中，按优先级排序。
 
-    只读。参数走 query（``?project=X&states=todo,doing&limit=15&include_handoff=true``）；
+    只读。参数走 query（``?project=X&states=todo,doing&limit=15``）；
     核心逻辑见 ``core.task_state.list_active_tasks``，与 MCP 工具 ``tasks_active``
     同一实现。默认排除 ``payload.legacy = true`` 的老节点（老节点请先跑 CLI
-    ``tasks backfill``）；``include_handoff=true`` 才列出会话接续点
-    （``kind=handoff`` 的跨会话交接记录，而非待办事项；显式列出时不受状态
-    过滤限制——接续点没有「待办状态」语义，``task_state`` 为 None 也能取回，
-    且置顶按 ``importance`` 倒序）；``fresh_days`` 是新鲜度窗口（默认 30 天）：
+    ``tasks backfill``）；``fresh_days`` 是新鲜度窗口（默认 30 天）：
     超期未动的条目折叠进 ``stale`` 汇总、不再逐条返回，传 ``0`` 展开全部。
     """
     from core.task_state import list_active_tasks
@@ -1714,7 +1586,6 @@ def tasks_active(
         project=project,
         states=states,
         limit=limit,
-        include_handoff=include_handoff,
         fresh_days=fresh_days,
     )
 
@@ -1763,12 +1634,6 @@ class PostTurnRequest(BaseModel):
     # 不变，隐式 general）；传了则落进 payload.domain，宿主可按自己的域检索
     # 底片（否则固定 domain=hermes 的宿主永远查不到自己的底片）。
     domain: str = ""
-
-
-class SessionEndRequest(BaseModel):
-    session_id: str = ""
-    messages: list[dict] = []
-    auto_ingest: bool = True
 
 
 class PreCompressRequest(BaseModel):
@@ -1952,115 +1817,6 @@ def _thought_already_stored(source: str, turn_index: int) -> bool:
     )
 
 
-# ---------------------------------------------------------------------------
-# 会话缓冲（「骨架即胶囊」第二/三刀的执行层）：post-turn 把每轮编号思考解析成
-# 字段，经实质轮筛选（is_substantive_turn，issue #170）后累进该 session 的缓冲
-# 节点（type="session"，同一 session_id 只一条）；session-end 由
-# compose_session_capsule 合并成 type=task + kind=handoff 胶囊。
-# 判定全在 core/strategy.py（parse_thought_sections / is_substantive_turn /
-# decide_session_buffer / compose_session_capsule 纯函数），这里只做落库执行。
-# ---------------------------------------------------------------------------
-
-# 会话胶囊节点的固定档位（任务书口径）：接续点形态的任务卡，写进 hermes 域。
-SESSION_CAPSULE_TYPE = "task"
-SESSION_CAPSULE_IMPORTANCE = 0.85
-SESSION_CAPSULE_DOMAIN = "hermes"
-SESSION_CAPSULE_EDGE_RELATION = "CONSOLIDATED_INTO"  # 缓冲节点 → 胶囊节点
-
-# 厚度门槛（issue #219，口径主人定的，先用常量不加 env 配置项）：胶囊只在会话
-# 真干了活时才值得产。薄会话（一两句闲聊）合成出的四节几乎全「（待补）」，只会
-# 污染「新会话先读」的列表。
-CAPSULE_MIN_SUBSTANTIVE_TURNS = 2
-CAPSULE_MIN_FILLED_SECTIONS = 2
-
-
-def _find_active_session_buffer(session_id: str) -> tuple[int, dict] | None:
-    """按 payload 定位该 session 的**活跃**缓冲节点。
-
-    判据：``type=session`` + ``payload.session_id`` 相等 + ``status=active``。
-    缓冲按 payload 字段定位（不走向量 / FTS 检索），单用户库 iter_payloads
-    全遍历足够；中途 session-end（issue #187）后同 session 可能有多条缓冲，
-    这里只要**活跃**那条（追加轮次的目标），全部缓冲的合并在胶囊落地侧
-    （``_find_session_buffers``）。
-    """
-    for nid, payload in _get_store().iter_payloads():
-        if not isinstance(payload, dict):
-            continue
-        if (
-            payload.get("type") == SESSION_BUFFER_TYPE
-            and payload.get("session_id") == session_id
-            and payload.get("status") == SESSION_BUFFER_STATUS_ACTIVE
-        ):
-            return nid, payload
-    return None
-
-
-def _append_session_buffer_turn(session_id: str, turn_index: int, buf: dict) -> tuple[int, int]:
-    """把本轮解析出的 sections 累进该 session 的缓冲节点，返回 ``(节点 id, 解析序号)``。
-
-    - 无缓冲节点 → 新建（``store.insert_node`` 一次原子写入，payload 一次成形）：
-      不走 ``mem_ingest``——它的固定入参写不了 ``payload.turns`` 这类结构化字段，
-      且机器簿记不该参与冲突检测 / 记忆检索池。
-    - 已有 → 追加本轮 turn；**显式非 0 序号同序重复提交幂等覆盖**（原位替换，
-      不追加第二条）。``turn_index <= 0``（宿主未提供真实序号，老宿主恒 0）不当
-      「同一轮」：按 ``last_turn_index + 1`` 追加（新建缓冲从 1 起）——否则每轮
-      恒 0 互相覆盖，缓冲只剩最后一轮（issue #216，全库实测 turns 恒为 1）。
-    - ``last_turn_index`` 单调不回退（显式低序号重试不把游标拉回旧值，兜底
-      追加的序号才不会与存量轮次相撞）。
-    - ``started_at`` 记缓冲创建时刻（首个 turn 的落库时刻，数值）；更新时保留。
-    - ``updated_at`` 记最后活动时刻（新建 = started_at，每次追加都刷新）：孤儿
-      恢复扫描（``_recover_orphan_session_buffers``）靠它判断缓冲静默多久——
-      此前 payload 只有 started_at、追加也不刷新任何时间戳，断线自愈无从判定。
-    - 解析序号随 ``(nid, index)`` 一并返回（issue #219）：``turn_index <= 0`` 的
-      宿主在请求里本来就没有真序号，端点要把落库用的真实序号回传，插件重载后才
-      能从缓冲离点续接，而不是从 1 重计覆盖第 1 轮。
-    """
-    store = _get_store()
-    existing = _find_active_session_buffer(session_id)
-    index = int(turn_index)
-    if index <= 0:
-        # 宿主未提供真实序号 → 解析出追加序号（新建缓冲从 1 起），不拿 0 当同一轮。
-        index = (int(existing[1].get("last_turn_index") or 0) + 1) if existing else 1
-    turn_entry = {
-        "turn_index": index,
-        "skeleton_kind": str(buf.get("skeleton_kind") or ""),
-        "sections": dict(buf.get("sections") or {}),
-        "raw": str(buf.get("raw") or ""),
-    }
-    if existing is None:
-        now = time.time()
-        content = f"[会话缓冲] session={session_id}（进行中，session-end 合并为会话胶囊）"
-        vector, embed_audit = store.embed_text_with_audit(content)  # issue #232
-        nid = store.insert_node(
-            {
-                "type": SESSION_BUFFER_TYPE,
-                "content": content,
-                "importance": SESSION_BUFFER_IMPORTANCE,
-                "session_id": session_id,
-                "status": SESSION_BUFFER_STATUS_ACTIVE,
-                "started_at": now,
-                "updated_at": now,  # 与 started_at 同值：新建这一刻即最后一次活动
-                "turns": [turn_entry],
-                "last_turn_index": index,
-            },
-            vector,
-            embedding_audit=embed_audit,
-        )
-        return nid, index
-    nid, payload = existing
-    prev_last = int(payload.get("last_turn_index") or 0)
-    turns = [t for t in (payload.get("turns") or []) if isinstance(t, dict)]
-    for i, turn in enumerate(turns):
-        if turn.get("turn_index") == index:
-            turns[i] = turn_entry  # 幂等：同轮重复提交覆盖，不追加第二条
-            break
-    else:
-        turns.append(turn_entry)
-    store.update_payload(nid, {"turns": turns, "last_turn_index": max(prev_last, index), "updated_at": time.time()})
-    _sync_fts_after_update(nid)
-    return nid, index
-
-
 @app.post("/lifecycle/post-turn")
 def lifecycle_post_turn(req: PostTurnRequest):
     """每轮回复后：本体决定这轮要不要沉淀、写什么、写哪层；并抽取思考底片。
@@ -2080,10 +1836,6 @@ def lifecycle_post_turn(req: PostTurnRequest):
     ``thought_origin`` 为本体按文本开头形态的**启发式**判定（skeleton / native /
     unknown，非精确归因）——两者交叉可查「注入了骨架但模型没照写」。
 
-    会话缓冲（第三条路径，issue #170 实质轮筛选）：``<thought>`` 编号答案解析后
-    经 :func:`core.strategy.is_substantive_turn` 判实质——工具调用 / 长思考含
-    结论字段 / 用户消息指令动词，任一满足才累进缓冲；短轮不进缓冲但可观测
-    （``session_buffer.reason="non_substantive"``，不静默丢弃）。
     """
     decision = _strategy_post_turn(req.user_message, auto_ingest=req.auto_ingest)
     decision["session_id"] = req.session_id
@@ -2158,477 +1910,13 @@ def lifecycle_post_turn(req: PostTurnRequest):
     decision["thought"] = thought_out
     decision["tier_distribution"] = tier_dist
 
-    # 会话缓冲（第三条独立路径，「骨架即胶囊」）：解析编号思考 → 实质轮筛选
-    # （issue #170）→ 累进缓冲节点。实质判定在 strategy.is_substantive_turn
-    # （工具调用 / 长思考含结论字段 / 指令动词，任一满足即实质）；阈值从
-    # Config 注入（环境变量可调），端点只取值与执行。与前两条落库路径互不
-    # 阻断：独立 try/except，失败透传 session_buffer.error。
-    session_buffer_out: dict = {"buffered": False, "node_id": None, "reason": "", "error": None}
-    try:
-        buf = _strategy_decide_session_buffer(
-            req.assistant_message,
-            skeleton_kind=req.skeleton_kind,
-            session_id=req.session_id,
-            turn_index=req.turn_index,
-            user_message=req.user_message,
-            min_thought_chars=Config.SESSION_BUFFER_MIN_THOUGHT_CHARS,
-        )
-        session_buffer_out["reason"] = buf["reason"]
-        if buf["buffer"]:
-            buf_nid, resolved = _append_session_buffer_turn(req.session_id, req.turn_index, buf)
-            session_buffer_out["node_id"] = buf_nid
-            session_buffer_out["buffered"] = True
-            session_buffer_out["turn_index_resolved"] = resolved
-    except Exception as e:  # noqa: BLE001 —— 缓冲失败绝不拖垮既有两条落库路径
-        logger.warning("session 缓冲累计失败 session=%s turn=%s: %s", req.session_id, req.turn_index, e)
-        session_buffer_out["error"] = str(e)
-    decision["session_buffer"] = session_buffer_out
-    # 解析后的真实序号（issue #219）：缓冲路径里**落库用**的那个序号。
-    # 加字段、不改 ``turn_index``（那仍是请求值，老消费者零感知）——宿主不发
-    # 序号（恒 0）时它在请求里本来就没有真序号，只有这里能学到该接几号。
-    decision["turn_index_resolved"] = session_buffer_out.get("turn_index_resolved", req.turn_index)
     return decision
-
-
-def _find_session_buffers(session_id: str) -> list[tuple[int, dict]]:
-    """定位该 session 的**全部**缓冲节点（active + closed，按节点 id 升序）。
-
-    issue #187：session-end 可能在会话中途发生过一次（缓冲被 closed），之后又
-    有实质轮 → ``_append_session_buffer_turn`` 找不到活跃缓冲会另建新缓冲。
-    合成胶囊必须取**全部**缓冲的轮次，否则中途 closed 那批轮会被丢出胶囊；
-    节点 id 升序即创建顺序，供轮次合并保持稳定。
-    """
-    out = [
-        (nid, payload)
-        for nid, payload in _get_store().iter_payloads()
-        if isinstance(payload, dict)
-        and payload.get("type") == SESSION_BUFFER_TYPE
-        and payload.get("session_id") == session_id
-    ]
-    out.sort(key=lambda item: item[0])
-    return out
-
-
-def _find_session_capsule(session_id: str) -> tuple[int, dict] | None:
-    """定位该 session 已有的会话胶囊（issue #187「先查后建」）。
-
-    判据：``type=task`` + ``payload.kind="handoff"`` + ``payload.session_id`` 相等。
-    查的是**本链路自己产出的**胶囊——kind / session_id 是本链路显式写入的
-    payload 字段，必然齐全，比 content 首行判据更精确（首行判据是给手写接续点
-    的形态兜底，两者不混用）。
-    """
-    for nid, payload in _get_store().iter_payloads():
-        if (
-            isinstance(payload, dict)
-            and payload.get("type") == SESSION_CAPSULE_TYPE
-            and payload.get("kind") == HANDOFF_KIND
-            and payload.get("session_id") == session_id
-        ):
-            return nid, payload
-    return None
-
-
-def _merge_session_turns(buffers: list[tuple[int, dict]]) -> list[dict]:
-    """合并该 session 全部缓冲里的 turns（按轮次升序，跨缓冲逐字去重）。
-
-    去重键是整条轮次（turn_index + skeleton_kind + sections + raw）的逐字相等：
-    同一轮同内容在多个缓冲里重复出现只留一条；**同 turn_index 不同内容的轮两
-    条都留**——宿主可能不传真实序号（恒 0），按 turn_index 判重会误吞不同的
-    轮，宁可重复不可丢轮。排序稳定，turn_index 相同时保持缓冲创建顺序。
-    """
-    seen: dict[tuple, dict] = {}
-    for _nid, payload in buffers:
-        for turn in payload.get("turns") or []:
-            if not isinstance(turn, dict):
-                continue
-            key = (
-                turn.get("turn_index"),
-                turn.get("skeleton_kind"),
-                json.dumps(turn.get("sections") or {}, sort_keys=True, ensure_ascii=False),
-                turn.get("raw"),
-            )
-            if key not in seen:
-                seen[key] = turn
-    turns = list(seen.values())
-    turns.sort(key=lambda t: t.get("turn_index") if isinstance(t.get("turn_index"), int) else 0)
-    return turns
-
-
-def _finalize_session_capsule(session_id: str) -> dict | None:
-    """会话胶囊落地（session-end 路径）：全部缓冲 → 合成 → 写胶囊 + 关缓冲 + 建边。
-
-    - 无缓冲（老宿主 / 空 session_id）→ ``None``；缓冲全部 closed 且胶囊已存在
-      → 同样 ``None``（重复 session-end 幂等空操作：不重写、不新建、返回体不加
-      ``capsule`` 字段，与改动前一致）。
-    - 有活跃缓冲（或缓冲在而胶囊缺失——历史写入失败残留的自愈）→ 合成。轮次取
-      **全部缓冲**合并（issue #187：中途 session-end 把缓冲切成了多条，只取活跃
-      那条会把前半段轮丢出胶囊）；该 session 已有胶囊 → **原节点更新**（正文重
-      合成 + payload 覆盖，node_id 不变），没有 → 才新建。
-    - 新建走 ``mem_ingest`` **单次写**（issue #198）：sections / pending 随入参
-      一次落库，消掉「先建节点再补写结构化字段」两步之间留下半状态胶囊的窗口；
-      ``turns`` / ``session_id`` 这类 mem_ingest 固定入参不支持的字段随后补写，
-      失败只记日志（正文与四节此时已可用）。更新路径不走 mem_ingest（它只会
-      新建节点）：``update_content``（同步 FTS / TDB，向量标 stale）+ 尽力重嵌 +
-      ``update_payload``，node_id 稳定是硬要求。
-    - handles（可核验句柄，M2）：各轮 sections 值 + raw 混拼后经
-      :func:`core.strategy.extract_handles` 抽取，经 compose 拼进 outcome 节。
-    - **全部**缓冲标 ``closed`` + 建 ``CONSOLIDATED_INTO`` 边（幂等：已建的边不
-      重建）——失败只记日志不阻断（胶囊正文此时已可用）。
-
-    胶囊写入失败 → 抛出（调用方 catch 后只记日志，不影响旧要点路径）。
-    """
-    store = _get_store()
-    buffers = _find_session_buffers(session_id)
-    if not buffers:
-        return None
-    has_active = any(payload.get("status") == SESSION_BUFFER_STATUS_ACTIVE for _nid, payload in buffers)
-    existing = _find_session_capsule(session_id)
-    if not has_active and existing is not None:
-        return None  # 已合并过且无新轮：重复 session-end 幂等空操作
-    turns = _merge_session_turns(buffers)
-    # 句柄文本源：各轮 sections 的值 + thought 原文（raw）混拼（M2 任务书口径）。
-    handle_blobs: list[str] = []
-    for turn in turns:
-        sections = turn.get("sections")
-        if isinstance(sections, dict):
-            handle_blobs.extend(value for value in sections.values() if isinstance(value, str))
-        raw = turn.get("raw")
-        if isinstance(raw, str) and raw:
-            handle_blobs.append(raw)
-    composed = _strategy_compose_session_capsule(
-        turns, session_id=session_id, handles=_strategy_extract_handles(handle_blobs)
-    )
-    if existing is not None:
-        # 更新路径的正文与四节**按行合并**，不覆盖（2026-10-28 实测）：胶囊里可能
-        # 含人补写的内容（收口时按接续点口径补的 outcome / next / pitfalls），它们
-        # 不在缓冲 turns 里、机器合成不出来；一次 1 轮缓冲的 session-end 或断线自愈
-        # 补产就会把 1761 字手写接续点静默盖掉。规则见 merge_capsule_with_existing。
-        composed = _strategy_merge_capsule_with_existing(composed, existing[1].get("sections"), session_id=session_id)
-    # 厚度门槛（issue #219）：只判这次**要写出的**合成结果（含与既有胶囊合并后
-    # 的四节——既有正文是真内容时不该被薄缓冲拖成跳过）。门槛不过 → **不创建也
-    # 不更新胶囊节点**；但必须把缓冲关掉（status=closed）：否则断线自愈扫描器
-    # （``_recover_orphan_session_buffers``）会认为它还悬空，每 5 分钟反复重试，
-    # 永远产不出胶囊、日志刷屏。要点/摘要路径不在这里，完全不受影响。
-    thickness = _strategy_capsule_thickness(turns, composed["sections"])
-    if (
-        thickness["substantive_turns"] < CAPSULE_MIN_SUBSTANTIVE_TURNS
-        or thickness["filled_sections"] < CAPSULE_MIN_FILLED_SECTIONS
-    ):
-        for buf_nid, _buf_payload in buffers:
-            try:
-                store.update_payload(buf_nid, {"status": SESSION_BUFFER_STATUS_CLOSED})
-            except Exception as e:  # noqa: BLE001 —— 关缓冲失败只记日志不阻断
-                logger.warning("薄会话缓冲关闭失败 buffer=%s: %s", buf_nid, e)
-        logger.info(
-            "会话胶囊跳过（太薄）session=%s substantive_turns=%s filled_sections=%s",
-            session_id,
-            thickness["substantive_turns"],
-            thickness["filled_sections"],
-        )
-        return {
-            "skipped": "too_thin",
-            "substantive_turns": thickness["substantive_turns"],
-            "filled_sections": thickness["filled_sections"],
-        }
-    structured = {
-        "kind": HANDOFF_KIND,  # 显式写进 payload（_is_handoff 首行判据之外的显式路）
-        "session_id": session_id,
-        "sections": composed["sections"],
-        "pending": composed["pending"],
-        "turns": composed["turns"],
-    }
-    if existing is not None:
-        # 更新路径（issue #187）：node_id 不变，正文重合成 + payload 覆盖。
-        # 收口时打 closed_at（#208 配套）：一场会话的接受到此为止。新建路径
-        # 刻意不写——刚产出的胶囊此刻还没有任何会话接手过它，写 closed_at
-        # 会自相矛盾（opened_at 为空却有 closed_at）。
-        structured["closed_at"] = _now_iso()
-        capsule_id = existing[0]
-        store.update_content(capsule_id, composed["content"])  # 内部同步 FTS / TDB，向量标 stale
-        try:
-            store.reembed_node(capsule_id)  # 尽力重嵌：失败保持 stale，由 reembed 通道兜底
-        except Exception as e:  # noqa: BLE001 —— 重嵌失败不阻断胶囊更新
-            logger.warning("胶囊重嵌失败 capsule=%s: %s", capsule_id, e)
-        try:
-            store.update_payload(capsule_id, structured)
-        except Exception as e:  # noqa: BLE001 —— 结构化字段覆盖失败不影响正文已更新
-            logger.warning("胶囊 payload 覆盖失败 capsule=%s: %s", capsule_id, e)
-    else:
-        # 新建路径（issue #198 单次写）：sections / pending 随 mem_ingest 一次落库。
-        ingest = _as_json(
-            _mcp_mem_ingest(
-                composed["content"],
-                type=SESSION_CAPSULE_TYPE,
-                importance=SESSION_CAPSULE_IMPORTANCE,
-                domain=SESSION_CAPSULE_DOMAIN,
-                sections=composed["sections"],
-                pending=composed["pending"],
-            )
-        )
-        if not (isinstance(ingest, dict) and ingest.get("stored") and ingest.get("node_id") is not None):
-            error = (
-                str(ingest.get("error") or "capsule_ingest_failed")
-                if isinstance(ingest, dict)
-                else "capsule_ingest_failed"
-            )
-            raise RuntimeError(f"会话胶囊写入失败: {error}")
-        capsule_id = int(ingest["node_id"])
-        try:
-            store.update_payload(capsule_id, structured)
-        except Exception as e:  # noqa: BLE001 —— 簿记字段补写失败不影响胶囊正文/四节可用
-            logger.warning("胶囊 payload 补写失败 capsule=%s: %s", capsule_id, e)
-    for buf_nid, _buf_payload in buffers:
-        try:
-            store.update_payload(buf_nid, {"status": SESSION_BUFFER_STATUS_CLOSED})
-            # 幂等建边：更新路径下老缓冲的边第一次 session-end 就建过了，不重建。
-            linked = {(getattr(e, "label", ""), getattr(e, "target_id", None)) for e in store.get_edges(buf_nid)}
-            if (SESSION_CAPSULE_EDGE_RELATION, capsule_id) not in linked:
-                store.create_edge(buf_nid, capsule_id, SESSION_CAPSULE_EDGE_RELATION)
-        except Exception as e:  # noqa: BLE001 —— 关缓冲 / 建边失败只记日志不阻断
-            logger.warning("缓冲关闭/建边失败 buffer=%s capsule=%s: %s", buf_nid, capsule_id, e)
-    return {
-        "node_id": capsule_id,
-        "sections": composed["sections"],
-        "pending": composed["pending"],
-        "turns": composed["turns"],
-    }
-
-
-def _session_buffer_activity_ts(payload: dict) -> float:
-    """缓冲的最后活动时间（epoch 秒）：updated_at 优先，缺失回退 started_at，都缺失返回 0.0（视为最老，可补）。
-
-    0.0 兜底的取向：连 started_at 都没有的缓冲只可能是更老的数据形态或脏数据，
-    宁可多补不可漏补——补产不丢数据（session-end 语义幂等），漏补才真悬空。
-    """
-    for key in ("updated_at", "started_at"):
-        value = payload.get(key)
-        if isinstance(value, (int, float)):
-            return float(value)
-    return 0.0
-
-
-def _recover_orphan_session_buffers(*, dry_run: bool = False, stale_after: float | None = None) -> dict:
-    """孤儿会话缓冲扫描与补产：进程硬砍（session-end 没跑）后把悬空缓冲补成胶囊。
-
-    为什么需要它：胶囊只在 session-end 落地，post-turn 累进的缓冲若赶上进程被硬砍
-    （计划内关机 / 崩溃）就永远 status=active 悬空，胶囊不产。这里把「静默超过
-    stale_after 秒」的活跃缓冲按 session 逐个调 ``_finalize_session_capsule`` 补产
-    ——该函数幂等（无缓冲 / 已合并过且无新轮都返回 None），晚到的正常 session-end
-    与补产结果天然合流，不丢轮次。
-
-    - ``dry_run=True``：一个字节都不写库，只报告将要处理哪些 session（recovered
-      条目 node_id=None、turns 为合并轮数预览）。
-    - 单 session 补产失败只记 warning 并计入 failed，绝不中断其余 session——
-      单点失败不能拖垮整批。
-    - 返回键名固定（端点与测试断言依赖）：ok / dry_run / stale_after / scanned /
-      recovered / skipped / failed；``scanned`` 为本轮扫到的 type=session 缓冲
-      节点总数（含 active / closed）。
-    """
-    threshold = float(Config.SESSION_CAPSULE_RECOVER_AFTER_SECONDS) if stale_after is None else stale_after
-    store = _get_store()
-    now = time.time()
-    scanned = 0
-    stale_by_session: dict[str, tuple[int, dict]] = {}
-    for nid, payload in store.iter_payloads():
-        if not isinstance(payload, dict) or payload.get("type") != SESSION_BUFFER_TYPE:
-            continue
-        scanned += 1
-        if payload.get("status") != SESSION_BUFFER_STATUS_ACTIVE:
-            continue
-        if now - _session_buffer_activity_ts(payload) < threshold:
-            continue
-        session_id = str(payload.get("session_id") or "")
-        if not session_id:
-            continue  # 无主缓冲没有合并归属（写入侧不会产生），防御脏数据
-        # 同一 session 理论只一条 active；多条时留活动时间最新的一条占位即可——
-        # 合并走 _find_session_buffers 取全部缓冲，轮次不会丢。
-        prev = stale_by_session.get(session_id)
-        if prev is None or _session_buffer_activity_ts(payload) > _session_buffer_activity_ts(prev[1]):
-            stale_by_session[session_id] = (nid, payload)
-
-    result: dict = {
-        "ok": True,
-        "dry_run": dry_run,
-        "stale_after": threshold,
-        "scanned": scanned,
-        "recovered": [],
-        "skipped": [],
-        "failed": [],
-    }
-    for session_id in stale_by_session:
-        if dry_run:
-            merged = _merge_session_turns(_find_session_buffers(session_id))
-            result["recovered"].append({"session_id": session_id, "node_id": None, "turns": len(merged)})
-            continue
-        try:
-            capsule = _finalize_session_capsule(session_id)
-        except Exception as e:  # noqa: BLE001 —— 单 session 失败不拖垮整批
-            logger.warning("孤儿会话缓冲补产失败 session=%s: %s", session_id, e)
-            result["failed"].append({"session_id": session_id, "error": str(e)})
-            continue
-        if capsule is None:
-            # 无缓冲 / 已合并过且无新轮的幂等空操作
-            result["skipped"].append(session_id)
-            continue
-        if isinstance(capsule, dict) and capsule.get("skipped"):
-            # 厚度门槛跳过（issue #219）：``_finalize_session_capsule`` 已经把
-            # 缓冲关掉了——下一轮扫描不会再命中这条（status≠active），不会
-            # 每 5 分钟反复刷 skip。带 session 与厚度数字留在 skipped 里可观测。
-            result["skipped"].append(
-                {
-                    "session_id": session_id,
-                    "skipped": capsule["skipped"],
-                    "substantive_turns": capsule.get("substantive_turns"),
-                    "filled_sections": capsule.get("filled_sections"),
-                }
-            )
-            continue
-        capsule_id = int(capsule["node_id"])
-        try:
-            # 留痕：这条胶囊是断线补产的，不是正常 session-end 产的——检索侧据此
-            # 能区分「半截产物」，排查时不用猜它是怎么来的。
-            store.update_payload(capsule_id, {"recovered": True, "recovered_at": _now_iso()})
-        except Exception as e:  # noqa: BLE001 —— 留痕失败不影响胶囊已产出（尽力而为）
-            logger.warning("孤儿补产留痕失败 capsule=%s: %s", capsule_id, e)
-        logger.info("孤儿会话缓冲已补产成胶囊 session=%s capsule=%s turns=%s", session_id, capsule_id, capsule["turns"])
-        result["recovered"].append({"session_id": session_id, "node_id": capsule_id, "turns": capsule["turns"]})
-    return result
-
-
-async def _orphan_recovery_loop() -> None:
-    """后台周期扫描：服务常驻时的断线自愈（Config.SESSION_CAPSULE_RECOVER_ENABLED 才启动）。
-
-    - 启动先 sleep 5 秒再首轮扫描：等 store 懒加载就绪，也避免与启动后的首批
-      请求挤在同一时刻做全库扫描。
-    - 同步扫描经 to_thread 下放，不阻塞事件循环（同 ``_startup_self_check``）。
-    - 单轮异常只记 warning 继续循环，绝不退出——自愈循环自己挂了，孤儿缓冲就
-      永远没人补了。CancelledError 不在 Exception 体系内，cancel 照常穿透。
-    """
-    await asyncio.sleep(5)
-    while True:
-        try:
-            await asyncio.to_thread(_recover_orphan_session_buffers)
-        except Exception as e:  # noqa: BLE001 —— 扫描失败只记日志，下轮重试
-            logger.warning("孤儿会话缓冲周期扫描失败（下轮重试）: %s", e)
-        await asyncio.sleep(Config.SESSION_CAPSULE_RECOVER_INTERVAL_SECONDS)
-
-
-@app.post("/lifecycle/session-end")
-def lifecycle_session_end(req: SessionEndRequest):
-    """会话结束：要点路径（type=memory，既有行为）+ 会话胶囊路径（kind=handoff）。
-
-    两条独立路径，互不阻断：
-
-    - 旧「会话要点」：messages 强信号提炼 → type=memory / facts 层。由
-      ``Config.SESSION_MEMORY_INGEST`` 开关控制，**默认开 = 行为完全不变**；
-      关闭后本路径可观测地跳过（skip_reason=session_memory_disabled）。
-    - 会话胶囊（新增）：session_id 命中活跃缓冲节点 → compose_session_capsule
-      → type=task + kind=handoff 胶囊 + 缓冲节点 closed + CONSOLIDATED_INTO 边。
-      返回体新增 ``capsule: {node_id, sections, pending, turns}``——仅在胶囊
-      **实际写出**时携带；无缓冲（老宿主 / 空 session_id）→ 不加该字段，
-      既有返回体逐字段不变。
-    - 太薄的会话（issue #219 厚度门槛）不产胶囊：返回体 ``capsule_skipped`` 带
-      原因与两个厚度数字（``{"skipped": "too_thin", ...}``），不静默；缓冲
-      **仍然关闭**（否则自愈扫描器会永远重试）。
-    """
-    decision = _strategy_session_end(req.messages, auto_ingest=req.auto_ingest)
-    decision["session_id"] = req.session_id
-
-    # 胶囊路径（新增）：与要点路径互不阻断，失败只记日志（capsule 字段缺席）。
-    capsule_out: dict | None = None
-    capsule_skipped_out: dict | None = None
-    if req.session_id:
-        try:
-            capsule_out = _finalize_session_capsule(req.session_id)
-        except Exception as e:  # noqa: BLE001 —— 胶囊失败不阻断旧要点路径
-            logger.warning("会话胶囊生成失败 session=%s: %s", req.session_id, e)
-        # 厚度门槛跳过（issue #219）不伪装成「胶囊已产出」：把 skip 返回体单独
-        # 透传 ``capsule_skipped``，``capsule`` 仍只在真写出时携带。
-        if isinstance(capsule_out, dict) and capsule_out.get("skipped"):
-            capsule_skipped_out = capsule_out
-            capsule_out = None
-        if capsule_skipped_out is not None:
-            decision["capsule_skipped"] = capsule_skipped_out
-        if capsule_out is not None:
-            decision["capsule"] = capsule_out
-
-    if not decision.get("store"):
-        return decision
-
-    if not Config.SESSION_MEMORY_INGEST:
-        # 兼容开关关闭：旧要点路径停用（胶囊路径不受影响），可观测地跳过。
-        decision["store"] = False
-        decision["skip_reason"] = "session_memory_disabled"
-        return decision
-
-    probe = _as_json(
-        _mcp_mem_search(
-            decision["content"],
-            scope="memory",
-            top_k=1,
-            # issue #278：查重要能看见历史 digest（要点路径回退模式下拦截重复
-            # 写入）；且查重是内部动作，不计任何命中计数。
-            include_digest=True,
-            count_kind="none",
-        )
-    )
-    dup_hits = probe.get("results", []) if isinstance(probe, dict) else []
-    if _strategy_is_near_duplicate(dup_hits):
-        out = {
-            "store": False,
-            "points": decision["points"],
-            "stored": False,
-            "tier_distribution": {},
-            "skip_reason": "near_duplicate",
-            "session_id": req.session_id,
-        }
-        if capsule_out is not None:
-            out["capsule"] = capsule_out
-        return out
-
-    ingest = _as_json(
-        _mcp_mem_ingest(
-            decision["content"],
-            type=decision["type"],
-            importance=decision["importance"],
-            domain=_resolve_domain(""),
-            # issue #278 写入侧打来源标记：会话要点默认不进检索候选
-            # （meta.origin=session_digest），降级可达性、不删历史节点。
-            meta={"origin": "session_digest"},
-        )
-    )
-    out = {
-        "store": True,
-        "stored": bool(ingest.get("stored")),
-        "node_id": ingest.get("node_id"),
-        "points": decision["points"],
-        "tier_distribution": {"facts": 1} if ingest.get("stored") else {},
-        "session_id": req.session_id,
-    }
-    if capsule_out is not None:
-        out["capsule"] = capsule_out
-    return out
 
 
 @app.post("/lifecycle/pre-compress")
 def lifecycle_pre_compress(req: PreCompressRequest):
     """压缩前抽取要点，贡献给压缩 prompt（**不写库**，只保上下文）。"""
     return _strategy_pre_compress(req.messages)
-
-
-class RecoverCapsulesRequest(BaseModel):
-    """POST /lifecycle/recover-orphan-capsules 请求体：dry_run 只报告不写库。"""
-
-    dry_run: bool = False
-
-
-@app.post("/lifecycle/recover-orphan-capsules")
-def lifecycle_recover_orphan_capsules(req: RecoverCapsulesRequest) -> dict:
-    """手动触发孤儿缓冲补产（验收与人工补救；与后台循环共用同一套扫描实现）。
-
-    同步 def：FastAPI 自动放线程池，不阻塞事件循环（与其他 lifecycle 端点一致）。
-    """
-    return _recover_orphan_session_buffers(dry_run=req.dry_run)
 
 
 class ContextEnhanceRequest(BaseModel):

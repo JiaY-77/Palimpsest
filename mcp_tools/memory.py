@@ -15,7 +15,6 @@ from typing import Any
 from config import Config
 from core import tdb_text_index as _tdb_text
 from core.bitemporal import freshness_decay, is_valid_at, stamp_new_fact, time_fields
-from core.capsule_guard import validate_capsule_fields
 from core.chunk_index import index_node_chunks
 from core.conflict import find_duplicate_candidates, resolve_conflict
 from core.db_health import check_db_health, health_hint
@@ -28,7 +27,7 @@ from core.policy import check_ingest
 from core.search import is_exact_identifier_query
 from core.secret_scan import SecretScanError
 from core.strategy import THOUGHT_TYPE, decide_import, detect_thought_origin, normalize_skeleton_kind
-from core.task_state import HANDOFF_KIND, _handoff_title, _is_handoff, _iso_from_epoch
+from core.task_state import _iso_from_epoch
 from core.trivium_store import (
     EmbeddingInputTooLongError,
     EmbeddingUnavailableError,
@@ -385,8 +384,6 @@ def mem_ingest(
     skeleton_kind: str = "",
     turn_index: int | None = None,
     meta: dict[str, str] | None = None,
-    sections: dict[str, str] | None = None,
-    pending: list[str] | None = None,
     event_time: str = "",
     dedupe: str = "allow",
     dedupe_target: int | None = None,
@@ -394,20 +391,12 @@ def mem_ingest(
     """
     写入新记忆。
 
-    接续点自动打标：``type=task`` 且 content 首行以「接续点」标题词开头
-    （``core.task_state._is_handoff`` 判据）→ 自动写 ``kind=handoff``（幂等），
-    并在 ``title`` 为空时用 ``core.task_state._handoff_title`` 自动补一行摘要
-    （已有非空值不覆盖），跨会话交接记录由此默认从活跃任务列表排除、
-    ``tasks_active(include_handoff=true)`` 可显式取回，且交接列表里读得出是哪条。
 
     ★ 先分载体（写之前必判）：能写进仓库 / 知识库文件、会随代码一起演进的事实
       （接口约定、目录结构、SOP、验收口径、配置项）**不要写记忆**——写下去就过期，
       过期就误导；只有**没有文件归宿、跨会话仍然成立**的内容（决策理由、被否掉的
       方案、被纠正的旧结论、用户偏好）才写记忆。判据与正反例见 docs/USAGE.md §2.0。
 
-    ★ 什么时候该写接续点（跨会话交接）：一段工作**收尾时**、长任务**到达里程碑
-      时**、或上下文**即将丢失时** → 写一条接续点（``type="task"``，content 首行
-      以「接续点」开头），正文写清「下一轮先读什么」。日常一问一答不需要写。
     ★ 写入前请先判定（判定归调用方，本工具不代判、不额外接 LLM）：
       1) 先 ``mem_search`` 查同主题的现有记忆（``scope="memory"``，top_k=3~5）；
       2) 按结果分三种情况：
@@ -462,16 +451,6 @@ def mem_ingest(
     ``meta`` 键，payload 形状与旧行为完全一致。
     v1.1：新增知识关联检测——score > 0.35 的 kb_chunk 记入 payload.linked_from，
     返回 linked_kb_ids 便于追溯关联的知识库块。
-
-    手写胶囊结构字段（可选 ``sections`` / ``pending``）：与自动胶囊
-    （``core.strategy.compose_session_capsule`` 产出，POST /lifecycle/session-end
-    写入）形状一致——``sections`` 为四节文本字典（键限 thought / outcome /
-    next / pitfalls，值为字符串），``pending`` 为待补节名列表。未传
-    ``pending`` 而传了 ``sections`` 时自动算（缺失或值为空白的节，固定
-    顺序）；显式传入原样使用、不做自动推断覆盖。校验见 ``core.capsule_guard``
-    （与 REST ``/mem/ingest`` 同一份实现）：键 / 元素出白名单、值非字符串、
-    pending 列了 sections 中非空的节，一律拒绝写入（stored:false，不落库）。
-    两个键均不传（None）时 payload 不含这两个键，形状与旧行为完全一致。
 
     思维底片来源标记（``type="thought"`` 专属）：``skeleton_kind`` 为给侧上报的
     **事实字段**（本轮注入的思考骨架类型，``""`` / code / research / default，
@@ -540,37 +519,6 @@ def mem_ingest(
         if not meta_ok:
             return _to_json({"stored": False, "error": meta_err})
         node_data["meta"] = dict(meta)
-    # 手写胶囊结构字段（可选 sections / pending）：校验见 core.capsule_guard——
-    # 与自动胶囊（compose_session_capsule）形状同源；键 / 元素出白名单、值
-    # 非字符串、pending 列了非空节，一律拒绝写入（stored:False，不落库，
-    # 走下方事务异常前的既有拒绝路径）。不传（None）或空字典时不写对应键，
-    # payload 形状与旧行为一致；pending 未传而 sections 非空时由校验函数
-    # 自动算（缺失或空白节，固定顺序），显式传入原样落库。
-    if sections is not None or pending is not None:
-        cap_ok, cap_err, pending_resolved = validate_capsule_fields(sections, pending)
-        if not cap_ok:
-            return _to_json({"stored": False, "error": cap_err})
-        if sections:
-            node_data["sections"] = dict(sections)
-        if pending_resolved is not None:
-            node_data["pending"] = list(pending_resolved)
-    # 会话接续点写入层打标（幂等）：type=task 且 content 首行以「接续点」标题词
-    # 开头 → 自动写 kind=handoff。判定复用 core.task_state._is_handoff 的首行判据
-    # （PR #112 收紧过的「标题词开头」，与查询 / 回填同源，不另立识别规则）——
-    # 此前 kind 只有存量回填会打，回填之后纯 ingest 进来的接续点一律缺 kind，
-    # include_handoff=True 也捞不回（生产 2363/2393 实测根因之一）。已是接续点
-    # 的写入不重复打、不报错。
-    # title 同步补齐（幂等、不覆盖）：title 此前只有回填会补，新写入的接续点在
-    # 交接列表里 title 为空、读不出是哪条。已有非空值不覆盖（尊重人工与既有值，
-    # 与回填「title 非空即就绪」判据一致）；为空才补，提取复用 _handoff_title
-    # （PR #112 验收过的逻辑，不改动）。
-    if type == "task" and _is_handoff({"content": content}):
-        node_data["kind"] = HANDOFF_KIND
-        if not (node_data.get("title") or "").strip():
-            # created_at 一并带入（issue #227）：hash-only 首行（补产胶囊形态）
-            # 退化出的可读 stub 需要日期段；其余 title 提取路径不读 created_at，
-            # 对正常手写接续点 / session-end 胶囊的既有 title 零行为变化。
-            node_data["title"] = _handoff_title({"content": content, "created_at": now})
     # 思维底片来源标记（type=thought 专属，见 mem_ingest docstring）：skeleton_kind
     # 是给侧上报的事实字段（白名单外归空串，脏值不进库）；thought_origin 是按
     # content 形态判定的启发式字段——落库路径统一打标，任何通道写 thought 节点
@@ -782,37 +730,21 @@ def tasks_active(
     project: str = "",
     states: str = "todo,doing,blocked",
     limit: int = 15,
-    include_handoff: bool = False,
     fresh_days: int = 30,
 ) -> str:
     """活跃任务列表：``type=task`` & ``status=active`` & 状态命中，按优先级排序。
-
-    ★ 会话**开始时**先调一次 ``tasks_active(include_handoff=true)``，把上一轮的
-      接续点带出来，不要要求用户重讲上一轮做了什么；读到后可用
-      ``POST /memory/{id}/open``（body ``{"session_id": ...}``）留接手痕迹。
 
     参数：
       - ``project``：非空时只保留该项目（``payload.project``）的任务；
       - ``states``：逗号分隔的状态集（``todo`` / ``doing`` / ``blocked`` /
         ``done`` / ``canceled``）；非法值被忽略，全非法则回退默认三态；
       - ``limit``：返回条数上限（``total`` 仍为过滤后总数）；
-      - ``include_handoff``：``true`` 时同时列出会话接续点
-        （``kind=handoff`` 的跨会话交接记录），默认排除。显式列出时**不受状态
-        过滤限制**——接续点没有「待办状态」语义，``task_state`` 为 ``None`` 也能
-        完整取回（``kind`` 由写入层自动打标，见 ``core.task_state._is_handoff``），
-        且置顶按 ``importance`` 倒序；
       - ``fresh_days``：新鲜度窗口（天，默认 30）。超期未动的条目不再逐条返回，
         汇总进返回体 ``stale``（``count`` / ``oldest`` / ``hint``）——旧任务由此
         退场，不再污染会话开场工作集（issue #128）；``0`` = 展开全部。
 
     排序：``doing > blocked > todo`` → ``last_touched_at`` 倒序 → ``importance`` 倒序。
     默认排除 ``payload.legacy = true`` 的老节点（见 CLI ``tasks backfill``）。
-
-    接手留痕（issue #208）：条目若被其他会话接手过（POST /memory/{id}/open
-    记录的胶囊接手痕迹），带 ``opened_at``（首次被接手时间）和 ``open_count``
-    （接手过的新会话个数，同会话重复接手不重复计数）——胶囊「被几个会话
-    接着用 / 何时第一次被接手」由此可读；从未被接手过的条目**不带**这两个
-    键（靠键缺席区分「从未接手」与「接过手」）。
 
     核心逻辑见 core.task_state.list_active_tasks（REST 端点复用同一实现，不复制）。
     """
@@ -824,7 +756,6 @@ def tasks_active(
             project=project,
             states=states,
             limit=limit,
-            include_handoff=include_handoff,
             fresh_days=fresh_days,
         )
     )

@@ -164,23 +164,7 @@ hermes config set context.engine palimpsest-graph
 
 **日常怎么用**（该记什么、`importance` 怎么给、什么时候该取代）见 **[`docs/USAGE.md`](docs/USAGE.md)**。
 
-## Cross-session handoff（跨会话交接）
 
-新会话不知道上一轮做过什么——这是 agent 最常见的断层。Palimpsest 把它做成**一种固定的数据形态**，不依赖模型记住任何东西：
-
-| 环节 | 怎么做 |
-|---|---|
-| **写** | 收尾时 `mem_ingest(content="接续点 / …", type="task", importance=0.9)`。首行以「接续点」开头 → 自动打 `kind=handoff`，并默认从活跃任务列表排除（它不是待办） |
-| **读** | 新会话第一句之前调 `tasks_active(include_handoff=true)`，上一轮的接续点直接带出来，不用让用户重讲 |
-| **留痕** | `POST /memory/{id}/open`（body `{"session_id": …}`）记录「这一轮被接手过」：谁读过、读过几次可查 |
-
-三条边界：
-
-- **时机**：一段工作收尾、长任务到里程碑、上下文即将丢失时写；一问一答不用写。
-- **先结账再写**：写接续点前把本轮做完 / 作废的任务当场改状态（`PUT /memory/{id}`，content 首行加 `[完成]` / `[取消]`），不结账就积成僵尸任务，一直污染 `tasks_active`。
-- **手写与自动同一形态**：`POST /lifecycle/session-end` 能自动合成胶囊；手写接续点用于「这一轮我判断特别重要」的场合。两者检索路径一致。
-
-不需要任何特殊集成——就是两个工具调用。完整配方见 [`docs/HERMES_INTEGRATION.md`](docs/HERMES_INTEGRATION.md)。
 ---
 
 ## Why not the others
@@ -245,10 +229,6 @@ python scripts/palimpsest_cli.py doctor
 |---|---|---|
 | `REST_PORT` | `8090` | FastAPI REST 服务端口 |
 | `DB_PATH` | `data/mh_memory.db` | 嵌入式 TriviumDB 数据库路径 |
-| `SESSION_BUFFER_MIN_THOUGHT_CHARS` | `400` | 会话缓冲只收实质轮的门槛：本轮有工具调用 / 思考正文 ≥ 此值且含结论字段 / 用户消息含指令动词，任一满足才进（详见 docs/CONFIGURATION.md） |
-| `SESSION_CAPSULE_RECOVER_ENABLED` | `1` | 会话胶囊断线自愈总开关：后台每 `INTERVAL` 秒扫描一次，把静默超过阈值的活跃会话缓冲补产成胶囊（进程被硬砍、session-end 没跑时的兜底）；`0` = 不启后台循环，手动端点仍可用 |
-| `SESSION_CAPSULE_RECOVER_AFTER_SECONDS` | `1800` | 孤儿判定阈值（秒）：缓冲最后活动距今超过它才补产。刻意保守——误判不丢轮次，session-end 会把全部缓冲重合成同一胶囊节点 |
-| `SESSION_CAPSULE_RECOVER_INTERVAL_SECONDS` | `300` | 后台扫描间隔（秒） |
 | `EMBEDDING_PROVIDER` | *（空 = 自动探测）* | 向量后端：留空自动探测（有云端 key → `openai`，否则 → `local`），或显式 `local` / `ollama` / `openai` |
 | `DEEPSEEK_API_KEY` | *（空）* | 生成报告用；不配也能跑 |
 | `KNOWLEDGE_DIR` | *（可选）* | 知识库根目录（待索引的 Obsidian `.md` 文件） |

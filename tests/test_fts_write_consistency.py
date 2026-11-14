@@ -173,9 +173,7 @@ class TestReembedClearsVectorStale:
 
     ``update_content`` 只为「向量待重算」打这个标记，``reembed_node`` 已经按
     当前 content 重算完向量——不清就留下「向量是新的、标记说它是旧的」的
-    自相矛盾记录。唯一的生产调用方是胶囊更新路径（``main.py`` 的
-    ``_finalize_session_capsule``），它 ``update_content`` 后紧接着 reembed，
-    所以每个被更新过的胶囊都会带着这个假标记。
+    自相矛盾记录（``update_content`` 的调用方随后应紧跟重嵌）。
     """
 
     def test_reembed_clears_vector_stale(self):
