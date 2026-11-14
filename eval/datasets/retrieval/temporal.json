@@ -1,0 +1,46 @@
+{
+  "version": 2,
+  "created_at": "2026-11-14",
+  "kind": "temporal_twin",
+  "doc": "时间孪生（现状基线）：同一问题在库里有多个版本的答案，检索必须召回最新那条（gold），召回 stale 视为答错。本文件的 gold 指向【叙事记录】，用于测量「最新答案只写在多主题长记录里」时的真实水位；按「状态与叙事分离」规范重建目标形态的题目见 temporal_state.json。",
+  "judge": "gold 必须在 top_k 内，且排名优于所有 stale_ids",
+  "history": "2026-11-14 口径修正：原 6 题里 t04 / t05 / t06 三条判据不成立，已移入 temporal_state.json 并改正——①t04 的 gold 3093 与 top-1 的 3092 是同结论双胞胎（3093 已标 outdated，REVISED_BY→3092）；②t05 的 gold 3949 是 120 字收尾 stub、没有 chunk 行；③t06 的 gold 4553 全文不含 rerank / 通道内容（真·坏题）。剩 t01~t03 是真实差距，gold 不改——改了就是放水。",
+  "items": [
+    {
+      "qid": "t01",
+      "query": "小九（xiaojiu）现在用的是哪个模型？",
+      "gold_ids": [
+        2378
+      ],
+      "stale_ids": [
+        1617,
+        1630
+      ],
+      "why": "10-07 换 deepseek → 10-17 换 glm-5.3-flash；1630 还写着「两人都是 deepseek-flash」"
+    },
+    {
+      "qid": "t02",
+      "query": "小帕现在的版本号是多少？",
+      "gold_ids": [
+        4553
+      ],
+      "stale_ids": [
+        3316,
+        1970,
+        875
+      ],
+      "why": "v2.0.0 → v2.9.0 → v2.16.0 → v2.22.0-17-gae4daea"
+    },
+    {
+      "qid": "t03",
+      "query": "小帕生产服务现在跑在哪个提交上？",
+      "gold_ids": [
+        4553
+      ],
+      "stale_ids": [
+        4552
+      ],
+      "why": "同一个下午 33d42df → ae4daea，4552 说的是「缺 #278」"
+    }
+  ]
+}

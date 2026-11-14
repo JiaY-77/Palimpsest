@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "created_at": "2026-11-14",
+  "kind": "temporal_twin",
+  "doc": "当前状态题（规范落地后的目标形态）：同一问题在库里有多版答案时，检索必须召回『状态事实节点』（type=memory，答案第一句、词面对齐，变更时 replaces 上一条）。与 temporal.json 的区别：那份的 gold 是『某条叙事记录』（现状测量，0/6 基线），这份的 gold 是 2026-11-14 按「状态与叙事分离」规范新建的状态节点。",
+  "judge": "gold 必须在 top_k 内，且排名优于所有 stale_ids",
+  "history": "2026-11-14 前：这类问题的最新答案只写在多主题长记录里，实测 gold 排 8~45 名（temporal.json 0/6）。#312 修掉 archived 回流后仍有 3 题不达标，遂按规范把状态单独成节点。",
+  "items": [
+    {
+      "qid": "s01",
+      "query": "小帕现在的版本号是多少？",
+      "gold_ids": [4555],
+      "stale_ids": [3316, 1970, 875],
+      "why": "v2.0.0 → v2.9.0 → v2.16.0 → v2.22.0-18：前三条是叙事记录，4555 是状态事实"
+    },
+    {
+      "qid": "s02",
+      "query": "小帕生产服务现在跑在哪个提交上？",
+      "gold_ids": [4556],
+      "stale_ids": [4552, 875],
+      "why": "同一个下午 33d42df → ae4daea → f6bc66a，4552 说的是「缺 #278」"
+    },
+    {
+      "qid": "s03",
+      "query": "小九（xiaojiu）现在用的是哪个模型？",
+      "gold_ids": [4557],
+      "stale_ids": [1630, 1617, 2378],
+      "why": "10-07 换 deepseek → 10-17 换 glm-5.3-flash；1630 还写着「两人都是 deepseek-flash」"
+    },
+    {
+      "qid": "s04",
+      "query": "小七现在的主模型是哪个？",
+      "gold_ids": [4558],
+      "stale_ids": [],
+      "why": "deepseek-v4.1-flash（provider opencode-go）"
+    },
+    {
+      "qid": "s05",
+      "query": "小七的故障兜底模型是哪个？",
+      "gold_ids": [3092],
+      "stale_ids": [3093],
+      "why": "10-24 定案 qwen3.8-flash；3093 是 3092 的同结论短版（双胞胎），已标 outdated"
+    },
+    {
+      "qid": "s06",
+      "query": "小帕的混合检索有几路通道、rerank 默认开吗？",
+      "gold_ids": [4559],
+      "stale_ids": [],
+      "why": "两路基线（语义+FTS5）+ 两路默认关（TDB 文本 / 时间索引）；rerank 默认关、后端 local_ce"
+    },
+    {
+      "qid": "s07",
+      "query": "备份脚本现在会备份哪些文件？",
+      "gold_ids": [4560],
+      "stale_ids": [3861],
+      "why": "3861 是 10-29 的坑（只备主库组、漏 fts.db），#241/#301 后的口径在 4560"
+    }
+  ]
+}
