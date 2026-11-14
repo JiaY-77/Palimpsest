@@ -34,13 +34,15 @@ logger = logging.getLogger(__name__)
 STATUS_DISABLED = "disabled"
 STATUS_OK = "ok"
 STATUS_DEGRADED = "degraded"
+# 打分失效（所有候选分数完全相同）时返回的状态：不采用重排、按原序返回（issue #307）。
+STATUS_DEGENERATE = "rerank_degenerate"
 
 # ---------------------------------------------------------------
 # local_ce 后端：本地 cross-encoder（issue #274）
 # ---------------------------------------------------------------
 
 _CE_MODEL_CTX = 4096  # 一次只送一条 query-doc 对（snippet 默认 240 字），4096 足够
-_CE_MODEL_UBATCH = 4096  # n_ubatch token 上限；仍逐条调用，这里只是放开物理上限
+_CE_MODEL_UBATCH = 4096  # n_batch 默认值（RERANK_LOCAL_N_BATCH 覆盖）；仍逐条调用，只是放开物理上限
 
 # llama.cpp 实例不是线程安全的（REST 层可能多线程进入）：懒加载与打分全程持锁。
 _CE_LOCK = threading.Lock()
@@ -104,21 +106,31 @@ def _get_ce_model() -> Any | None:
         _CE_BLOCKED = f"缺少 llama-cpp-python 依赖：{e}"
         logger.warning("rerank(local_ce) 降级（%s）；fail-open 回原顺序", _CE_BLOCKED)
         return None
+    # n_batch / n_ubatch 都显式可配（issue #307）：n_ubatch=0 表示不传，走 llama.cpp
+    # 默认（= n_batch）——即历史行为；实测与本地 embedding 模型同进程交替使用多轮时，
+    # n_ubatch 不设会在 decode_batch 段错误，显式压小后稳定（对照实验见 PR）。
+    n_batch = int(getattr(Config, "RERANK_LOCAL_N_BATCH", _CE_MODEL_UBATCH) or _CE_MODEL_UBATCH)
+    n_ubatch = int(getattr(Config, "RERANK_LOCAL_N_UBATCH", 0) or 0)
+    kwargs: dict[str, Any] = {
+        "model_path": str(model_path),
+        "embedding": True,
+        "pooling_type": LLAMA_POOLING_TYPE_RANK,
+        "n_ctx": _CE_MODEL_CTX,
+        "n_batch": n_batch,
+        "n_threads": int(getattr(Config, "RERANK_LOCAL_N_THREADS", 0) or 0),
+        "verbose": False,
+    }
+    if n_ubatch:
+        kwargs["n_ubatch"] = n_ubatch
     try:
-        _CE_MODEL = Llama(
-            model_path=str(model_path),
-            embedding=True,
-            pooling_type=LLAMA_POOLING_TYPE_RANK,
-            n_ctx=_CE_MODEL_CTX,
-            n_batch=_CE_MODEL_UBATCH,
-            n_threads=int(getattr(Config, "RERANK_LOCAL_N_THREADS", 0) or 0),
-            verbose=False,
-        )
+        _CE_MODEL = Llama(**kwargs)
     except Exception as e:  # noqa: BLE001 —— 坏文件 / 加载失败同样归为后端不可用
         _CE_BLOCKED = f"模型加载失败：{e}"
         logger.warning("rerank(local_ce) 降级（%s）；fail-open 回原顺序", _CE_BLOCKED)
         return None
-    logger.info("rerank(local_ce)：模型已加载 %s", model_path)
+    logger.info(
+        "rerank(local_ce)：模型已加载 %s（n_batch=%s, n_ubatch=%s）", model_path, n_batch, n_ubatch or "(默认=n_batch)"
+    )
     return _CE_MODEL
 
 
@@ -165,6 +177,16 @@ def _rerank_local_ce(query: str, items: list[dict], top_k: int) -> tuple[list[di
     except Exception as e:  # noqa: BLE001 —— 任何异常都 fail-open 回原顺序（红线 2）
         logger.warning("rerank(local_ce) fail-open（异常）: %s", e)
         return items, STATUS_DEGRADED
+    if n > 1 and len({float(s) for s in scores}) == 1:
+        # 打分失效（issue #307 观测：4 个语义差异极大的 doc 全部 -10.572）——分数
+        # 全同意味着模型输出不可信，任何排序都只是噪声；不采用重排、按原序返回，
+        # 并标记 rerank_degenerate（不是 degraded：模型没坏，是这次打分没区分度）。
+        logger.warning(
+            "rerank(local_ce) 打分失效：%d 个候选分数完全相同（%r），不采用重排、按原序返回",
+            n,
+            scores[0],
+        )
+        return items, STATUS_DEGENERATE
     order = sorted(range(n), key=lambda i: scores[i], reverse=True)  # sorted 稳定：同分保原序
     top = order[:top_k_int]
     top_set = set(top)

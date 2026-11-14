@@ -22,6 +22,7 @@ rank-only 不变量 / 打分器异常 fail-open / 模型缺失只走一次磁盘
 from __future__ import annotations
 
 import sys
+from typing import ClassVar
 
 import pytest
 import requests
@@ -473,16 +474,23 @@ def test_local_ce_rank_only_invariant(monkeypatch, _reset_ce_state):
     assert out[0] is items[2]  # 元素本身未被拷贝改写
 
 
-def test_local_ce_ties_keep_original_order(monkeypatch, _reset_ce_state):
-    """同分（打分器给全池同一分数）→ 保持原顺序，仍 status ok。"""
+def test_local_ce_degenerate_scores_fall_back(monkeypatch, _reset_ce_state, caplog):
+    """全池分数完全相同（打分失效，issue #307 观测 4 个 doc 全 -10.572）→ 不采用
+    重排、按原序返回，status 标 ``rerank_degenerate``（区别于 degraded：模型没坏，
+    是这一轮打分没有区分度，任何排序都只是噪声）。"""
+    import logging
+
     import core.reranker as rr
 
     _ce_enable(monkeypatch)
-    _install_ce(monkeypatch, {f"正文-{i}": 0.5 for i in range(1, 6)})
+    _install_ce(monkeypatch, {f"正文-{i}": -10.572 for i in range(1, 6)})
     items = _five_items()
-    out, status = rr.rerank("问题", items, 2)
-    assert status == "ok"
+    with caplog.at_level(logging.WARNING, logger="core.reranker"):
+        out, status = rr.rerank("问题", items, 2)
+    assert status == "rerank_degenerate"
+    assert out is items  # 原对象、原顺序（不采用重排）
     assert [it["id"] for it in out] == [1, 2, 3, 4, 5]
+    assert any("打分失效" in r.getMessage() for r in caplog.records)  # 日志留痕
 
 
 def test_local_ce_pool_bigger_than_items_skips_scoring(monkeypatch, _reset_ce_state):
@@ -676,3 +684,80 @@ def test_hybrid_rrf_local_ce_keeps_full_pool_and_no_network(monkeypatch, _reset_
     assert len(items) == 8  # rank-only：池全长（不是截回 top_k）
     assert items[0]["id"] == 8  # 打分最高者排最前
     assert len(fake.inputs) == 8  # 逐条打分
+
+
+# ----------------------------------------------------------------
+# 10.7 n_batch / n_ubatch 装配契约（issue #307：本地 embedding + local_ce
+#     交替使用多轮，decode_batch 段错误——n_ubatch 必须显式可配且默认生效）
+# ----------------------------------------------------------------
+
+
+class _RecordingLlama:
+    """替身 llama_cpp.Llama：只记录构造参数，绝不加载真模型（CI 无 635MB 文件）。
+
+    create_embedding 按输入文本给一个确定性且互不相同的假分数——构造参数断言
+    之外，还要求整条 local_ce 链路（装配 → 逐条打分 → 排序）在替身上能走通到
+    status "ok"，防止测试悄悄退化成「构造即崩、fail-open 兜底」的假绿。
+    """
+
+    instances: ClassVar[list[_RecordingLlama]] = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        type(self).instances.append(self)
+
+    def create_embedding(self, inputs: list) -> dict:
+        text = inputs[0]
+        score = float(abs(hash(text)) % 10_000) / 10_000  # 确定性、逐文本不同
+        return {"data": [{"embedding": [score]}]}
+
+
+def _install_fake_llama_cpp(monkeypatch) -> type[_RecordingLlama]:
+    """把 sys.modules['llama_cpp'] 换成替身模块（_get_ce_model 是函数内 import，
+    from-import 走 sys.modules 查找，注入即生效；monkeypatch 自动还原）。"""
+    import types
+
+    fake_mod = types.ModuleType("llama_cpp")
+    # setattr 动态挂（ModuleType 上点号赋值 Pyright 判 unknown attribute）；
+    # 常量属性 setattr 被 B010 误伤，这里确实需要运行期动态挂。
+    setattr(fake_mod, "LLAMA_POOLING_TYPE_RANK", 4)  # noqa: B010
+    setattr(fake_mod, "Llama", _RecordingLlama)  # noqa: B010
+    monkeypatch.setitem(sys.modules, "llama_cpp", fake_mod)
+    _RecordingLlama.instances = []
+    return _RecordingLlama
+
+
+def test_local_ce_n_ubatch_passed_to_llama(monkeypatch, _reset_ce_state):
+    """默认配置（RERANK_LOCAL_N_UBATCH=512）→ Llama(...) 必须同时收到
+    n_batch=4096 与 n_ubatch=512（#307 修复：只设 n_batch 不设 n_ubatch 是崩因）。"""
+    import core.reranker as rr
+    from config import Config
+
+    _ce_enable(monkeypatch, RERANK_LOCAL_N_THREADS=0)
+    monkeypatch.setattr(Config, "RERANK_LOCAL_MODEL_PATH", "models/bge-reranker-v2-m3-Q8_0.gguf")
+    recording = _install_fake_llama_cpp(monkeypatch)
+    monkeypatch.setattr(rr, "_model_file_exists", lambda path: True)
+
+    assert rr.rerank("问题", _five_items(), 2)[1] == "ok"
+    assert len(recording.instances) == 1
+    kwargs = recording.instances[0].kwargs
+    assert kwargs["n_batch"] == 4096  # 历史默认不变（Config.RERANK_LOCAL_N_BATCH）
+    assert kwargs["n_ubatch"] == 512  # 显式传入（修复点）
+    assert kwargs["embedding"] is True
+    assert rr._CE_MODEL is recording.instances[0]  # 单例缓存的就是替身实例
+
+
+def test_local_ce_n_ubatch_zero_omits_kwarg(monkeypatch, _reset_ce_state):
+    """RERANK_LOCAL_N_UBATCH=0 → 不传 n_ubatch（= #307 修复前历史行为，逃生口）。"""
+
+    import core.reranker as rr
+
+    _ce_enable(monkeypatch, RERANK_LOCAL_N_BATCH=4096, RERANK_LOCAL_N_UBATCH=0)
+    monkeypatch.setattr(rr, "_model_file_exists", lambda path: True)
+    recording = _install_fake_llama_cpp(monkeypatch)
+
+    assert rr.rerank("问题", _five_items(), 2)[1] == "ok"
+    kwargs = recording.instances[0].kwargs
+    assert kwargs["n_batch"] == 4096
+    assert "n_ubatch" not in kwargs  # 历史行为：由 llama.cpp 取 n_ubatch = n_batch
+    assert recording.instances[0].kwargs.get("n_ctx") == rr._CE_MODEL_CTX
