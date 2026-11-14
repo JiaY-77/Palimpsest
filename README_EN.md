@@ -170,23 +170,7 @@ hermes config set context.engine palimpsest-graph
 
 **Day-to-day usage** (what to record, how to grade `importance`, when to supersede) is in **[`docs/USAGE.md`](docs/USAGE.md)** (Chinese).
 
-## Cross-session handoff
 
-A fresh session has no idea what the last one did — the most common break in agent work. Palimpsest turns it into **one data shape**, with nothing for the model to remember:
-
-| Step | How |
-|---|---|
-| **Write** | When a working session wraps up: `mem_ingest(content="Handoff / …", type="task", importance=0.9)`. A first line starting with the handoff marker auto-tags `kind=handoff` and excludes it from the active-task list (it is not pending work) |
-| **Read** | Before the first turn of a new session: `tasks_active(include_handoff=true)` brings the previous capsule straight up, so the user never re-explains |
-| **Trace** | `POST /memory/{id}/open` (body `{"session_id": …}`) records that this session picked it up — who read it, how many times |
-
-Three boundaries:
-
-- **Timing**: write when a session wraps up, a long task hits a milestone, or context is about to be lost. Not for a plain question and answer.
-- **Settle before writing**: close this round's finished / abandoned tasks first (`PUT /memory/{id}` with `[done]` / `[canceled]` on the first line). Unsettled tasks become zombies that keep polluting `tasks_active`.
-- **Manual and automatic share one shape**: `POST /lifecycle/session-end` composes a capsule automatically; a hand-written handoff is for the rounds you judge especially important. Both are retrieved the same way.
-
-No special integration — it is two tool calls. Full recipe: [`docs/HERMES_INTEGRATION.md`](docs/HERMES_INTEGRATION.md).
 ---
 
 ## Why not the others
@@ -251,10 +235,6 @@ All configuration is read from environment variables (a `.env` file is loaded au
 |---|---|---|
 | `REST_PORT` | `8090` | Port for the FastAPI REST service |
 | `DB_PATH` | `data/mh_memory.db` | Path to the embedded TriviumDB database |
-| `SESSION_BUFFER_MIN_THOUGHT_CHARS` | `400` | Substantive-turn threshold for the session buffer: a turn enters only with tool calls, or thought body ≥ this length plus a conclusion field, or an imperative user message (see docs/CONFIGURATION.md) |
-| `SESSION_CAPSULE_RECOVER_ENABLED` | `1` | Crash-recovery switch for session capsules: a background loop finalizes active session buffers idle past the threshold into capsules (covers a hard kill where session-end never ran); `0` = no background loop, the manual endpoint still works |
-| `SESSION_CAPSULE_RECOVER_AFTER_SECONDS` | `1800` | Orphan threshold (seconds): a buffer is finalized only when its last activity is older than this. Deliberately conservative -- a false positive loses no turns, since session-end re-merges all buffers into the same node |
-| `SESSION_CAPSULE_RECOVER_INTERVAL_SECONDS` | `300` | Background scan interval (seconds) |
 | `EMBEDDING_PROVIDER` | *(empty = auto-detect)* | Embedding backend: empty auto-detects (cloud key → `openai`, otherwise `local`), or explicitly `local` / `ollama` / `openai` |
 | `DEEPSEEK_API_KEY` | *(empty)* | Used for report generation; optional |
 | `KNOWLEDGE_DIR` | *(optional)* | Root of the knowledge base (Obsidian `.md` files) to index |

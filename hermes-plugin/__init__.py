@@ -276,7 +276,7 @@ class PalimpsestMemoryProvider(MemoryProvider):
         # 思维底片收侧开关（issue #287）：``sync_turn`` 是否把 reasoning 拼回
         # ``<thought>`` 块随 post-turn 上报（本体落 ``type=thought`` 节点）。
         # 默认开；关闸设 PALIMPSEST_THOUGHT_CAPTURE=false——post-turn 请求照常发
-        # （普通沉淀 / 胶囊不受影响），只是 payload 不带 ``<thought>``，本体
+        # （普通沉淀不受影响），只是 payload 不带 ``<thought>``，本体
         # ``decide_thought_store`` 无可存。给侧骨架（下面一行）独立开关。
         self._thought_capture = os.environ.get("PALIMPSEST_THOUGHT_CAPTURE", "true").lower() != "false"
         # 骨架是热路径，宁缺毋慢：本地 REST 通常 <500ms，慢 embedding 时 fail-open
@@ -385,13 +385,8 @@ class PalimpsestMemoryProvider(MemoryProvider):
     # 轮次计数桶（类级，理由同 ``_skeleton_kind_by_session``）：宿主给不了轮次号
     # ——``memory_manager`` 的 ``sync_turn`` 调用只带 ``session_id`` / ``messages``
     # （``turn_id`` 只到得了 ``pre_llm_call`` 钩子）。插件自己维护每会话单调计数
-    # 随请求上送，服务端才有幂等去重的键（issue #216：此前缺省恒 0 被当「同一
-    # 轮」，会话缓冲每轮覆盖上一轮，turns 恒为 1）。
-    # 重载续接（issue #219）：服务端在 post-turn 返回体里回传**解析后的真实序号**
-    # （``turn_index_resolved``，缓冲落库用那个），每个 sync_turn 拿它校正本地
-    # （``max(本地, 服务端值)``）——插件重启后同会话从 1 重计的自我校正：第一轮
-    # post-turn 就对齐到缓冲离点，不再覆盖活跃缓冲的第 1 轮。仍不落持久层——
-    # 跨进程不保证续接的老取舍由服务端返回值兜住。
+    # 随请求上送，服务端才有幂等去重的键（issue #216）。仍不落持久层——跨进程
+    # 不保证续接（插件重启后同会话从 1 重计）。
     _turn_index_by_session: ClassVar[dict[str, int]] = {}
     _TURN_INDEX_BUCKETS_MAX: ClassVar[int] = 256
 
@@ -467,19 +462,6 @@ class PalimpsestMemoryProvider(MemoryProvider):
             "严格按下面的骨架逐项填写（写完整、不要跳过任何一项），然后再给出正式回答：\n" + skeleton
         )
 
-    def _seed_turn_index(self, session_id: str, resolved: int) -> None:
-        """用服务端解析序号校正本地计数（``max(本地, resolved)``，issue #219）。
-
-        插件重载（部署同步 / 网关重启）后本地桶可能为空或落后于缓冲离点：第一轮
-        sync_turn 的返回体带 ``turn_index_resolved``，这里把本地计数顶上去，
-        下一轮自然从离点 +1 续接，不再覆盖活跃缓冲的第 1 轮。单调取向：
-        服务端值只**推不拉**（正常重试的幂等语义不受影响）。
-        """
-        buckets = type(self)._turn_index_by_session
-        if session_id not in buckets and len(buckets) >= type(self)._TURN_INDEX_BUCKETS_MAX:
-            buckets.pop(next(iter(buckets)), None)
-        buckets[session_id] = max(buckets.get(session_id, 0), resolved)
-
     def _next_turn_index(self, session_id: str) -> int:
         """本会话下一个轮次序号（单调 +1，只在真发请求时推进）。
 
@@ -505,7 +487,7 @@ class PalimpsestMemoryProvider(MemoryProvider):
 
         轮次序号：宿主给不了轮次号（``memory_manager`` 的调用只带 session_id /
         messages），插件维护每会话单调计数随请求上送（见类级桶注释），本体拿它
-        做缓冲幂等覆盖与 thought 判重的键（issue #216）。
+        做 thought 判重的键（issue #216）。
 
         思维预设层收侧：Hermes 已把 ``<thought>`` 内容剥进最后一条 assistant
         消息的 ``reasoning`` 字段（正文里没有），原样还原成 ``<thought>`` 块
@@ -526,7 +508,7 @@ class PalimpsestMemoryProvider(MemoryProvider):
             return
         assistant_message = assistant_content or ""
         # 收侧开关（issue #287）：关闸时跳过 reasoning 拼接——post-turn 照常发
-        # （普通沉淀 / 胶囊不受影响），payload 不带 ``<thought>`` 即无可存节点。
+        # （普通沉淀不受影响），payload 不带 ``<thought>`` 即无可存节点。
         reasoning = _assistant_reasoning(messages) if self._thought_capture else ""
         if reasoning:
             if assistant_message.strip():
@@ -535,7 +517,7 @@ class PalimpsestMemoryProvider(MemoryProvider):
                 assistant_message = f"<thought>{reasoning}</thought>"
             if kind:
                 logger.debug("Palimpsest thought captured (skeleton_kind=%s)", kind)
-        resp = _http_post(
+        _http_post(
             f"{self._base_url}/lifecycle/post-turn",
             {
                 "session_id": session_id or self._session_id,
@@ -546,28 +528,8 @@ class PalimpsestMemoryProvider(MemoryProvider):
                 # thought_origin 形态启发式（文本长得像什么），两者交叉核对。
                 "skeleton_kind": kind,
                 # 每会话单调轮次计数（宿主给不了轮次号，见类级桶注释）：本体
-                # 按显式非 0 序号做缓冲幂等覆盖与 thought 判重。
+                # 按显式非 0 序号做 thought 判重的键。
                 "turn_index": self._next_turn_index(session_id or self._session_id or ""),
-            },
-        )
-        # 重载续接（issue #219）：返回体的 ``turn_index_resolved`` 是服务端落库
-        # 用的真实序号——拿它校正本地计数（max，只推不拉），插件重载后第一轮
-        # 就对齐到缓冲离点。可观测优先：校正是进程内簿记，失败不影响本轮沉淀。
-        sid = session_id or self._session_id or ""
-        resolved = resp.get("turn_index_resolved") if isinstance(resp, dict) else None
-        if isinstance(resolved, int) and resolved > 0:
-            self._seed_turn_index(sid, resolved)
-
-    def on_session_end(self, messages: list[dict[str, Any]]) -> None:
-        """会话结束：转发 ``/lifecycle/session-end``（要点提炼 / 分层 / 去重在本体）。"""
-        if not self._enabled or not self._auto_ingest:
-            return
-        _http_post(
-            f"{self._base_url}/lifecycle/session-end",
-            {
-                "session_id": self._session_id,
-                "messages": messages or [],
-                "auto_ingest": self._auto_ingest,
             },
         )
 

@@ -8,7 +8,7 @@
 本文件钉四件事：
   1. 主用例：新建 → PUT 改 content → reembed → 新正文独有关键词必须命中
      （FTS 行与向量都按新正文落位）；
-  2. 反例保护：既有能命中的接续点（kind=handoff）节点经同样的 PUT 重写不得变差；
+  2. 反例保护：既有能命中的 task 节点经同样的 PUT 重写不得变差；
   3. 失败路径：FTS 写入抛异常 → 主更新仍成功（200、payload 已更新），
      响应 ``fts_synced=False`` + ``warning``，且普通分支与 task 分支都覆盖；
   4. 自愈路径：故障期间主更新成功而索引行停在旧正文，``fts_index.rebuild``
@@ -137,47 +137,6 @@ class TestPutReembedRetrievable:
                 assert nid in hits, f"task 路径改写后新关键词检索不到: {hits}"
                 # 日志节点等副作用不回呛：state 也是新的
                 assert body["task_state"] == "doing"
-
-    def test_two_handoff_nodes_both_retrievable_after_rewrites(self):
-        """反例保护：两条接续点（kind=handoff）各自 PUT 重写，谁都不许掉队。"""
-        main, client = _client()
-        with _isolated_store() as store:
-            specs = [
-                # (新 token, 旧 token, 旧正文, 新正文)
-                (
-                    "h-new-t82",
-                    "h-old-t81",
-                    "接续点 / 会话接续 / 旧一 h-old-t81\n\ndetail-1",
-                    "接续点 / 会话接续 / 新一 h-new-t82\n\ndetail-2",
-                ),
-                (
-                    "h-new-u92",
-                    "h-old-u91",
-                    "接续点 / 会话接续 / 旧二 h-old-u91\n\ndetail-3",
-                    "接续点 / 会话接续 / 新二 h-new-u92\n\ndetail-4",
-                ),
-            ]
-            created = []
-            for _kw, _old_kw, old_content, _new in specs:
-                nid = store.insert_node(
-                    {"type": "task", "kind": "handoff", "content": old_content}, _fake_embed(old_content)
-                )
-                created.append(nid)
-                fts_index.index_node(nid, old_content)
-            with patch.object(main, "_get_store", return_value=store):
-                for nid, (_kw, _old_kw, _old, new_content) in zip(created, specs, strict=True):
-                    resp = client.put(f"/memory/{nid}", json={"content": new_content})
-                    assert resp.status_code == 200, resp.text
-                    assert resp.json()["fts_synced"] is True
-                client.post(f"/memory/{created[0]}/reembed")
-            for nid, (kw, old_kw, _old, new_content) in zip(created, specs, strict=True):
-                assert _fts_rows(nid) == [new_content], f"接续点 {nid} FTS 未重写"
-                # 断言用各节点**独有** token：锚词「接续点/会话接续」两组共有，
-                # trigram OR 查询互相命中属正常行为，不该判失败
-                new_hits = [h["node_id"] for h in fts_index.search_fts(kw)]
-                assert nid in new_hits, f"接续点 {nid} 重写后检索不到自己 (kw={kw})"
-                old_hits = [h["node_id"] for h in fts_index.search_fts(old_kw)]
-                assert nid not in old_hits, f"接续点 {nid} 旧关键词仍命中同一行"
 
 
 # ---------------------------------------------------------------------------

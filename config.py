@@ -345,40 +345,6 @@ class Config:
     # 默认 1.0——chunk 段与全文同处一个向量空间、同为余弦可比。
     CHUNK_SCORE_WEIGHT = float(os.getenv("CHUNK_SCORE_WEIGHT", "1.0"))
 
-    # ---- lifecycle session-end：旧「会话要点」路径开关 ----
-    # 会话胶囊（type=task kind=handoff，由 session 缓冲合并）成为主路径后，
-    # 要点路径默认停用（issue #278）：要点是每次会话固定写入的对话残渣，
-    # 语义极泛 + 数量线性增长，在候选窗口里天然占位。默认 0 = session-end
-    # 只走胶囊路径，要点不再写（可观测：skip_reason=session_memory_disabled）；
-    # 设环境变量 SESSION_MEMORY_INGEST=1 可回退旧行为（要点照旧写 facts 层，
-    # 并带 meta.origin=session_digest 打标，默认不出现在检索候选）。
-    SESSION_MEMORY_INGEST = os.getenv("SESSION_MEMORY_INGEST", "0") == "1"
-
-    # ---- lifecycle post-turn：会话缓冲的实质轮筛选（issue #170，胶囊第二刀）----
-    # 判定在 core/strategy.is_substantive_turn（三条判据任一满足才进缓冲：
-    # ①本轮有工具调用；②思考正文 ≥ 此门槛且结论类字段非空；③用户消息含指令
-    # 动词）。这里只是判据 2 的思考正文长度门槛（strip 后字符数）：全不满足的
-    # 短轮（打招呼 / 确认 / 一句话回复）不进缓冲（skip_reason=non_substantive），
-    # session-end 胶囊不再被噪声塞满。纯函数不读环境——本值由端点注入。
-    SESSION_BUFFER_MIN_THOUGHT_CHARS = int(os.getenv("SESSION_BUFFER_MIN_THOUGHT_CHARS", "400"))
-
-    # ---- 会话胶囊断线自愈（孤儿缓冲补产）----
-    # 背景：胶囊只在 session-end 落地；进程被硬砍（计划内关机 / 桌面 app 崩溃）时
-    # session-end 不会跑，post-turn 累进的缓冲永远 status=active 悬空在库里，胶囊
-    # 永远不产。三项配置构成自愈：后台循环（ENABLED）每 INTERVAL 秒扫一次，把静默
-    # 超过 AFTER_SECONDS 的活跃缓冲按 session 补产成胶囊；也可经
-    # POST /lifecycle/recover-orphan-capsules 手动触发（验收 / 人工补救）。
-    # 总开关：1=启用（默认）；0=后台循环不启动（手动端点仍可用）。
-    SESSION_CAPSULE_RECOVER_ENABLED = os.getenv("SESSION_CAPSULE_RECOVER_ENABLED", "1") == "1"
-    # 孤儿判定的静默阈值（秒）：缓冲 updated_at（缺时间戳的老数据回退 started_at）
-    # 距今超过它才判孤儿。30 分钟刻意保守——正聊着的会话轮间隔远小于它，不能误伤；
-    # 即使误判也**不丢数据**：session-end 合并的是全部缓冲轮次，误补的「半截胶囊」
-    # 会在真 session-end 时原节点重合成（node_id 不变），代价只是中间多一条可观测
-    # 的中间产出，而不是丢轮次。
-    SESSION_CAPSULE_RECOVER_AFTER_SECONDS = int(os.getenv("SESSION_CAPSULE_RECOVER_AFTER_SECONDS", "1800"))
-    # 后台扫描间隔（秒）：服务常驻时每 5 分钟自愈一轮——肉眼可等，又不至于空转。
-    SESSION_CAPSULE_RECOVER_INTERVAL_SECONDS = int(os.getenv("SESSION_CAPSULE_RECOVER_INTERVAL_SECONDS", "300"))
-
     # ---- 记忆分层（tier）：检索侧视图，不改存储、不迁数据 ----
     # facts = 事实层（prefetch 自动注入池的默认；检索默认自 2.21 起为不过滤，见下）；
     # logs = 日志层（从默认池摘出）；
@@ -395,10 +361,10 @@ class Config:
         if t.strip()
     )
     TIER_LOGS = frozenset(
-        t.strip() for t in os.getenv("TIER_LOGS", "record,event,git_commit,thought,session").split(",") if t.strip()
+        t.strip() for t in os.getenv("TIER_LOGS", "record,event,git_commit,thought").split(",") if t.strip()
     )
     # 检索默认分层。2.21 起默认 ""（不过滤）：tier=facts 会把日志层（record/event/
-    # git_commit/thought/session）整体排除在候选之外，实测 62 条判卷题中 27% 的
+    # git_commit/thought）整体排除在候选之外，实测 62 条判卷题中 27% 的
     # gold 因此不可达（hit@5 0.613 → 放宽后 0.887，issue #266）。
     # 一键回退：设 DEFAULT_TIER=facts 即恢复 2.20 行为（LTS 行为变更条款：
     # 默认配置值可在次版本调整，须 CHANGELOG 显式列出 + 环境变量一键回退）。
@@ -409,19 +375,16 @@ class Config:
     # 错误走「未登记保守归 facts」兜底 —— issue #151 时 thought 即如此漏网）。
     # 来源（grep 仓库实际写入 / 分支处）：
     #   事实层语义 type（mem_ingest 调用方契约，与 TIER_FACTS 默认同源）：
-    #     memory      mcp_tools/memory.py（ingest 默认值）、core/strategy.py（session-end
-    #                 提炼）、core/consolidator.py（合并产物）
+    #     memory      mcp_tools/memory.py（ingest 默认值）、core/consolidator.py（合并产物）
     #     review      mcp_tools/memory.py（mem_review：复盘裁决后存 type=review）
     #     event / character_state / user_intent / correction / decision / plan /
     #     task / inspiration   调用方语义 type 侧分支：main.py（event / character_state
-    #                 展示分支）、mcp_tools/memory.py（task 接续点 / thought 专属字段分支）、
+    #                 展示分支）、mcp_tools/memory.py（thought 专属字段分支）、
     #                 core/conflict.py + core/bitemporal.py（留痕类豁免分支列举）
     #   日志层 type（代码内写入点）：
     #     record      core/strategy.py（对话原话 capture）、core/task_state.py（任务状态
     #                 变更日志节点）、core/embedding_fingerprint.py（向量空间指纹记录）
     #     thought     core/strategy.py（THOUGHT_TYPE，思维底片，tier=logs 设计意图见该处注释）
-    #     session     main.py（会话缓冲节点：post-turn 累进各轮编号思考，session-end
-    #                 合并成 kind=handoff 胶囊后标 closed——过程簿记，tier=logs 同 thought）
     #     git_commit  scripts/palimpsest_cli.py（git 提交同步落库）
     # 例外（不入本清单）：kb_chunk / novel_chunk / skill_chunk —— 索引切片类走既有
     # scope / domain 隔离，不参与 tier 分层（见上方 TIER_FACTS 注释）。
@@ -441,7 +404,6 @@ class Config:
             "event",
             "git_commit",
             "thought",
-            "session",
         }
     )
 

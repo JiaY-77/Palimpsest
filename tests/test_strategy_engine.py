@@ -18,7 +18,6 @@ from core.strategy import (
     decide_post_turn,
     decide_pre_compress,
     decide_pre_turn,
-    decide_session_end,
     decide_thought_skeleton,
     decide_thought_store,
     extract_graph_topics,
@@ -230,32 +229,6 @@ class TestDecidePostTurn:
 
     def test_auto_ingest_off_stores_nothing(self):
         assert decide_post_turn("记住这个偏好", auto_ingest=False)["store"] is False
-
-
-# ---------------------------------------------------------------------------
-# decide_session_end (issue #47: distilled points -> facts tier)
-# ---------------------------------------------------------------------------
-
-
-class TestDecideSessionEnd:
-    def test_writes_memory_type_facts_tier(self):
-        msgs = [
-            {"role": "user", "content": "记住这个偏好：我喜欢深色模式"},
-            {"role": "user", "content": "不对，改成浅色"},
-        ]
-        d = decide_session_end(msgs)
-        assert d["store"] is True
-        assert d["type"] == "memory"  # facts 层 —— 与 prefetch 默认 tier 一致
-        assert d["tier"] == "facts"
-        assert d["importance"] == 0.55
-
-    def test_no_points_stores_nothing(self):
-        d = decide_session_end([{"role": "user", "content": BORING_TEXT}])
-        assert d["store"] is False
-
-    def test_auto_ingest_off_stores_nothing(self):
-        msgs = [{"role": "user", "content": "记住这个偏好"}]
-        assert decide_session_end(msgs, auto_ingest=False)["store"] is False
 
 
 # ---------------------------------------------------------------------------

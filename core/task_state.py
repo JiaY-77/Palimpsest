@@ -27,7 +27,6 @@ Palimpsest 里的任务节点（``type=task``）长期把「任务当前处于�
 匹配范围到首行末尾（真实语料里状态词常常在正文中间，如 ``T-73：… → [待办，…]``）。
 """
 
-import contextlib
 import logging
 import re
 import time
@@ -44,26 +43,6 @@ TASK_STATES = frozenset({"todo", "doing", "blocked", "done", "canceled", "unknow
 
 # 回填时解析不出状态 → unknown（并打 needs_review 标记，交给人工复核）。
 UNKNOWN_STATE = "unknown"
-
-# 会话接续点的身份标记：``payload.kind == "handoff"`` 的 task 节点是「跨会话交接
-# 记录」而非待办事项。接续点必须写成 ``type=task``（写成 ``type=record`` 会落
-# logs 层，``tier=facts`` 的默认检索搜不到），但它们的状态标记常命中 doing、
-# 又多数没有 title——混进 ``list_active_tasks`` 的工作集会长期占着前排。因此
-# 查询层默认排除它们（``include_handoff=False``），显式开关可取回（显式取回
-# 不受状态过滤限制——接续点没有「待办状态」语义）。``kind`` 由**写入层**自动打：
-# ``mem_ingest`` / ``apply_task_patch`` 在写入/更新时凡 content 首行符合
-# ``_is_handoff`` 判据即打标，存量缺标由回填补——不依赖任何一方单独补齐。
-# 只支持这一个 kind 取值，不做别的分类。
-HANDOFF_KIND = "handoff"
-
-# 会话接续点识别：``type=task`` 且 content **首行以「接续点」作为标题词开头**
-# （跳过前导空白与若干 ``[...]`` 状态块后必须紧跟「接续点」，允许 ``【`` / ``★``
-# 装饰，见 ``_is_handoff``）。真实存量语料两种形态都命中：
-#   · ``【★接续点·2026-10-16 任务治理整理 + 下一步外包 · 新会话先读这条】``
-#   · ``接续点 / 会话接续 / 新聊天先读 —— 2026-10-13~14 大修（……）``
-# 不能只做「首行包含『接续点』」——句中提到「接续点」的真待办会被误吃
-# （生产实测两条反例，见 ``_is_handoff`` 的 docstring）。
-_HANDOFF_HINT = "接续点"
 
 # 状态关键词表：**(关键词, 规范化状态)**，元组顺序仅作**同位置并列时的兜底**
 # （见 ``_match_keyword``：块内实际以「最先出现的状态词」胜出，顺序只在两个
@@ -288,13 +267,7 @@ def apply_task_patch(store, node_id: int, payload_patch: dict | None = None) -> 
          ``type=record`` 日志节点并建 ``record -[LOGS]-> task`` 边；
          状态没变（含无状态可解析）→ 只更新 ``last_touched_at``；
 
-      4. **接续点写入层打标（幂等）**：合并后的 ``type=task`` content 若首行以
-         「接续点」标题词开头（``_is_handoff``，与 ``mem_ingest`` / 回填同源的
-         唯一识别规则）→ 自动补 ``kind=handoff``，并在 ``title`` 为空时用
-         ``_handoff_title`` 补摘要（``title`` 已有非空值不覆盖，提取逻辑与回填
-         同源）。content 改成接续点形态同样打标；已是接续点的不重复写、不报错。
-
-    **原子性**：状态更新与日志写入不是一个事务（triviumdb 的连接模型如此，
+      **原子性**：状态更新与日志写入不是一个事务（triviumdb 的连接模型如此，
     见 core/trivium_store.py 的单进程写约束）。因此日志节点**先写**——日志写入
     失败时状态保持原值不变，不会出现「状态已变、没有留痕」的半状态；
     最坏情况是「日志已写、状态未变」（一次多余日志，可人工清理，无损）。
@@ -323,18 +296,6 @@ def apply_task_patch(store, node_id: int, payload_patch: dict | None = None) -> 
     merged = {**payload, **patch}
     if new_state is not None:
         merged["task_state"] = new_state
-    # 接续点写入层打标（幂等）：合并后的 content 首行以「接续点」标题词开头
-    # （``_is_handoff``——与 ``mem_ingest`` / 回填同源的唯一识别规则，PR #112
-    # 收紧过的首行判据不放宽）→ 自动补 ``kind=handoff``；已是接续点的不重复写。
-    # title 同步补齐（幂等、不覆盖）：``title`` 此前只有回填会补，更新路径改出
-    # 的接续点在交接列表里 title 为空、读不出是哪条。``title`` 已有非空值就保持
-    # 原值（尊重人工与既有值，与回填「title 非空即就绪」判据一致）；为空才用
-    # ``_handoff_title`` 补（PR #112 验收过的提取逻辑，直接复用不改动）。
-    if merged.get("type") == "task" and _is_handoff(merged):
-        merged["kind"] = HANDOFF_KIND
-        if not (merged.get("title") or "").strip():
-            merged["title"] = _handoff_title(merged)
-
     # 状态变化先留痕：日志成功后才落状态，避免「状态已变、无留痕」。
     changed = new_state is not None and new_state != previous_state
     now_iso = _now_iso()
@@ -423,29 +384,18 @@ def _write_state_log(store, node_id: int, payload: dict, previous_state, new_sta
     logger.info("任务状态日志已写入 log_node=%s -> task=%s（%s）", log_id, node_id, new_state)
 
 
-def _matches_filters(
-    payload: dict, project: str, states: set, include_legacy: bool, include_handoff: bool = False
-) -> bool:
-    """活跃任务过滤：type / status / legacy / handoff + 状态集 + 项目。"""
+def _matches_filters(payload: dict, project: str, states: set, include_legacy: bool) -> bool:
+    """活跃任务过滤：type / status / legacy + 状态集 + 项目。"""
     if payload.get("type") != "task":
         return False
     if payload.get("status") != "active":
         return False
     if not include_legacy and payload.get("legacy") is True:
         return False
-    is_handoff = payload.get("kind") == HANDOFF_KIND
-    if not include_handoff and is_handoff:
+    state, _ = _resolve_effective_state(payload)
+    if state is not None and state not in states:
         return False
-    # 接续点豁免状态判定：它没有「待办状态」语义——正文首行是接续点标记块，
-    # ``parse_task_state`` 解析不出 → 生效状态 None → 按 {todo, doing, blocked}
-    # 过滤会把 ``include_handoff=True`` 的显式取回也一并挡掉（生产 2363/2393
-    # 实测，三条列表全隐形）。豁免**不是**塞假状态：``task_state`` 仍如实反映
-    # 正文解析结果（解析不出就是 None），只是不再用它决定接续点的可见性。
-    if not is_handoff:
-        state, _ = _resolve_effective_state(payload)
-        if state not in states:
-            return False
-    return not (project and str(payload.get("project") or "") != project)
+    return not (project and payload.get("project") != project)
 
 
 def _sort_key(item: dict) -> tuple:
@@ -534,60 +484,10 @@ def _stale_age_days(payload: dict, now: float) -> float | None:
     return max(0.0, (now - epoch) / 86400.0)
 
 
-def _handoff_time_key(item: dict) -> float:
-    """接续点时间主键（epoch 秒）：``created_at`` 解析失败 / 缺失 → ``id`` 作时间代理。
-
-    数值与 ISO8601 字符串都认（库里两种形态都有，与 ``_freshness_epoch`` 同口径）；
-    ``id`` 单调递增（新建越晚 id 越大），作时间代理时降序方向与时间一致。
-    """
-    created = item.get("created_at")
-    if isinstance(created, (int, float)) and created > 0:
-        return float(created)
-    if isinstance(created, str) and created.strip():
-        epoch = _iso_to_epoch(created)
-        if epoch is not None:
-            return epoch
-    return float(item.get("id") or 0)
-
-
-def _order_handoff_first(items: list[dict], include_handoff: bool) -> list[dict]:
-    """排序（issue #128 A2）：``include_handoff=True`` 时接续点**置顶**。
-
-    接续点组内 ``created_at`` **倒序（最新在前）** → ``importance`` 倒序 → ``id``
-    倒序兜底（同刻时保稳定）；``created_at`` 缺失的条目以 ``id`` 作时间代理。
-    旧实现 importance 主序会让「历史写入时 importance 偏高的老接续点」压住
-    最新接续点（2026-10-22 实测：新条 0.92 被 10-17 的 0.93 压住，新会话
-    「先读这条」读到过期上下文）——取回接续点的目的就是「先读**最新**这条」，
-    故时间为主、importance 只作同刻次序。普通任务保持原排序（状态优先级 →
-    ``last_touched_at`` 倒序 → ``importance`` 倒序）。
-
-    补产胶囊不进置顶组（issue #227）：``payload.recovered == true`` 的接续点是
-    孤儿缓冲补产时机器抓的半成品——它的 ``created_at`` 天然比同 session 里已写
-    的手写接续点**新**，照旧排序会压到「新会话先读这条」的第一位，打断跨会话
-    续接。它留在普通任务组里照常排序与可见（turns 不丢、不隐藏），手写接续点
-    永远排在它前面——同 session 已有手写接续点的重复压制由本条天然覆盖。
-    """
-    if not include_handoff:
-        items.sort(key=_sort_key)
-        return items
-    handoffs = [it for it in items if it.get("kind") == HANDOFF_KIND and not it.get("recovered")]
-    others = [it for it in items if it.get("kind") != HANDOFF_KIND or it.get("recovered")]
-    handoffs.sort(
-        key=lambda it: (
-            -_handoff_time_key(it),
-            -(_to_float(it.get("importance"), 0.0) or 0.0),
-            -(it.get("id") or 0),
-        )
-    )
-    others.sort(key=_sort_key)
-    return handoffs + others
-
-
 def _fold_stale(items: list[dict], ages: dict[int, float | None], fresh_days: int) -> tuple[list[dict], dict | None]:
     """新鲜度折叠（issue #128 A1）：超期条目移出 ``results``，汇总成 ``stale`` 摘要。
 
     - ``fresh_days <= 0`` → 关闭折叠（原样返回全部、``stale=None``，兼容旧行为）；
-    - ``kind=handoff`` 豁免折叠（跨会话交接记录天然可能很旧，进 results 不进汇总）；
     - ``stale.oldest.age_days`` 为整数天（向下取整，与治理脚本的 ``.days`` 口径一致）。
     """
     try:
@@ -600,7 +500,7 @@ def _fold_stale(items: list[dict], ages: dict[int, float | None], fresh_days: in
     stale: list[tuple[float, dict]] = []
     for it in items:
         age = ages.get(it["id"])
-        if age is not None and age > threshold and it.get("kind") != HANDOFF_KIND:
+        if age is not None and age > threshold:
             stale.append((age, it))
         else:
             visible.append(it)
@@ -625,7 +525,6 @@ def list_active_tasks(
     states=(),
     limit: int = 15,
     include_legacy: bool = False,
-    include_handoff: bool = False,
     fresh_days: int = 30,
 ) -> dict:
     """列出活跃任务（``type=task`` & ``status=active`` & 状态命中）。
@@ -634,14 +533,11 @@ def list_active_tasks(
       空 / 全为非法值 → 回退默认 ``DEFAULT_ACTIVE_STATES``。
     - ``project``：非空时只保留 ``payload.project`` 相等的节点。
     - ``include_legacy=False``（默认）排除 ``payload.legacy is True`` 的老节点。
-    - ``include_handoff=False``（默认）排除 ``payload.kind == "handoff"`` 的会话
-      接续点（跨会话交接记录而非待办；显式传 ``True`` 可取回，此时接续点置顶，
-      见 ``_order_handoff_first``）。
     - ``fresh_days``（issue #128 A 项）：新鲜度窗口（天）。判据时间 =
       ``last_touched_at``（ISO），为空回退 ``created_at``（数值时间戳），两者都缺
       视为新鲜（保留、不猜、不折叠）。超过 ``fresh_days`` 天未触碰的条目不再逐条
       返回，汇总进返回体的 ``stale``（``count`` / ``oldest`` / ``hint``）；
-      ``kind=handoff`` 豁免折叠；``fresh_days <= 0`` 关闭折叠（兼容旧行为）。
+      ``fresh_days <= 0`` 关闭折叠（兼容旧行为）。
 
     返回 ``{"results": [...], "total": int, "states": [...], "stale": dict | None}``；
     ``total`` 是过滤后的总数（不受 ``limit`` 影响，**含被折叠的超期条目**——
@@ -653,13 +549,13 @@ def list_active_tasks(
     ages: dict[int, float | None] = {}
     for nid, node in store.iter_nodes():
         payload = node.get("payload") or {}
-        if not _matches_filters(payload, project, state_set, include_legacy, include_handoff):
+        if not _matches_filters(payload, project, state_set, include_legacy):
             continue
         state, _ = _resolve_effective_state(payload)
         items.append(_brief(nid, payload, state))
         ages[nid] = _stale_age_days(payload, now)
 
-    items = _order_handoff_first(items, include_handoff)
+    items.sort(key=_sort_key)
     visible, stale = _fold_stale(items, ages, fresh_days)
     try:
         cap = max(1, int(limit))
@@ -688,102 +584,28 @@ def _brief(nid: int, payload: dict, state: str | None) -> dict:
         "last_touched_at": payload.get("last_touched_at"),
         "created_at": payload.get("created_at"),
         "importance": payload.get("importance", 0.5),
-        "kind": payload.get("kind") or "",
     }
-    # 补产胶囊留痕（issue #227）：``recovered=True`` 是孤儿缓冲补产时打的机器
-    # 标记（``_recover_orphan_session_buffers`` 写入），有则带、没有就不带键——
-    # 消费者靠键缺席区分「正常 session-end 胶囊」与「补产胶囊」，排序层也用它
-    # 把补产胶囊排除出 handoff 置顶组（见 ``_order_handoff_first``）。
-    if payload.get("recovered"):
-        item["recovered"] = payload["recovered"]
-    # 胶囊接手留痕（issue #208）：有则带、没有就不带这些键——绝大多数任务
-    # 节点从未被接手过，塞 None / 0 会把「从未接手」伪装成「接过手」；
-    # 消费者靠键缺席区分两种状态。
-    if payload.get("opened_at"):
-        item["opened_at"] = payload["opened_at"]
-    opened_count = payload.get("open_count")
-    if opened_count is not None:
-        with contextlib.suppress(TypeError, ValueError):
-            item["open_count"] = int(opened_count)  # 脏值不进返回体——读路径绝不因 payload 脏数据炸
     return item
 
 
-# 接续点首行判据（2026-10-16 收紧）：``^`` 锚定行首，跳过前导空白与若干
-# ``[...]`` 状态块（如 ``[完成] `` / ``[待办] ``），其后必须紧跟「接续点」
-# 标题词（允许 ``【`` / ``★`` 前缀装饰）。「接续点」只出现在**句中**的不命中。
-_HANDOFF_FIRST_LINE_RE = re.compile(r"^\s*(?:\[[^\[\]\n]*\]\s*)*【?★?接续点")
-
-# 前导 ``[...]`` 状态块（与上面判据同一个装饰口径，供 title 判据复用）：
-# 「什么算首行装饰」只能有一处定义，否则排序判据认它是接续点、title 判据
-# 把状态词当信息段，同一节点两套结论（issue #227 验收实测：3752
-# ``[完成] 接续点 / 会话接续 local-<64hex>`` 漏降级）。
-_HANDOFF_STATUS_BLOCK_RE = re.compile(r"^\s*(?:\[[^\[\]\n]*\]\s*)*")
-
-
-def _is_handoff(payload: dict) -> bool:
-    """task 节点是否为会话接续点：content **首行以「接续点」作为标题词开头**。
-
-    判据 ``_HANDOFF_FIRST_LINE_RE``：跳过首行前导的空白与若干 ``[...]`` 状态
-    块（如 ``[完成] 【★接续点…】``）后，必须紧跟「接续点」标题词（允许 ``【``
-    / ``★`` 前缀装饰）；块外正文直接以「接续点」开头（无 ``【】``）同样命中。
-    **不看「接续点」出现在句中的任何位置。**
-
-    旧判据（PR #111 初版）是「首行**包含** ``_HANDOFF_HINT``」，生产库实测
-    两条误判（都是 type=task 的活跃真待办，逐字首行）：
-
-    · ``[待办] Palimpsest「接续点 × 任务列表」解耦（走 PR，2026-10-16 立）``
-      ——「接续点」只出现在**句中**：本条在**讨论**接续点机制，本身是真
-      待办；包含匹配会把它打成 handoff，一条真待办就此从活跃列表隐形。
-    · ``【历史留痕·记忆同行实测 2026-10-10 第一步】（⚠️ 本条为中途状态，不是当前接续点）``
-      ——同为句中命中，且本条**自述**不是接续点。
-
-    生产实测「包含」判据在 99 条 task 里命中 60 条 handoff——过宽；收紧为
-    「标题词开头」后，只认真正的接续点形态（见 ``test_is_handoff_real_shapes``
-    的 7 条逐字用例）。
-    """
-    first_line = (payload.get("content") or "").split("\n", 1)[0]
-    return _HANDOFF_FIRST_LINE_RE.match(first_line) is not None
-
-
 # title 摘要段落的分隔符：中点 ``·``、中文破折号 ``——``、斜杠与竖线的全/半角
-# 形态。接续点标记的「日期+主题」段与锚词段之间几乎总由这些符号隔开。
+# 形态。「日期 + 主题」段与主题段之间几乎总由这些符号隔开。
 _TITLE_SEGMENT_SPLIT_RE = re.compile(r"——|[·／/｜|]")
 
 # 判「纯锚词段」前先剥掉的装饰：空白与常见纯符号（切段后残留的单个 ``—`` 等符号
 # 段剥完即空 → 按空段丢弃）。
 _TITLE_ANCHOR_STRIP_RE = re.compile(r"[\s·—|｜/／]+")
 
-# 接续点标记的固定锚词：切段后整段只是这些词（含 ``★`` 前缀变体）的没有信息量，
-# 一律丢弃——它们出现在**每一条**接续点上，不携带「这条是哪条」的区分度。
-_TITLE_ANCHOR_STUBS = ("★接续点", "接续点", "会话接续", "新聊天先读", "新会话先读这条")
-
 # title 摘要的截断上限。
 _TITLE_MAX_LEN = 120
-
-# 锚词删除（按长度降序的交替模式）：判断「首行除锚词 + hash 外是否还有信息」
-# 时把锚词整词剥掉（``★接续点`` 必须早于 ``接续点`` 抢匹配，长词优先）。
-_TITLE_ANCHOR_WORDS_RE = re.compile(
-    "|".join(re.escape(stub) for stub in sorted(_TITLE_ANCHOR_STUBS, key=len, reverse=True))
-)
-
-# hash token（session id 形态）：``local-<hex>`` 前缀形态或 ≥16 位纯 hex 长串。
-# 阈值取 16：日期串（``2026-10-13``）被连字符打断后最长 hex 段不过 4~6 位，
-# 正常手写首行永远够不到 16 连 hex，不会误触发降级。
-_TITLE_HASH_RUN_RE = re.compile(r"(?:local[-_]?)?[0-9a-f]{16,}")
-
-# session id 提取：真实语料 ``接续点 / 会话接续 local-<64hex>`` 的 ``local-`` 前缀
-# 形态优先；纯长 hex 兜底。
-_TITLE_SESSION_HASH_RE = re.compile(r"local[-_ ]?([0-9a-f]{8,})", re.IGNORECASE)
-# 兜底用的纯 hex 长串（前后不得再邻接 hex，避免从长串中间截走半截）。
-_TITLE_BARE_HASH_RE = re.compile(r"(?<![0-9a-f])([0-9a-f]{16,})(?![0-9a-f])")
 
 
 def _iter_title_fragments(first_line: str):
     """按出现顺序交错产出首行的文本片段：括号块内容 + 块外正文。
 
-    块内（标记块的内容）与块外（正文）都可能是信息的载体（见 ``_handoff_title``
+    块内（标记块的内容）与块外（正文）都可能是信息的载体（见 ``_task_title``
     的「为什么」）；片段边界同时是切段边界——两个相邻块不会被空白粘连成一段
-    （``【接续点 / …新聊天先读】【2026-10-12 …主题…】`` 的锚词块与主题块各自成段）。
+    （``【块一标题】【块二主题】`` 的两块各自成段）。
     """
     pos = 0
     for match in _iter_mark_blocks(first_line):
@@ -795,89 +617,19 @@ def _iter_title_fragments(first_line: str):
         yield first_line[pos:]
 
 
-def _first_line_hashes_only(first_line: str) -> bool:
-    """首行剥掉锚词与分隔符后**只剩 hash token** → True（3778 生产形态判据）。
-
-    真实语料 ``接续点 / 会话接续 local-<64hex>``：锚词全剥后残留只有 session
-    hash——最长信息段就是裸 hash，title 零信息量（issue #227）。正常手写接续点
-    的首行总有锚词之外的信息段（日期 / 主题），剥完必有残留 → ``False`` 不触发降级。
-
-    前导 ``[...]`` 状态块必须先剥：``_is_handoff`` 的判据
-    （``_HANDOFF_FIRST_LINE_RE``）明确允许首行带若干状态块（生产实测
-    ``[完成] 接续点 / 会话接续 local-<64hex>`` 这类），状态块本身不是信息段；
-    不剥就会让「状态块 + 锚词 + hash」形态漏判、继续留下 hash-only title。
-    两处判据对「什么算首行装饰」必须同口径，否则同一节点一边认作接续点、
-    一边认作有信息量。
-    """
-    text = _HANDOFF_STATUS_BLOCK_RE.sub("", first_line)
-    text = _TITLE_ANCHOR_WORDS_RE.sub("", text)
-    text = _TITLE_ANCHOR_STRIP_RE.sub("", text).lower()
-    if not text:
-        return False
-    return not _TITLE_HASH_RUN_RE.sub("", text).strip()
-
-
-def _session_hash_prefix(first_line: str) -> str:
-    """从首行提取 session id 的前 8 位（``local-<hex>`` / 长 hex 兜底）；提取不出返回空串。"""
-    match = _TITLE_SESSION_HASH_RE.search(first_line)
-    if not match:
-        match = _TITLE_BARE_HASH_RE.search(first_line)
-    return match.group(1)[:8] if match else ""
-
-
-def _recovered_capsule_title(payload: dict, first_line: str) -> str:
-    """hash-only 首行的可读 stub：``补产胶囊 <日期> <session 前 8 位>``（缺省段省略）。
-
-    日期取 ``payload.created_at``（数值 epoch 或 ISO 字符串都认，与
-    ``_freshness_epoch`` 同口径）；缺失 / 解析不出就省略日期段。session 前 8 位
-    从首行 hash 提取；同样提取不出时省略。
-    """
-    created = payload.get("created_at")
-    epoch = None
-    if isinstance(created, (int, float)) and created > 0:
-        epoch = float(created)
-    elif isinstance(created, str) and created.strip():
-        epoch = _iso_to_epoch(created)
-    parts = ["补产胶囊"]
-    if epoch is not None:
-        parts.append(datetime.fromtimestamp(epoch, tz=timezone.utc).astimezone().strftime("%Y-%m-%d"))
-    session = _session_hash_prefix(first_line)
-    if session:
-        parts.append(session)
-    return " ".join(parts)
-
-
-def _handoff_title(payload: dict) -> str:
+def _task_title(payload: dict) -> str:
     """task 节点的 title 摘要：块内 + 块外文本切段，取信息量最大的一段。
-
-    **为什么「取信息量最大的段」而不是「先删块再取剩余」**（2026-10-16 验收
-    实测反例）：旧规则把首行里的括号块整块删掉再取剩余文本，而生产上接续点的
-    主流形态就是**整行一个块**（``【★接续点·2026-10-16 … · 新会话先读这条】``），
-    删完只剩空串 → 回退常量「接续点」，等于没补（实测 ``tasks backfill
-    --apply`` 后 4 条生产接续点的 title 仍无法互相区分）。反过来，若**只**取
-    块内容，``接续点 / … —— 2026-10-13~14 大修 · [进行中] 细节`` 这类「块 +
-    块外正文」形态又会把正文丢光、退化成 ``进行中`` 这类状态词。因此块内与块外
-    文本**都**参与切段，哪段信息量最大（最长）取哪段。
 
     规则：
       1. 首行按括号块切成片段（块内容 + 块外正文，按出现顺序，见
          ``_iter_title_fragments``）；一个块都没有 → 整行就是一个片段；
       2. 每个片段按分隔符切段（``_TITLE_SEGMENT_SPLIT_RE``：``·`` ``——``
          ``/`` ``／`` ``｜`` ``|``）；
-      3. 丢弃空段 / 纯符号段 / 纯锚词段（``_TITLE_ANCHOR_STUBS``）；
+      3. 丢弃空段 / 纯符号段；
       4. 剩余段取**最长**的一段（长度并列取最先出现），截断到 120 字符；
-      5. 仍为空（整行只有锚词，如 ``【★接续点】``）→ 退回 ``payload.task_key``
-         → 再退回 ``"接续点"``。
+      5. 仍为空 → 退回 ``payload.task_key``。
 
-    回填对 ``title`` 为空的 task 节点**统一**用它补摘要（不限于接续点）：非接续
-    点没有锚词段，同一套规则自然退化成「首行原文 / 最长段」。
-
-    **hash-only 降级（issue #227）**：首行只有锚词 + session hash 的形态（补产
-    胶囊生产的 ``接续点 / 会话接续 local-<64hex>``，3778 实证）——最长段就是裸
-    hash，产出 ``会话接续 local-3b593a05…`` 这类零信息 title。此形态不再产
-    hash-only title，退化为 ``补产胶囊 <日期> <session 前 8 位>`` 可读 stub
-    （``_recovered_capsule_title``）；日期取 ``created_at``，缺则省略。手写
-    接续点（锚词之外总有日期 / 主题段）不经此分支，提取结果不变。
+    回填对 ``title`` 为空的 task 节点统一用它补摘要。
     """
     first_line = (payload.get("content") or "").split("\n", 1)[0]
     segments: list[str] = []
@@ -886,16 +638,14 @@ def _handoff_title(payload: dict) -> str:
             if not seg.strip():
                 continue
             core = _TITLE_ANCHOR_STRIP_RE.sub("", seg)
-            if not core or core in _TITLE_ANCHOR_STUBS:
+            if not core:
                 continue
             segments.append(seg.strip())
     # max 并列时保留最先出现的那段（严格大于才替换）
     best = max(segments, key=len) if segments else ""
     if len(best) > _TITLE_MAX_LEN:
         best = best[:_TITLE_MAX_LEN]
-    if _is_handoff(payload) and _first_line_hashes_only(first_line):
-        return _recovered_capsule_title(payload, first_line)
-    return best or (payload.get("task_key") or _HANDOFF_HINT)
+    return best or (payload.get("task_key") or "")
 
 
 def backfill_task_state(store, dry_run: bool = True) -> dict:
@@ -908,17 +658,8 @@ def backfill_task_state(store, dry_run: bool = True) -> dict:
         ``canceled`` / ``unknown``）才标 ``payload.legacy = True``（历史留痕，
         ``/tasks/active`` 默认不列出）；仍在跟进的状态（``todo`` / ``doing`` /
         ``blocked``）保持 legacy 缺失，**回填后即可出现在活跃任务视图里**。
-        **接续点豁免**：``kind=handoff`` 的节点不打 ``legacy``（统一写 ``False``）——
-        状态解析不出来自接续点标记块、不代表任务完结，显式 ``include_handoff=True``
-        应能完整取回（见 ``_matches_filters`` 的状态豁免）。
-      - **会话接续点**（content 首行**以「接续点」作为标题词开头**，见
-        ``_is_handoff``）：打
-        ``payload.kind = "handoff"`` 身份标记——``list_active_tasks`` 默认排除
-        接续点（``include_handoff=True`` 可取回），排除前先补 title 便于显式
-        取回时识别。
-      - **``title`` 为空/缺失的 task 节点**（含接续点与普通任务）：补一行摘要
-        （见 ``_handoff_title``）——活跃列表里空 title 同样读不出是哪条任务；
-        幂等判据相应放宽为「title 非空即就绪」。
+      - **``title`` 为空/缺失的 task 节点**：补一行摘要（见 ``_task_title``）——
+        活跃列表里空 title 同样读不出是哪条任务；幂等判据为「title 非空即就绪」。
 
     为什么这样分：``legacy`` 的语义是「历史节点，不必再看」，不是「回填过的节点」。
     把仍在做的任务一并标成 legacy，会让回填后的工作集立刻变空——恰好废掉这套
@@ -930,7 +671,7 @@ def backfill_task_state(store, dry_run: bool = True) -> dict:
     （进程级 DB 访问锁），迭代中调 ``update_payload`` 会在同进程内重入取锁而自锁
     ——因此先把候选节点整体快照出来、迭代结束（连接释放）后再逐个写回。
 
-    返回 ``{dry_run, scanned, already, parsed, unknown, needs_review, legacy, handoff, changes}``；
+    返回 ``{dry_run, scanned, already, parsed, unknown, needs_review, legacy, changes}``；
     ``changes`` 为每个将变更 / 已变更节点的摘要（dry-run 预览 = 执行决策）。
     """
     scanned = 0
@@ -938,7 +679,6 @@ def backfill_task_state(store, dry_run: bool = True) -> dict:
     parsed = 0
     unknown = 0
     legacy_count = 0
-    handoff_count = 0
     changes: list[dict] = []
     pending: list[tuple[int, dict]] = []  # (node_id, 待写 payload)，迭代结束再写
 
@@ -953,27 +693,14 @@ def backfill_task_state(store, dry_run: bool = True) -> dict:
             unknown += 1
         else:
             parsed += 1
-        # 接续点判定 + title 是否已补（目标判据：title 非空即就绪——不要求它一定
-        # 出自本函数，人工改过的 title 同样算就绪）
-        handoff = _is_handoff(payload)
-        # 该节点**应该**是什么 legacy 值：不活跃状态才标 legacy。**接续点豁免**：
-        # 接续点没有「待办状态」语义，状态解析不出（unknown）不等于「任务已完结、
-        # 不必再看」；打了 kind=handoff 后默认视图已由 kind 排除，若再按 unknown
-        # 打 legacy=True，会把 include_handoff=True 的显式取回也一并挡掉——显式
-        # 开关应当能完整取回全部接续点（生产 2363/2393 回归根因之二）。
-        want_legacy = (state not in DEFAULT_ACTIVE_STATES) and not handoff
+        # title 是否已补（目标判据：title 非空即就绪——不要求它一定出自本函数，
+        # 人工改过的 title 同样算就绪）
+        want_legacy = state not in DEFAULT_ACTIVE_STATES
         title_done = bool((payload.get("title") or "").strip())
-        # 幂等：已是目标形态（task_state 相符、legacy 相符、title 非空即就绪；
-        # 接续点还要求 kind 已打）→ 跳过，重跑输出 0 变更。接续点的 legacy 判据
-        # 相应放宽为「非 True 即就绪」：豁免后 legacy 不再是接续点的语义字段，
-        # 存量若被旧逻辑打了 True 才回写 False。
-        legacy_done = payload.get("legacy") is not True if handoff else payload.get("legacy") is want_legacy
-        if (
-            payload.get("task_state") == state
-            and legacy_done
-            and title_done
-            and (not handoff or payload.get("kind") == HANDOFF_KIND)
-        ):
+        # 幂等：已是目标形态（task_state 相符、legacy 相符、title 非空即就绪）
+        # → 跳过，重跑输出 0 变更。
+        legacy_done = payload.get("legacy") is want_legacy
+        if payload.get("task_state") == state and legacy_done and title_done:
             already += 1
             continue
         changes.append(
@@ -983,7 +710,6 @@ def backfill_task_state(store, dry_run: bool = True) -> dict:
                 "needs_review": state == UNKNOWN_STATE,
                 "legacy": want_legacy,
                 "title": _task_label(payload),
-                "handoff": handoff,
             }
         )
         new_payload = {**payload, "task_state": state}
@@ -994,12 +720,9 @@ def backfill_task_state(store, dry_run: bool = True) -> dict:
             new_payload["legacy"] = False
         if state == UNKNOWN_STATE:
             new_payload["needs_review"] = True
-        # title 为空一律补摘要（接续点与普通任务同一套规则，见 ``_handoff_title``）
+        # title 为空一律补摘要（见 ``_task_title``）
         if not title_done:
-            new_payload["title"] = _handoff_title(payload)
-        if handoff:
-            new_payload["kind"] = HANDOFF_KIND
-            handoff_count += 1
+            new_payload["title"] = _task_title(payload)
         pending.append((nid, new_payload))
 
     if not dry_run:
@@ -1014,6 +737,5 @@ def backfill_task_state(store, dry_run: bool = True) -> dict:
         "unknown": unknown,
         "needs_review": unknown,
         "legacy": legacy_count,
-        "handoff": handoff_count,
         "changes": changes,
     }

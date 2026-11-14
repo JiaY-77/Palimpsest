@@ -126,24 +126,6 @@ def test_rp_mode_honors_custom_rp_domain(rp_mode_on):
         Config.RP_DOMAIN = "rp"
 
 
-def test_rp_mode_session_end_ingest_lands_in_rp_domain(rp_mode_on):
-    """lifecycle/session-end 没有 domain 字段：RP 模式下落库域也应锁 rp。"""
-    c = _client()
-    resp = c.post(
-        "/lifecycle/session-end",
-        json={"messages": [{"role": "user", "content": "这轮我们聊了主线剧情决胜点"}]},
-    )
-    assert resp.status_code == 200, resp.text
-    data = resp.json()
-    # 宿主不传 auto_ingest 默认 True 但由策略判定 store；只有真正落库时才断言域
-    if data.get("stored") and data.get("node_id"):
-        from mcp_tools import store
-
-        assert store.get_node(data["node_id"])["payload"]["domain"] == "rp"
-    else:
-        pytest.skip("策略判定本轮无沉淀（不落库），域锁死无从断言")
-
-
 # ---------------------------------------------------------------------------
 # kb 关联边关闭：ingest 不再挂 linked_from / REFERENCES 边
 # ---------------------------------------------------------------------------
@@ -189,8 +171,8 @@ def test_rp_mode_ingest_skips_kb_links():
 
 
 def test_rp_mode_resolve_domain_blank_fills_rp_domain(rp_mode_on):
-    """helper 单点：RP 模式下空域补 RP_DOMAIN（session-end 等无 domain 字段的
-    写入口也靠这条保证落库域锁死）。"""
+    """helper 单点：RP 模式下空域补 RP_DOMAIN（无 domain 字段的写入口也靠这条
+    保证落库域锁死）。"""
     from main import _resolve_domain
 
     assert _resolve_domain("") == "rp"

@@ -5,9 +5,6 @@
   1. count_kind 三档（hit / inject / none）分别累加到正确计数；
   2. digest 类节点默认不出现在 mem_search 结果，include_digest=True 时出现；
   3. 迁移脚本幂等（跑两遍第二遍 0 变更；只补字段不改正文不删节点）；
-  4. SESSION_MEMORY_INGEST 默认 0：session-end 要点路径默认停用（胶囊照常，
-     既有 test_session_memory_switch_off_skips_legacy_path_only 覆盖行为，
-     此处补「默认值=0」的口径钉）。
 另覆盖 pre-turn 注入路径显式传 count_kind="inject" 的接线，与 mem_stats
 的 digest 残留占比 / top_hit_nodes 排除口径。
 
@@ -17,7 +14,6 @@
 import contextlib
 import json
 import os
-import subprocess
 import sys
 
 import pytest
@@ -216,37 +212,6 @@ def test_migrate_digest_origin_idempotent():
     # 第二遍：0 变更（幂等核心断言：所有前缀命中的节点此时都已有 origin 标记）
     second = migrate_digest_origin(apply=True)
     assert second["patched"] == 0
-
-
-# ---------------------------------------------------------------------------
-# 4. SESSION_MEMORY_INGEST 默认 0
-# ---------------------------------------------------------------------------
-def test_session_memory_ingest_default_off():
-    """未设环境变量时默认关闭（独立子进程验证，避免本进程 Config 污染）。"""
-    env = dict(os.environ)
-    env.pop("SESSION_MEMORY_INGEST", None)
-    proc = subprocess.run(
-        [sys.executable, "-c", "import config; print(int(config.Config.SESSION_MEMORY_INGEST))"],
-        cwd=PROJECT_ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() == "0"
-
-    env["SESSION_MEMORY_INGEST"] = "1"
-    proc = subprocess.run(
-        [sys.executable, "-c", "import config; print(int(config.Config.SESSION_MEMORY_INGEST))"],
-        cwd=PROJECT_ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() == "1"
 
 
 # ---------------------------------------------------------------------------
