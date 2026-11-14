@@ -134,7 +134,12 @@ def resolve_conflict(
     elif hasattr(store, "embed_text"):
         # TriviumStore 形实现（自带 embed_text）：保持原向量直查——嵌入由
         # mem_ingest 调用方传入复用，零额外嵌入开销（历史行为，字节不动）。
-        similar = store.search_similar(embedding, top_k=3, expand_depth=0, apply_decay=False)
+        # count_kind="none"：写入侧判重不是用户检索，不产生命中计数；
+        # include_digest=True：判重要能看到历史 digest 节点（否则要点路径
+        # 回退模式下的重复写入无法被查重拦截，issue #278）。
+        similar = store.search_similar(
+            embedding, top_k=3, expand_depth=0, apply_decay=False, count_kind="none", include_digest=True
+        )
     else:
         # protocols.Store 实现（LocalStore / RemoteStore）：search_similar 首参
         # 是 query **文本**、各实现自行 embed。此前把向量当文本传，会让
@@ -142,7 +147,9 @@ def resolve_conflict(
         # 静默破坏。按协议传文本：query 取新节点 content（与 embedding 同源，
         # embed 后同向量，结果排序不变）。
         query = str((new_payload or {}).get("content") or "")
-        similar = store.search_similar(query, top_k=3, expand_depth=0, apply_decay=False)
+        similar = store.search_similar(
+            query, top_k=3, expand_depth=0, apply_decay=False, count_kind="none", include_digest=True
+        )
 
     auto_supersede = bool(getattr(Config, "CONFLICT_AUTO_SUPERSEDE", False))
     for r in similar:
@@ -204,7 +211,11 @@ def find_duplicate_candidates(
     if new_type == "kb_chunk" or threshold <= 0:
         return []
     try:
-        similar = store.search_similar(embedding, top_k=top_k, expand_depth=0, apply_decay=False)
+        # count_kind="none" / include_digest=True：同 resolve_conflict 的写入侧
+        # 判重口径——不计命中计数、判重视野含历史 digest 节点（issue #278）。
+        similar = store.search_similar(
+            embedding, top_k=top_k, expand_depth=0, apply_decay=False, count_kind="none", include_digest=True
+        )
     except Exception as e:  # noqa: BLE001 —— 候选检索失败降级空结果，不阻断主写入
         logger.warning("dedupe 候选检索失败，返回空列表: %s", e)
         return []

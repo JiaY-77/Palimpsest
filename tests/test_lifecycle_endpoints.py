@@ -145,7 +145,13 @@ def test_post_turn_operational_tool_output_not_ingested(db_path):
 # ---------------------------------------------------------------------------
 
 
-def test_session_end_writes_facts_tier(db_path):
+def test_session_end_writes_facts_tier(db_path, monkeypatch):
+    # #278 起要点路径默认停用（SESSION_MEMORY_INGEST 默认 0）；本测试覆盖的是
+    # 要点路径自身行为，显式开启（回退模式，默认关闭行为由
+    # test_session_memory_switch_off_skips_legacy_path_only / test_digest_demotion 钉）。
+    from config import Config
+
+    monkeypatch.setattr(Config, "SESSION_MEMORY_INGEST", True)
     client = _client()
     msgs = [
         {"role": "user", "content": "记住这个偏好：报告用极简风"},
@@ -161,7 +167,10 @@ def test_session_end_writes_facts_tier(db_path):
     assert got["payload"]["type"] == "memory"  # facts 层
 
 
-def test_session_end_near_duplicate_is_skipped(db_path):
+def test_session_end_near_duplicate_is_skipped(db_path, monkeypatch):
+    from config import Config
+
+    monkeypatch.setattr(Config, "SESSION_MEMORY_INGEST", True)  # 要点路径回退模式（#278 起默认关）
     from mcp_tools import store
 
     content = "会话要点（Palimpsest 策略引擎提炼）：\n[user] 记住：项目代号凤凰"
@@ -207,8 +216,11 @@ def test_pre_compress_returns_text_without_writing(db_path):
 # ---------------------------------------------------------------------------
 
 
-def test_full_session_cycle_layering(db_path):
+def test_full_session_cycle_layering(db_path, monkeypatch):
     """喂一批混合 turn，断言只有该写的写了，且分层各自正确。"""
+    from config import Config
+
+    monkeypatch.setattr(Config, "SESSION_MEMORY_INGEST", True)  # 要点路径回退模式（#278 起默认关）
     client = _client()
     pre_turn = client.post("/lifecycle/pre-turn", json={"user_message": "回忆一下项目代号", "domain": "hermes"})
     assert pre_turn.status_code == 200

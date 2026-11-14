@@ -346,11 +346,13 @@ class Config:
     CHUNK_SCORE_WEIGHT = float(os.getenv("CHUNK_SCORE_WEIGHT", "1.0"))
 
     # ---- lifecycle session-end：旧「会话要点」路径开关 ----
-    # 会话胶囊（type=task kind=handoff，由 session 缓冲合并）上线后保留的兼容
-    # 开关：默认开 = 既有行为完全不变（要点照旧写 facts 层）；关闭后 session-end
-    # 只走胶囊路径，要点不再写（可观测：skip_reason=session_memory_disabled）。
-    # 将来观察胶囊质量后再决定是否调整默认值。
-    SESSION_MEMORY_INGEST = os.getenv("SESSION_MEMORY_INGEST", "1") == "1"
+    # 会话胶囊（type=task kind=handoff，由 session 缓冲合并）成为主路径后，
+    # 要点路径默认停用（issue #278）：要点是每次会话固定写入的对话残渣，
+    # 语义极泛 + 数量线性增长，在候选窗口里天然占位。默认 0 = session-end
+    # 只走胶囊路径，要点不再写（可观测：skip_reason=session_memory_disabled）；
+    # 设环境变量 SESSION_MEMORY_INGEST=1 可回退旧行为（要点照旧写 facts 层，
+    # 并带 meta.origin=session_digest 打标，默认不出现在检索候选）。
+    SESSION_MEMORY_INGEST = os.getenv("SESSION_MEMORY_INGEST", "0") == "1"
 
     # ---- lifecycle post-turn：会话缓冲的实质轮筛选（issue #170，胶囊第二刀）----
     # 判定在 core/strategy.is_substantive_turn（三条判据任一满足才进缓冲：

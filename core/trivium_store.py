@@ -13,6 +13,7 @@ import triviumdb
 from config import Config
 from core import confidence
 from core import tdb_text_index as _tdb_text
+from core.digest import is_digest_payload
 from core.fts_index import remove_node, sync_node
 from core.secret_scan import SecretScanError, scan_secret_classified
 
@@ -460,8 +461,12 @@ class TriviumStore:
         if not read_only:
             self._init_indexes()
         # 命中计数内存缓冲（检索返回热路径零写库）：
-        #   _hit_buffer        {node_id: [累计次数, 最近命中时间戳]}
-        #   _hit_pending_total 缓冲内待回写的命中总数（达阈值/超时触发回写）
+        #   _hit_buffer        {node_id: [hit 累计, inject 累计, 最近命中时间戳]}
+        #                      （issue #278 拆双计数器：hit=主动检索命中、
+        #                      inject=pre-turn 注入命中，回写分别累加到
+        #                      payload.hit_count / payload.inject_count）
+        #   _hit_pending_total 缓冲内待回写的计数总数（hit+inject 合计，
+        #                      达阈值/超时触发回写）
         #   _hit_last_flush    上次回写时刻（周期触发用）
         #   _hit_lock          缓冲读改写互斥（并发检索不丢计数）
         self._hit_buffer: dict[int, list] = {}
@@ -991,6 +996,8 @@ class TriviumStore:
         block: str = "",
         include_outdated: bool = False,
         payload_filter: dict[str, Any] | None = None,
+        count_kind: str = "hit",
+        include_digest: bool = False,
     ) -> list[dict[str, Any]]:
         """使用 search_advanced（SA-PPR 认知管线）检索，保留时间衰减
 
@@ -1027,6 +1034,15 @@ class TriviumStore:
               final = score + ε × KB_SOFT_RERANK_MULT
 
         候选阶段已排除 status="outdated" 的节点（新版取代旧版的过期记忆）。
+
+        对话残渣降权（issue #278）：
+          - include_digest（默认 False）：digest 类节点（core.digest.is_digest_payload
+            判定：meta.origin 打标或历史 content 前缀）不进候选窗口——语义极泛 +
+            每次 session-end 固定写入，会把结论型记忆挤出 top_k。include_digest=True
+            是审计/回溯通道（显式点名才可达，如写入侧判重）。
+          - count_kind（默认 "hit"）：本调用的命中计数类型，"hit" = 主动检索命中
+            （MCP 工具 / /mem/search），"inject" = pre-turn 注入路径命中，
+            "none" = 内部判重等不计数的调用。非法值回退 "hit"。
         """
         # 多取候选供衰减后重排（search_advanced 的 top_k 是检索量，
         # 衰减后可能改变排序，需预留余量；6x 因约 24% 候选是 outdated，
@@ -1061,6 +1077,12 @@ class TriviumStore:
         if not include_outdated:
             scored = _drop_outdated_candidates(scored)
 
+        # 对话残渣降权（issue #278）：digest 类节点默认不进候选窗口。
+        # 与 outdated 过滤同一阶段（候选级），保证不占 top_k 名额、不产生命中计数；
+        # include_digest=True 时跳过（审计/回溯通道，节点照常可达）。
+        if not include_digest:
+            scored = [(s, n) for s, n in scored if not is_digest_payload(n.get("payload") or {})]
+
         # 时间衰减（记忆生命周期）：kb_chunk 知识块不衰减
         if apply_decay:
             scored = _rerank_by_decay(scored)
@@ -1082,17 +1104,21 @@ class TriviumStore:
             for score, node in top
         ]
         # 记忆生命周期：命中计数（best-effort，不影响检索结果/排序）
-        self._bump_hit_counts(top_results)
+        self._bump_hit_counts(top_results, count_kind)
         return top_results
 
-    def _bump_hit_counts(self, top_results: list) -> None:
+    def _bump_hit_counts(self, top_results: list, count_kind: str = "hit") -> None:
         """命中计数累加进内存缓冲（best-effort，记忆生命周期 promote 的数据源）。
 
-        对 search_similar 最终返回的命中节点 hit_count+1，供 promote 高频记忆
-        升级识别——但**只记内存缓冲、绝不碰数据库**：检索返回热路径上不再开写
-        事务（原版每次检索一次 read-modify-write，并发命中同一节点会丢计数、
-        写锁竞争放大延迟），实际回写由 flush_hit_counts 批量合并完成。设计约束：
+        对 search_similar 最终返回的命中节点按 count_kind 累加：hit_count+1（主动
+        检索命中）或 inject_count+1（pre-turn 注入命中），供 promote 高频记忆升级
+        识别与「注入 vs 主动检索」两类真实复用的区分盘点（issue #278）——但**只记
+        内存缓冲、绝不碰数据库**：检索返回热路径上不再开写事务（原版每次检索一次
+        read-modify-write，并发命中同一节点会丢计数、写锁竞争放大延迟），实际回写
+        由 flush_hit_counts 批量合并完成。设计约束：
           - 只对【最终返回】的命中节点计数（top_results），不含中途召回后丢弃的；
+          - count_kind 取值 hit / inject / none：none（内部判重等）不计任何计数，
+            非法值回退 "hit"（保守归入主动检索口径）；
           - 不改变检索返回内容/排序/行为（本方法纯内存，返回值原样不动）；
           - 缓冲读改写全程持 _hit_lock，并发检索不丢计数；
           - 回写失败由 flush_hit_counts 吞掉并 warning，绝不抛出影响检索。
@@ -1100,6 +1126,10 @@ class TriviumStore:
             丢弃（最多 _HIT_FLUSH_THRESHOLD 次命中 / _HIT_FLUSH_INTERVAL 秒），
             长驻的 REST 进程由周期触发兜底落库。
         """
+        kind = count_kind if count_kind in ("hit", "inject", "none") else "hit"
+        if kind == "none":
+            return
+        kind_idx = 0 if kind == "hit" else 1
         if not top_results:
             return
         ids = [r.get("id") for r in top_results if r.get("id") is not None]
@@ -1110,10 +1140,10 @@ class TriviumStore:
             for nid in ids:
                 entry = self._hit_buffer.get(nid)
                 if entry is None:
-                    self._hit_buffer[nid] = [1, now]
-                else:
-                    entry[0] += 1
-                    entry[1] = now
+                    entry = [0, 0, now]
+                    self._hit_buffer[nid] = entry
+                entry[kind_idx] += 1
+                entry[2] = now
                 self._hit_pending_total += 1
         self._maybe_flush_hit_counts()
 
@@ -1138,8 +1168,10 @@ class TriviumStore:
     def flush_hit_counts(self) -> int:
         """把内存缓冲的命中计数按**合并语义**批量回写数据库，返回成功累加的计数总和。
 
-        合并语义：读节点现有 payload，`hit_count = 原值 + 缓冲计数`、
-        `last_hit_at = 缓冲时间戳`，再整包写回——对 hit_count 是加法，不会覆盖
+        合并语义：读节点现有 payload，`hit_count = 原值 + 缓冲 hit 计数`、
+        `inject_count = 原值 + 缓冲 inject 计数`（issue #278 双计数器；inject_count
+        键按需引入——纯 hit 场景 payload 与旧版逐位一致）、
+        `last_hit_at = 缓冲时间戳`，再整包写回——对两个计数都是加法，不会覆盖
         外部并发写入的其他字段/计数。契约（沿用原 _bump_hit_counts 的 best-effort）：
           - 单连接一次写完所有缓冲节点，避免 N+1 次开/关连接；
           - 全程持 _hit_lock：并发 flush 串行化，同一节点不会被重复累加；
@@ -1152,14 +1184,15 @@ class TriviumStore:
             if not self._hit_buffer:
                 self._hit_last_flush = time.time()
                 return 0
-            # 快照待回写条目（持锁期间缓冲不会被并发改写）
-            snapshot = {nid: (int(e[0]), float(e[1])) for nid, e in self._hit_buffer.items()}
+            # 快照待回写条目（持锁期间缓冲不会被并发改写）：
+            # entry = [hit 累计, inject 累计, 最近命中时间戳]
+            snapshot = {nid: (int(e[0]), int(e[1]), float(e[2])) for nid, e in self._hit_buffer.items()}
             written = 0
             handled: list[int] = []
             db = None
             try:
                 db = self._acquire()
-                for nid, (cnt, ts) in snapshot.items():
+                for nid, (hit_cnt, inject_cnt, ts) in snapshot.items():
                     node = db.get(nid)
                     if not node:
                         # 节点已被删除：无处可写，按已处理出缓冲，避免永久残留
@@ -1171,11 +1204,20 @@ class TriviumStore:
                         cur = int(cur) if cur is not None else 0
                     except (TypeError, ValueError):
                         cur = 0
-                    payload["hit_count"] = cur + cnt
+                    payload["hit_count"] = cur + hit_cnt
+                    # inject_count（issue #278）：按需引入键——纯 hit 场景
+                    # payload 与旧版逐位一致（不产生恒 0 的新键）
+                    if inject_cnt or payload.get("inject_count") is not None:
+                        icur = payload.get("inject_count")
+                        try:
+                            icur = int(icur) if icur is not None else 0
+                        except (TypeError, ValueError):
+                            icur = 0
+                        payload["inject_count"] = icur + inject_cnt
                     payload["last_hit_at"] = ts
                     db.update_payload(id=nid, payload=payload)
                     handled.append(nid)
-                    written += cnt
+                    written += hit_cnt + inject_cnt
             except Exception as e:  # noqa: BLE001 — 写失败不影响检索，吞掉仅记录
                 logger.warning("命中计数回写失败（不影响检索）: %s", e)
             finally:
@@ -1184,9 +1226,9 @@ class TriviumStore:
                         db.close()
             # 成功/已删条目出缓冲并扣减待回写总数；中途失败的节点留在缓冲待下次重试
             for nid in handled:
-                snap_cnt = snapshot[nid][0]
+                h_cnt, i_cnt, _ts = snapshot[nid]
                 if self._hit_buffer.pop(nid, None) is not None:
-                    self._hit_pending_total = max(0, self._hit_pending_total - snap_cnt)
+                    self._hit_pending_total = max(0, self._hit_pending_total - (h_cnt + i_cnt))
             self._hit_last_flush = time.time()
             return written
 

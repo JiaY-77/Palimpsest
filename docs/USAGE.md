@@ -105,6 +105,18 @@
 >
 > 需要翻日志层时显式指定：`mem_search(tier="logs")` 或 CLI `search --tier logs`。
 
+### 2.3.1 对话残渣降权（digest，issue #278）
+
+session-end 的「会话要点」与 post-turn 的「[对话沉淀] 用户原话」是每次会话固定写入的对话残渣：语义极泛 + 数量随会话线性增长，在候选窗口里天然占位，把结论型记忆挤出去。治理是**降级可达性，不删历史节点**：
+
+| 手段 | 行为 |
+|---|---|
+| 写入打标 | 两条 digest 写入路径自动带 `meta.origin`（`session_digest` / `dialogue_digest`）；历史节点用 `scripts/migrate_digest_origin.py` 按 content 前缀补标（幂等，只补字段） |
+| 检索过滤 | `mem_search` / `mem_hybrid_search` / `mem_retrieve` 默认不返回 digest 类节点（`meta.origin` 打标或历史 content 前缀命中都算，不依赖迁移完成） |
+| 审计通道 | 显式传 `include_digest=true` 才可达；`mem_stats` 新增 `digest` 分节报残留占比（active 数 / 占比 / by_origin / 存量命中 top10） |
+| 停止新增 | `SESSION_MEMORY_INGEST` 默认 `0`：session-end 只走会话胶囊路径；设 `1` 回退要点路径 |
+| 计数拆分 | 命中计数拆两个：`hit_count`（MCP / `/mem/search` 主动检索）与 `inject_count`（`/lifecycle/pre-turn` 注入）；`mem_stats` 的 `top_hit_nodes` 只按 `hit_count`（真实复用）排序，digest 类命中单列 digest 分节，另有 `top_inject_nodes` |
+
 ### 2.4 要不要取代：三问
 
 写入前先 `mem_search` 查同主题（`scope="memory"`，`top_k=3~5`），然后：
